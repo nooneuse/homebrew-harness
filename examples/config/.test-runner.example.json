@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "recipes": [
+    {
+      "name": "unit-tests",
+      "builtin": "unittest",
+      "description": "Run the project unittest suite",
+      "roles": [
+        "lead",
+        "subagent",
+        "teammate"
+      ],
+      "input_globs": [
+        "**/*"
+      ],
+      "locked_globs": [
+        "tests/**",
+        "pyproject.toml",
+        "conftest.py",
+        "pytest.ini"
+      ],
+      "timeout": 120,
+      "max_runs": 10,
+      "authorization": "confirm"
+    }
+  ]
+}

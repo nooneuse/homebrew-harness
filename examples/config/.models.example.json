@@ -1,0 +1,39 @@
+{
+  "version": 2,
+  "connections": {
+    "provider_a": {
+      "protocol": "openai_responses",
+      "api_key_env": "PROVIDER_A_API_KEY",
+      "base_url_env": "PROVIDER_A_BASE_URL"
+    },
+    "provider_b": {
+      "protocol": "anthropic_messages",
+      "api_key_env": "PROVIDER_B_API_KEY",
+      "base_url_env": "PROVIDER_B_BASE_URL",
+      "api_version": "2023-06-01"
+    }
+  },
+  "profiles": {
+    "planner": {
+      "connection": "provider_a",
+      "model_env": "PLANNER_MODEL",
+      "description": "Planning and review",
+      "context_chars": 50000,
+      "max_output_tokens": 8192
+    },
+    "coder": {
+      "connection": "provider_b",
+      "model_env": "CODER_MODEL",
+      "description": "Focused implementation and tests",
+      "context_chars": 50000,
+      "max_output_tokens": 4096
+    }
+  },
+  "defaults": {
+    "lead": "planner",
+    "teammate_roles": {
+      "coder": "coder",
+      "reviewer": "planner"
+    }
+  }
+}

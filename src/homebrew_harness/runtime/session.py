@@ -1,0 +1,2061 @@
+"""s17: a serialized Lead, automatic events and one explicit goal gate."""
+
+from __future__ import annotations
+
+import copy
+import json
+import math
+import sys
+import threading
+import time
+import uuid
+from contextlib import nullcontext
+from dataclasses import replace
+from datetime import datetime
+from functools import partial
+from pathlib import Path
+
+import homebrew_harness.context.memory
+import homebrew_harness.execution.background
+import homebrew_harness.orchestration.cron_scheduler
+import homebrew_harness.orchestration.teams
+import homebrew_harness.orchestration.workflow_runtime
+import homebrew_harness.runtime.assembly
+import homebrew_harness.runtime.prompts
+import homebrew_harness.runtime.turns
+import homebrew_harness.tools.registry
+import homebrew_harness.tools.shell
+from homebrew_harness.context.tracked_history import ConversationHistory
+from homebrew_harness.execution.execution_control import (
+    acquired,
+    cleanup_scope,
+    control_scope,
+    operation_deadline,
+)
+from homebrew_harness.execution.execution_control import (
+    check as execution_check,
+)
+from homebrew_harness.execution.model_errors import quota_exhausted
+from homebrew_harness.execution.model_gateway import (
+    Deadline,
+    ModelCancelled,
+    ModelDeadlineExceeded,
+    ModelGateway,
+    UsageLedger,
+    gateway_error,
+)
+from homebrew_harness.execution.test_runner import TestRunnerError
+from homebrew_harness.tools.mcp.runtime import MCPRuntime
+from homebrew_harness.orchestration.goal_loop import (
+    GoalController,
+    PromptGoalEvaluator,
+)
+from homebrew_harness.orchestration.hard_conditions import HardVerifier
+from homebrew_harness.orchestration.workspace_runtime import WorkspaceRuntime
+from homebrew_harness.runtime.capabilities import Capabilities, capability_scope
+from homebrew_harness.runtime.host_commands import HostCommand
+from homebrew_harness.runtime.loop_components import LoopComponents
+from homebrew_harness.runtime.observability import Observations, RuntimeTrace
+from homebrew_harness.runtime.runtime_control import (
+    ClosePending,
+    CloseProgress,
+    Poller,
+    Shutdown,
+)
+from homebrew_harness.storage.durable_runtime import (
+    CheckpointWriter,
+    RecoveryRequired,
+    checkpoint_scope,
+    inspected_output,
+    operation_active,
+    repair_history,
+)
+from homebrew_harness.tools.tool_outcome import needs_inspection
+
+
+class HarnessSession:
+    def __init__(
+        self,
+        client,
+        model: str,
+        workdir: Path,
+        *,
+        hooks=None,
+        skill_loader=None,
+        compactor=None,
+        todo_manager=None,
+        memory_runtime=None,
+        background_manager=None,
+        cron_scheduler=None,
+        team_manager=None,
+        mcp_runtime=None,
+        context_chars: int = 50_000,
+        max_turns: int = 20,
+        clock=datetime.now,
+        poll_interval: float = 1,
+        dispatch_interval: float = 0.2,
+        retry_delay: float = 5,
+        workflow_runtime=None,
+        goal_controller=None,
+        goal_evaluator_model=None,
+        goal_check_tokens=2048,
+        goal_input_chars=12000,
+        stop_block_cap=8,
+        mode="interactive",
+        shutdown_timeout=5,
+        gateway=None,
+        gateway_limits=None,
+        test_runner=None,
+        resume_session=None,
+        turn_timeout=300,
+        model_profile=None,
+        worker_output_tokens=None,
+        capabilities=None,
+        bash_policy=None,
+        model_registry=None,
+        lead_model_profile=None,
+    ):
+        created, bindings = [], []
+        missing = object()
+
+        def own(label, value):
+            created.append((label, value.close))
+            return value
+
+        def bind(value, name, replacement):
+            bindings.append((value, name, getattr(value, name, missing)))
+            setattr(value, name, replacement)
+
+        try:
+            if (
+                mode not in {"interactive", "one_shot", "service"}
+                or not math.isfinite(shutdown_timeout)
+                or shutdown_timeout < 0
+            ):
+                raise ValueError("Invalid host mode or shutdown timeout.")
+            if not math.isfinite(turn_timeout) or turn_timeout <= 0:
+                raise ValueError("Turn timeout must be finite positive seconds.")
+            from homebrew_harness.execution.bash_policy import current_bash_policy
+
+            self.bash_policy = (
+                bash_policy
+                or getattr(team_manager, "bash_policy", None)
+                or current_bash_policy()
+            )
+            selected = capabilities or Capabilities.default()
+            injected = {
+                name
+                for name, value in (
+                    ("background", background_manager),
+                    ("cron", cron_scheduler),
+                    ("teams", team_manager),
+                    ("workflow", workflow_runtime),
+                    ("mcp", mcp_runtime),
+                )
+                if value is not None
+            }
+            self.capabilities = selected.include(*injected)
+            if memory_runtime is not None and self.capabilities.memory_mode == "off":
+                self.capabilities = Capabilities(
+                    self.capabilities.enabled,
+                    memory_runtime.mode
+                    if isinstance(memory_runtime.mode, str)
+                    else "recall",
+                    self.capabilities.details,
+                )
+            from homebrew_harness.execution.model_registry import ModelRegistry
+
+            self.models = model_registry or ModelRegistry()
+            self.models.claim(self)
+            own("models", self.models)
+            lead_alias = (
+                lead_model_profile
+                if lead_model_profile is not None
+                else self.models.lead_default
+            )
+            initial = self.models.select(
+                lead_alias,
+                client=client,
+                model=model,
+                context_chars=context_chars,
+                max_output_tokens=worker_output_tokens or 4096,
+            )
+            client, model = initial.client, initial.model
+            self.gateway = gateway or (
+                client
+                if isinstance(client, ModelGateway) and gateway_limits is None
+                else own(
+                    "gateway",
+                    ModelGateway(
+                        client,
+                        gateway_limits,
+                        workdir=workdir,
+                        ledger=UsageLedger(workdir, enabled=self.capabilities.details),
+                    ),
+                )
+            )
+            if worker_output_tokens is not None:
+                self.gateway.configure_worker_output(worker_output_tokens)
+            self.lead_binding = self.models.select(
+                lead_alias,
+                client=client,
+                model=model,
+                context_chars=context_chars,
+                max_output_tokens=self.gateway.worker_output_tokens,
+            )
+            context_chars = self.lead_binding.context_chars
+            client = self.gateway.bind(client)
+            self.client, self.model = client, model
+            self.workdir = workdir.resolve()
+            core = homebrew_harness.runtime.assembly.prepare_core(
+                client,
+                model,
+                self.workdir,
+                LoopComponents(
+                    hooks=hooks,
+                    skill_loader=skill_loader,
+                    compactor=compactor,
+                    todo_manager=todo_manager,
+                    test_runner=test_runner,
+                    context_chars=context_chars,
+                    archive_namespace="lead-" + uuid.uuid4().hex,
+                ),
+                created,
+            )
+            self.hooks, self.skills, self.compactor, self.todo, self.tests = (
+                core.hooks,
+                core.skill_loader,
+                core.compactor,
+                core.todo_manager,
+                core.test_runner,
+            )
+            self.trace = RuntimeTrace(self.workdir)
+            self._observations = Observations()
+            self.memory = memory_runtime or (
+                homebrew_harness.context.memory.MemoryRuntime(
+                    client, model, self.workdir, mode=self.capabilities.memory_mode
+                )
+                if self.capabilities.memory_mode != "off"
+                else None
+            )
+            if self.memory:
+                bind(self.memory, "mode", self.capabilities.memory_mode)
+            self.mcp = mcp_runtime
+            self.workflow = (
+                (
+                    workflow_runtime
+                    or own(
+                        "workflow",
+                        homebrew_harness.orchestration.workflow_runtime.WorkflowRuntime(
+                            self.workdir,
+                            homebrew_harness.orchestration.workflow_runtime.ModelWorkflowRunner(
+                                client, model, profile=model_profile
+                            ),
+                            on_event=lambda kind, **fields: self._emit_trace(
+                                "workflow_" + kind, source="workflow", **fields
+                            ),
+                        ),
+                    )
+                )
+                if self.capabilities.has("workflow")
+                else None
+            )
+            self.background = (
+                (
+                    background_manager
+                    or own(
+                        "background",
+                        homebrew_harness.execution.background.BackgroundManager(
+                            self.workdir,
+                            homebrew_harness.tools.shell.run_bash,
+                            bash_policy=self.bash_policy,
+                        ),
+                    )
+                )
+                if self.capabilities.has("background")
+                else None
+            )
+            if (
+                self.background
+                and self.background.run_command is homebrew_harness.tools.shell.run_bash
+            ):
+                bind(
+                    self.background,
+                    "run_command",
+                    partial(
+                        homebrew_harness.tools.shell.run_bash,
+                        archive_store=self.compactor.store,
+                    ),
+                )
+            self.cron = (
+                (
+                    cron_scheduler
+                    or homebrew_harness.orchestration.cron_scheduler.CronScheduler(
+                        self.workdir
+                    )
+                )
+                if self.capabilities.has("cron")
+                else None
+            )
+            self.team = (
+                (
+                    team_manager
+                    or own(
+                        "workspace",
+                        homebrew_harness.orchestration.teams.TeamManager(
+                            self.workdir,
+                            partial(
+                                homebrew_harness.runtime.turns.run_member_loop,
+                                client=client,
+                                model=model,
+                                hooks=self.hooks,
+                                skill_loader=self.skills,
+                                context_chars=context_chars,
+                                mcp_runtime=mcp_runtime,
+                            ),
+                            background_manager=self.background,
+                            bash_policy=self.bash_policy,
+                            worktrees=self.capabilities.has("worktrees"),
+                        ),
+                    )
+                )
+                if self.capabilities.has("teams")
+                else None
+            )
+            if self.team and (team_manager is None or self.models.specs):
+                bind(
+                    self.team,
+                    "model_selector",
+                    lambda role, alias: self.models.select(
+                        alias,
+                        client=self.client,
+                        model=self.model,
+                        role=role,
+                        context_chars=self.compactor.context_chars,
+                        max_output_tokens=self.lead_binding.max_output_tokens,
+                    ),
+                )
+            self.workspace = self.team or own(
+                "workspace",
+                WorkspaceRuntime(
+                    self.workdir,
+                    tasks=self.capabilities.has("tasks"),
+                    worktrees=self.capabilities.has("worktrees"),
+                    background_manager=self.background,
+                    bash_policy=self.bash_policy,
+                ),
+            )
+            if isinstance(self.mcp, MCPRuntime):
+                if any(
+                    c.owner is not None and c.owner._leased for c in self.mcp._actors
+                ):
+                    raise ValueError(
+                        "Bind the session before connecting container MCP services."
+                    )
+                bind(self.mcp, "leases", self.workspace.leases)
+            self.shell = self.workspace.shell_runner
+            from homebrew_harness.storage.artifact_store import ArtifactStore
+
+            self.artifacts = (
+                ArtifactStore(
+                    self.workdir,
+                    self.bash_policy,
+                    workspace_resolver=lambda task_id: self.workspace.store.workspace(
+                        self.workspace.store.load(task_id)
+                    ),
+                    test_runner=self.tests,
+                    owner=lambda: self.workspace.runtime_session_id,
+                )
+                if self.bash_policy.outputs
+                else None
+            )
+            if self.artifacts is not None:
+                bind(self.workspace, "artifact_store", self.artifacts)
+                bind(self.shell, "artifact_store", self.artifacts)
+                if self.background:
+                    bind(self.background.runner, "artifact_store", self.artifacts)
+            from homebrew_harness.execution.bash_runner import validate_bash_resources
+
+            validate_bash_resources(self.bash_policy, self.shell, self.background)
+            bind(self.workspace, "capabilities", self.capabilities)
+            bind(self.workspace, "session_owner", self)
+            bind(self.workspace, "test_runner", self.tests)
+            bind(self.workspace, "background_manager", self.background)
+            bind(
+                self.workspace,
+                "model_pending",
+                lambda: (
+                    self.gateway.inflight > 0
+                    or self.tests.active.is_set()
+                    or not self.shell.wait_closed(0)
+                    or any(
+                        component and not component.wait_closed(0)
+                        for component in (self.background, self.workflow)
+                    )
+                ),
+            )
+            if self.background:
+                bind(self.background, "leases", self.workspace.leases)
+            self.intent = self.compactor.intent
+            bind(self.workspace, "task_intent", self.intent)
+            if self.workspace.store:
+                bind(self.workspace.store, "intent", self.intent)
+            self.turn_timeout = turn_timeout
+            self.mode, self.shutdown_timeout = mode, shutdown_timeout
+            self._drain_changed = threading.Event()
+            self._automatic_failed = False
+            self._control_blocked = False
+            self._control_limit = False
+            self._async_failed = False
+            self.wait_timed_out = False
+            if self.team:
+                runner = self.team.run_member
+
+                def run_member(member):
+                    with (
+                        capability_scope(self.capabilities),
+                        self.gateway.scope(
+                            role="teammate",
+                            context_id=member.name,
+                            cancel_event=member.stop_event,
+                        ),
+                        self.trace.scope("teammate", member.name),
+                    ):
+                        return runner(member)
+
+                bind(self.team, "run_member", run_member)
+            self._goal_changed = threading.Event()
+            self._goal_ready = False
+            self.last_goal_result = ""
+            self.stop_block_cap = stop_block_cap
+            self.goal = goal_controller or own(
+                "goal",
+                GoalController(
+                    self.workdir,
+                    PromptGoalEvaluator(
+                        client,
+                        goal_evaluator_model or model,
+                        max_tokens=goal_check_tokens,
+                    ),
+                    block_cap=stop_block_cap,
+                    input_chars=goal_input_chars,
+                ),
+            )
+            bind(
+                self.goal,
+                "hard_verifier",
+                HardVerifier(
+                    self.workdir,
+                    test_runner=self.tests,
+                    workspace_resolver=self.resolve_task_workspace,
+                ),
+            )
+            self._goal_observer = self.goal.on_event
+            bind(self.goal, "on_event", self._goal_event)
+            bind(self.goal, "pending_work", self._goal_pending_work)
+            self.messages = ConversationHistory(
+                [
+                    {
+                        "role": "system",
+                        "content": homebrew_harness.runtime.prompts.build_system_prompt(
+                            self.workdir,
+                            skill_loader=self.skills,
+                            capabilities=self.capabilities,
+                        ),
+                    }
+                ]
+            )
+            self.compactor.validate_fixed_budget(
+                self.messages, tools=self.tool_pool().tools
+            )
+            self.user_request = ""
+            self.max_turns = max_turns
+            self.clock, self.poll_interval, self.dispatch_interval = (
+                clock,
+                poll_interval,
+                dispatch_interval,
+            )
+            self.retry_delay = retry_delay
+            self.lock = threading.Lock()
+            self._user_waiting = threading.Event()
+            self.stop_event = threading.Event()
+            self._poller = Poller(self.stop_event)
+            self._threads = self._poller.workers.threads
+            self._observing = False
+            self._pending_team = []
+            self._pending_background = []
+            self._observation_retry = 0.0
+            self._cron_retry = {}
+            self._last_source = "cron"
+            self._closed = False
+            self._shutdown = Shutdown()
+            self._close_finished = self._shutdown.finished
+            self._close_progress = CloseProgress()
+            self._cleanup_errors = self._close_progress.errors
+            self._cleanup_history = self._close_progress.history
+            self._persistence_error = None
+            self._runtime_init_lock = threading.RLock()
+            self._quota_blocked = False
+            self.runtime_store = self.workspace.bus.store
+            self.session_id = uuid.uuid4().hex
+            self.checkpoint_key = "lead:" + self.session_id
+            self.resume_session = resume_session
+            self._runtime_started = False
+            from homebrew_harness.runtime.user_input import UserInputController
+
+            self.inputs = UserInputController(self)
+            self._pending_user = []
+            self._recovery_blocked = []
+            self._checkpoint_writer = CheckpointWriter(
+                self.runtime_store,
+                self.checkpoint_key,
+                lambda: self._snapshot(borrow=True),
+            )
+
+        except BaseException as failure:
+            errors = []
+            for value, name, previous in reversed(bindings):
+                try:
+                    if previous is missing:
+                        if hasattr(value, name):
+                            delattr(value, name)
+                    else:
+                        setattr(value, name, previous)
+                except Exception:
+                    errors.append("binding_" + name)
+            with cleanup_scope():
+                for label, close in reversed(created):
+                    try:
+                        close()
+                    except Exception:
+                        errors.append(label)
+            if errors:
+                failure.construction_cleanup_errors = tuple(errors)
+            raise
+
+    def _snapshot(self, *, borrow=False):
+        return {
+            "session_id": self.session_id,
+            "contract_version": 4,
+            "input_control": self.inputs.data(),
+            "messages": self.messages if borrow else copy.deepcopy(self.messages),
+            "host_instance": self.workspace.leases.instance,
+            "archives": self.compactor.store.checkpoint(),
+            "intent": self.intent.to_dict(),
+            "todo": [
+                {"content": i.content, "status": i.status} for i in self.todo.items
+            ],
+            "todo_revision": self.todo.revision,
+            "pending_team": copy.deepcopy(self._pending_team),
+            "pending_background": copy.deepcopy(self._pending_background),
+            "last_result": self.last_goal_result,
+            "goal_id": self.goal.state["goal_id"] if self.goal.pending else None,
+            "lead_task": self.workspace.lead_assignment.id
+            if self.workspace.lead_assignment
+            else None,
+            "usage": self.gateway.summary(),
+            "capabilities": self.capabilities.manifest(),
+            "bash_policy": self.bash_policy.identity(),
+            "model_binding": self.lead_binding.identity(),
+            "model_registry": self.models.manifest(),
+            **(
+                {
+                    "team": self.team.snapshot_for_storage()
+                    if borrow
+                    else self.team.checkpoint()
+                }
+                if self.team
+                else {}
+            ),
+            "recovery_blocked": list(self._recovery_blocked),
+            "phase": "idle",
+        }
+
+    def loop_components(self):
+        return LoopComponents(
+            hooks=self.hooks,
+            todo_manager=self.todo,
+            skill_loader=self.skills,
+            compactor=self.compactor,
+            team_manager=self.workspace,
+            task_store=self.workspace.store,
+            background_manager=self.background,
+            cron_scheduler=self.cron,
+            workflow_runtime=self.workflow,
+            mcp_runtime=self.mcp,
+            test_runner=self.tests,
+            capabilities=self.capabilities,
+            shell_runner=self.shell,
+            artifact_store=self.artifacts,
+            bash_policy=self.bash_policy,
+            stop_event=getattr(self, "stop_event", None),
+            model_registry=self.models,
+            worker_output_tokens=self.lead_binding.max_output_tokens,
+            steering=getattr(self, "inputs", None),
+            on_user_submit=self._ack_user_input
+            if getattr(self, "_pending_user", None)
+            else None,
+        )
+
+    def tool_pool(self):
+        return homebrew_harness.tools.registry.build_tool_pool(
+            self.client, self.model, self.workdir, self.loop_components()
+        )
+
+    def _ensure_runtime(self, deadline=None):
+        with acquired(self._runtime_init_lock, deadline):
+            if self._closed:
+                raise ValueError("Harness session is closed.")
+            try:
+                self._initialize_runtime(deadline)
+            except BaseException:
+                self._runtime_started = False
+                with cleanup_scope():
+                    try:
+                        sid = self.session_id
+                        current = self.runtime_store.get("session_meta", sid)
+                        if (
+                            current
+                            and current.get("instance")
+                            == self.workspace.leases.instance
+                        ):
+                            if getattr(self, "_prior_meta", None):
+                                self.runtime_store.put(
+                                    "session_meta", sid, self._prior_meta
+                                )
+                            else:
+                                self.runtime_store.remove("session_meta", sid)
+                            if self.runtime_store.get_meta("latest_session") == sid:
+                                self.runtime_store.set_meta(
+                                    "latest_session",
+                                    getattr(self, "_prior_latest", None),
+                                )
+                    except Exception as error:
+                        self._close_progress.record_error("initialization", error)
+                    finally:
+                        try:
+                            if self.workspace.store:
+                                self._critical_close(
+                                    "initialization_tasks",
+                                    self.workspace.store.close,
+                                    repeat=True,
+                                )
+                        finally:
+                            self._critical_close(
+                                "initialization_lease",
+                                self.workspace.release_session,
+                                repeat=True,
+                            )
+                raise
+
+    def _initialize_runtime(self, deadline=None):
+        if self._runtime_started:
+            return
+        self.workspace.acquire_session(
+            (deadline or operation_deadline(self.turn_timeout)).expires_at
+        )
+        state = self.runtime_store.load_session(self.resume_session)
+        self._prior_meta = None
+        self._prior_latest = self.runtime_store.get_meta("latest_session")
+        if self.resume_session:
+            sid = (
+                state.get("latest_session")
+                if self.resume_session == "latest"
+                else self.resume_session
+            )
+            from homebrew_harness.storage.checkpoint_lifecycle import require_retained
+
+            require_retained(state.get("session_meta", {}).get(sid))
+            self._prior_meta = copy.deepcopy(state["session_meta"].get(sid))
+            saved = state["checkpoints"].get("lead:" + str(sid))
+            if saved is None:
+                raise RecoveryRequired(
+                    "Session checkpoint not found; choose a saved session ID."
+                )
+            self.session_id, self.checkpoint_key = sid, "lead:" + sid
+            operations = [
+                v
+                for v in state["operations"].values()
+                if v["checkpoint"] == self.checkpoint_key
+                or v["checkpoint"].startswith("member:" + sid + ":")
+            ]
+            if saved.get("contract_version") != 4:
+                raise RecoveryRequired(
+                    "Checkpoint requires the current protocol/input contract; start a new session for prerelease formats."
+                )
+            if saved.get("bash_policy") != self.bash_policy.identity():
+                raise RecoveryRequired(
+                    "Resume requires the saved Bash execution policy; a sandbox cannot silently become host execution."
+                )
+            if (
+                saved.get("model_binding") != self.lead_binding.identity()
+                or saved.get("model_registry") != self.models.manifest()
+            ):
+                raise RecoveryRequired(
+                    "Resume requires the saved model binding and host model registry; start a new session for changed models."
+                )
+            if saved.get("capabilities") != self.capabilities.manifest():
+                raise RecoveryRequired(
+                    "Resume requires the saved host capability configuration; choose the matching profile."
+                )
+            restored, uncertain = repair_history(saved["messages"], operations)
+            self.messages[:] = restored
+            if saved.get("archives"):
+                self.compactor.store.restore_checkpoint(saved["archives"])
+            self.intent.restore(saved["intent"])
+            self.inputs.restore(saved["input_control"])
+            self.user_request = self.intent.original
+            self.todo.update(saved.get("todo", []))
+            self.todo._revision = saved.get("todo_revision", self.todo.revision)
+            self.last_goal_result = saved.get("last_result", "")
+            self._pending_background = saved.get("pending_background", [])
+            self._recovery_blocked = list(
+                dict.fromkeys(
+                    [
+                        *saved.get("recovery_blocked", []),
+                        *uncertain,
+                        *[
+                            v["call_id"]
+                            for v in operations
+                            if v["state"] in {"started", "unknown"}
+                        ],
+                    ]
+                )
+            )
+            if saved.get("phase") == "running" and not self._recovery_blocked:
+                self._recovery_blocked.append("interrupted_turn")
+            if saved.get("lead_task"):
+                record = self.workspace.store.load(saved["lead_task"])
+                if record.status == "in_progress":
+                    self.workspace.lead_assignment = self.workspace.store.resume(
+                        record.id
+                    )
+            if saved.get("goal_id"):
+                self.goal.restore(saved["goal_id"], reactivate=False)
+            if self.team:
+                self.team.restore_checkpoint(sid)
+            # A saved model call may have been billed after the old host died.
+            self.gateway.restore_usage(saved.get("usage", {}))
+            if saved.get("phase") == "running":
+                self.gateway.mark_observation_incomplete()
+            self.runtime_store.start_session(sid, self.workspace.leases.instance)
+        if not self.resume_session:
+            self.runtime_store.start_session(
+                self.session_id, self.workspace.leases.instance
+            )
+        self._checkpoint_writer = CheckpointWriter(
+            self.runtime_store, self.checkpoint_key, lambda: self._snapshot(borrow=True)
+        )
+        self.workspace.runtime_session_id = self.session_id
+        self.workspace.bus.recover("lead")
+        self._pending_team.clear()  # Durable claims reappear once, after the lease is acquired.
+        if self.cron:
+            self.cron.reconcile()
+        self._recovery_blocked.extend((self.cron.unresolved() if self.cron else []))
+        if self.background:
+            self.background.recover()
+        unknown = [
+            t["bg_id"]
+            for t in (self.background.snapshot() if self.background else [])
+            if t["status"] == "unknown" and not t.get("inspected")
+        ]
+        self._recovery_blocked.extend(
+            x for x in unknown if x not in self._recovery_blocked
+        )
+        self._runtime_started = True
+        self.runtime_store.set_meta("latest_session", self.session_id)
+        self._save_checkpoint()
+
+    def _save_checkpoint(self, phase="idle", *, ack=()):
+        if self._runtime_started:
+            operations = self.runtime_store.items(
+                "operations", owner=self.checkpoint_key
+            )
+            self._recovery_blocked.extend(
+                v["call_id"]
+                for v in operations.values()
+                if v["checkpoint"] == self.checkpoint_key
+                and v["state"] in {"started", "unknown"}
+                and v["call_id"] not in self._recovery_blocked
+            )
+            for message in self.messages:
+                if message.get("role") == "tool":
+                    try:
+                        unknown = needs_inspection(message.get("content", "{}"))
+                    except (ValueError, AttributeError):
+                        unknown = False
+                    if (
+                        unknown
+                        and message["tool_call_id"] not in self._recovery_blocked
+                    ):
+                        self._recovery_blocked.append(message["tool_call_id"])
+            expected = self.runtime_store.checkpoint_revision(self.checkpoint_key)
+            snapshot = self._snapshot(borrow=True)
+            snapshot["phase"] = phase
+            try:
+                with cleanup_scope():
+                    self.runtime_store.checkpoint(
+                        self.checkpoint_key,
+                        snapshot,
+                        ack=ack,
+                        expected_revision=expected,
+                    )
+            except Exception as error:
+                self._persistence_error = type(error).__name__
+                self._automatic_failed = True
+                raise
+            else:
+                self._persistence_error = None
+
+    def _refresh_recovery(self):
+        for row in self.recovery_operations():
+            if not row["active"] and row["call_id"] not in self._recovery_blocked:
+                self._recovery_blocked.append(row["call_id"])
+        for key in self.cron.unresolved() if self.cron else []:
+            if key not in self._recovery_blocked:
+                self._recovery_blocked.append(key)
+        for item in self.background.snapshot() if self.background else []:
+            if (
+                item["status"] == "unknown"
+                and not item.get("inspected")
+                and item["bg_id"] not in self._recovery_blocked
+            ):
+                self._recovery_blocked.append(item["bg_id"])
+        if (
+            self._persistence_error
+            and "persistence_error" not in self._recovery_blocked
+        ):
+            self._recovery_blocked.append("persistence_error")
+
+    def recovery_operations(self):
+        prefix = (
+            "lead:" + self.session_id,
+            "member:" + self.session_id + ":",
+            "sub:" + self.session_id + ":",
+        )
+        records = self.runtime_store.items("operations", owner=prefix[0])
+        for scope in prefix[1:]:
+            records.update(self.runtime_store.items("operations", owner_prefix=scope))
+        return [
+            {
+                "operation_id": key,
+                "revision": value.get("revision", 0),
+                "call_id": value["call_id"],
+                "checkpoint": value["checkpoint"],
+                "state": value["state"],
+                "batch_id": value.get("batch_id"),
+                "active": operation_active(self.workdir, key),
+            }
+            for key, value in records.items()
+            if (
+                value["checkpoint"] == prefix[0]
+                or value["checkpoint"].startswith(prefix[1:])
+            )
+            and value["state"] in {"started", "unknown"}
+        ]
+
+    def inspect_operation(self, identity, revision):
+        from homebrew_harness.storage.durable_runtime import _LIVE_LOCK
+
+        with acquired(_LIVE_LOCK):
+            candidates = {
+                row["operation_id"]: row for row in self.recovery_operations()
+            }
+            row = candidates.get(identity)
+            if row is None or row["revision"] != revision:
+                raise RecoveryRequired(
+                    "Operation inspection is stale; read /recovery again."
+                )
+            if row["active"]:
+                raise RecoveryRequired(
+                    "Operation is still executing; cancel or wait for its result before inspection."
+                )
+            snapshot = self._snapshot()
+            target = (
+                self.runtime_store.get("checkpoints", row["checkpoint"])
+                if row["checkpoint"] != self.checkpoint_key
+                else snapshot
+            )
+            if not isinstance(target, dict):
+                raise RecoveryRequired(
+                    "Operation checkpoint is missing; inspect the stored execution facts."
+                )
+            original = copy.deepcopy(target)
+            confirmed = row["call_id"]
+            snapshot["recovery_blocked"] = [
+                item for item in snapshot["recovery_blocked"] if item != confirmed
+            ]
+
+            def update(state):
+                current = state["operations"].get(identity)
+                if (
+                    current is None
+                    or current.get("revision", 0) != revision
+                    or current["state"] not in {"started", "unknown"}
+                ):
+                    raise RecoveryRequired("Operation changed during inspection.")
+                current.update(
+                    state="inspected", revision=revision + 1, host_inspected=True
+                )
+                operations = [
+                    value
+                    for value in state["operations"].values()
+                    if value["checkpoint"] == row["checkpoint"]
+                ]
+                for effect in target.get("effects", []):
+                    if effect.get("operation_id") == identity:
+                        effect["state"] = "inspected"
+                target["messages"], _ = repair_history(
+                    target.get("messages", []), operations
+                )
+                if row["checkpoint"] != self.checkpoint_key:
+                    if state["checkpoints"].get(row["checkpoint"]) != original:
+                        raise RecoveryRequired(
+                            "Target checkpoint changed during inspection."
+                        )
+                    state["checkpoints"][row["checkpoint"]] = target
+                state["checkpoints"][self.checkpoint_key] = snapshot
+
+            with cleanup_scope():
+                self.runtime_store.transaction(update)
+            for effect in self._checkpoint_writer.effects:
+                if effect.get("operation_id") == identity:
+                    effect["state"] = "inspected"
+            self.messages[:] = snapshot["messages"]
+            self._recovery_blocked = snapshot["recovery_blocked"]
+            self._refresh_recovery()
+            return (
+                "Host inspection recorded for "
+                + identity
+                + ". Original execution facts were retained."
+            )
+
+    def recovery_status(self):
+        self._refresh_recovery()
+        return {
+            "session_id": self.session_id,
+            "blocked": list(self._recovery_blocked),
+            "operations": self.recovery_operations(),
+            "background": [
+                {
+                    "operation_id": b["bg_id"],
+                    "revision": b.get("revision", 0),
+                    "state": b["status"],
+                }
+                for b in (self.background.snapshot() if self.background else [])
+                if b["status"] == "unknown" and not b.get("inspected")
+            ],
+            "cron": [
+                {
+                    "operation_id": k,
+                    "revision": v.get("revision", 0),
+                    "state": v["state"],
+                }
+                for k, v in (
+                    self.cron.runtime.items("cron").items() if self.cron else []
+                )
+                if v["state"] in {"received", "unknown"}
+            ],
+            "recovered_members": list(self.team.recovered_members) if self.team else [],
+            "subagents": [
+                {
+                    "run_id": v.get("run_id"),
+                    "phase": v.get("phase"),
+                    "effects": v.get("effects", []),
+                }
+                for k, v in self.runtime_store.items(
+                    "checkpoints", prefix="sub:" + self.session_id + ":"
+                ).items()
+            ],
+            "persistence_error": self._persistence_error,
+            "shutdown": self.shutdown_status(),
+            "instruction": "Inspect current files, task state and external results before /recovery continue. Tools are never automatically replayed.",
+        }
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        self.close()
+
+    def resolve_task_workspace(self, identity):
+        if self.workspace.store is None:
+            raise ValueError("Enable the tasks capability for task predicates.")
+        return self.workspace.store.workspace(self.workspace.store.load(identity))
+
+    @property
+    def members(self):
+        return self.team.members if self.team else {}
+
+    def start(self, *, include_clock=True, deadline=None):
+        if self._closed:
+            raise ValueError("Harness session is closed.")
+        self._ensure_runtime(Deadline(deadline) if deadline is not None else None)
+        jobs = [(self.process_once, self.dispatch_interval, "harness-events")]
+        if include_clock and self.cron:
+            jobs.append(
+                (
+                    lambda: self.cron.poll_due(self.clock()),
+                    self.poll_interval,
+                    "harness-clock",
+                )
+            )
+        try:
+            self._poller.start(
+                jobs,
+                lambda error: self._emit_trace(
+                    "dispatch_error", error_type=type(error).__name__
+                ),
+            )
+        except BaseException:
+            self.close()
+            raise
+
+    def _goal_event(self, kind, **fields):
+        self._emit_trace(kind, source="goal", **fields)
+        self._goal_changed.set()
+        if self._goal_observer:
+            self._observations.run(
+                "goal_callback", lambda: self._goal_observer(kind, **fields)
+            )
+
+    def _goal_pending_work(self):
+        # The current Lead task and this Goal are the work being verified.
+        return [
+            item
+            for item in self.pending_work(for_goal=True)
+            if item not in {"goal", "lead_task"}
+        ]
+
+    def _wait_lock(self, deadline):
+        if deadline is None:
+            self.lock.acquire()
+            return True
+        return self.lock.acquire(timeout=max(0, deadline - time.monotonic()))
+
+    def wait_for_goal(self, timeout=None):
+        deadline = None if timeout is None else time.monotonic() + timeout
+        while True:
+            self._goal_changed.clear()
+            if not self._wait_lock(deadline):
+                self.wait_timed_out = True
+                return "Host wait timeout reached; work is pending and the goal is retained."
+            try:
+                if not self.goal.enabled or self.stop_event.is_set():
+                    return self.last_goal_result
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    self.wait_timed_out = True
+                    return self.goal.report(
+                        "",
+                        self.goal.suspend(
+                            "limit", "Host wait timeout reached; goal retained."
+                        ),
+                    )
+            finally:
+                self.lock.release()
+            self._goal_changed.wait(remaining)
+
+    def pending_work(self, deadline=None, *, for_goal=False):
+        pending = ["recovery"] if self._recovery_blocked else []
+        if (
+            self.inputs.pending(active_only=True)
+            if for_goal
+            else self.runtime_store.mailbox("peek", self.inputs.recipient)
+            or self.inputs.active_id is not None
+        ):
+            pending.append("user_input")
+        if self.tests.active.is_set():
+            pending.append("tests")
+        if (
+            (self.background.running_paths() if self.background else [])
+            or (self.background is not None and self.background.has_ready())
+            or self._pending_background
+            and not (for_goal and self._observing)
+        ):
+            pending.append("background")
+        acquired = (
+            self.workspace.lock.acquire(blocking=False)
+            if deadline is None
+            else self.workspace.lock.acquire(
+                timeout=max(0, deadline - time.monotonic())
+            )
+        )
+        if not acquired:
+            return [*pending, "team_busy"]
+        try:
+            if any(
+                member.status in {"working", "stopping", "waiting_approval"}
+                or member.assignment is not None
+                for member in self.members.values()
+                if member.status not in {"stopped", "failed"}
+            ):
+                pending.append("team")
+        finally:
+            self.workspace.lock.release()
+        queued = (
+            self.workspace.bus.available("lead")
+            if for_goal and self._observing
+            else self.workspace.bus.peek("lead")
+        )
+        if queued or self._pending_team and not (for_goal and self._observing):
+            pending.append("team_events")
+        if (
+            self._goal_ready
+            and self.goal.enabled
+            or self.goal.enabled
+            and self.goal.state["status"] == "waiting"
+        ):
+            pending.append("goal")
+        if (self.cron is not None and self.cron.has_pending()) or (
+            self.cron.unresolved() if self.cron else []
+        ):
+            pending.append("cron")
+        if (self.workspace.store.owned() if self.workspace.store else None) is not None:
+            pending.append("lead_task")
+        return pending
+
+    def drain(self, timeout=120):
+        """Observe accepted work before one-shot exit: 0 complete, 1 failed, 2 pending."""
+        deadline = time.monotonic() + max(0, timeout)
+        try:
+            self.start(include_clock=False, deadline=deadline)
+        except ValueError:
+            if time.monotonic() >= deadline:
+                self.wait_timed_out = True
+                return 2
+            raise
+        while True:
+            self._drain_changed.clear()
+            if not self._wait_lock(deadline):
+                self.wait_timed_out = True
+                return 2
+            try:
+                pending = self.pending_work(deadline)
+                failed = self._async_failed or any(
+                    member.status == "failed" for member in self.members.values()
+                )
+                if self._recovery_blocked:
+                    return 2
+                if pending and (
+                    self._quota_blocked
+                    or self._automatic_failed
+                    or self._control_blocked
+                    or self.gateway.blocked
+                ):
+                    reason = self.gateway.blocked
+                    return 2 if self._control_limit or "deadline" in reason else 1
+                if pending and set(pending) <= {"lead_task"}:
+                    return 2
+                if not pending:
+                    return (
+                        1
+                        if failed or self.goal.status()["status"] == "failed"
+                        else 2
+                        if self.goal.pending
+                        else 0
+                    )
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self.wait_timed_out = True
+                    return 2
+            finally:
+                self.lock.release()
+            # Also wake periodically for workers with no mailbox event yet.
+            self._drain_changed.wait(min(remaining, self.dispatch_interval))
+
+    def exit_report(self, status):
+        return {
+            "exit_status": status,
+            "background": [
+                {"bg_id": item["bg_id"], "status": item["status"]}
+                for item in (self.background.snapshot() if self.background else [])
+            ],
+            "tasks": [
+                {"task_id": task.id, "status": task.status}
+                for task in (
+                    self.workspace.store.list() if self.workspace.store else []
+                )
+            ],
+            "goal": self.goal.status()["status"],
+            "model_usage": self.gateway.summary(),
+        }
+
+    def submit_user_input(
+        self, text, *, mode="steer", target="lead", expected_turn_id=None
+    ):
+        if not self._runtime_started:
+            self._ensure_runtime()
+        receipt = self.inputs.submit(
+            text, mode=mode, target=target, expected_turn_id=expected_turn_id
+        )
+        if not self._poller.started and self.inputs.active_id is None:
+            self.start(include_clock=False)
+        return receipt
+
+    def input_status(self):
+        return self.inputs.status()
+
+    def _ack_user_input(self, messages, components):
+        self.inputs.commit_records(
+            self._pending_user,
+            messages,
+            components.todo_manager,
+            components.compactor,
+            append=False,
+        )
+        self._pending_user = []
+
+    def _consume_user_input(self):
+        if (
+            self.inputs.active_id
+            or self._user_waiting.is_set()
+            or not self.inputs.pending()
+        ):
+            return False
+        values = self.runtime_store.mailbox(
+            "claim", self.inputs.recipient, owner=self.inputs.consumer
+        )
+        if not values:
+            return False
+        if self._recovery_blocked:
+            controls = [
+                r
+                for r in values
+                if HostCommand.parse(r["content"]).allowed_during_recovery
+            ]
+            if not controls:
+                self.inputs.release(values)
+                return False
+            record = controls[0]
+            rest = [r for r in values if r is not record]
+        else:
+            record, rest = values[0], values[1:]
+        if (
+            record.get("from") != "user"
+            or record.get("type") != "user_input"
+            or record.get("metadata", {}).get("origin") != "host_user"
+        ):
+            self.runtime_store.mailbox(
+                "ack",
+                self.inputs.recipient,
+                owner=self.inputs.consumer,
+                records=[record],
+            )
+            if rest:
+                self.inputs.release(rest)
+            raise ValueError("Untrusted inbox data cannot become a user request.")
+        if rest:
+            self.inputs.release(rest)
+        command = HostCommand.parse(record["content"])
+        if self._recovery_blocked and not command.allowed_during_recovery:
+            self.inputs.release([record])
+            return False
+        receipt = self.runtime_store.get("input_receipts", record["id"], {})
+        if receipt.get("next_retry", 0) and receipt["next_retry"] > time.time():
+            self.inputs.release([record])
+            return False
+        self._pending_user = [record]
+        try:
+            result = self.run_user(record["content"])
+            if self._pending_user:
+                with cleanup_scope():
+                    self._checkpoint_writer.save(
+                        "idle",
+                        ack=[
+                            (
+                                self.inputs.recipient,
+                                self.inputs.consumer,
+                                [record["id"]],
+                            )
+                        ],
+                        boundary={
+                            "receipts": [
+                                {
+                                    "input_id": record["id"],
+                                    "checkpoint": self.checkpoint_key,
+                                    "state": "applied",
+                                    "revision": self.inputs.revision,
+                                    "target": "lead",
+                                    "record": record,
+                                }
+                            ]
+                        },
+                    )
+                self._pending_user = []
+            print("\n[runtime] user " + record["id"] + "\n" + result, flush=True)
+        except Exception as error:
+            if isinstance(error, RecoveryRequired) and not self._recovery_blocked:
+                self._recovery_blocked.append("user_input_recovery_required")
+            if self._pending_user:
+                try:
+                    self.inputs.fail(self._pending_user, error)
+                except Exception:
+                    self._recovery_blocked.append("input_persistence_unknown")
+                    raise
+                finally:
+                    self._pending_user = []
+            self._automatic_failed = True
+            print(
+                "[runtime] User work stopped (" + type(error).__name__ + ").",
+                file=sys.stderr,
+            )
+        self._drain_changed.set()
+        return True
+
+    def run_user(self, query: str) -> str:
+        command = HostCommand.parse(query)
+        if command.name == "inputs":
+            with control_scope(Deadline.after(2)):
+                if self._closed:
+                    raise ValueError("Harness session is closed.")
+                self._ensure_runtime()
+                result = (
+                    self.inputs.status()
+                    if command.action == "status"
+                    else self.inputs.manage(command.action, command.argument)
+                )
+                return json.dumps(result, ensure_ascii=False)
+        deadline = (
+            Deadline.after(2)
+            if command.local
+            else operation_deadline(self.turn_timeout)
+        )
+        with (
+            control_scope(deadline) if command.local else nullcontext(),
+            acquired(self._runtime_init_lock, deadline, inherit=not command.local),
+        ):
+            return self._run_user(command, deadline)
+
+    def _run_user(self, command: HostCommand, turn_deadline: Deadline) -> str:
+        if self._closed:
+            raise ValueError("Harness session is closed.")
+        query = command.query
+        with self.gateway.scope(cancel_event=self.stop_event, deadline=turn_deadline):
+            self._ensure_runtime(turn_deadline)
+        self._user_waiting.set()
+        work_started = False
+        try:
+            with (
+                capability_scope(self.capabilities),
+                self.gateway.scope(
+                    role="lead",
+                    context_id="user",
+                    cancel_event=self.stop_event,
+                    deadline=turn_deadline,
+                ),
+                acquired(self.lock, turn_deadline, inherit=not command.local),
+                checkpoint_scope(self._checkpoint_writer),
+                self.trace.scope("user", "lead"),
+            ):
+                if command.name == "recovery" and command.action == "status":
+                    return json.dumps(
+                        self.recovery_status(), ensure_ascii=False, indent=2
+                    )
+                if command.name == "recovery" and command.action == "inspect":
+                    identity, revision = command.values
+                    if identity.startswith("bg_"):
+                        self.background.inspect_unknown(identity, revision)
+                        self._recovery_blocked = [
+                            x for x in self._recovery_blocked if x != identity
+                        ]
+                        self._save_checkpoint()
+                        return "Host inspected " + identity
+                    if identity.startswith("cron_"):
+                        self.cron.inspect_run(identity, revision)
+                        self._recovery_blocked = [
+                            x for x in self._recovery_blocked if x != identity
+                        ]
+                        self._save_checkpoint()
+                        return "Host inspected " + identity
+                    return self.inspect_operation(identity, revision)
+                if command.name == "recovery" and command.action == "continue":
+                    if (
+                        self.recovery_operations()
+                        or (self.cron.unresolved() if self.cron else [])
+                        or any(
+                            item["status"] == "unknown" and not item.get("inspected")
+                            for item in (
+                                self.background.snapshot() if self.background else []
+                            )
+                        )
+                    ):
+                        raise RecoveryRequired(
+                            "Inspect the listed operation IDs before continuing; active work cannot be acknowledged."
+                        )
+                    self._recovery_blocked.clear()
+                    for message in self.messages:
+                        if message.get("role") == "tool":
+                            message["content"] = inspected_output(
+                                message.get("content", "")
+                            )
+                    self._automatic_failed = self._control_blocked = (
+                        self._control_limit
+                    ) = False
+                    self._save_checkpoint()
+                    return "Host acknowledged the interrupted boundary; tool records were retained."
+                self._refresh_recovery()
+                if self._recovery_blocked and not command.allowed_during_recovery:
+                    raise RecoveryRequired(
+                        "Recovery requires host inspection. Use /recovery for pending outcomes, then /recovery continue after checking them."
+                    )
+                if command.name == "mcp":
+                    if self.mcp is None:
+                        return json.dumps({"connections": [], "enabled": False})
+                    result = (
+                        self.mcp.connection_status()
+                        if command.action == "status"
+                        else self.mcp.close_connection(command.argument)
+                    )
+                    return json.dumps(result, ensure_ascii=False, indent=2)
+                if command.name == "goal" and command.action == "status":
+                    return json.dumps(self.goal.status(), ensure_ascii=False, indent=2)
+                if command.name == "goal" and command.action == "cancel":
+                    execution_check(turn_deadline, gateway=False)
+                    self._goal_ready = False
+                    result = self.goal.clear()
+                    with cleanup_scope():
+                        self._save_checkpoint()
+                    return result
+                if command.name == "usage":
+                    return json.dumps(
+                        self.gateway.summary(), ensure_ascii=False, indent=2
+                    )
+                if command.name == "storage":
+                    from homebrew_harness.storage.storage_metrics import metrics_for
+
+                    return json.dumps(
+                        {
+                            "backend": self.runtime_store.backend_name,
+                            "trace": self.trace.status(),
+                            "metrics": metrics_for(
+                                self.runtime_store.workdir
+                            ).snapshot(),
+                        },
+                        ensure_ascii=False,
+                        indent=2,
+                    )
+                if command.name == "memory":
+                    if self.memory is None:
+                        raise ValueError("Memory is disabled for this session.")
+                    if command.action == "list":
+                        return self.memory.list_records()
+                    if command.action == "show":
+                        return self.memory.show(command.argument)
+                    if command.action == "delete":
+                        return self.memory.delete(command.argument)
+                    return self.memory.correct(command.argument, command.values[0])
+                if command.name == "tests":
+                    if command.action == "status":
+                        return json.dumps(
+                            {"tests": self.tests.catalog()},
+                            ensure_ascii=False,
+                            indent=2,
+                        )
+                    action, name = command.action, command.argument
+                    if action == "approve":
+                        assignment = (
+                            self.workspace.store.owned()
+                            if self.workspace.store
+                            else None
+                        )
+                        self.tests.approve(
+                            name,
+                            cwd=self.workspace.lead_cwd(),
+                            role="lead",
+                            task_id=assignment.id if assignment else None,
+                        )
+                        return "Host test authorization recorded for " + name + "."
+                    if action == "revoke":
+                        self.tests.revoke(name)
+                        return "Host test authorization revoked for " + name + "."
+                    raise TestRunnerError(
+                        "Use /tests, /tests approve NAME or /tests revoke NAME."
+                    )
+                if command.name == "task":
+                    query = command.argument
+                    if (
+                        self.pending_work()
+                        or (
+                            self.workspace.store.owned()
+                            if self.workspace.store
+                            else None
+                        )
+                        is not None
+                        or any(
+                            member.status not in {"stopped", "failed"}
+                            for member in self.members.values()
+                        )
+                    ):
+                        raise ValueError(
+                            "Finish or stop pending asynchronous work before starting a new task."
+                        )
+                    self.intent.update(query, new_task=True)
+                    self.todo = homebrew_harness.runtime.assembly.prepare_context(
+                        self.client,
+                        self.model,
+                        self.workdir,
+                        replace(self.loop_components(), todo_manager=None),
+                    ).todo_manager
+                    self.messages[:] = [
+                        {
+                            "role": "system",
+                            "content": homebrew_harness.runtime.prompts.build_system_prompt(
+                                self.workdir,
+                                skill_loader=self.skills,
+                                capabilities=self.capabilities,
+                            ),
+                        }
+                    ]
+                    self.goal.clear()
+                if command.name == "goal":
+                    if command.action == "resume":
+                        goal_id = command.argument or (
+                            self.goal.state["goal_id"] if self.goal.state else ""
+                        )
+                        self.goal.restore(goal_id)
+                        query = self.goal.resume_prompt()
+                        if self.goal.state.get("task_intent") is not None:
+                            self.intent.restore(self.goal.state["task_intent"])
+                        else:
+                            self.intent.update(query, new_task=True)
+                    else:
+                        definition = (
+                            command.values[0]
+                            if command.action == "spec"
+                            else command.argument
+                        )
+                        self.goal.set_goal(definition)
+                        query = (
+                            definition["condition"]
+                            if isinstance(definition, dict)
+                            else definition
+                        )
+                        self.intent.update(query)
+                else:
+                    self.goal.begin_query()
+                self._goal_ready = False
+                self.intent.update(query)
+                self.user_request = self.intent.original
+                if self.goal.pending:
+                    self.goal.state["task_intent"] = self.intent.to_dict()
+                    self.goal._persist()
+                if self.workspace.store:
+                    self.workspace.store.save_intent()
+                self.gateway.reset_failures()
+                self._control_blocked = False
+                self._control_limit = False
+                work_started = True
+                with self.inputs.turn():
+                    result = homebrew_harness.runtime.turns.run_user_turn(
+                        self.client,
+                        self.model,
+                        self.messages,
+                        query,
+                        self.workdir,
+                        memory_runtime=self.memory,
+                        max_turns=self.max_turns,
+                        collect_background=False,
+                        goal_controller=self.goal,
+                        stop_block_cap=self.stop_block_cap,
+                        stop_event=self.stop_event,
+                        components=self.loop_components(),
+                    )
+                self.user_request = self.intent.original
+                if self.workspace.store:
+                    self.workspace.store.save_intent()
+                if self.goal.pending:
+                    self.goal.state["task_intent"] = self.intent.to_dict()
+                    self.goal._persist()
+                self.last_goal_result = result
+                self._quota_blocked = False
+                self._automatic_failed = False
+                return result
+        except Exception as error:
+            if work_started and self.goal.enabled:
+                controlled = gateway_error(error)
+                self.goal.suspend(
+                    "limit"
+                    if isinstance(controlled, ModelDeadlineExceeded)
+                    else "suspended"
+                    if isinstance(controlled, ModelCancelled)
+                    else "error",
+                    str(controlled)
+                    if controlled
+                    else "Worker turn failed ("
+                    + type(error).__name__
+                    + "); goal retained.",
+                )
+            if quota_exhausted(error):
+                self._quota_blocked = True
+                self._emit_trace("provider_blocked", reason="insufficient_quota")
+            raise
+        finally:
+            try:
+                if work_started:
+                    with self.lock:
+                        self._save_checkpoint("idle")
+            finally:
+                self._user_waiting.clear()
+                if (
+                    not self._closed
+                    and self.inputs.pending()
+                    and not self._poller.started
+                ):
+                    self.start(include_clock=False)
+
+    def process_once(self) -> bool:
+        with capability_scope(self.capabilities):
+            return self._process_once()
+
+    def _process_once(self) -> bool:
+        if self._closed or self.stop_event.is_set():
+            return False
+        self._ensure_runtime()
+        if self._consume_user_input():
+            return True
+        self._refresh_recovery()
+        if self._recovery_blocked:
+            return False
+        if (
+            self.stop_event.is_set()
+            or self.mode == "one_shot"
+            and self._automatic_failed
+            or self._control_blocked
+            or self.gateway.blocked
+            or self._quota_blocked
+            or self._user_waiting.is_set()
+            or not self.lock.acquire(blocking=False)
+        ):
+            return False
+        changed = False
+        try:
+            if self._user_waiting.is_set() or self.stop_event.is_set():
+                return False
+            test_ready = (
+                self.goal.enabled
+                and self.goal.state["status"] == "waiting"
+                and "tests" in self.goal.state.get("waiting_on", [])
+                and not self.tests.active.is_set()
+            )
+            if not (
+                self._pending_team
+                or self._pending_background
+                or self._goal_ready
+                and self.goal.enabled
+                or test_ready
+                or self.workspace.bus.available("lead")
+                or (self.background is not None and self.background.has_ready())
+                or (self.cron is not None and self.cron.has_pending())
+            ):
+                return False
+            changed = True
+            self._pending_team.extend(self.workspace.consume_lead_inbox())
+            self._pending_background.extend(
+                (self.background.collect() if self.background else [])
+            )
+            now = time.monotonic()
+            if (
+                self.goal.enabled
+                and self.goal.state["status"] == "waiting"
+                and "tests" in self.goal.state.get("waiting_on", [])
+                and not self.tests.active.is_set()
+            ):
+                self._goal_ready = True
+            observations = (
+                bool(
+                    self._pending_team
+                    or self._pending_background
+                    or self._goal_ready
+                    and self.goal.enabled
+                )
+                and now >= self._observation_retry
+            )
+            # An unfinished manual task is still a Lead assignment. Scheduled
+            # work waits, rather than inheriting that task's worktree implicitly.
+            cron_ready = (self.cron is not None and self.cron.has_pending()) and (
+                self.workspace.store.owned() if self.workspace.store else None
+            ) is None
+            if observations and (not cron_ready or self._last_source == "cron"):
+                self._last_source = "observations"
+                team = copy.deepcopy(self._pending_team)
+                background = copy.deepcopy(self._pending_background)
+                self._async_failed |= any(
+                    item.get("status") in {"failed", "cancelled"} for item in background
+                )
+                source = (
+                    "events"
+                    if team and background
+                    else "team"
+                    if team
+                    else "background"
+                    if background
+                    else "goal"
+                )
+                self._emit_trace(
+                    "observations_collected",
+                    team_events=len(team),
+                    background_ids=[result["bg_id"] for result in background],
+                )
+                self._checkpoint_writer.completion_ack = [
+                    ("lead", self.workspace.bus.consumer, [m["id"] for m in team]),
+                    ("background", None, [b["bg_id"] for b in background]),
+                ]
+                try:
+                    self._observing = True
+                    with (
+                        self.gateway.scope(
+                            role="lead",
+                            context_id=source,
+                            cancel_event=self.stop_event,
+                            deadline=Deadline.after(self.turn_timeout),
+                        ),
+                        checkpoint_scope(self._checkpoint_writer),
+                        self.trace.scope(source, "lead"),
+                    ):
+                        result = homebrew_harness.runtime.turns.run_team_turn(
+                            team,
+                            client=self.client,
+                            model=self.model,
+                            messages=self.messages,
+                            workdir=self.workdir,
+                            background_results=background,
+                            active_request=self.user_request,
+                            memory_runtime=self.memory,
+                            max_turns=self.max_turns,
+                            stop_event=self.stop_event,
+                            collect_background=False,
+                            goal_controller=self.goal,
+                            stop_block_cap=self.stop_block_cap,
+                            components=self.loop_components(),
+                        )
+                    self._goal_ready = False
+                    self.last_goal_result = result
+                    self._pending_team.clear()
+                    self._pending_background.clear()
+                    self._save_checkpoint(
+                        ack=[
+                            (
+                                "lead",
+                                self.workspace.bus.consumer,
+                                [m["id"] for m in team],
+                            ),
+                            ("background", None, [b["bg_id"] for b in background]),
+                        ]
+                    )
+                    print(f"\n[runtime] {source}\n{result}", flush=True)
+                except Exception as error:
+                    self._automatic_failed = True
+                    controlled = gateway_error(error)
+                    self._control_blocked = controlled is not None
+                    self._control_limit = isinstance(controlled, ModelDeadlineExceeded)
+                    if self.goal.enabled:
+                        self.goal.suspend(
+                            "limit"
+                            if self._control_limit
+                            else "suspended"
+                            if isinstance(controlled, ModelCancelled)
+                            else "error",
+                            str(controlled)
+                            if controlled
+                            else "Automatic worker turn failed ("
+                            + type(error).__name__
+                            + "); goal retained.",
+                        )
+                    if quota_exhausted(error):
+                        self._quota_blocked = True
+                        self._emit_trace(
+                            "provider_blocked", reason="insufficient_quota"
+                        )
+                    if not getattr(error, "retryable", True):
+                        delivered = list(self._pending_team)
+                        self._pending_team.clear()
+                        self._pending_background.clear()
+                        self._save_checkpoint(
+                            ack=[
+                                (
+                                    "lead",
+                                    self.workspace.bus.consumer,
+                                    [m["id"] for m in delivered],
+                                ),
+                                ("background", None, [b["bg_id"] for b in background]),
+                            ]
+                        )
+                    self._observation_retry = time.monotonic() + self.retry_delay
+                    print(
+                        f"[runtime] Observation turn stopped ({type(error).__name__}).",
+                        file=sys.stderr,
+                    )
+                return True
+            if cron_ready:
+                job = self.cron.take_pending()
+                if job is None:
+                    return False
+                if now < self._cron_retry.get(job.id, 0):
+                    self.cron.restore(job)
+                    return False
+                self._last_source = "cron"
+                try:
+                    with (
+                        self.gateway.scope(
+                            role="lead",
+                            context_id=job.id,
+                            cancel_event=self.stop_event,
+                            deadline=Deadline.after(self.turn_timeout),
+                        ),
+                        checkpoint_scope(self._checkpoint_writer),
+                        self.trace.scope("cron", job.id),
+                    ):
+                        result = homebrew_harness.runtime.turns.run_scheduled_turn(
+                            job,
+                            client=self.client,
+                            model=self.model,
+                            messages=self.messages,
+                            workdir=self.workdir,
+                            scheduler=self.cron,
+                            memory_runtime=self.memory,
+                            stop_event=self.stop_event,
+                            max_turns=self.max_turns,
+                            collect_background=False,
+                            stop_block_cap=self.stop_block_cap,
+                            goal_observer=self.goal,
+                            components=self.loop_components(),
+                        )
+                    if (
+                        self.goal.enabled
+                        and self.goal.state["status"] == "waiting"
+                        and "cron" in self.goal.state.get("waiting_on", [])
+                    ):
+                        self._goal_ready = True
+                    self._cron_retry.pop(job.id, None)
+                    print(f"\n[runtime] cron {job.id}\n{result}", flush=True)
+                except Exception as error:
+                    self._automatic_failed = True
+                    controlled = gateway_error(error)
+                    self._control_blocked = controlled is not None
+                    self._control_limit = isinstance(controlled, ModelDeadlineExceeded)
+                    if quota_exhausted(error):
+                        self._quota_blocked = True
+                        self._emit_trace(
+                            "provider_blocked", reason="insufficient_quota"
+                        )
+                    self.cron.restore(job)
+                    self._cron_retry[job.id] = time.monotonic() + self.retry_delay
+                    print(
+                        f"[runtime] Scheduled turn stopped ({type(error).__name__}).",
+                        file=sys.stderr,
+                    )
+                return True
+            return False
+        finally:
+            self._observing = False
+            try:
+                self._checkpoint_writer.completion_ack = ()
+                if changed:
+                    self._save_checkpoint()
+            finally:
+                self.lock.release()
+                self._drain_changed.set()
+
+    def close(self):
+        self._closed = True
+        self.stop_event.set()
+        self.tests.closed.set()
+        for member in list(self.members.values()):
+            member.stop_event.set()
+        self.gateway.close()
+        self._shutdown.request(
+            lambda: self._close_components(time.monotonic() + self.shutdown_timeout),
+            self.shutdown_timeout,
+        )
+
+    def _emit_trace(self, kind, **fields):
+        self._observations.run("trace", lambda: self.trace.emit(kind, **fields))
+
+    def _critical_close(self, label, action, *, repeat=False):
+        result = self._close_progress.step(label, action, repeat=repeat)
+        if not result:
+            self._emit_trace("cleanup_error", component=label)
+        return result
+
+    def _close_components(self, deadline):
+        self._goal_changed.set()
+        self._drain_changed.set()
+        remaining = lambda: max(0, deadline - time.monotonic())
+        actions = [
+            ("tests", lambda: self.tests.close(timeout=remaining())),
+            ("shell", lambda: self.shell.close(timeout=remaining())),
+        ]
+        if self.workflow:
+            actions.append(("workflow", self.workflow.close))
+        if self.mcp:
+            actions.append(("mcp", lambda: self.mcp.close(timeout=remaining())))
+        if self.background:
+            actions.append(
+                ("background", lambda: self.background.close(timeout=remaining()))
+            )
+        actions.append(("poller", lambda: self._poller.close(remaining())))
+        for label, action in actions:
+            self._critical_close(label, action)
+        self._close_progress.require(label for label, _ in actions)
+        self._finish_close()
+
+    def shutdown_status(self):
+        progress = self._close_progress.snapshot()
+        errors = self._shutdown_errors()
+        held = self.workspace.leases.held("session")
+        complete = self._close_finished.is_set() and not held
+        return {
+            "state": "open"
+            if not self._closed
+            else "pending"
+            if not complete
+            else "error"
+            if errors
+            else "closed",
+            "resources_closed": complete,
+            "persistence_ok": complete and not errors,
+            "errors": errors,
+            "start_error": self._shutdown.error,
+            "session_lease_held": held,
+            "cleanup_history": progress["history"],
+            "retryable": self._closed and not complete and not self._shutdown.started,
+            "completed_steps": progress["completed_steps"],
+            "failed_steps": progress["failed_steps"],
+            "observations": self._observations.snapshot(),
+        }
+
+    def _shutdown_errors(self):
+        return [
+            *self._close_progress.snapshot()["errors"],
+            *getattr(self.background, "cleanup_errors", []),
+            *getattr(self.team, "cleanup_errors", []),
+            *getattr(self.workflow, "cleanup_errors", []),
+        ]
+
+    def wait_closed(self, timeout=5):
+        """Observe deferred cleanup without exceeding the caller wait limit."""
+        return self._close_finished.wait(timeout)
+
+    def _finish_close(self, deadline=None):
+        def wait(action):
+            if action() is not True:
+                raise ClosePending(
+                    "Resource wait returned before actual execution ended."
+                )
+
+        waits = [
+            ("wait_poller", lambda: self._poller.workers.wait(None)),
+            ("wait_gateway", lambda: self.gateway.wait_idle(None)),
+        ]
+        for label, component in (
+            ("tests", self.tests),
+            ("shell", self.shell),
+            ("background", self.background),
+            ("workflow", self.workflow),
+            ("mcp", self.mcp),
+            ("workspace", self.workspace),
+        ):
+            if component is not None and hasattr(component, "wait_closed"):
+                waits.append(
+                    (
+                        "wait_" + label,
+                        lambda component=component: component.wait_closed(None),
+                    )
+                )
+        for label, action in waits:
+            self._critical_close(label, lambda action=action: wait(action))
+        self._close_progress.require(label for label, _ in waits)
+        with self._runtime_init_lock, self.lock, cleanup_scope():
+            can_report_checkpoint_failure = (
+                not self._pending_team
+                and not self._pending_background
+                and not self._persistence_error
+            )
+            steps = [
+                ("models", self.models.close),
+                (
+                    "user_delivery",
+                    lambda: (
+                        self.inputs.release(self._pending_user)
+                        if self._pending_user
+                        else None
+                    ),
+                ),
+                (
+                    "background_delivery",
+                    lambda: (
+                        self.background.restore(self._pending_background)
+                        if self.background
+                        else None
+                    ),
+                ),
+                ("checkpoint", lambda: self._save_checkpoint("closed")),
+                (
+                    "team_delivery",
+                    lambda: self.workspace.bus.release("lead", self._pending_team),
+                ),
+                (
+                    "team",
+                    lambda: self.workspace.close(
+                        timeout=0
+                        if deadline is None
+                        else max(0, deadline - time.monotonic())
+                    ),
+                ),
+                ("goal", self.goal.close),
+            ]
+            for label, action in steps:
+                if not self._critical_close(label, action):
+                    if label == "checkpoint" and can_report_checkpoint_failure:
+                        self._close_progress.terminal_failure(label)
+                    if (
+                        label == "goal"
+                        and self.goal.lease is None
+                        and not self.goal.enabled
+                    ):
+                        self._close_progress.terminal_failure(label)
+                    self._close_progress.require([label])
+            self._pending_team.clear()
+            self._pending_background.clear()
+            if self._runtime_started:
+                errors = [
+                    item
+                    for item in self._shutdown_errors()
+                    if item.get("component")
+                    not in {"session_lease", "session_lifecycle"}
+                ]
+                self._critical_close(
+                    "session_lifecycle",
+                    lambda: self.runtime_store.finish_session(
+                        self.session_id,
+                        self.workspace.leases.instance,
+                        complete=not errors,
+                    ),
+                    repeat=True,
+                )
+                self._close_progress.require(["session_lifecycle"])
+
+            def release():
+                self.workspace.release_session()
+                if self.workspace.leases.held("session"):
+                    raise ClosePending(
+                        "Session lease remains held; inspect pending resources and retry close."
+                    )
+
+            released = self._critical_close("session_lease", release)
+            if not released and self.workspace.leases.held("session"):
+                if self._runtime_started:
+                    self._critical_close(
+                        "session_lifecycle",
+                        lambda: self.runtime_store.finish_session(
+                            self.session_id,
+                            self.workspace.leases.instance,
+                            complete=False,
+                        ),
+                        repeat=True,
+                    )
+                raise ClosePending(
+                    "Critical session release is pending; close can be retried."
+                )
+            self._emit_trace("session_closed")

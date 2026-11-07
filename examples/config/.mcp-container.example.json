@@ -1,0 +1,22 @@
+{
+  "servers": {
+    "workspace": {
+      "transport": "stdio",
+      "command": "/usr/local/bin/python",
+      "args": ["/opt/mcp_workspace_server.py"],
+      "execution": {
+        "mode": "container",
+        "cli": "/usr/bin/docker",
+        "image": "",
+        "inputs": "workspace",
+        "cpus": 1,
+        "memory_mb": 512,
+        "pids": 64
+      },
+      "tools": {
+        "get_version": {"action": "allow", "read_only": true},
+        "read_text": {"action": "allow", "read_only": true}
+      }
+    }
+  }
+}

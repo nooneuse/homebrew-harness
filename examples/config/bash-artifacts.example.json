@@ -1,0 +1,28 @@
+{
+  "mode": "container",
+  "cli": "/usr/bin/docker",
+  "image": "",
+  "bash_path": "/bin/bash",
+  "cpus": 1,
+  "memory_mb": 512,
+  "pids": 64,
+  "timeout": 120,
+  "workspace_bytes": 134217728,
+  "output_bytes": 8388608,
+  "max_files": 5000,
+  "max_input_bytes": 67108864,
+  "export_python": "/usr/local/bin/python",
+  "outputs": [
+    {
+      "name": "report",
+      "files": [
+        {
+          "source": "output/report.json",
+          "target": "reports/report.json",
+          "max_bytes": 1048576
+        }
+      ],
+      "max_bytes": 1048576
+    }
+  ]
+}

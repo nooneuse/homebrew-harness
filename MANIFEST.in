@@ -1,0 +1,8 @@
+include README.md LICENSE requirements.txt
+include docs/DESIGN.md
+recursive-include licenses *
+recursive-include src *.py
+recursive-include examples *.py *.json
+include examples/config/.env.example
+recursive-include skills SKILL.md
+recursive-include tests *.py
