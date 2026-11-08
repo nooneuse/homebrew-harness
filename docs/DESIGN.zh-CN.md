@@ -6,6 +6,12 @@ homebrew-harness 将模型推理循环与执行能力组合成运行时。宿主
 
 设计围绕三个对象展开：模型请求、有效工具池和持久会话。编排组件在此基础上表达任务分工、固定流程和完成条件。
 
+## 命令入口
+
+`homebrew-harness` 通过 `session`、`run`、`workflow`、`admin` 四个子命令提供交互会话、持久任务、固定编排和宿主管理。无子命令时启动交互会话，单次任务使用 `session`。公共工作目录和环境文件选项可放在子命令前后。
+
+入口统一定义公共参数、解析一次并分发给相应执行模块。各模块继续拥有自己的状态与生命周期，运行资源按执行需要加载。独立 worker 是 Run 的内部进程入口。
+
 ## 执行流程
 
 ```mermaid
@@ -91,7 +97,7 @@ Run 表达持久任务，ExecutionAttempt 表达执行进程，Episode 表达一
 
 Deadline 保留当前限制来源，控制器区分请求恢复、Episode 接续与停止。持续成员使用自身请求期限和 Run 期限。
 
-Run 输入收件人跨段落和进程保持稳定。宿主控制与业务输入分别登记，工具提议引用输入版本。单次与交互 Session 保留常规入口，`harness-run` 管理持久执行。
+Run 输入收件人跨段落和进程保持稳定。宿主控制与业务输入分别登记，工具提议引用输入版本。单次与交互 Session 保留常规入口，`homebrew-harness run` 管理持久执行。
 
 `runs/` 包包含 RunSpec、RunOutcome、SQLite 状态访问、会话控制和进程监督，复用已有工具、上下文、Goal、数据库与 Task 依赖图。
 
@@ -150,4 +156,4 @@ Hooks 在用户输入、工具前后和结束前提供扩展点。控制 Hook �
 | `storage/` | SQLite、增量 checkpoint、消息、产物、备份和历史维护 |
 | `security/` | 权限策略、文件访问和输出处理 |
 
-`cli.py`、`workflow_cli.py`、`runs/cli.py` 和 `admin.py` 分别提供 Session、固定 Workflow、受管理 Run 与宿主管理入口。测试遵循相同模块布局，`integration/` 检查组件组合，`system/` 验证真实容器执行。
+`cli.py` 提供统一命令，`cli_arguments.py` 定义公共选项；`session_cli.py`、`workflow_cli.py`、`runs/cli.py` 和 `admin.py` 执行各自的子命令。测试遵循相同模块布局，`integration/` 检查组件组合，`system/` 验证真实容器执行。

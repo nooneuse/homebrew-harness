@@ -377,11 +377,12 @@ store.close()
                     )
                 )
             )
-            from homebrew_harness.runs.cli import main
+            from homebrew_harness.cli import main
 
             self.assertEqual(
                 main(
                     [
+                        "run",
                         "--cwd",
                         str(self.root),
                         "--env-file",

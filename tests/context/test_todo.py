@@ -16,6 +16,7 @@ from unittest.mock import Mock, patch
 
 from tests.support.tools import execute_fixture_tool
 import homebrew_harness.cli
+import homebrew_harness.session_cli
 import homebrew_harness.configuration
 import homebrew_harness.runtime.assembly
 import homebrew_harness.runtime.hooks
@@ -366,8 +367,8 @@ class TodoTests(unittest.TestCase):
         }
         with (
             patch.dict(os.environ, config),
-            patch("homebrew_harness.cli.load_dotenv"),
-            patch("homebrew_harness.cli.OpenAI") as factory,
+            patch("homebrew_harness.session_cli.load_dotenv"),
+            patch("homebrew_harness.session_cli.OpenAI") as factory,
             patch(
                 "builtins.input",
                 side_effect=queued_cli_input(["Plan a task", "/queue Show the current task", "q"], lambda: client.chat.completions.create.call_count >= 3),
@@ -380,7 +381,7 @@ class TodoTests(unittest.TestCase):
         ):
             factory.return_value.__enter__.return_value = client
             self.assertEqual(
-                homebrew_harness.cli.main(
+                homebrew_harness.cli.main(["session"] +
                     ["--profile", "full"]
                     + ["--memory-mode", "off", "--cwd", str(self.workdir)]
                 ),

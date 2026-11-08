@@ -18,6 +18,7 @@ from contextlib import redirect_stderr, redirect_stdout
 
 from tests.support.tools import execute_fixture_tool
 import homebrew_harness.cli
+import homebrew_harness.session_cli
 import homebrew_harness.configuration
 import homebrew_harness.context.compaction
 import homebrew_harness.context.todo
@@ -205,6 +206,7 @@ from unittest.mock import patch
 from homebrew_harness.orchestration.goal_loop import GoalController
 from homebrew_harness.runtime.session import HarnessSession
 import homebrew_harness.cli
+import homebrew_harness.session_cli
 import homebrew_harness.configuration
 import homebrew_harness.context.compaction
 import homebrew_harness.context.todo
@@ -419,8 +421,8 @@ with patch.object(GoalController,'accept_candidate',crash):
         (self.root / "mcp.json").write_text('{"servers":{}}')
         with (
             patch.dict(os.environ, config),
-            patch("homebrew_harness.cli.load_dotenv"),
-            patch("homebrew_harness.cli.OpenAI") as factory,
+            patch("homebrew_harness.session_cli.load_dotenv"),
+            patch("homebrew_harness.session_cli.OpenAI") as factory,
             patch(
                 "builtins.input",
                 side_effect=queued_cli_input(
@@ -435,7 +437,7 @@ with patch.object(GoalController,'accept_candidate',crash):
         ):
             factory.return_value.__enter__.return_value = c
             self.assertEqual(
-                homebrew_harness.cli.main(
+                homebrew_harness.cli.main(["session"] +
                     ["--profile", "full"]
                     + [
                         "--cwd",
@@ -713,7 +715,7 @@ with patch.object(GoalController,'accept_candidate',crash):
         s, _, _ = self.session()
         s.run_user("/usage")
         with patch.object(s, "_save_checkpoint", side_effect=OSError("fixture ENOSPC")):
-            status = homebrew_harness.cli.host_exit_status(s)
+            status = homebrew_harness.session_cli.host_exit_status(s)
             self.assertTrue(s.wait_closed(3))
         self.assertIn(status, {1, 2})
         self.assertEqual(s.shutdown_status()["state"], "error")

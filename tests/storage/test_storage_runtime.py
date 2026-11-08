@@ -14,7 +14,7 @@ from homebrew_harness.storage.durable_runtime import DurableStore, RecoveryRequi
 from homebrew_harness.storage.message_bus import MessageBus
 from homebrew_harness.storage.storage_admin import backup
 from homebrew_harness.storage.storage_baseline import run_baseline
-from homebrew_harness.admin import main
+from homebrew_harness.cli import main
 
 
 class CurrentStorageTests(unittest.TestCase):
@@ -122,7 +122,7 @@ class CurrentStorageTests(unittest.TestCase):
                 redirect_stderr(io.StringIO()),
                 self.assertRaises(SystemExit) as result,
             ):
-                main([command, "--cwd", str(self.root)])
+                main(["admin", command, "--cwd", str(self.root)])
             self.assertEqual(result.exception.code, 2)
         self.assertEqual(list(self.root.iterdir()), [])
 

@@ -15,6 +15,7 @@ from unittest.mock import patch, MagicMock
 from types import SimpleNamespace
 
 import homebrew_harness.cli
+import homebrew_harness.session_cli
 
 import homebrew_harness.configuration
 
@@ -418,13 +419,13 @@ class FollowupTests(unittest.TestCase):
                     for name in homebrew_harness.configuration.CONFIG_VARIABLES
                 },
             ),
-            patch("homebrew_harness.cli.load_dotenv"),
-            patch("homebrew_harness.cli.OpenAI", return_value=sdk),
+            patch("homebrew_harness.session_cli.load_dotenv"),
+            patch("homebrew_harness.session_cli.OpenAI", return_value=sdk),
             patch(
                 "homebrew_harness.runtime.session.HarnessSession", side_effect=construct
             ),
         ):
-            result = homebrew_harness.cli.main(
+            result = homebrew_harness.cli.main(["session"] +
                 [
                     "--profile",
                     "core",

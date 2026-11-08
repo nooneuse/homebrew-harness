@@ -14,6 +14,7 @@ from unittest.mock import Mock, patch
 
 from homebrew_harness.runtime.loop_components import LoopComponents
 import homebrew_harness.cli
+import homebrew_harness.session_cli
 import homebrew_harness.configuration
 import homebrew_harness.context.memory
 import homebrew_harness.runtime.hooks
@@ -494,14 +495,14 @@ class MemoryTests(unittest.TestCase):
         }
         with (
             patch.dict(os.environ, config),
-            patch("homebrew_harness.cli.load_dotenv"),
-            patch("homebrew_harness.cli.OpenAI") as factory,
+            patch("homebrew_harness.session_cli.load_dotenv"),
+            patch("homebrew_harness.session_cli.OpenAI") as factory,
             patch("homebrew_harness.context.memory.MemoryRuntime") as runtime,
             redirect_stdout(io.StringIO()),
         ):
             factory.return_value.__enter__.return_value = client
             self.assertEqual(
-                homebrew_harness.cli.main(
+                homebrew_harness.cli.main(["session"] +
                     ["--profile", "full"]
                     + ["--cwd", str(self.workdir), "--memory-mode", "off", "Task"]
                 ),
@@ -532,13 +533,13 @@ class MemoryTests(unittest.TestCase):
         }
         with (
             patch.dict(os.environ, config),
-            patch("homebrew_harness.cli.load_dotenv"),
-            patch("homebrew_harness.cli.OpenAI") as factory,
+            patch("homebrew_harness.session_cli.load_dotenv"),
+            patch("homebrew_harness.session_cli.OpenAI") as factory,
             redirect_stdout(io.StringIO()),
         ):
             factory.return_value.__enter__.return_value = client
             self.assertEqual(
-                homebrew_harness.cli.main(
+                homebrew_harness.cli.main(["session"] +
                     ["--profile", "full", "--memory-mode", "auto"]
                     + ["--cwd", str(self.workdir), "Delegate a greeting."]
                 ),

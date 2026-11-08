@@ -960,6 +960,7 @@ class GoalTests(unittest.TestCase):
                     sys.executable,
                     "-m",
                     "homebrew_harness",
+                    "session",
                     "--cwd",
                     str(self.root),
                     "--env-file",

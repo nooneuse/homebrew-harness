@@ -19,6 +19,7 @@ from unittest.mock import Mock, patch
 from homebrew_harness.runtime.loop_components import LoopComponents
 from tests.support.tools import execute_fixture_tool
 import homebrew_harness.cli
+import homebrew_harness.session_cli
 import homebrew_harness.configuration
 import homebrew_harness.context.skill_loader
 import homebrew_harness.execution.test_runner
@@ -902,8 +903,8 @@ class LeadEventsTests(TeamFixture):
         }
         with (
             patch.dict("os.environ", config),
-            patch("homebrew_harness.cli.load_dotenv"),
-            patch("homebrew_harness.cli.OpenAI") as factory,
+            patch("homebrew_harness.session_cli.load_dotenv"),
+            patch("homebrew_harness.session_cli.OpenAI") as factory,
             patch(
                 "homebrew_harness.runtime.hooks.create_hooks", return_value=self.hooks
             ),
@@ -912,7 +913,7 @@ class LeadEventsTests(TeamFixture):
         ):
             factory.return_value.__enter__.return_value = client
             self.assertEqual(
-                homebrew_harness.cli.main(
+                homebrew_harness.cli.main(["session"] +
                     ["--profile", "full"]
                     + ["--memory-mode", "off", "--cwd", str(self.root)]
                 ),

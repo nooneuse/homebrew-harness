@@ -6,6 +6,12 @@ homebrew-harness combines a model reasoning loop with execution capabilities. Th
 
 The design centers on three objects: model requests, an effective tool pool, and persistent sessions. Orchestration components build task assignment, fixed workflows, and completion conditions on this foundation.
 
+## Command entry point
+
+`homebrew-harness` provides interactive sessions, persistent tasks, fixed orchestration, and host administration through `session`, `run`, `workflow`, and `admin`. Without a subcommand it starts an interactive session; one-shot tasks use `session`. Shared working-directory and environment-file options may appear before or after subcommands.
+
+The entry point defines shared arguments, parses once, and dispatches to the selected module. Each module owns its state and lifecycle, and execution resources load as needed. The dedicated worker remains an internal Run process entry point.
+
 ## Execution flow
 
 ```mermaid
@@ -91,7 +97,7 @@ A Run represents a persistent task, an ExecutionAttempt represents its worker pr
 
 Deadline retains the source of the active limit. The controller distinguishes request recovery, Episode continuation, and stopping. Persistent members use their own request deadlines and the Run deadline.
 
-Run input recipients stay stable across Episodes and processes. Host controls and business input have separate records, and tool proposals reference input versions. One-shot and interactive Sessions keep their usual entry points; `harness-run` manages persistent execution.
+Run input recipients stay stable across Episodes and processes. Host controls and business input have separate records, and tool proposals reference input versions. One-shot and interactive Sessions keep their usual entry points; `homebrew-harness run` manages persistent execution.
 
 The `runs/` package contains RunSpec, RunOutcome, SQLite state access, session control, and process supervision. It reuses the existing tools, context, Goals, database, and Task dependency graph.
 
@@ -150,4 +156,4 @@ Hooks expose extension points at user input, before and after tools, and before 
 | `storage/` | SQLite, incremental checkpoints, messages, artifacts, backups, and history maintenance |
 | `security/` | Permission policies, file access, and output handling |
 
-`cli.py`, `workflow_cli.py`, `runs/cli.py`, and `admin.py` provide entry points for Sessions, fixed Workflows, managed Runs, and host administration. Tests follow the same module layout; `integration/` checks composition and `system/` exercises real container execution.
+`cli.py` provides the unified command and `cli_arguments.py` defines shared options. `session_cli.py`, `workflow_cli.py`, `runs/cli.py`, and `admin.py` execute their respective subcommands. Tests follow the same module layout; `integration/` checks composition and `system/` exercises real container execution.

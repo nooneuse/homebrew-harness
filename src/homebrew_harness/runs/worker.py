@@ -7,21 +7,19 @@ import time
 from pathlib import Path
 
 from dotenv import load_dotenv
-from homebrew_harness import HarnessSession, Capabilities
+
+from homebrew_harness import Capabilities, HarnessSession
+from homebrew_harness.cli_arguments import (
+    add_environment_argument,
+    add_host_config_arguments,
+)
 from homebrew_harness.execution.bash_policy import HOST_POLICY, load_bash_policy
 from homebrew_harness.execution.model_gateway import GatewayLimits
 from homebrew_harness.execution.model_registry import ModelRegistry, load_model_registry
 from homebrew_harness.execution.test_runner import load_test_runner
-from .store import RunStore
+
 from .controller import RunController
-
-
-def host_arguments(parser):
-    config = Path.home() / ".config/homebrew-harness"
-    parser.add_argument("--env-file", type=Path, default=config / ".env")
-    parser.add_argument("--models-config", type=Path)
-    parser.add_argument("--test-config", type=Path, default=config / "tests.json")
-    parser.add_argument("--bash-config", type=Path)
+from .store import RunStore
 
 
 def make_session(store, control, args):
@@ -115,7 +113,8 @@ def main(argv=None):
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--owner", required=True)
     parser.add_argument("--generation", type=int, required=True)
-    host_arguments(parser)
+    add_environment_argument(parser, defaults=True)
+    add_host_config_arguments(parser)
     args = parser.parse_args(argv)
     store = RunStore(args.cwd)
     control = RunController(store, args.run_id, args.owner, args.generation)

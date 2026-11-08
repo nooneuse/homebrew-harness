@@ -122,14 +122,13 @@ class WorkflowTests(unittest.TestCase):
             )
 
     def test_cli_resume_in_another_process_uses_only_saved_results(self):
-        script = PROJECT_ROOT / "homebrew_harness.workflow_cli.py"
-
         def cli(*arguments):
             result = subprocess.run(
                 [
                     sys.executable,
                     "-m",
-                    "homebrew_harness.workflow_cli",
+                    "homebrew_harness",
+                    "workflow",
                     "--cwd",
                     str(self.root),
                     *arguments,

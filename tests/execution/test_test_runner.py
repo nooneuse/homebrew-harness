@@ -836,6 +836,7 @@ class IntegrationTests(Fixture):
                     sys.executable,
                     "-m",
                     "homebrew_harness",
+                    "session",
                     "--cwd",
                     str(self.root),
                     "--env-file",

@@ -8,12 +8,12 @@ from unittest.mock import Mock, patch
 
 import homebrew_harness.runtime.loop
 from homebrew_harness.runtime.session import HarnessSession
+from homebrew_harness.cli_arguments import add_gateway_arguments
 from homebrew_harness.execution.model_gateway import (
     Deadline,
     ModelDeadlineExceeded,
     ModelGateway,
     UsageLedger,
-    add_gateway_arguments,
     gateway_limits_from_args,
 )
 from tests.support.clients import fake_client

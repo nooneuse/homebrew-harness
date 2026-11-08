@@ -1,6 +1,5 @@
 """Host CLI for storage/GC/benchmarks; deliberately absent from model tool schemas."""
 
-import argparse
 import io
 import json
 import os
@@ -8,13 +7,13 @@ import stat
 import sys
 from pathlib import Path
 
-from homebrew_harness.security.data_boundary import register_private_values
-from homebrew_harness.security.safe_files import SafeFile
-from homebrew_harness.storage.storage_admin import backup, publish, storage_status
+from homebrew_harness.cli_arguments import add_location_arguments
 
 
 def external_model_config(path, workspace):
     from dotenv import dotenv_values
+
+    from homebrew_harness.security.data_boundary import register_private_values
 
     path = Path(path).expanduser()
     if path.resolve().is_relative_to(workspace.resolve()) or path.is_symlink():
@@ -49,84 +48,100 @@ def external_model_config(path, workspace):
     return config
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(
-        description="Explicit host storage, history and evaluation commands"
+def register(groups):
+    parser = groups.add_parser(
+        "admin", help="Manage host storage, history, artifacts and evaluations."
     )
-    parser.add_argument(
-        "command",
-        choices=[
-            "storage-status",
-            "storage-backup",
-            "inventory",
-            "artifact-list",
-            "artifact-discard-preview",
+    add_location_arguments(parser)
+    commands = parser.add_subparsers(dest="command", required=True)
+    descriptions = {
+        "storage-status": "Inspect storage without creating state.",
+        "storage-backup": "Create a storage backup.",
+        "inventory": "Inspect retained artifacts and history.",
+        "artifact-list": "List output artifact bundles.",
+        "artifact-discard-preview": "Preview an artifact discard plan.",
+        "artifact-discard": "Apply a saved artifact discard plan.",
+        "gc-preview": "Preview history collection.",
+        "gc-apply": "Apply a saved history collection plan.",
+        "gc-recover": "Recover an interrupted history collection.",
+        "storage-baseline": "Measure offline storage behavior.",
+        "benchmark": "Run an offline or explicit live model benchmark.",
+        "checkpoint-list": "List checkpoint retirement candidates.",
+        "checkpoint-pin": "Pin one retained session.",
+        "checkpoint-unpin": "Unpin one retained session.",
+        "checkpoint-retire-preview": "Preview checkpoint retirement.",
+        "checkpoint-retire": "Apply a saved retirement plan.",
+        "checkpoint-unretire": "Restore a retired checkpoint.",
+        "checkpoint-purge-preview": "Preview retired checkpoint removal.",
+        "checkpoint-purge": "Apply a saved checkpoint removal plan.",
+        "checkpoint-reconcile": "Reconcile interrupted checkpoint operations.",
+        "incremental-prune-preview": "Preview unused incremental revisions.",
+        "incremental-prune": "Apply a saved incremental pruning plan.",
+    }
+    for name, description in descriptions.items():
+        command = commands.add_parser(name, help=description, description=description)
+        add_location_arguments(command)
+        command.add_argument(
+            "--output", help="Optional report path under .harness/ inside --cwd"
+        )
+        if name in {"inventory", "gc-preview"}:
+            command.add_argument("--retention-days", type=float, default=30)
+        if name in {
             "artifact-discard",
-            "gc-preview",
             "gc-apply",
-            "gc-recover",
-            "storage-baseline",
-            "benchmark",
+            "checkpoint-retire",
+            "checkpoint-purge",
+            "incremental-prune",
+        }:
+            command.add_argument("--plan", help="Saved preview JSON path inside --cwd")
+        if name == "gc-recover":
+            command.add_argument("--run-id")
+        if name == "artifact-discard-preview":
+            command.add_argument("--bundle-id")
+        if name == "artifact-list":
+            command.add_argument("--offset", type=int, default=0)
+            command.add_argument("--limit", type=int, default=20)
+        if name in {
             "checkpoint-list",
+            "checkpoint-retire-preview",
+            "checkpoint-purge-preview",
             "checkpoint-pin",
             "checkpoint-unpin",
-            "checkpoint-retire-preview",
-            "checkpoint-retire",
             "checkpoint-unretire",
-            "checkpoint-purge-preview",
-            "checkpoint-purge",
-            "checkpoint-reconcile",
-            "incremental-prune-preview",
-            "incremental-prune",
-        ],
-    )
-    parser.add_argument("--cwd", type=Path, default=Path.cwd())
-    parser.add_argument(
-        "--output", help="Optional report path under .harness/ inside --cwd"
-    )
-    parser.add_argument("--retention-days", type=float, default=30)
-    parser.add_argument("--plan", help="GC preview JSON path inside --cwd")
-    parser.add_argument("--run-id")
-    parser.add_argument("--bundle-id")
-    parser.add_argument("--offset", type=int, default=0)
-    parser.add_argument("--limit", type=int, default=20)
-    parser.add_argument(
-        "--session-id",
-        action="append",
-        help="Explicit session selection for host checkpoint management",
-    )
-    parser.add_argument(
-        "--checkpoint-days",
-        type=int,
-        default=15,
-        help="Default checkpoint retirement age in days",
-    )
-    parser.add_argument(
-        "--keep-recent",
-        type=int,
-        default=10,
-        help="Keep this many recent retained sessions in policy previews",
-    )
-    parser.add_argument(
-        "--live",
-        action="store_true",
-        help="Run the bounded model batch; default is offline protocol verification",
-    )
-    parser.add_argument(
-        "--max-turns", type=int, default=4, help="Benchmark turns per case, 1..100"
-    )
-    parser.add_argument(
-        "--timeout-seconds",
-        type=float,
-        default=120,
-        help="Benchmark absolute batch deadline",
-    )
-    parser.add_argument(
-        "--env-file",
-        type=Path,
-        default=Path.home() / ".config/homebrew-harness/.env",
-    )
-    args = parser.parse_args(argv)
+        }:
+            command.add_argument(
+                "--session-id",
+                action="append",
+                help="Explicit session selection for checkpoint management",
+            )
+        if name in {"checkpoint-list", "checkpoint-retire-preview"}:
+            command.add_argument("--checkpoint-days", type=int, default=15)
+            command.add_argument("--keep-recent", type=int, default=10)
+        if name == "benchmark":
+            command.add_argument(
+                "--live",
+                action="store_true",
+                help="Use the configured model; default is offline verification",
+            )
+            command.add_argument(
+                "--max-turns",
+                type=int,
+                default=4,
+                help="Benchmark turns per case, 1..100",
+            )
+            command.add_argument(
+                "--timeout-seconds",
+                type=float,
+                default=120,
+                help="Benchmark absolute batch deadline",
+            )
+    parser.set_defaults(_handler=__name__, _command_parser=parser)
+
+
+def execute(args, parser):
+    from homebrew_harness.security.safe_files import SafeFile
+    from homebrew_harness.storage.storage_admin import backup, publish, storage_status
+
     root = args.cwd.expanduser()
     try:
         if args.output is not None and (
@@ -275,7 +290,3 @@ def main(argv=None):
             file=sys.stderr,
         )
         return 1
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

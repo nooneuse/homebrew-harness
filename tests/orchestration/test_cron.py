@@ -23,6 +23,7 @@ from unittest.mock import Mock, patch
 from homebrew_harness.runtime.loop_components import LoopComponents
 from tests.support.tools import execute_fixture_tool
 import homebrew_harness.cli
+import homebrew_harness.session_cli
 import homebrew_harness.configuration
 import homebrew_harness.context.memory
 import homebrew_harness.context.skill_loader
@@ -809,9 +810,9 @@ class CronSessionTests(unittest.TestCase):
         }
         with (
             patch.dict(os.environ, config),
-            patch("homebrew_harness.cli.load_dotenv"),
+            patch("homebrew_harness.session_cli.load_dotenv"),
             patch("homebrew_harness.runtime.hooks.create_hooks", return_value=hooks),
-            patch("homebrew_harness.cli.OpenAI") as factory,
+            patch("homebrew_harness.session_cli.OpenAI") as factory,
             patch("homebrew_harness.context.memory.MemoryRuntime") as memory,
             patch("builtins.input", side_effect=user_input),
             redirect_stdout(io.StringIO()),
@@ -819,7 +820,7 @@ class CronSessionTests(unittest.TestCase):
             factory.return_value.__enter__.return_value = client
             memory.return_value.recall.return_value = ""
             self.assertEqual(
-                homebrew_harness.cli.main(
+                homebrew_harness.cli.main(["session"] +
                     ["--profile", "full"] + ["--cwd", str(self.root)]
                 ),
                 0,

@@ -1,23 +1,21 @@
 """Local host commands for persistent managed runs."""
 
-import argparse
 import json
 import sys
 from pathlib import Path
 
-from homebrew_harness.security.data_boundary import redact
-from .spec import RunSpec
-from .store import RunStore
-from .supervisor import RunSupervisor
-from .worker import host_arguments, exit_status
+from homebrew_harness.cli_arguments import (
+    add_host_config_arguments,
+    add_location_arguments,
+)
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(
-        description="Run and supervise a bounded single-agent task"
+def register(groups):
+    parser = groups.add_parser(
+        "run", help="Supervise and control persistent managed runs."
     )
-    parser.add_argument("--cwd", type=Path, default=Path.cwd())
-    host_arguments(parser)
+    add_location_arguments(parser)
+    add_host_config_arguments(parser)
     parser.add_argument("--control-config", type=Path)
     commands = parser.add_subparsers(dest="command", required=True)
     start = commands.add_parser("start")
@@ -89,7 +87,19 @@ def main(argv=None):
     )
     steer.add_argument("--expected-turn-id")
     steer.add_argument("--expected-generation", type=int)
-    args = parser.parse_args(argv)
+    for command in commands.choices.values():
+        add_location_arguments(command)
+    parser.set_defaults(_handler=__name__, _command_parser=parser)
+
+
+def execute(args, parser):
+    from homebrew_harness.security.data_boundary import redact
+
+    from .spec import RunSpec
+    from .store import RunStore
+    from .supervisor import RunSupervisor
+    from .worker import exit_status
+
     supervisor = None
     services = None
     try:
@@ -118,7 +128,9 @@ def main(argv=None):
 
         def handoff_model(value, alias, reason, owner=None):
             from dotenv import load_dotenv
+
             from homebrew_harness.execution.model_registry import load_model_registry
+
             from .handoff import switch_model
 
             if (
@@ -171,7 +183,7 @@ def main(argv=None):
             )
             return 0
         if args.command in {"export", "backup"}:
-            from .maintenance import write_export, backup_run
+            from .maintenance import backup_run, write_export
 
             result = (write_export if args.command == "export" else backup_run)(
                 store, identity, args.output
@@ -219,8 +231,9 @@ def main(argv=None):
             print(json.dumps(redact(result), ensure_ascii=False, indent=2))
             return 0
         if args.command in {"progress", "progress-reset"}:
-            from .progress import ProgressTracker
             from homebrew_harness.execution.execution_leases import ExecutionLeases
+
+            from .progress import ProgressTracker
 
             progress = ProgressTracker(store)
             if args.command == "progress":
@@ -261,6 +274,7 @@ def main(argv=None):
             return 0
         if args.command == "inspect":
             from homebrew_harness.execution.execution_leases import ExecutionLeases
+
             from .controller import RunController
             from .worker import make_session
 
@@ -424,7 +438,3 @@ def main(argv=None):
                     services.close()
             finally:
                 store.close()
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

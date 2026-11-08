@@ -17,7 +17,8 @@ from homebrew_harness.execution.model_gateway import Deadline
 from homebrew_harness.benchmark import run_benchmark, verify, TASKS
 from homebrew_harness.execution.test_runner import TestRecipe, TestRunner
 from tests.support.clients import fake_client, reply, call
-from homebrew_harness.admin import main, external_model_config
+from homebrew_harness.cli import main
+from homebrew_harness.admin import external_model_config
 from contextlib import redirect_stderr
 
 
@@ -76,6 +77,7 @@ class BenchmarkTests(unittest.TestCase):
             self.assertEqual(
                 main(
                     [
+                        "admin",
                         "inventory",
                         "--cwd",
                         temp,

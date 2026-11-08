@@ -15,6 +15,7 @@ from unittest.mock import Mock, patch
 
 from tests.support.tools import execute_fixture_tool
 import homebrew_harness.cli
+import homebrew_harness.session_cli
 import homebrew_harness.configuration
 import homebrew_harness.runtime.assembly
 import homebrew_harness.runtime.hooks
@@ -449,8 +450,8 @@ class SkillTests(unittest.TestCase):
                 client, requests = scripted_client([reply("Available skills listed.")])
                 with (
                     patch.dict(os.environ, config),
-                    patch("homebrew_harness.cli.load_dotenv"),
-                    patch("homebrew_harness.cli.OpenAI") as factory,
+                    patch("homebrew_harness.session_cli.load_dotenv"),
+                    patch("homebrew_harness.session_cli.OpenAI") as factory,
                     patch(
                         "homebrew_harness.runtime.assembly.SkillLoader",
                         wraps=SkillLoader,
@@ -459,7 +460,7 @@ class SkillTests(unittest.TestCase):
                 ):
                     factory.return_value.__enter__.return_value = client
                     self.assertEqual(
-                        homebrew_harness.cli.main(
+                        homebrew_harness.cli.main(["session"] +
                             ["--profile", "full"]
                             + [
                                 "--memory-mode",
@@ -477,10 +478,10 @@ class SkillTests(unittest.TestCase):
 
     def test_invalid_explicit_skill_directory_fails_before_model_startup(self):
         with (
-            patch("homebrew_harness.cli.OpenAI") as client,
+            patch("homebrew_harness.session_cli.OpenAI") as client,
             self.assertRaises(SystemExit) as error,
         ):
-            homebrew_harness.cli.main(
+            homebrew_harness.cli.main(["session"] +
                 ["--profile", "full"]
                 + ["--skills-dir", str(self.root / "missing"), "Task"]
             )

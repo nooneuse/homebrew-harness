@@ -18,6 +18,7 @@ from openai import APIError
 from openai.types.chat import ChatCompletion
 
 import homebrew_harness.cli
+import homebrew_harness.session_cli
 
 import homebrew_harness.configuration
 
@@ -290,12 +291,12 @@ class ConfigurationTests(unittest.TestCase):
         error_output = io.StringIO()
         with (
             patch.dict(os.environ, {}, clear=True),
-            patch("homebrew_harness.cli.load_dotenv"),
-            patch("homebrew_harness.cli.OpenAI") as client,
+            patch("homebrew_harness.session_cli.load_dotenv"),
+            patch("homebrew_harness.session_cli.OpenAI") as client,
             redirect_stderr(error_output),
         ):
             self.assertEqual(
-                homebrew_harness.cli.main(["--profile", "full"] + ["test task"]), 1
+                homebrew_harness.cli.main(["session"] + ["--profile", "full"] + ["test task"]), 1
             )
         client.assert_not_called()
         self.assertIn("Missing configuration", error_output.getvalue())
@@ -311,12 +312,12 @@ class ConfigurationTests(unittest.TestCase):
         error_output = io.StringIO()
         with (
             patch.dict(os.environ, config),
-            patch("homebrew_harness.cli.load_dotenv"),
-            patch("homebrew_harness.cli.OpenAI", side_effect=error),
+            patch("homebrew_harness.session_cli.load_dotenv"),
+            patch("homebrew_harness.session_cli.OpenAI", side_effect=error),
             redirect_stderr(error_output),
         ):
             self.assertEqual(
-                homebrew_harness.cli.main(["--profile", "full"] + ["test task"]), 1
+                homebrew_harness.cli.main(["session"] + ["--profile", "full"] + ["test task"]), 1
             )
         self.assertIn("APIError", error_output.getvalue())
         self.assertNotIn("private-test-value", error_output.getvalue())

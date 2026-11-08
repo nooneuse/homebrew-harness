@@ -1335,21 +1335,6 @@ _GATEWAY_OPTIONS = (
 )
 
 
-def add_gateway_arguments(parser):
-    descriptions = {
-        "model_concurrency": "Maximum in-flight model requests (default: 4).",
-        "model_request_timeout": "Absolute model queue/request deadline in seconds (default: 60).",
-        "model_session_timeout": "Optional absolute session duration, including idle time, in seconds.",
-    }
-    for name, _, converter in _GATEWAY_OPTIONS:
-        parser.add_argument(
-            "--" + name.replace("_", "-"),
-            type=converter,
-            default=None,
-            help=descriptions[name],
-        )
-
-
 def gateway_limits_from_args(args):
     values = []
     defaults = GatewayLimits()

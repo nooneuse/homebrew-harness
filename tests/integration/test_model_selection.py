@@ -643,7 +643,7 @@ class ModelSelectionTests(unittest.TestCase):
         }
         worker.responses.append(reply("CLI selected alternate Lead"))
         with patch.dict(os.environ, env, clear=True):
-            status = homebrew_harness.cli.main(
+            status = homebrew_harness.cli.main(["session"] +
                 [
                     "--cwd",
                     str(self.root),

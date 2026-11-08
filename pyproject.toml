@@ -14,9 +14,6 @@ dynamic = ["dependencies"]
 
 [project.scripts]
 homebrew-harness = "homebrew_harness.cli:main"
-harness-admin = "homebrew_harness.admin:main"
-harness-workflow = "homebrew_harness.workflow_cli:main"
-harness-run = "homebrew_harness.runs.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

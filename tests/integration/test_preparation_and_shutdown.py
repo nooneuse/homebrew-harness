@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 import homebrew_harness.cli
+import homebrew_harness.session_cli
 
 import homebrew_harness.configuration
 
@@ -293,8 +294,8 @@ class SimplificationTests(unittest.TestCase):
         }
         with (
             patch.dict("os.environ", settings),
-            patch("homebrew_harness.cli.load_test_runner", return_value=runner),
-            patch("homebrew_harness.cli.OpenAI") as sdk,
+            patch("homebrew_harness.session_cli.load_test_runner", return_value=runner),
+            patch("homebrew_harness.session_cli.OpenAI") as sdk,
             patch(
                 "homebrew_harness.runtime.session.HarnessSession",
                 side_effect=ValueError("fixture initialization"),
@@ -302,7 +303,7 @@ class SimplificationTests(unittest.TestCase):
         ):
             sdk.return_value.__enter__.return_value = client
             self.assertEqual(
-                homebrew_harness.cli.main(
+                homebrew_harness.cli.main(["session"] +
                     [
                         "--profile",
                         "core",
@@ -325,11 +326,11 @@ class SimplificationTests(unittest.TestCase):
         }
         with (
             patch.dict("os.environ", settings),
-            patch("homebrew_harness.cli.load_test_runner", return_value=runner),
-            patch("homebrew_harness.cli.OpenAI") as sdk,
+            patch("homebrew_harness.session_cli.load_test_runner", return_value=runner),
+            patch("homebrew_harness.session_cli.OpenAI") as sdk,
         ):
             self.assertEqual(
-                homebrew_harness.cli.main(
+                homebrew_harness.cli.main(["session"] +
                     [
                         "--profile",
                         "core",

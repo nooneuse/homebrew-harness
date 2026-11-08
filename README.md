@@ -31,16 +31,19 @@ source .venv/bin/activate
 python -m pip install -e .
 ```
 
-Installation provides four commands:
+Installation provides one command with four subcommands:
 
 ```sh
 homebrew-harness --help
-harness-run --help
-harness-workflow --help
-harness-admin --help
+homebrew-harness session --help
+homebrew-harness run --help
+homebrew-harness workflow --help
+homebrew-harness admin --help
 ```
 
-You can also launch the main program with `python -m homebrew_harness`.
+You can also use `python -m homebrew_harness` with the same subcommands. Running the command without a subcommand starts an interactive session. Use `session` explicitly for a one-shot task or session-specific options.
+
+`--cwd` and `--env-file` are shared options and may appear before or after subcommands. If repeated, the last explicit value takes precedence. Other options belong to their feature group; use `homebrew-harness run --help` or the help for an individual operation to see them.
 
 ## Model configuration
 
@@ -58,7 +61,7 @@ Use the [model catalog template](examples/config/.models.example.json) for multi
 
 ```sh
 cp examples/config/.models.example.json ~/.config/homebrew-harness/models.json
-homebrew-harness --models-config ~/.config/homebrew-harness/models.json
+homebrew-harness session --models-config ~/.config/homebrew-harness/models.json
 ```
 
 Set the environment variables referenced by the template, and configure tool use, structured output, and reasoning capabilities for each model. The Lead can select an alias with `--lead-model`; teammates and subagents can select from the host's registered profiles. Credentials and model endpoint values belong in the host environment.
@@ -70,15 +73,15 @@ Set the environment variables referenced by the template, and configure tool use
 homebrew-harness
 
 # One-shot task
-homebrew-harness "Read the project files and explain how the core modules relate"
+homebrew-harness session "Read the project files and explain how the core modules relate"
 
 # Explicit working directory
 mkdir -p /tmp/harness-example
-homebrew-harness --cwd /tmp/harness-example \
+homebrew-harness session --cwd /tmp/harness-example \
   "Create hello.py that prints Hello, world!, then read it back to verify"
 
 # Resume the latest saved session
-homebrew-harness --resume-session
+homebrew-harness session --resume-session
 ```
 
 The working directory defaults to the directory from which you launch the command. `--cwd` selects another workspace; session state is stored there.
@@ -86,10 +89,10 @@ The working directory defaults to the directory from which you launch the comman
 The default `core` profile includes the basic tools. Enable optional modules as needed:
 
 ```sh
-homebrew-harness --enable subagents --enable tasks
-homebrew-harness --enable teams --enable worktrees
-homebrew-harness --enable background --enable cron
-homebrew-harness --memory-mode recall
+homebrew-harness session --enable subagents --enable tasks
+homebrew-harness session --enable teams --enable worktrees
+homebrew-harness session --enable background --enable cron
+homebrew-harness session --memory-mode recall
 ```
 
 `--profile full` enables all optional modules and defaults memory to `recall`. `--memory-mode auto` enables memory maintenance after normal user turns; `off` disables memory calls.
@@ -98,11 +101,11 @@ The bundled skill examples cover [Python code review](skills/code-review/SKILL.m
 
 ## Managed runs (hands-off)
 
-`harness-run` persists a task as a Run and advances it through bounded Episodes in a separate worker process. Episodes continue the same session; process recovery checks the checkpoint and actual execution state. The Run's overall deadline includes waiting and restarts. Runs can use declared stages and a fixed team of members.
+`homebrew-harness run` persists a task as a Run and advances it through bounded Episodes in a separate worker process. Episodes continue the same session; process recovery checks the checkpoint and actual execution state. The Run's overall deadline includes waiting and restarts. Runs can use declared stages and a fixed team of members.
 
 ```sh
 cp examples/config/run.example.json ~/.config/homebrew-harness/run.json
-harness-run --cwd /path/to/project start \
+homebrew-harness run --cwd /path/to/project start \
   --spec ~/.config/homebrew-harness/run.json
 ```
 
@@ -111,11 +114,11 @@ harness-run --cwd /path/to/project start \
 Startup prints a `run_id`. Manage it from another terminal:
 
 ```sh
-harness-run --cwd /path/to/project status RUN_ID
-harness-run --cwd /path/to/project steer RUN_ID "Add a requirement to the current task"
-harness-run --cwd /path/to/project pause RUN_ID
-harness-run --cwd /path/to/project resume RUN_ID
-harness-run --cwd /path/to/project cancel RUN_ID
+homebrew-harness run --cwd /path/to/project status RUN_ID
+homebrew-harness run --cwd /path/to/project steer RUN_ID "Add a requirement to the current task"
+homebrew-harness run --cwd /path/to/project pause RUN_ID
+homebrew-harness run --cwd /path/to/project resume RUN_ID
+homebrew-harness run --cwd /path/to/project cancel RUN_ID
 ```
 
 `supervise RUN_ID` takes over a recoverable task after the supervisor restarts. `steer --mode queued` applies input at the next Episode; `--mode interrupt` requests cancellation of the current cancellable step. Use a new Run for an independent task.
@@ -133,9 +136,9 @@ After cancellation or final failure, unfinished Tasks and Goals become `abandone
 When a tool needs permission, the Run records an exact request and enters `waiting`. Requirement questions use separate Attention requests. Inspect and answer the current revision:
 
 ```sh
-harness-run --cwd /path/to/project requests RUN_ID
-harness-run --cwd /path/to/project approve RUN_ID REQUEST_ID REVISION yes
-harness-run --cwd /path/to/project answer RUN_ID QUESTION_ID REVISION "Requirement decision"
+homebrew-harness run --cwd /path/to/project requests RUN_ID
+homebrew-harness run --cwd /path/to/project approve RUN_ID REQUEST_ID REVISION yes
+homebrew-harness run --cwd /path/to/project answer RUN_ID QUESTION_ID REVISION "Requirement decision"
 ```
 
 After approval, the model uses `execute_approved` to submit the original call. Permission is consumed once when the operation is accepted. An Attention answer becomes a user amendment to the original task.
@@ -143,7 +146,7 @@ After approval, the model uses `execute_approved` to submit the original call. P
 When a member's fixed-test grant expires or runs out, the runtime records a `test_grant` request. Renew it for the same task with a bounded run count and duration:
 
 ```sh
-harness-run --cwd /path/to/project approve RUN_ID REQUEST_ID REVISION yes \
+homebrew-harness run --cwd /path/to/project approve RUN_ID REQUEST_ID REVISION yes \
   --runs 1 --seconds 600
 ```
 
@@ -178,7 +181,7 @@ An integration stage lists predecessors in `integrates`. After producers stop, `
 The optional [Run control configuration](examples/config/run-control.example.json) subscribes to an existing GitHub PR and enables minimal notifications. Store it outside the workspace, set the repository, PR, allowed actor/app IDs, and environment variables, and remove unused `github` or `notification` entries.
 
 ```sh
-harness-run --cwd /path/to/project \
+homebrew-harness run --cwd /path/to/project \
   --control-config /path/to/private/run-control.json start --spec /path/to/private/run.json
 ```
 
@@ -237,7 +240,7 @@ Structured Goals support `file_exists`, `file_contains`, `file_sha256`, and `tes
 ```
 
 ```sh
-homebrew-harness --allow-tests unit-tests \
+homebrew-harness session --allow-tests unit-tests \
   --goal-spec ~/.config/homebrew-harness/goal.json
 ```
 
@@ -248,8 +251,8 @@ A workspace containing `tests/` registers `unit-tests` by default. Custom tests 
 Workflows use host-registered Python async scripts to organize fixed steps, save their results, and reuse them on recovery. The built-in demonstration runs offline:
 
 ```sh
-harness-workflow list
-harness-workflow --cwd /tmp/harness-example demo
+homebrew-harness workflow list
+homebrew-harness workflow --cwd /tmp/harness-example demo
 ```
 
 The main session loads it with `--demo-workflows`. Register custom scripts through `WorkflowRegistry`; see the [design document](docs/DESIGN.md) for component composition.
@@ -259,7 +262,7 @@ MCP supports real stdio and Streamable HTTP transports. Start the local demonstr
 ```sh
 python examples/create_mcp_demo_config.py \
   --output ~/.config/homebrew-harness/mcp.json
-homebrew-harness --enable mcp \
+homebrew-harness session --enable mcp \
   "Connect to the docs service, search for Hooks, and query its version"
 ```
 
@@ -281,12 +284,12 @@ Set the Docker CLI, image digest, and program paths inside the image. Containers
 Session state lives in `.harness/` under the working directory. Tasks, memory, and worktrees use their own local directories. `/recovery` lists operations needing inspection; after checking them, use the suggested recovery commands.
 
 ```sh
-harness-admin storage-status --cwd /tmp/harness-example
-harness-admin checkpoint-list --cwd /tmp/harness-example
-harness-admin gc-preview --cwd /tmp/harness-example
+homebrew-harness admin storage-status --cwd /tmp/harness-example
+homebrew-harness admin checkpoint-list --cwd /tmp/harness-example
+homebrew-harness admin gc-preview --cwd /tmp/harness-example
 ```
 
-`harness-admin` manages backups, history collection, and checkpoint retirement. The default retirement policy keeps the latest 10 sessions and selects older sessions only after they have been closed and fully cleaned up for more than 15 days. See `harness-admin --help` for parameters.
+`homebrew-harness admin` manages backups, history collection, and checkpoint retirement. The default retirement policy keeps the latest 10 sessions and selects older sessions only after they have been closed and fully cleaned up for more than 15 days. See `homebrew-harness admin --help` for parameters.
 
 ## Python API
 

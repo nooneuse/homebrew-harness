@@ -2,41 +2,22 @@
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import sys
 from pathlib import Path
 
-from homebrew_harness.execution.model_gateway import (
-    ModelGateway,
-    add_gateway_arguments,
-    gateway_limits_from_args,
-)
-from homebrew_harness.orchestration.workflow_runtime import (
-    ModelWorkflowRunner,
-    WorkflowError,
-    WorkflowLimits,
-    WorkflowRuntime,
-)
-from homebrew_harness.orchestration.workflows import (
-    DEMO_CHANGES,
-    DemoWorkflowRunner,
-    default_registry,
-)
+from homebrew_harness.cli_arguments import add_gateway_arguments, add_location_arguments
 
 
-def main(argv=None):
-    parser = argparse.ArgumentParser(description="Run and resume registered workflows.")
+def register(groups):
+    parser = groups.add_parser(
+        "workflow", help="Run and resume fixed workflow scripts."
+    )
+    add_location_arguments(parser)
     add_gateway_arguments(parser)
     parser.add_argument(
         "--model-profile", help="Host model capability revision for cache identity."
-    )
-    parser.add_argument("--cwd", type=Path, default=Path.cwd())
-    parser.add_argument(
-        "--env-file",
-        type=Path,
-        default=Path.home() / ".config" / "homebrew-harness" / ".env",
     )
     parser.add_argument("--max-output-tokens", type=int, default=2048)
     parser.add_argument("--concurrency", type=int, default=2)
@@ -59,7 +40,28 @@ def main(argv=None):
     )
     status = commands.add_parser("status")
     status.add_argument("run_id")
-    args = parser.parse_args(argv)
+    for command in commands.choices.values():
+        add_location_arguments(command)
+    parser.set_defaults(_handler=__name__, _command_parser=parser)
+
+
+def execute(args, parser):
+    from homebrew_harness.execution.model_gateway import (
+        ModelGateway,
+        gateway_limits_from_args,
+    )
+    from homebrew_harness.orchestration.workflow_runtime import (
+        ModelWorkflowRunner,
+        WorkflowError,
+        WorkflowLimits,
+        WorkflowRuntime,
+    )
+    from homebrew_harness.orchestration.workflows import (
+        DEMO_CHANGES,
+        DemoWorkflowRunner,
+        default_registry,
+    )
+
     client = None
     try:
         registry = default_registry()
@@ -176,7 +178,3 @@ def main(argv=None):
             )
         if client is not None:
             client.close()
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

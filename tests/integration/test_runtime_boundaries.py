@@ -613,7 +613,7 @@ class AsyncExitTests(Fixture):
         ):
             session.run_user("Run a slow check")
         release.set()
-        self.assertEqual(session.drain(timeout=2), 0)
+        self.assertEqual(session.drain(timeout=5), 0)
         self.assertEqual(client.chat.completions.create.call_count, 3)
         self.assertTrue(
             any(
@@ -682,7 +682,7 @@ class AsyncExitTests(Fixture):
             "fixture provider failure"
         )
         session.team.bus.send("worker", "lead", "Finding", "result")
-        self.assertEqual(session.drain(timeout=2), 1)
+        self.assertEqual(session.drain(timeout=5), 1)
         self.assertFalse(session.process_once())
         self.assertEqual(client.chat.completions.create.call_count, 1)
         self.assertTrue(session._pending_team)

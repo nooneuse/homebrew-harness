@@ -31,16 +31,19 @@ source .venv/bin/activate
 python -m pip install -e .
 ```
 
-安装后提供四个命令：
+安装后提供一个命令和四个子命令：
 
 ```sh
 homebrew-harness --help
-harness-run --help
-harness-workflow --help
-harness-admin --help
+homebrew-harness session --help
+homebrew-harness run --help
+homebrew-harness workflow --help
+homebrew-harness admin --help
 ```
 
-也可以通过 `python -m homebrew_harness` 启动主程序。
+也可以使用 `python -m homebrew_harness` 和相同的子命令。无子命令时进入交互会话；单次任务和会话专属选项使用显式的 `session` 子命令。
+
+`--cwd` 和 `--env-file` 为公共选项，可放在子命令前后；重复提供时，最后一个显式值生效。其他参数属于对应功能组，通过 `homebrew-harness run --help` 或具体操作的帮助页查看。
 
 ## 模型配置
 
@@ -58,7 +61,7 @@ chmod 600 ~/.config/homebrew-harness/.env
 
 ```sh
 cp examples/config/.models.example.json ~/.config/homebrew-harness/models.json
-homebrew-harness --models-config ~/.config/homebrew-harness/models.json
+homebrew-harness session --models-config ~/.config/homebrew-harness/models.json
 ```
 
 填写模板引用的环境变量，并按实际模型配置工具、结构化输出和思考能力。Lead 可用 `--lead-model` 选择别名；成员和 Subagent 从宿主登记的配置中选择。凭据与模型接入地址由宿主环境提供。
@@ -70,15 +73,15 @@ homebrew-harness --models-config ~/.config/homebrew-harness/models.json
 homebrew-harness
 
 # 单次任务
-homebrew-harness "阅读项目文件，说明核心模块之间的关系"
+homebrew-harness session "阅读项目文件，说明核心模块之间的关系"
 
 # 指定工作目录
 mkdir -p /tmp/harness-example
-homebrew-harness --cwd /tmp/harness-example \
+homebrew-harness session --cwd /tmp/harness-example \
   "创建 hello.py，打印 Hello, world!，然后读回确认"
 
 # 恢复最近保存的会话
-homebrew-harness --resume-session
+homebrew-harness session --resume-session
 ```
 
 工作目录默认为启动命令时所在的目录。`--cwd` 选择其他工作区，会话状态保存在该工作区中。
@@ -86,10 +89,10 @@ homebrew-harness --resume-session
 默认 `core` 配置包含基础工具。按需启用可选模块：
 
 ```sh
-homebrew-harness --enable subagents --enable tasks
-homebrew-harness --enable teams --enable worktrees
-homebrew-harness --enable background --enable cron
-homebrew-harness --memory-mode recall
+homebrew-harness session --enable subagents --enable tasks
+homebrew-harness session --enable teams --enable worktrees
+homebrew-harness session --enable background --enable cron
+homebrew-harness session --memory-mode recall
 ```
 
 `--profile full` 启用全部可选模块，记忆默认为 `recall`。`--memory-mode auto` 允许正常用户回合结束后的记忆维护；`off` 关闭记忆调用。
@@ -98,11 +101,11 @@ homebrew-harness --memory-mode recall
 
 ## 受管理运行（无人值守）
 
-`harness-run` 将一个任务保存为 Run，由独立执行进程按有界 Episode 推进。段落之间接续同一会话；进程恢复时核对 checkpoint 与实际执行状态。Run 的总期限包含等待和重启时间。Run 可以使用声明的阶段和固定成员团队。
+`homebrew-harness run` 将一个任务保存为 Run，由独立执行进程按有界 Episode 推进。段落之间接续同一会话；进程恢复时核对 checkpoint 与实际执行状态。Run 的总期限包含等待和重启时间。Run 可以使用声明的阶段和固定成员团队。
 
 ```sh
 cp examples/config/run.example.json ~/.config/homebrew-harness/run.json
-harness-run --cwd /path/to/project start \
+homebrew-harness run --cwd /path/to/project start \
   --spec ~/.config/homebrew-harness/run.json
 ```
 
@@ -111,11 +114,11 @@ harness-run --cwd /path/to/project start \
 启动后输出 `run_id`。可以从另一个终端管理：
 
 ```sh
-harness-run --cwd /path/to/project status RUN_ID
-harness-run --cwd /path/to/project steer RUN_ID "补充当前任务要求"
-harness-run --cwd /path/to/project pause RUN_ID
-harness-run --cwd /path/to/project resume RUN_ID
-harness-run --cwd /path/to/project cancel RUN_ID
+homebrew-harness run --cwd /path/to/project status RUN_ID
+homebrew-harness run --cwd /path/to/project steer RUN_ID "补充当前任务要求"
+homebrew-harness run --cwd /path/to/project pause RUN_ID
+homebrew-harness run --cwd /path/to/project resume RUN_ID
+homebrew-harness run --cwd /path/to/project cancel RUN_ID
 ```
 
 `supervise RUN_ID` 在监督进程重启后接管可恢复任务。`steer --mode queued` 将输入留到下一 Episode；`--mode interrupt` 请求取消当前可取消步骤。独立任务使用新的 Run。
@@ -133,9 +136,9 @@ harness-run --cwd /path/to/project cancel RUN_ID
 工具需要许可时，Run 保存精确请求并进入 `waiting`。需求问题使用独立的 Attention 请求。查询后按当前 revision 答复：
 
 ```sh
-harness-run --cwd /path/to/project requests RUN_ID
-harness-run --cwd /path/to/project approve RUN_ID REQUEST_ID REVISION yes
-harness-run --cwd /path/to/project answer RUN_ID QUESTION_ID REVISION "需求决定"
+homebrew-harness run --cwd /path/to/project requests RUN_ID
+homebrew-harness run --cwd /path/to/project approve RUN_ID REQUEST_ID REVISION yes
+homebrew-harness run --cwd /path/to/project answer RUN_ID QUESTION_ID REVISION "需求决定"
 ```
 
 批准后模型通过 `execute_approved` 提交原调用，许可在接受操作时消费一次。Attention 答复作为用户修订进入原任务。
@@ -143,7 +146,7 @@ harness-run --cwd /path/to/project answer RUN_ID QUESTION_ID REVISION "需求决
 成员的固定测试许可到期或耗尽后，会登记 `test_grant` 请求。为原任务续期时，指定有限次数和期限：
 
 ```sh
-harness-run --cwd /path/to/project approve RUN_ID REQUEST_ID REVISION yes \
+homebrew-harness run --cwd /path/to/project approve RUN_ID REQUEST_ID REVISION yes \
   --runs 1 --seconds 600
 ```
 
@@ -178,7 +181,7 @@ RunSpec 可声明 `stages`，每个阶段有 `key`、`subject`、`depends_on` �
 可选 [Run control 配置](examples/config/run-control.example.json) 订阅已有 GitHub PR 并启用最小通知。配置放在工作区外，填写仓库、PR、允许的 actor／app ID 和环境变量，删除不用的 `github` 或 `notification` 项。
 
 ```sh
-harness-run --cwd /path/to/project \
+homebrew-harness run --cwd /path/to/project \
   --control-config /path/to/private/run-control.json start --spec /path/to/private/run.json
 ```
 
@@ -237,7 +240,7 @@ python examples/managed_run_demo.py --output /tmp/harness-ae-demo
 ```
 
 ```sh
-homebrew-harness --allow-tests unit-tests \
+homebrew-harness session --allow-tests unit-tests \
   --goal-spec ~/.config/homebrew-harness/goal.json
 ```
 
@@ -248,8 +251,8 @@ homebrew-harness --allow-tests unit-tests \
 Workflow 使用宿主登记的 Python 异步脚本组织固定步骤、保存结果，并在恢复时复用。内置演示可以离线运行：
 
 ```sh
-harness-workflow list
-harness-workflow --cwd /tmp/harness-example demo
+homebrew-harness workflow list
+homebrew-harness workflow --cwd /tmp/harness-example demo
 ```
 
 主会话用 `--demo-workflows` 加载演示，自定义脚本通过 `WorkflowRegistry` 注册。组件组合参见 [设计文档](docs/DESIGN.zh-CN.md)。
@@ -259,7 +262,7 @@ MCP 支持真实 stdio 和 Streamable HTTP 传输。本地演示服务：
 ```sh
 python examples/create_mcp_demo_config.py \
   --output ~/.config/homebrew-harness/mcp.json
-homebrew-harness --enable mcp \
+homebrew-harness session --enable mcp \
   "连接 docs 服务，搜索 Hooks，并查询服务版本"
 ```
 
@@ -281,12 +284,12 @@ Bash 使用 `--bash-mode container --bash-config PATH` 选择容器后端，Test
 会话状态保存在工作目录的 `.harness/`，Task、Memory 和 worktree 使用各自的本地目录。`/recovery` 查看需要检查的操作，核实后使用提示中的恢复命令。
 
 ```sh
-harness-admin storage-status --cwd /tmp/harness-example
-harness-admin checkpoint-list --cwd /tmp/harness-example
-harness-admin gc-preview --cwd /tmp/harness-example
+homebrew-harness admin storage-status --cwd /tmp/harness-example
+homebrew-harness admin checkpoint-list --cwd /tmp/harness-example
+homebrew-harness admin gc-preview --cwd /tmp/harness-example
 ```
 
-`harness-admin` 管理备份、历史回收和 checkpoint 退休。默认保留最近 10 个会话，较旧会话只有在关闭并完成全部收尾超过 15 天后才进入退休候选。参数参见 `harness-admin --help`。
+`homebrew-harness admin` 管理备份、历史回收和 checkpoint 退休。默认保留最近 10 个会话，较旧会话只有在关闭并完成全部收尾超过 15 天后才进入退休候选。参数参见 `homebrew-harness admin --help`。
 
 ## Python 接口
 
