@@ -415,7 +415,22 @@ else:
         ]
         self.assertTrue(all(result["error"] == "Unknown tool." for result in results))
         self.assertEqual(
-            len(client.chat.completions.create.call_args_list[0].kwargs["tools"]), 14
+            {
+                tool["function"]["name"]
+                for tool in client.chat.completions.create.call_args_list[0].kwargs[
+                    "tools"
+                ]
+            },
+            {
+                tool["function"]["name"]
+                for tool in homebrew_harness.tools.catalog.TEAMMATE_TOOLS
+            }
+            - {
+                "list_artifacts",
+                "get_artifact",
+                "publish_artifacts",
+                *homebrew_harness.execution.test_runner.TEST_TOOL_NAMES,
+            },
         )
 
     def test_worker_bash_approval_cannot_read_the_terminal(self):

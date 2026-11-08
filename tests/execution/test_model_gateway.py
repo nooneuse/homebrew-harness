@@ -922,8 +922,12 @@ class RealTransportTests(Fixture):
                 _ = client.chat.completions
                 gateway, _ = self.gateway(client, request_timeout=0.15)
                 started = time.monotonic()
-                with self.assertRaises(ModelDeadlineExceeded):
+                with self.assertRaises(ModelDeadlineExceeded) as raised:
                     self.invoke(gateway)
+                self.assertEqual(raised.exception.source, "request")
+                self.assertEqual(raised.exception.phase, "transport")
+                self.assertTrue(raised.exception.sent)
+                self.assertIsNotNone(raised.exception.request_id)
                 self.assertLess(time.monotonic() - started, 0.3)
                 self.assertTrue(gateway.wait_idle(2))
                 self.assertEqual(len(requests), 1)

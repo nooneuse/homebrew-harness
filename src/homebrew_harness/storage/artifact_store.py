@@ -361,7 +361,7 @@ class ArtifactStore:
             for row in sorted(bundle["files"], key=lambda row: row["target"]):
                 artifact_path(row["target"], target=True)
                 if self.test_runner is not None:
-                    from homebrew_harness.execution.test_runner import matches
+                    from homebrew_harness.execution.source_snapshot import matches
 
                     if any(
                         matches(row["target"], r.locked_globs)

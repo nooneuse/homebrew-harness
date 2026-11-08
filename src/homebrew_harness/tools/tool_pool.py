@@ -75,12 +75,21 @@ class ToolPool:
         mcp_task_id=None,
         mcp_allow_workspace=True,
         models=None,
+        run_tools=frozenset(),
     ):
         access = intersect_access(allowlist)
         catalog = workflow.registry.catalog() if workflow is not None else []
         recipes = tests.recipes if tests is not None else {}
         tools = []
-        for definition in capabilities.filter(definitions):
+        from homebrew_harness.runs.spec import RUN_TOOLS
+
+        if not isinstance(run_tools, frozenset) or run_tools - RUN_TOOLS:
+            raise ValueError(
+                "Only managed host control tools can extend this snapshot."
+            )
+        for definition in definitions:
+            if definition["function"]["name"] not in capabilities.tools() | run_tools:
+                continue
             tool = copy.deepcopy(definition)
             function = tool["function"]
             name = function["name"]

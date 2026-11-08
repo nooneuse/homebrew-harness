@@ -4,6 +4,7 @@ import json
 
 from homebrew_harness.security.permissions import (
     check_permission,
+    approval_call_scope,
     record_artifact_approval,
     record_spawn_approval,
     record_test_approval,
@@ -88,7 +89,8 @@ class HookRegistry:
 
 def permission_hook(event: ToolEvent) -> str | None:
     """Adapt the unchanged s03 policy to PreToolUse's blocking-result contract."""
-    decision = check_permission(event.name, dict(event.arguments), event.workdir)
+    with approval_call_scope(event.call_id):
+        decision = check_permission(event.name, dict(event.arguments), event.workdir)
     if decision.action == "allow":
         if event.name == "run_tests" and test_approval_needed():
             record_test_approval(event.arguments, event.workdir)
@@ -102,6 +104,11 @@ def permission_hook(event: ToolEvent) -> str | None:
             "error": "Permission denied.",
             "permission": "deny",
             "reason": decision.reason,
+            **(
+                {"reason_code": decision.code}
+                if getattr(decision, "code", None)
+                else {}
+            ),
         },
         ensure_ascii=False,
     )

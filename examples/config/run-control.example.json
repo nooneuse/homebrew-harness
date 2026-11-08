@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "github": {
+    "repository": "owner/project",
+    "pull_number": 1,
+    "actor_ids": [1],
+    "app_ids": [1],
+    "api_url_env": "HARNESS_GITHUB_API_URL",
+    "token_env": "GITHUB_TOKEN",
+    "poll_seconds": 30
+  },
+  "notification": {
+    "url_env": "HARNESS_NOTIFICATION_URL",
+    "token_env": "HARNESS_NOTIFICATION_TOKEN"
+  }
+}

@@ -17,6 +17,8 @@ from homebrew_harness.execution.execution_leases import ExecutionLeases
 from homebrew_harness.security.data_boundary import redact
 from homebrew_harness.security.safe_files import SafeFile
 
+TASK_TERMINAL = {"completed", "abandoned"}
+
 TASK_ID_PATTERN = re.compile(r"task_[0-9a-f]{8}")
 TASK_TOOL_NAMES = (
     "create_task",
@@ -29,6 +31,7 @@ TASK_TOOL_NAMES = (
 )
 _STORE_LOCKS: dict[Path, threading.RLock] = {}
 _STORE_LOCK_GUARD = threading.Lock()
+_STORE_DEPTHS = threading.local()
 
 
 @dataclass(frozen=True)
@@ -41,6 +44,7 @@ class Task:
     blockedBy: tuple[str, ...]
     worktree: str | None = None
     task_intent: dict | None = None
+    stage: dict | None = None
 
     def to_dict(self) -> dict:
         data = asdict(self)
@@ -49,11 +53,15 @@ class Task:
 
 
 class TaskStore:
-    """One JSON record per task; no model-supplied paths or owner identities."""
+    """SQLite task records; no model-supplied paths or owner identities."""
 
     def __init__(self, workdir: Path, *, owner: str = "agent", leases=None):
         self.workdir = workdir.resolve()
-        self.directory = self.workdir / ".tasks"
+        self.directory = self.workdir / ".harness/runtime"
+        from homebrew_harness.storage.durable_runtime import DurableStore
+
+        self.runtime = DurableStore(self.workdir)
+        self.stage_control = None
         self.owner = self._text(owner, "owner")
         self.leases = leases or ExecutionLeases(self.workdir)
         self.instance = self.leases.instance
@@ -89,35 +97,42 @@ class TaskStore:
                 "Task directory must not be a symlink or escape the workspace."
             )
         if create:
-            self.directory.mkdir(mode=0o700, exist_ok=True)
+            self.directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         if self.directory.exists() and not self.directory.is_dir():
             raise ValueError("Task directory must be a directory.")
         return self.directory
-
-    def _path(self, task_id: str) -> Path:
-        path = self._root() / (self._id(task_id) + ".json")
-        if path.is_symlink():
-            raise ValueError("Task records must not be symlinks.")
-        return path
 
     @contextmanager
     def _lock(self):
         from homebrew_harness.execution.execution_control import acquired, check
         from homebrew_harness.storage.storage_gate import storage_gate
 
+        self._root()
         with storage_gate(self.workdir), acquired(self._thread_lock):
-            with self._file_lock():
+            depths = getattr(_STORE_DEPTHS, "values", {})
+            _STORE_DEPTHS.values = depths
+            if depths.get(self.workdir, 0):
                 check()
                 yield
+                return
+            with self._file_lock():
+                depths[self.workdir] = 1
+                try:
+                    check()
+                    yield
+                finally:
+                    depths.pop(self.workdir, None)
 
     @contextmanager
     def _file_lock(self):
         self._root(create=True)
-        if (self.directory / ".lock").is_symlink():
+        if (self.directory / "task-board.lock").is_symlink():
             raise ValueError("Task lock must not be a symlink.")
-        with SafeFile(self.workdir, ".tasks/.lock", create_parents=True) as target:
+        with SafeFile(
+            self.workdir, ".harness/runtime/task-board.lock", create_parents=True
+        ) as target:
             fd = os.open(
-                ".lock",
+                "task-board.lock",
                 os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
                 0o600,
                 dir_fd=target.fds[-1],
@@ -135,17 +150,9 @@ class TaskStore:
                 os.close(fd)
 
     def _load(self, task_id: str) -> Task:
-        path = self._path(task_id)
-        try:
-            with (
-                SafeFile(self.workdir, str(path)) as target,
-                target.open_read() as handle,
-            ):
-                data = json.load(handle)
-        except FileNotFoundError:
-            raise ValueError(f"Task not found: {task_id}") from None
-        except (UnicodeError, json.JSONDecodeError):
-            raise ValueError(f"Invalid task record: {task_id}") from None
+        data = self.runtime.get("tasks", self._id(task_id))
+        if data is None:
+            raise ValueError(f"Task not found: {task_id}")
         fields = {
             "id",
             "subject",
@@ -155,9 +162,14 @@ class TaskStore:
             "blockedBy",
             "worktree",
             "task_intent",
+            "stage",
         }
         if not isinstance(data, dict) or set(data) != fields:
             raise ValueError(f"Invalid task fields: {task_id}")
+        if data.get("stage") is not None:
+            from homebrew_harness.runs.stages import validate_task_stage
+
+            validate_task_stage(data["stage"])
         if data.get("task_intent") is not None:
             TaskIntent().restore(data["task_intent"])
         worktree = data.get("worktree")
@@ -169,9 +181,9 @@ class TaskStore:
             raise ValueError(f"Task file ID does not match {task_id}.")
         self._text(data["subject"], "subject")
         self._text(data["description"], "description", empty=True)
-        if data["status"] not in ("pending", "in_progress", "completed"):
+        if data["status"] not in {"pending", "in_progress", *TASK_TERMINAL}:
             raise ValueError(f"Invalid task status: {task_id}")
-        if data["status"] == "pending":
+        if data["status"] in {"pending", "abandoned"}:
             if data["owner"] is not None:
                 raise ValueError(f"Pending task must be unowned: {task_id}")
         else:
@@ -189,20 +201,21 @@ class TaskStore:
 
     def _list(self) -> list[Task]:
         return [
-            self._load(path.stem) for path in sorted(self._root().glob("task_*.json"))
+            self._load(identity) for identity in sorted(self.runtime.items("tasks"))
         ]
 
     def _write(self, task: Task, *, create: bool = False) -> None:
-        """Publish a complete file; a failed update leaves the old record intact."""
-        path = self._path(task.id)
-        with SafeFile(self.workdir, str(path)) as target:
-            _, version, _ = target.snapshot()
-            if create and version is not None:
+        db = self.runtime.backend()
+        with db.write() as conn:
+            if create and db._get(conn, "tasks", task.id) is not None:
                 raise FileExistsError("Task ID already exists")
-            data = (
-                json.dumps(task.to_dict(), indent=2, ensure_ascii=False) + "\n"
-            ).encode()
-            target.publish(data, version, 0o600)
+            db._put(conn, "tasks", task.id, task.to_dict())
+
+    def _stage_guard(self, task, *, dependencies=True):
+        if task.stage is not None:
+            if self.stage_control is None:
+                raise ValueError("Managed stage requires its Run execution controller.")
+            self.stage_control.guard(task, dependencies=dependencies)
 
     def create(self, subject: str, description: str = "") -> Task:
         subject = self._text(subject, "subject").strip()
@@ -257,6 +270,8 @@ class TaskStore:
             self._id(dependency)
         with self._lock():
             task = self._load(task_id)
+            if task.stage is not None:
+                raise ValueError("Managed stage dependencies are host-selected.")
             if task.status != "pending" or task.owner is not None:
                 raise ValueError(
                     "Dependencies can only be updated while pending and unowned."
@@ -295,10 +310,13 @@ class TaskStore:
 
     def claim(self, task_id: str) -> Task:
         self._id(task_id)
+        if self.stage_control is not None:
+            self.stage_control.prepare_claim(task_id)
         with self._lock():
             return self._claim(self._load(task_id))
 
     def _claim(self, task: Task) -> Task:
+        self._stage_guard(task)
         if task.status != "pending":
             raise ValueError(f"Task {task.id} is {task.status}; cannot claim.")
         blockers = self._incomplete(task)
@@ -365,6 +383,7 @@ class TaskStore:
         """Explicit takeover; OS locks, not an expired timestamp, prove inactivity."""
         with self._lock():
             task = self._load(task_id)
+            self._stage_guard(task, dependencies=False)
             if task.status != "in_progress" or task.owner != self.owner:
                 raise ValueError(
                     "Only the same recovery identity can resume its unfinished task."
@@ -449,7 +468,9 @@ class TaskStore:
                 self._write(replace(task, status="pending", owner=None))
                 self._release_execution(task_id)
 
-    def complete(self, task_id: str) -> tuple[Task, list[Task]]:
+    def complete(
+        self, task_id: str, *, summary="", next_steps=""
+    ) -> tuple[Task, list[Task]]:
         self._id(task_id)
         with self._lock():
             task = self._load(task_id)
@@ -460,6 +481,11 @@ class TaskStore:
                     "Only the host identity that claimed this task can complete it."
                 )
             self.assert_execution(task_id)
+            self._stage_guard(task)
+            if task.stage is not None:
+                return self.stage_control.complete(
+                    task, summary=summary, next_steps=next_steps
+                )
             records = {record.id: record for record in self._list()}
             ready_before = {
                 record.id
@@ -488,6 +514,7 @@ class TaskStore:
             "owner": task.owner,
             "blockedBy": list(task.blockedBy),
             "worktree": task.worktree,
+            "stage": task.stage,
             "incompleteDependencies": blockers,
             "ready": task.status == "pending" and not blockers,
             "resumable": task.status == "in_progress"
@@ -519,7 +546,7 @@ class TaskStore:
         elif name == "resume_task":
             result = self.resume(arguments["task_id"]).to_dict()
         elif name == "complete_task":
-            task, unblocked = self.complete(arguments["task_id"])
+            task, unblocked = self.complete(**arguments)
             result = {
                 "task": task.to_dict(),
                 "unblocked": [record.to_dict() for record in unblocked],

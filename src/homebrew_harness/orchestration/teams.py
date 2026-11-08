@@ -46,6 +46,9 @@ WORKSPACE_TOOLS = {
     "write_file",
     "edit_file",
     "glob",
+    "search_text",
+    "git_status",
+    "git_diff",
 }
 MODIFY_TOOLS = {
     "publish_artifacts",
@@ -79,6 +82,15 @@ class TeammateRuntime:
     def __init__(self, manager, name: str, role: str, prompt: str, require_plan: bool):
         self.manager, self.name, self.role = manager, name, role
         self.store = TaskStore(manager.workdir, owner=name, leases=manager.leases)
+        if getattr(manager, "managed", None):
+            from homebrew_harness.runs.stages import MemberStageAccess
+
+            self.store.stage_control = MemberStageAccess(
+                manager.managed.control.stages, name, self.store
+            )
+        self.failure_kind = None
+        self.last_outcome = None
+        self.permission_blocked = None
         self.store.intent = TaskIntent()
         if manager.task_intent is not None:
             self.store.intent.restore(manager.task_intent.to_dict())
@@ -205,14 +217,18 @@ class TeammateRuntime:
             self.bind(task, defer=True)
             return json.dumps(task.to_dict(), ensure_ascii=False)
 
-    def complete(self, task_id: str, *, workdir: Path) -> str:
+    def complete(
+        self, task_id: str, *, workdir: Path, summary="", next_steps=""
+    ) -> str:
         with self.manager.lock:
             if self.assignment is None or self.assignment.id != task_id:
                 raise ValueError("Only the current assigned task can be completed.")
             blocked = self.guard("complete_task", {})
             if blocked:
                 return blocked
-            task, unblocked = self.store.complete(task_id)
+            task, unblocked = self.store.complete(
+                task_id, summary=summary, next_steps=next_steps
+            )
             return json.dumps(
                 {
                     "task": task.to_dict(),
@@ -278,6 +294,41 @@ class TeammateRuntime:
                     if isinstance(request_id, str)
                     else None
                 )
+                if kind == "test_grant_decision" and getattr(
+                    self.manager, "managed", None
+                ):
+                    managed = self.manager.managed
+                    saved = managed.control.store.runtime.get(
+                        "run_requests", metadata.get("request_id", ""), {}
+                    )
+                    if (
+                        message["from"] == "lead"
+                        and metadata.get("origin") == "managed_test_authorization"
+                        and saved.get("run_id") == managed.control.id
+                        and saved.get("kind") == "test_grant"
+                        and self.assignment
+                        and saved["context"]["task_id"] == self.assignment.id
+                        and saved["context"]["member"] == self.name
+                        and saved["state"] == "consumed"
+                    ):
+                        self.test_request = None
+                        work.append("[Host fixed-test grant] " + message["content"])
+                    continue
+                if kind == "input_applied" and getattr(self.manager, "managed", None):
+                    applied = self.manager.managed.control.store.runtime.get(
+                        "run_input_applied", self.manager.managed.control.id, {}
+                    )
+                    if (
+                        message["from"] == "lead"
+                        and metadata.get("origin") == "managed_input"
+                        and metadata.get("run_id") == self.manager.managed.control.id
+                        and metadata.get("checkpoint") == applied.get("checkpoint")
+                        and metadata.get("revision") == applied.get("revision")
+                        and self.manager.managed.input_ready(self)
+                    ):
+                        self.test_request = None
+                        self.status = "working"
+                    continue
                 if kind == "shutdown_request":
                     if (
                         request
@@ -354,6 +405,9 @@ class TeammateRuntime:
         return bool(work)
 
     def before_model(self) -> None:
+        managed = getattr(self.manager, "managed", None)
+        if managed:
+            managed.before_model(self)
         sid = getattr(self.manager, "runtime_session_id", None)
         if sid is not None:
             # Accepted targeted input already invalidated this member's proposal;
@@ -389,8 +443,12 @@ class TeammateRuntime:
         self.messages.extend(self.pending_context)
         self.pending_context.clear()
         self.handle_messages(self.manager.bus.claim(self.name))
+        if getattr(self.manager, "managed", None):
+            self.manager.managed.verify_before_model(self)
 
     def finish_work_turn(self, result: str) -> None:
+        if getattr(self.manager, "managed", None):
+            return self.manager.managed.complete_turn(self, result)
         with self.manager.lock:
             if self.gate == "pending":
                 self.status = "waiting_approval"
@@ -430,6 +488,17 @@ class TeammateRuntime:
     def run(self) -> None:
         try:
             while not self.stop_event.is_set():
+                if self.status == "waiting_input" and getattr(
+                    self.manager, "managed", None
+                ):
+                    if self.manager.managed.input_ready(self):
+                        self.status = "working"
+                    else:
+                        from homebrew_harness.execution.execution_control import check
+
+                        check(cancel_events=(self.stop_event,))
+                        self.stop_event.wait(self.manager.scan_interval)
+                        continue
                 if self.status in {"idle", "waiting_approval"}:
                     inbox = self.manager.bus.wait_for_messages(
                         self.name, self.manager.scan_interval, durable=True
@@ -468,12 +537,46 @@ class TeammateRuntime:
                         "team": self.manager.snapshot_for_storage(),
                     },
                 )
+                if getattr(self.manager, "managed", None):
+                    writer.run_control = self.manager.managed.checkpoint_control(self)
                 with checkpoint_scope(writer):
-                    result = self.manager.run_member(self)
-                if not self.stop_event.is_set():
-                    self.finish_work_turn(result)
+                    try:
+                        result = self.manager.run_member(self)
+                    except Exception as error:
+                        from homebrew_harness.storage.control_boundary import (
+                            ProposalSuperseded,
+                        )
+
+                        if isinstance(error, ProposalSuperseded) and getattr(
+                            self.manager, "managed", None
+                        ):
+                            if self.manager.managed.unknown(self.name):
+                                self.manager.managed.record_outcome(
+                                    self, "blocked", "inspection_required"
+                                )
+                            else:
+                                self.manager.managed.record_outcome(
+                                    self,
+                                    "waiting_input",
+                                    "input_changed",
+                                    wait_on={
+                                        "type": "run_input",
+                                        "run_id": self.manager.managed.control.id,
+                                    },
+                                )
+                            continue
+                        raise
+                    if not self.stop_event.is_set():
+                        self.finish_work_turn(result)
         except Exception as error:
             if not self.stop_event.is_set():
+                from homebrew_harness.storage.control_boundary import ProposalSuperseded
+
+                self.failure_kind = (
+                    "superseded"
+                    if isinstance(error, ProposalSuperseded)
+                    else getattr(error, "kind", type(error).__name__)
+                )
                 self.status = "failed"
                 try:
                     self.manager.bus.send(
@@ -500,6 +603,8 @@ class TeammateRuntime:
                         )
                     except Exception:
                         pass
+                if getattr(self.manager, "managed", None) and self.status != "failed":
+                    self.status = "stopped"
                 try:
                     self.manager.persist_checkpoint()
                 except Exception as error:
@@ -605,6 +710,8 @@ class TeamManager(WorkspaceRuntime):
                     "messages": m.messages,
                     "pending_context": copy.deepcopy(m.pending_context),
                     "status": m.status,
+                    "failure_kind": m.failure_kind,
+                    "last_outcome": m.last_outcome,
                     "gate": m.gate,
                     "require_plan": m.require_plan,
                     "plan_request": m.plan_request,
@@ -757,6 +864,8 @@ class TeamManager(WorkspaceRuntime):
             raise ValueError(
                 "Teammate role/prompt must be nonempty and require_plan must be boolean."
             )
+        if getattr(self, "managed", None):
+            self.managed.prepare_member(name)
         with self.lock:
             self.acquire_session()
             requested = dict(
@@ -809,6 +918,8 @@ class TeamManager(WorkspaceRuntime):
                 >= self.max_members
             ):
                 raise ValueError("Team member limit reached.")
+            if getattr(self, "managed", None):
+                self.managed.before_spawn(requested)
             member = TeammateRuntime(self, name, role, prompt, require_plan)
             member.model_binding = binding
             member.allowed_tasks = approval[1]
@@ -846,6 +957,12 @@ class TeamManager(WorkspaceRuntime):
                     member.messages.append(
                         {"role": "user", "content": "[Host resumed member] " + prompt}
                     )
+                    member.last_outcome = saved.get("last_outcome")
+                    if member.last_outcome and saved.get("status") in {
+                        "idle",
+                        "waiting_input",
+                    }:
+                        member.status = saved["status"]
                     member.snapshot_revision = saved.get("revision", 0)
                     member.user_revision = saved.get("user_revision", 0)
                     member.user_input_ids = saved.get("user_input_ids", [])

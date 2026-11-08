@@ -31,3 +31,4 @@ class LoopComponents:
     worker_output_tokens: int | None = None
     steering: object = None
     on_user_submit: object = None
+    run_control: object = None

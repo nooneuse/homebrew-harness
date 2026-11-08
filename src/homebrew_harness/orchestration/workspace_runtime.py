@@ -121,6 +121,8 @@ class WorkspaceRuntime:
         return {"task_id": task.id, "owner": task.owner, "worktree": task.worktree}
 
     def lead_claim(self, task_id, *, workdir):
+        if self.store.stage_control:
+            self.store.stage_control.prepare_claim(task_id)
         with self.lock:
             if self.lead_assignment:
                 raise ValueError("Finish the current Lead task first.")
@@ -134,15 +136,22 @@ class WorkspaceRuntime:
             self.lead_assignment = self.store.resume(task_id)
             return json.dumps(self.lead_assignment.to_dict())
 
-    def lead_complete(self, task_id, *, workdir):
+    def lead_complete(self, task_id, *, workdir, summary="", next_steps=""):
         with self.lock:
             if self.background_manager and self.background_manager.task_running(
                 task_id
             ):
                 raise ValueError("Assigned background work is still running.")
-            return self.store.run_tool(
-                "complete_task", workdir=workdir, task_id=task_id
+            result = self.store.run_tool(
+                "complete_task",
+                workdir=workdir,
+                task_id=task_id,
+                summary=summary,
+                next_steps=next_steps,
             )
+            if self.lead_assignment and self.lead_assignment.id == task_id:
+                self.lead_assignment = None
+            return result
 
     def handlers(self):
         handlers = (

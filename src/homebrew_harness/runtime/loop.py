@@ -242,12 +242,16 @@ def _agent_loop(
     first_response = True
 
     def commit_stop(text, proposal, pending=()):
+        if components.run_control is not None:
+            pending = components.run_control.pending_work()
         candidate = (
             goal_controller.propose_after_turn(text, pending_work=pending)
             if goal_controller
             else None
         )
         decision = candidate[0] if candidate else None
+        if components.run_control is not None:
+            components.run_control.stage_result(text, decision, pending)
         if steering is not None:
             if not steering.commit_end(
                 messages,
@@ -284,6 +288,8 @@ def _agent_loop(
         return True, decision
 
     while True:
+        if components.run_control is not None:
+            components.run_control.safe_point(turns)
         pool = (
             first_pool
             if turns == 0
@@ -328,6 +334,8 @@ def _agent_loop(
             inject_background_results(messages, background_manager, goal_controller)
         if steering is not None:
             steering.apply(messages, todo_manager, compactor)
+        if components.run_control is not None:
+            components.run_control.before_model(messages, components)
         plan = todo_manager.render() if todo_manager is not None else ""
         messages[:] = compactor.prepare(messages, active_request, plan, tools)
         if stop_event is not None and stop_event.is_set():
@@ -353,11 +361,11 @@ def _agent_loop(
         from homebrew_harness.runtime.proposal import Proposal
 
         proposal = (
-            Proposal(steering.session.runtime_store, [steering.recipient])
+            Proposal(steering.session.runtime_store, steering.recipients)
             if steering is not None
             else Proposal(
                 team_member.manager.bus.store,
-                [team_member.name],
+                [team_member.manager.bus.proposal_recipient(team_member.name)],
                 version=lambda: (team_member.version, team_member.user_revision),
             )
             if team_member is not None
@@ -394,6 +402,8 @@ def _agent_loop(
                 "Agent turn stopped before executing model actions."
             ) from error
         except ModelDeadlineExceeded as error:
+            if components.run_control is not None:
+                raise
             if goal_controller is not None and goal_controller.pending:
                 return goal_controller.report(
                     "", goal_controller.suspend("limit", str(error))
@@ -531,7 +541,17 @@ def _agent_loop(
                 control_error = None
             except ModelGatewayError as error:
                 control_error = error
-            if superseded or proposal is not None and proposal():
+            if (
+                components.run_control is not None
+                and components.run_control.permission_required
+            ):
+                output = json.dumps(
+                    {
+                        "error": "Earlier call needs host authorization; this call was not executed.",
+                        "executed": False,
+                    }
+                )
+            elif superseded or proposal is not None and proposal():
                 superseded = True
                 output = json.dumps(
                     {
@@ -612,6 +632,17 @@ def _agent_loop(
             raise RecoveryRequired(
                 "Tool outcome unknown; inspect saved execution facts before continuing. Session hosts can use /recovery."
             )
+        if (
+            components.run_control is not None
+            and components.run_control.permission_required
+        ):
+            from homebrew_harness.runs.spec import RunStopped
+
+            raise RunStopped(
+                getattr(
+                    components.run_control, "permission_reason", "approval_required"
+                )
+            )
         try:
             client.checkpoint()
         except ModelGatewayError as error:
@@ -641,13 +672,34 @@ def _agent_loop(
         if changed_input:
             continue
         if (
+            team_member is not None
+            and getattr(team_member.manager, "managed", None)
+            and getattr(team_member, "test_request", None)
+        ):
+            return "Waiting for the recorded fixed-test authorization decision."
+        if (
+            team_member is not None
+            and getattr(team_member.manager, "managed", None)
+            and team_member.assignment is not None
+            and team_member.store.load(team_member.assignment.id).status == "completed"
+        ):
+            return ""
+        if (
             goal_controller is not None
             and goal_controller.enabled
             and goal_controller.state.get("spec")
             and not goal_controller.state["spec"]["judge"]
         ):
             if any(
-                call.name in {"run_tests", "write_file", "edit_file"} for call in calls
+                call.name
+                in {
+                    "run_tests",
+                    "write_file",
+                    "edit_file",
+                    "complete_task",
+                    "publish_stage",
+                }
+                for call in calls
             ):
                 pending = (
                     goal_controller.pending_work()

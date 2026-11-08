@@ -67,7 +67,7 @@ def inspect_artifacts(
     roots = state_roots(state)
     files, total = [], 0
     clock = time.time() if now is None else now
-    for base in (".harness", ".tasks"):
+    for base in (".harness",):
         directory = root / base
         if not directory.exists():
             continue
@@ -114,8 +114,7 @@ def inspect_artifacts(
                             sha256=hashlib.sha256(raw).hexdigest(),
                         )
                     elif (
-                        base == ".tasks"
-                        or "/goals/" in path
+                        "/goals/" in path
                         or "/workflows/" in path
                         or path == ".harness/artifact-pins.json"
                     ) and path.endswith(".json"):

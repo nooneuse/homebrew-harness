@@ -681,7 +681,21 @@ with termination_guard(), BackgroundManager(root, run_bash) as manager:
         child.close()
         self.assertTrue(child._closed)
         self.assertEqual(
-            len(client.chat.completions.create.call_args_list[0].kwargs["tools"]), 8
+            {
+                tool["function"]["name"]
+                for tool in client.chat.completions.create.call_args_list[0].kwargs[
+                    "tools"
+                ]
+            },
+            set(homebrew_harness.tools.catalog.SUB_TOOL_NAMES)
+            - {
+                "run_tests",
+                "list_tests",
+                "get_test_result",
+                "list_artifacts",
+                "get_artifact",
+                "publish_artifacts",
+            },
         )
 
     def test_custom_pre_hook_blocks_background_start_after_permission(self):

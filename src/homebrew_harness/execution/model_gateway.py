@@ -35,7 +35,22 @@ class ModelGatewayError(RuntimeError):
 
 
 class ModelDeadlineExceeded(ModelGatewayError):
-    pass
+    def __init__(
+        self,
+        message,
+        *,
+        source="caller",
+        phase=None,
+        request_id=None,
+        sent=False,
+        settled=None,
+    ):
+        super().__init__(message)
+        self.source, self.phase = source, phase
+        self.request_id, self.sent, self.settled = request_id, sent, settled
+        self.reason_code = source + "_timeout"
+        self.kind = "timeout" if source == "request" else self.reason_code
+        self.transient = source == "request"
 
 
 class ModelCancelled(ModelGatewayError):
@@ -63,20 +78,31 @@ class GatewayLimits:
 @dataclass(frozen=True)
 class Deadline:
     expires_at: float | None = None
+    source: str = field(default="caller", compare=False)
 
     def __post_init__(self):
+        if self.source not in {
+            "caller",
+            "request",
+            "episode",
+            "run",
+            "session",
+            "tool",
+            "cleanup",
+        }:
+            raise ValueError("Invalid deadline source.")
         if self.expires_at is not None and (
             isinstance(self.expires_at, bool) or not math.isfinite(self.expires_at)
         ):
             raise ValueError("Deadline must use a finite monotonic timestamp.")
 
     @classmethod
-    def after(cls, seconds: float | None):
+    def after(cls, seconds: float | None, *, source="caller"):
         if seconds is not None and (
             isinstance(seconds, bool) or not math.isfinite(seconds) or seconds < 0
         ):
             raise ValueError("Deadline duration must be finite and nonnegative.")
-        return cls(None if seconds is None else time.monotonic() + seconds)
+        return cls(None if seconds is None else time.monotonic() + seconds, source)
 
     def remaining(self):
         return (
@@ -86,10 +112,18 @@ class Deadline:
         )
 
     def intersect(self, other):
-        values = [
-            value for value in (self.expires_at, other.expires_at) if value is not None
-        ]
-        return Deadline(min(values) if values else None)
+        values = [value for value in (self, other) if value.expires_at is not None]
+        priorities = {
+            name: n
+            for n, name in enumerate(
+                ("run", "session", "episode", "caller", "request", "tool", "cleanup")
+            )
+        }
+        return (
+            min(values, key=lambda value: (value.expires_at, priorities[value.source]))
+            if values
+            else Deadline()
+        )
 
 
 @dataclass(frozen=True)
@@ -256,7 +290,12 @@ class Receipt:
 class GatewayState:
     def __init__(self, limits, ledger):
         self.limits, self.ledger = limits, ledger
-        self.deadline = Deadline.after(limits.session_timeout)
+        self.deadline = Deadline.after(limits.session_timeout, source="session")
+        self.session_deadline_at = (
+            None
+            if limits.session_timeout is None
+            else time.time() + limits.session_timeout
+        )
         self.condition = threading.Condition(threading.RLock())
         self.inflight = {}
         self.attempts = self.calls = 0
@@ -286,7 +325,8 @@ class GatewayState:
             )
         if deadline.remaining() == 0 or self.deadline.remaining() == 0:
             raise ModelDeadlineExceeded(
-                "Model operation deadline reached; unfinished work is retained."
+                "Model operation deadline reached; unfinished work is retained.",
+                source=deadline.intersect(self.deadline).source,
             )
         blocked = self.blocked or self.connection_faults.get(connection, {}).get(
             "blocked", ""
@@ -341,6 +381,7 @@ class GatewayState:
         return {
             "format": 2,
             "session_id": self.ledger.session_id,
+            "session_deadline_at": self.session_deadline_at,
             "sequence": self.sequence,
             "attempted_calls": self.attempts,
             "calls": self.calls,
@@ -390,9 +431,10 @@ class GatewayState:
                     and receipt.abandoned != "ModelCancelled"
                     and not receipt.failure_counted
                 ):
-                    fault["failures"] = fault["failures"] + 1 if transient else 0
+                    if transient and receipt.sent:
+                        fault["failures"] += 1
+                        receipt.failure_counted = True
                     self.failures = fault["failures"]
-                    receipt.failure_counted = transient
                 if quota_exhausted(receipt.error):
                     fault["blocked"] = "provider quota unavailable"
                 elif status in {401, 403}:
@@ -524,6 +566,7 @@ class ModelGateway:
         task_id=None,
         deadline=None,
         cancel_event=None,
+        inherit_deadline=True,
     ):
         parent = _SCOPE.get()
         scope = RequestScope(
@@ -534,7 +577,9 @@ class ModelGateway:
             if context_id and context_id != parent.context_id
             else parent.parent_id,
             task_id or parent.task_id,
-            parent.deadline.intersect(deadline or Deadline()),
+            (parent.deadline if inherit_deadline else Deadline()).intersect(
+                deadline or Deadline()
+            ),
             parent.cancel_events
             + ((cancel_event,) if cancel_event is not None else ()),
         )
@@ -562,6 +607,13 @@ class ModelGateway:
             raise ValueError("Configure worker output before starting model work.")
         self._state.worker_output_tokens = value
 
+    def inflight_for(self, task_id):
+        with self._state.condition:
+            return any(
+                receipt.metadata.get("task_id") == task_id
+                for receipt in self._state.inflight.values()
+            )
+
     @property
     def inflight(self):
         with self._state.condition:
@@ -580,6 +632,46 @@ class ModelGateway:
                 else ""
             )
         )
+
+    def acknowledge_faults(self, expected):
+        """Host resume acknowledges saved connection errors without resetting usage."""
+        with self._state.condition:
+            if self._state.inflight:
+                raise ModelGatewayError(
+                    "Wait for outstanding model execution before resume."
+                )
+            for key, fault in expected.items():
+                if self._state.connection_faults.get(key) != fault:
+                    raise ModelGatewayError(
+                        "Connection fault changed before resume confirmation."
+                    )
+            if expected:
+                for key in expected:
+                    self._state.connection_faults.pop(key, None)
+                self._state.failures = max(
+                    (
+                        f.get("failures", 0)
+                        for f in self._state.connection_faults.values()
+                    ),
+                    default=0,
+                )
+                self._state.sequence += 1
+                self._state.condition.notify_all()
+        self._state.publish_observation()
+
+    def restore_acknowledged_faults(self, faults):
+        with self._state.condition:
+            if self._state.inflight:
+                raise ModelGatewayError(
+                    "Cannot restore faults during active execution."
+                )
+            self._state.connection_faults.update(copy.deepcopy(faults))
+            self._state.failures = max(
+                (f.get("failures", 0) for f in self._state.connection_faults.values()),
+                default=0,
+            )
+            self._state.sequence += 1
+        self._state.publish_observation()
 
     def reset_failures(self):
         with self._state.condition:
@@ -733,6 +825,18 @@ class ModelGateway:
                     ):
                         raise ModelGatewayError("Invalid usage group counters.")
             state = self._state
+            wall = latest.get("session_deadline_at")
+            if wall is not None:
+                if type(wall) not in {int, float} or not math.isfinite(wall):
+                    raise ModelGatewayError("Invalid saved session deadline.")
+                state.session_deadline_at = (
+                    min(wall, state.session_deadline_at)
+                    if state.session_deadline_at is not None
+                    else wall
+                )
+                state.deadline = state.deadline.intersect(
+                    Deadline.after(max(0, wall - time.time()), source="session")
+                )
             state.sequence = latest.get("sequence", 0)
             state.attempts = latest.get("attempted_calls", 0)
             state.calls = latest.get("calls", 0)
@@ -850,7 +954,7 @@ class ModelGateway:
         )
         params["timeout"] = configured_timeout
         expires = (
-            Deadline(request_started + timeout)
+            Deadline(request_started + timeout, source="request")
             .intersect(self._state.deadline)
             .intersect(scope.deadline)
             .intersect(deadline or Deadline())
@@ -925,6 +1029,13 @@ class ModelGateway:
                 self._prepared = (identity, prepared)
         metadata["connection"] = self._connection_key()
         metadata["protocol"] = self._adapter.protocol
+        if expires.remaining() == 0:
+            raise ModelDeadlineExceeded(
+                "Model preparation exceeded its deadline.",
+                source=expires.source,
+                phase="prepare",
+                settled=True,
+            )
         return (request, prepared, configured_timeout), metadata, expires, cancels
 
     def input_size(self, model, messages, tools, root, output_tokens=None):
@@ -964,7 +1075,9 @@ class ModelGateway:
             raise ModelCancelled("Model response discarded after cancellation.")
         if receipt.deadline.remaining() == 0:
             raise ModelDeadlineExceeded(
-                "Model response arrived after its deadline; it was discarded."
+                "Model response arrived after its deadline; it was discarded.",
+                source=receipt.deadline.source,
+                phase="response",
             )
         if receipt.error is not None:
             raise receipt.error
@@ -975,6 +1088,7 @@ class ModelGateway:
             receipt.abandoned = type(error).__name__
             if (
                 isinstance(error, ModelDeadlineExceeded)
+                and error.source == "request"
                 and receipt.sent
                 and not receipt.done.is_set()
             ):
@@ -1010,7 +1124,12 @@ class ModelGateway:
         params, metadata, expires, cancels = self._prepare_request(
             purpose, role, task_id, deadline, cancel_event, kwargs
         )
-        receipt = self._state.acquire(metadata, expires, cancels)
+        try:
+            receipt = self._state.acquire(metadata, expires, cancels)
+        except ModelDeadlineExceeded as error:
+            error.phase = "queue"
+            error.settled = True
+            raise
         self._launch_request(receipt, params)
         try:
             while not receipt.done.is_set():
@@ -1021,6 +1140,13 @@ class ModelGateway:
                 receipt.done.wait(min(0.05, expires.remaining()))
             return self._response(receipt)
         except (ModelCancelled, ModelDeadlineExceeded) as error:
+            if isinstance(error, ModelDeadlineExceeded):
+                error.request_id, error.sent, error.settled = (
+                    receipt.id,
+                    receipt.sent,
+                    receipt.done.is_set(),
+                )
+                error.phase = error.phase or "transport"
             self._abandon(receipt, error)
             raise
 
@@ -1064,6 +1190,11 @@ class ModelGateway:
             return self._response(receipt)
         except (asyncio.CancelledError, ModelCancelled, ModelDeadlineExceeded) as error:
             caller_cancel.set()
+            if isinstance(error, ModelDeadlineExceeded):
+                error.phase = error.phase or ("transport" if receipt else "queue")
+                error.request_id = receipt.id if receipt else None
+                error.sent = bool(receipt and receipt.sent)
+                error.settled = receipt.done.is_set() if receipt else True
             if receipt is not None:
                 self._abandon(receipt, error)
             raise

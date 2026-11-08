@@ -1,0 +1,31 @@
+{
+  "prompt": "Implement the requested feature, pass the registered tests, and write REPORT.md describing the verified behavior.",
+  "write_paths": ["src", "REPORT.md"],
+  "allow_tests": ["unit-tests"],
+  "stages": [
+    {
+      "key": "implement",
+      "subject": "Implement and verify the feature",
+      "acceptance": {
+        "condition": "Registered implementation tests pass",
+        "judge": false,
+        "predicates": [{"id": "tests", "type": "tests_passed", "recipe": "unit-tests"}]
+      }
+    },
+    {
+      "key": "report",
+      "subject": "Document verified behavior",
+      "depends_on": ["implement"],
+      "acceptance": {
+        "condition": "The report is present",
+        "judge": false,
+        "predicates": [{"id": "report", "type": "file_exists", "path": "REPORT.md", "min_bytes": 1}]
+      }
+    }
+  ],
+  "goal": {
+    "condition": "All stages are verified and the report is present",
+    "judge": false,
+    "predicates": [{"id": "report", "type": "file_exists", "path": "REPORT.md", "min_bytes": 1}]
+  }
+}

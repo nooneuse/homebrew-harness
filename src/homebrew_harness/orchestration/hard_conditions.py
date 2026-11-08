@@ -51,7 +51,9 @@ def validate_spec(spec):
         if (
             not isinstance(workspace, str)
             or workspace != "base"
-            and not re.fullmatch(r"task_[0-9a-f]{8}", workspace)
+            and not re.fullmatch(
+                r"(?:task_[0-9a-f]{8}|stage:[a-z][a-z0-9_-]{0,63})", workspace
+            )
         ):
             raise ConditionError(
                 "Predicate workspace must be base or an explicit task ID."

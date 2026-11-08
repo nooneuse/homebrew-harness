@@ -53,7 +53,7 @@ class StopDecision:
 
 
 PENDING = {"active", "waiting", "limit", "error", "suspended"}
-TERMINAL = {"achieved", "failed", "cleared", "replaced"}
+TERMINAL = {"achieved", "failed", "cleared", "replaced", "abandoned"}
 GOAL_ID = re.compile(r"goal_[0-9a-f]{32}\Z")
 _LOCKS = {}
 _LOCK_GUARD = threading.Lock()
@@ -383,7 +383,7 @@ class GoalController:
         self.store.release(self.lease)
         self.lease = None
 
-    def set_goal(self, condition):
+    def set_goal(self, condition, *, goal_id=None):
         spec = validate_spec(condition) if isinstance(condition, dict) else None
         if spec is not None:
             for predicate in spec["predicates"]:
@@ -411,7 +411,7 @@ class GoalController:
             )
             self._persist()
         self._release()
-        goal_id = self.store.new_id()
+        goal_id = goal_id or self.store.new_id()
         self.lease = self.store.claim(goal_id)
         self.state = {
             "format": 3,
@@ -452,7 +452,7 @@ class GoalController:
             self._cache = None
             self._persist()
 
-    def restore(self, goal_id, *, reactivate=True):
+    def restore(self, goal_id, *, reactivate=True, reset_episode=True):
         self.verification_since = time.monotonic()
         if self.state is not None and self.state["goal_id"] == goal_id:
             if not self.pending:
@@ -462,7 +462,8 @@ class GoalController:
             self.state.pop("hard_checks", None)
             for item in self.state["evidence"]:
                 item["historical"] = True
-            self.begin_query()
+            if reset_episode:
+                self.begin_query()
             return
         lease = self.store.claim(goal_id)
         try:
@@ -491,7 +492,8 @@ class GoalController:
             self._release()
             self.state, self.lease = state, lease
             lease = None
-            self.begin_query()
+            if reset_episode:
+                self.begin_query()
         finally:
             self.store.release(lease)
 

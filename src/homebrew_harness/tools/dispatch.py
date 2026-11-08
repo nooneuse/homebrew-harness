@@ -213,6 +213,29 @@ def _execute_tool(
 
     def finish(output):
         output = redact(output)
+        from homebrew_harness.runs.controller import current_run
+
+        run = current_run()
+        if run is not None:
+            if team_member is not None:
+                try:
+                    parsed = json.loads(output)
+                    if parsed.get("reason_code") == "approval_requires_lead":
+                        team_member.permission_blocked = "authorization_required"
+                except (ValueError, AttributeError):
+                    pass
+            if current_scope().role == "lead":
+                run.observe_tool(call, workdir, output)
+            try:
+                result = json.loads(output)
+                if isinstance(result, dict) and result.get("reason_code") in {
+                    "approval_required",
+                    "test_authorization_exhausted",
+                }:
+                    run.permission_required = call.name
+                    run.permission_reason = result["reason_code"]
+            except (ValueError, TypeError):
+                pass
         if goal_controller is not None:
             try:
                 goal_controller.observe_tool(call, workdir, output)
@@ -231,6 +254,49 @@ def _execute_tool(
             getattr(call, "id", ""),
             output,
         )
+
+    if call.name == "execute_approved":
+        from homebrew_harness.runs.controller import current_run
+        from homebrew_harness.runs.requests import approval_scope
+        from homebrew_harness.execution.model_protocol import ToolInvocation
+
+        run = current_run()
+        try:
+            raw = json.loads(call.arguments)
+            validate_arguments(
+                raw, homebrew_harness.tools.catalog.TOOL_SCHEMAS[call.name]
+            )
+            if (
+                run is None
+                or current_scope().role != "lead"
+                or call.name not in handlers
+            ):
+                raise ValueError("Exact execution requires the owning managed Lead.")
+            request = run.requests.approved(run, raw["request_id"], handlers)
+            original = ToolInvocation(
+                call.id, request["tool"], json.dumps(request["arguments"])
+            )
+        except Exception as error:
+            return finish(tool_error(error))
+        with approval_scope(request):
+            return _execute_tool(
+                original,
+                workdir,
+                hooks=hooks,
+                handlers=handlers,
+                background_manager=background_manager,
+                team_member=team_member,
+                team_manager=team_manager,
+                mcp_runtime=mcp_runtime,
+                mcp_bindings=mcp_bindings,
+                archive_store=archive_store,
+                restrict_archives=restrict_archives,
+                workflow_runtime=workflow_runtime,
+                goal_controller=goal_controller,
+                test_runner=test_runner,
+                artifact_store=artifact_store,
+                before_start=before_start,
+            )
 
     if call.kind != "function":
         return finish(json.dumps({"error": "Only function tools are supported."}))
@@ -352,6 +418,9 @@ def _execute_tool(
             if event.name == "run_tests" and test_runner
             else None
         )
+        from homebrew_harness.runs.controller import current_run
+
+        run = current_run()
         test_approval_identity = (
             test_runner.approval_identity(arguments["name"], workdir)
             if policy and policy[0] == "ask"
@@ -379,6 +448,33 @@ def _execute_tool(
             blocked = hooks.trigger_hooks("PreToolUse", event)
             artifact_approval = consume_artifact_approval(arguments, workdir)
         if blocked is not None:
+            if (
+                run is not None
+                and event.name == "run_tests"
+                and team_member is not None
+                and policy
+                and policy[0] == "ask"
+            ):
+                try:
+                    denied = json.loads(blocked)
+                except (TypeError, ValueError):
+                    denied = {}
+                if denied.get("reason_code") == "approval_requires_lead":
+                    request = run.test_authorizations.request(
+                        arguments["name"], workdir, test_call_context
+                    )
+                    team_member.test_request = request["id"]
+                    return finish(
+                        json.dumps(
+                            {
+                                "error": "Fixed-test authorization requires a host decision.",
+                                "executed": False,
+                                "request_id": request["id"],
+                                "state": request["state"],
+                                "reason_code": "member_test_authorization_required",
+                            }
+                        )
+                    )
             return finish(blocked)
         try:
             model_checkpoint()
@@ -441,6 +537,14 @@ def _execute_tool(
                 }
             )
         )
+    from homebrew_harness.runs.requests import current_approval
+
+    approval = current_approval()
+    if approval is not None:
+        try:
+            run.requests.approved(run, approval["id"], handlers)
+        except Exception as error:
+            return finish(tool_error(error))
     writer = active_writer()
     try:
         if writer is None and hasattr(before_start, "accept"):
@@ -462,7 +566,19 @@ def _execute_tool(
             )
         )
     except ModelGatewayError as error:
-        return finish(json.dumps({"error": str(error), "executed": False}))
+        return finish(
+            json.dumps(
+                {
+                    "error": str(error),
+                    "executed": False,
+                    **(
+                        {"reason_code": error.reason_code}
+                        if hasattr(error, "reason_code")
+                        else {}
+                    ),
+                }
+            )
+        )
     try:
         try:
             if binding is not None:

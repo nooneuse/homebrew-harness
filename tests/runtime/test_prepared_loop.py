@@ -146,7 +146,7 @@ class PreparedLoopTests(unittest.TestCase):
         )
         self.memory.recall.assert_called_once_with(query, max_chars=max(0, expected))
 
-    def test_standalone_user_recall_sees_all_sixteen_actual_tools(self):
+    def test_standalone_user_recall_sees_all_actual_tools(self):
         client, _ = fake_client([reply("done")])
         with (
             capability_scope(Capabilities({"tasks", "background"})),
@@ -156,7 +156,7 @@ class PreparedLoopTests(unittest.TestCase):
             result, _, compactor = self.user(client)
         self.assertEqual(result, "done")
         self.assertEqual(len(self.pools), 1)
-        self.assertEqual(len(self.pools[0].tools), 16)
+        self.assertEqual(len(self.pools[0].tools), 19)
         self.assertTrue(
             set(homebrew_harness.orchestration.task_store.TASK_TOOL_NAMES)
             <= self.pools[0].names
@@ -181,7 +181,7 @@ class PreparedLoopTests(unittest.TestCase):
         ):
             result, _, compactor = self.user(client)
         self.assertEqual(result, "done")
-        self.assertEqual(len(self.pools[0].tools), 8)
+        self.assertEqual(len(self.pools[0].tools), 11)
         self.assertEqual(set(created), {"tests", "shell"})
         self.assert_recall_matches(client, compactor, "Read fixture")
         self.assert_closed(created)

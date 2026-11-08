@@ -185,6 +185,10 @@ class IncrementalStore(SQLiteDatabase):
     def _save_doc(
         self, conn, doc, value, owner, *, root=False, refs=None, expected=None
     ):
+        if value.get("managed_run"):
+            from homebrew_harness.runs.store import owner_guard
+
+            owner_guard(self, conn, value["managed_run"])
         old = self._meta(conn, doc)
         old_revision = old["revision"] if old else 0
         if expected is not None and expected != old_revision:

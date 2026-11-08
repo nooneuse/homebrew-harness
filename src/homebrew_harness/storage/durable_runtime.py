@@ -24,6 +24,10 @@ _LIVE = {}
 _OPERATION = ContextVar("current_tool_operation", default=None)
 
 
+def current_operation():
+    return _OPERATION.get()
+
+
 def operation_active(root, identity):
     with _LIVE_LOCK:
         key = (str(root), identity)
@@ -220,6 +224,9 @@ class CheckpointWriter:
         expected = self.store.checkpoint_revision(self.key)
         value = self.value(phase)
         value.update(overrides or {})
+        control = getattr(self, "run_control", None)
+        if control is not None:
+            boundary = control.boundary(value, phase, boundary)
         if phase == "executed" and self.completion_ack:
             value["pending_team"] = []
             value["pending_background"] = []
@@ -248,6 +255,31 @@ class CheckpointWriter:
             "cwd": str(workdir.resolve().relative_to(self.store.workdir)),
             "time": time.time(),
         }
+        if getattr(self, "run_control", None):
+            record["managed_run"] = self.run_control.header
+            if hasattr(self.run_control, "operation_guard"):
+                guard = {**(guard or {}), **self.run_control.operation_guard()}
+            from homebrew_harness.runs.requests import current_approval, digest
+
+            approval = current_approval()
+            if approval is not None:
+                record.update(
+                    approval_id=approval["id"],
+                    approval_revision=approval["revision"],
+                    approval_context=digest(approval["context"]),
+                    approval_arguments=digest(json.loads(call.arguments)),
+                    operation_id=operation_id,
+                )
+            if call.name == "run_tests":
+                record["test_recipe"] = json.loads(call.arguments)["name"]
+                record["test_grant_key"] = self.run_control.test_grant_key(
+                    record["test_recipe"], workdir
+                )
+                record.update(
+                    self.run_control.test_authorization_fields(
+                        record["test_recipe"], workdir
+                    )
+                )
         from homebrew_harness.context.tracked_history import encoded_message
 
         assistant = next(

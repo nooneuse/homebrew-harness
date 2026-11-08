@@ -43,7 +43,15 @@ class WorktreeManager:
     def branch(name: str) -> str:
         return "codex/wt/" + validate_worktree_name(name)
 
-    def _git(self, args, *, cwd=None, check=True, on_started=None):
+    def _git(
+        self,
+        args,
+        *,
+        cwd=None,
+        check=True,
+        on_started=None,
+        output_bytes=8 * 1024 * 1024,
+    ):
         # Git may execute configured programs even for status. This host path
         # accepts no ambient Git overrides or checkout/clean/process filters.
         env = {
@@ -74,38 +82,17 @@ class WorktreeManager:
             # branch/worktree conditions. Inspect both files without expanding
             # includes; system/global/ambient configuration is disabled above.
             unsafe = r"^(include\.path|includeif\..*\.path|filter\..*\.(clean|smudge|process))$"
-            scoped = runner.run(
-                [
-                    *prefix,
-                    "config",
-                    "--local",
-                    "--no-includes",
-                    "--bool",
-                    "extensions.worktreeConfig",
-                ],
-                cwd or self.workdir,
-                env,
-                30,
-            )
-            if scoped.returncode not in {0, 1} or getattr(
-                scoped, "output_limit", False
-            ):
-                raise ValueError("Cannot validate Git worktree configuration.")
-            scopes = (
-                ("--local", "--worktree")
-                if scoped.stdout.strip() == "true"
-                else ("--local",)
-            )
-            for scope in scopes:
+
+            def configuration(scope):
                 config = runner.run(
                     [
                         *prefix,
                         "config",
                         scope,
                         "--no-includes",
-                        "--name-only",
+                        "--null",
                         "--get-regexp",
-                        unsafe,
+                        ".*",
                     ],
                     cwd or self.workdir,
                     env,
@@ -113,17 +100,43 @@ class WorktreeManager:
                 )
                 if (
                     config.returncode not in {0, 1}
-                    or config.stdout.strip()
+                    or (config.returncode == 1 and config.stdout)
                     or getattr(config, "output_limit", False)
                 ):
-                    raise ValueError(
-                        "Automatic Git operations refuse config includes and checkout filters; use a host-managed Git workflow."
-                    )
+                    raise ValueError("Cannot validate Git worktree configuration.")
+                values = {}
+                for row in config.stdout.split("\0"):
+                    if not row:
+                        continue
+                    key, separator, value = row.partition("\n")
+                    key = key.lower()
+                    if re.fullmatch(unsafe, key):
+                        raise ValueError(
+                            "Automatic Git operations refuse config includes and checkout filters; use a host-managed Git workflow."
+                        )
+                    values[key] = value if separator else None
+                return values
+
+            local = configuration("--local")
+            if "extensions.worktreeconfig" in local:
+                raw = local["extensions.worktreeconfig"]
+                normalized = raw.strip().lower() if raw is not None else "true"
+                if normalized in {"true", "yes", "on", "1"}:
+                    enabled = True
+                elif normalized in {"false", "no", "off", "0", ""}:
+                    enabled = False
+                elif re.fullmatch(r"[+-]?[0-9]+", normalized):
+                    enabled = int(normalized) != 0
+                else:
+                    raise ValueError("Cannot validate Git worktree configuration.")
+                if enabled:
+                    configuration("--worktree")
             result = runner.run(
                 [*prefix, *args],
                 cwd or self.workdir,
                 env,
                 30,
+                output_bytes=output_bytes,
                 **({"on_started": on_started} if on_started is not None else {}),
             )
         finally:

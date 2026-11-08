@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import fnmatch
 import hashlib
 import json
 import math
@@ -25,32 +24,17 @@ from homebrew_harness.execution.model_gateway import (
     ModelGatewayError,
     current_scope,
 )
-from homebrew_harness.security.data_boundary import redact, sensitive_path
+from homebrew_harness.security.data_boundary import redact
 from homebrew_harness.security.safe_files import (
     SafeFile,
     canonical_root,
 )
 
+from .source_snapshot import TestRunnerError, snapshot, validate_limits
+
 TEST_TOOL_NAMES = ("list_tests", "run_tests", "get_test_result")
 _CONTEXT = ContextVar("test_execution_context", default=None)
-_EXCLUDED = {
-    ".git",
-    ".venv",
-    ".harness",
-    ".tasks",
-    ".mailboxes",
-    ".memory",
-    ".worktrees",
-    "__pycache__",
-    ".pytest_cache",
-    ".mypy_cache",
-    ".ruff_cache",
-}
 _ID = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
-
-
-class TestRunnerError(ValueError):
-    pass
 
 
 def encoded(value):
@@ -59,94 +43,6 @@ def encoded(value):
 
 def digest(value):
     return hashlib.sha256(encoded(value).encode()).hexdigest()
-
-
-def matches(path, patterns):
-    return any(
-        fnmatch.fnmatchcase(path, pattern)
-        or pattern.startswith("**/")
-        and fnmatch.fnmatchcase(path, pattern[3:])
-        for pattern in patterns
-    )
-
-
-def snapshot(root, patterns=("**/*",), *, max_files=5000, max_bytes=32_000_000):
-    root = canonical_root(root)
-    records, total = {}, 0
-    for directory, dirs, files in os.walk(
-        root,
-        followlinks=False,
-        onerror=lambda error: (_ for _ in ()).throw(
-            TestRunnerError("Cannot inspect all declared test inputs.")
-        ),
-    ):
-        from homebrew_harness.execution.execution_control import check
-
-        check()
-        parent = Path(directory)
-        relative = parent.relative_to(root)
-        kept = []
-        for name in dirs:
-            path = parent / name
-            if name in _EXCLUDED or sensitive_path((*relative.parts, name)):
-                continue
-            if path.is_symlink():
-                raise TestRunnerError(
-                    "Watched source directories must not be symlinks."
-                )
-            kept.append(name)
-        dirs[:] = kept
-        for name in sorted(files):
-            path = (relative / name).as_posix()
-            if (
-                name in _EXCLUDED
-                or sensitive_path(Path(path).parts)
-                or not matches(path, patterns)
-            ):
-                continue
-            with SafeFile(root, path) as target, target.open_read() as stream:
-                info = os.fstat(stream.fileno())
-                total += info.st_size
-                if total > max_bytes or len(records) >= max_files:
-                    raise TestRunnerError(
-                        "Watched source exceeds the host snapshot limit; register narrower inputs."
-                    )
-                hasher = hashlib.sha256()
-                while chunk := stream.read(65536):
-                    check()
-                    hasher.update(chunk)
-                after = os.fstat(stream.fileno())
-                target.verify_binding()
-                named = os.stat(
-                    target.parts[-1], dir_fd=target.fds[-1], follow_symlinks=False
-                )
-                version = (
-                    info.st_dev,
-                    info.st_ino,
-                    info.st_size,
-                    info.st_mtime_ns,
-                    info.st_ctime_ns,
-                )
-                if version != (
-                    after.st_dev,
-                    after.st_ino,
-                    after.st_size,
-                    after.st_mtime_ns,
-                    after.st_ctime_ns,
-                ) or version != (
-                    named.st_dev,
-                    named.st_ino,
-                    named.st_size,
-                    named.st_mtime_ns,
-                    named.st_ctime_ns,
-                ):
-                    raise TestRunnerError("Watched source changed during snapshot.")
-                records[path] = {
-                    "sha256": hasher.hexdigest(),
-                    "version": list(version),
-                    "executable": bool(info.st_mode & 0o111),
-                }
-    return records
 
 
 def executable_identity(path):
@@ -204,9 +100,13 @@ class TestRecipe:
     max_runs: int = 10
     approval_seconds: float = 900
     allow_worktrees: bool = True
+    snapshot_limits: dict = field(default_factory=dict)
     _identity: dict = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
+        object.__setattr__(
+            self, "snapshot_limits", validate_limits(self.snapshot_limits)
+        )
         for name in ("argv", "roles", "input_globs", "locked_globs", "env"):
             object.__setattr__(self, name, tuple(getattr(self, name)))
         if not isinstance(self.name, str) or not _ID.fullmatch(self.name):
@@ -301,6 +201,7 @@ class TestRecipe:
         return digest(
             {
                 "argv": self.argv,
+                "snapshot_limits": self.snapshot_limits,
                 "executable": self._identity,
                 "env": self.env,
                 "inputs": self.input_globs,
@@ -397,10 +298,13 @@ class TestRunner:
         self.lock = threading.RLock()
         self.grants = []
         self._receipts = {}
+        self.receipt_scope = None
+        self.authorizations = None
         self._processes = set()
         self.process_lock = threading.Lock()
         self.closed = threading.Event()
         self.active = threading.Event()
+        self.active_test = None
         self.max_runs, self.total_seconds = max_runs, total_seconds
         if (
             type(max_runs) is not int
@@ -468,7 +372,9 @@ class TestRunner:
         locked = (
             {
                 path: info["sha256"]
-                for path, info in snapshot(target, recipe.locked_globs).items()
+                for path, info in snapshot(
+                    target, recipe.locked_globs, **recipe.snapshot_limits
+                ).items()
             }
             if recipe.locked_globs
             else {}
@@ -507,10 +413,17 @@ class TestRunner:
             self.grants[:] = [grant for grant in self.grants if grant.recipe != name]
 
     def _grant(self, recipe, cwd, context):
+        if self.authorizations:
+            from homebrew_harness.runs.requests import current_approval
+
+            if current_approval() is None:
+                return self.authorizations.grant(recipe, cwd, context)
         protected = (
             {
                 path: info["sha256"]
-                for path, info in snapshot(cwd, recipe.locked_globs).items()
+                for path, info in snapshot(
+                    cwd, recipe.locked_globs, **recipe.snapshot_limits
+                ).items()
             }
             if recipe.locked_globs
             else {}
@@ -536,7 +449,9 @@ class TestRunner:
         locked = (
             {
                 path: info["sha256"]
-                for path, info in snapshot(cwd, recipe.locked_globs).items()
+                for path, info in snapshot(
+                    cwd, recipe.locked_globs, **recipe.snapshot_limits
+                ).items()
             }
             if recipe.locked_globs
             else {}
@@ -578,13 +493,25 @@ class TestRunner:
     def authorization_available(self, name, cwd, task_id=None):
         recipe = self._recipe(name)
         cwd = self._cwd(cwd, recipe)
+        if self.authorizations:
+            active = self.active_test
+            if (
+                active
+                and active[0] == name
+                and active[1] == str(cwd)
+                and (task_id is None or active[2] == task_id)
+            ):
+                return True
+            return self.authorizations.available(recipe, cwd, task_id)
         if not self.lock.acquire(blocking=False):
             return True  # A running approved command will provide its result.
         try:
             protected = (
                 {
                     path: info["sha256"]
-                    for path, info in snapshot(cwd, recipe.locked_globs).items()
+                    for path, info in snapshot(
+                        cwd, recipe.locked_globs, **recipe.snapshot_limits
+                    ).items()
                 }
                 if recipe.locked_globs
                 else {}
@@ -661,6 +588,7 @@ class TestRunner:
         self.active.set()
         process = None
         started = time.monotonic()
+        durable_scope = self.receipt_scope() if self.receipt_scope else None
         try:
             if (
                 self.closed.is_set()
@@ -682,8 +610,22 @@ class TestRunner:
                 raise TestRunnerError(
                     "Registered test executable changed; execution refused."
                 )
-            before = snapshot(cwd, recipe.input_globs)
+            before = snapshot(cwd, recipe.input_globs, **recipe.snapshot_limits)
+            if self.authorizations:
+                from homebrew_harness.runs.requests import current_approval
+
+                if current_approval() is None:
+                    from homebrew_harness.storage.durable_runtime import (
+                        current_operation,
+                    )
+
+                    if current_operation() is None:
+                        raise TestRunnerError(
+                            "Managed tests require an accepted tool reservation."
+                        )
+                    self.authorizations.consume_projection()
             grant.remaining -= 1
+            self.active_test = (name, str(cwd), context.task_id)
             self.runs += 1
             run_id = "test_" + uuid.uuid4().hex
             prefix = ".harness/tests/" + self.session_id + "/" + run_id
@@ -807,7 +749,7 @@ class TestRunner:
                     process, deadline.expires_at
                 )  # Also stop descendants that outlive a successful parent.
                 isolation = self.backend.finish(process)
-                after = snapshot(cwd, recipe.input_globs)
+                after = snapshot(cwd, recipe.input_globs, **recipe.snapshot_limits)
                 stable = before == after
                 if status == "completed":
                     status = (
@@ -876,6 +818,18 @@ class TestRunner:
                     bytes(data[: recipe.output_bytes]).decode("utf-8", "replace"),
                 )
             self._save(prefix + "/receipt.json", encoded(receipt))
+            if durable_scope is not None:
+                from homebrew_harness.storage.durable_runtime import DurableStore
+
+                receipt["scope"] = durable_scope
+                receipt["checkpoint"] = (
+                    "lead:" + durable_scope["session_id"]
+                    if "session_id" in durable_scope
+                    else None
+                )
+                db = DurableStore(self.workdir).backend()
+                with db.write() as conn:
+                    db._put(conn, "test_receipts", run_id, receipt)
             self._receipts[run_id] = json.loads(encoded(receipt))
             return {key: value for key, value in receipt.items() if key != "inputs"} | {
                 "stdout_preview": redact(
@@ -911,6 +865,7 @@ class TestRunner:
                         pass
                 for kind in ("stdout", "stderr"):
                     getattr(process, kind).close()
+            self.active_test = None
             self.active.clear()
             self.lock.release()
 
@@ -924,28 +879,55 @@ class TestRunner:
                 "waiting": True,
             }
         location = cwd.relative_to(self.workdir).as_posix()
+        durable_scope = self.receipt_scope() if self.receipt_scope else None
+        if durable_scope is not None:
+            from homebrew_harness.storage.durable_runtime import DurableStore
+
+            db = DurableStore(self.workdir).backend()
+            with db.connection() as conn:
+                records = [
+                    json.loads(raw)
+                    for (raw,) in conn.execute(
+                        "SELECT value FROM records WHERE section='test_receipts' AND owner=? ORDER BY rowid",
+                        ("lead:" + durable_scope["session_id"],),
+                    ).fetchall()
+                ]
+        else:
+            records = list(self._receipts.values())
         records = [
             record
-            for record in self._receipts.values()
+            for record in records
             if record["recipe"] == name
             and record["cwd"] == location
-            and record["started"] >= since
+            and (
+                record.get("scope") == durable_scope
+                if durable_scope is not None
+                else record["started"] >= since
+            )
             and (task_id is None or record["task_id"] == task_id)
         ]
-        latest = max(records, key=lambda record: record["started"], default=None)
+        latest = (
+            (records[-1] if records else None)
+            if durable_scope is not None
+            else max(records, key=lambda record: record["started"], default=None)
+        )
         if latest is None:
             return {
                 "ok": False,
                 "reason": "A fresh authorized test run is required.",
                 "recipe": name,
             }
-        if latest["status"] != "passed" or latest["exit_code"] != 0:
+        if (
+            latest["status"] != "passed"
+            or latest["exit_code"] != 0
+            or not latest["isolation"].get("cleanup_complete")
+        ):
             return {
                 "ok": False,
                 "reason": "Latest registered test did not pass: " + latest["status"],
                 "run_id": latest["run_id"],
             }
-        current = snapshot(cwd, recipe.input_globs)
+        current = snapshot(cwd, recipe.input_globs, **recipe.snapshot_limits)
         ok = (
             latest["fingerprint"] == self._fingerprint(recipe)
             and current == latest["inputs"]
@@ -963,6 +945,12 @@ class TestRunner:
 
     def get(self, run_id):
         record = self._receipts.get(run_id)
+        if record is None and self.receipt_scope:
+            from homebrew_harness.storage.durable_runtime import DurableStore
+
+            record = DurableStore(self.workdir).get("test_receipts", run_id)
+            if record and record.get("scope") != self.receipt_scope():
+                record = None
         if record is None:
             raise TestRunnerError("No host-issued test receipt exists in this session.")
         return {key: value for key, value in record.items() if key != "inputs"}

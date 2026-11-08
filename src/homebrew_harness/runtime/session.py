@@ -114,8 +114,10 @@ class HarnessSession:
         bash_policy=None,
         model_registry=None,
         lead_model_profile=None,
+        run_control=None,
     ):
         created, bindings = [], []
+        self.run_control = run_control
         missing = object()
 
         def own(label, value):
@@ -412,12 +414,21 @@ class HarnessSession:
                 runner = self.team.run_member
 
                 def run_member(member):
+                    from contextlib import nullcontext
+
                     with (
+                        self.run_control.team_control.scope(member)
+                        if self.run_control and self.run_control.team_control
+                        else nullcontext(),
                         capability_scope(self.capabilities),
                         self.gateway.scope(
                             role="teammate",
                             context_id=member.name,
                             cancel_event=member.stop_event,
+                            deadline=self.run_control.deadline()
+                            if self.run_control
+                            else None,
+                            inherit_deadline=self.run_control is None,
                         ),
                         self.trace.scope("teammate", member.name),
                     ):
@@ -504,6 +515,9 @@ class HarnessSession:
             from homebrew_harness.runtime.user_input import UserInputController
 
             self.inputs = UserInputController(self)
+            self.run_control = run_control
+            if run_control is not None:
+                run_control.bind(self)
             self._pending_user = []
             self._recovery_blocked = []
             self._checkpoint_writer = CheckpointWriter(
@@ -511,6 +525,7 @@ class HarnessSession:
                 self.checkpoint_key,
                 lambda: self._snapshot(borrow=True),
             )
+            self._checkpoint_writer.run_control = run_control
 
         except BaseException as failure:
             errors = []
@@ -537,7 +552,22 @@ class HarnessSession:
         return {
             "session_id": self.session_id,
             "contract_version": 4,
+            **(
+                {
+                    "managed_run": {
+                        **self.run_control.identity(),
+                        **self.run_control.header,
+                    }
+                }
+                if self.run_control is not None
+                else {}
+            ),
             "input_control": self.inputs.data(),
+            **(
+                {"handoff_applied": getattr(self, "_managed_handoff_applied", None)}
+                if self.run_control
+                else {}
+            ),
             "messages": self.messages if borrow else copy.deepcopy(self.messages),
             "host_instance": self.workspace.leases.instance,
             "archives": self.compactor.store.checkpoint(),
@@ -594,6 +624,10 @@ class HarnessSession:
             steering=getattr(self, "inputs", None),
             on_user_submit=self._ack_user_input
             if getattr(self, "_pending_user", None)
+            else None,
+            run_control=self.run_control,
+            tool_allowlist=frozenset(self.run_control.spec.tools)
+            if self.run_control
             else None,
         )
 
@@ -699,11 +733,16 @@ class HarnessSession:
                     "Resume requires the saved host capability configuration; choose the matching profile."
                 )
             restored, uncertain = repair_history(saved["messages"], operations)
+            if self.run_control is not None:
+                uncertain = self.run_control.recovered(
+                    saved, operations, restored, uncertain
+                )
             self.messages[:] = restored
             if saved.get("archives"):
                 self.compactor.store.restore_checkpoint(saved["archives"])
             self.intent.restore(saved["intent"])
             self.inputs.restore(saved["input_control"])
+            self._managed_handoff_applied = saved.get("handoff_applied")
             self.user_request = self.intent.original
             self.todo.update(saved.get("todo", []))
             self.todo._revision = saved.get("todo_revision", self.todo.revision)
@@ -722,7 +761,11 @@ class HarnessSession:
                     ]
                 )
             )
-            if saved.get("phase") == "running" and not self._recovery_blocked:
+            if (
+                saved.get("phase") == "running"
+                and not self._recovery_blocked
+                and self.run_control is None
+            ):
                 self._recovery_blocked.append("interrupted_turn")
             if saved.get("lead_task"):
                 record = self.workspace.store.load(saved["lead_task"])
@@ -731,7 +774,11 @@ class HarnessSession:
                         record.id
                     )
             if saved.get("goal_id"):
-                self.goal.restore(saved["goal_id"], reactivate=False)
+                self.goal.restore(
+                    saved["goal_id"],
+                    reactivate=False,
+                    reset_episode=self.run_control is None,
+                )
             if self.team:
                 self.team.restore_checkpoint(sid)
             # A saved model call may have been billed after the old host died.
@@ -746,6 +793,7 @@ class HarnessSession:
         self._checkpoint_writer = CheckpointWriter(
             self.runtime_store, self.checkpoint_key, lambda: self._snapshot(borrow=True)
         )
+        self._checkpoint_writer.run_control = self.run_control
         self.workspace.runtime_session_id = self.session_id
         self.workspace.bus.recover("lead")
         self._pending_team.clear()  # Durable claims reappear once, after the lease is acquired.
@@ -792,6 +840,11 @@ class HarnessSession:
             expected = self.runtime_store.checkpoint_revision(self.checkpoint_key)
             snapshot = self._snapshot(borrow=True)
             snapshot["phase"] = phase
+            boundary = (
+                self.run_control.boundary(snapshot, phase, None)
+                if self.run_control
+                else None
+            )
             try:
                 with cleanup_scope():
                     self.runtime_store.checkpoint(
@@ -799,6 +852,7 @@ class HarnessSession:
                         snapshot,
                         ack=ack,
                         expected_revision=expected,
+                        boundary=boundary,
                     )
             except Exception as error:
                 self._persistence_error = type(error).__name__
@@ -988,6 +1042,8 @@ class HarnessSession:
         return self.team.members if self.team else {}
 
     def start(self, *, include_clock=True, deadline=None):
+        if self.run_control is not None:
+            raise ValueError("Managed run scheduling belongs to RunController.")
         if self._closed:
             raise ValueError("Harness session is closed.")
         self._ensure_runtime(Deadline(deadline) if deadline is not None else None)
@@ -1184,6 +1240,10 @@ class HarnessSession:
     def submit_user_input(
         self, text, *, mode="steer", target="lead", expected_turn_id=None
     ):
+        if self.run_control is not None:
+            return self.inputs.submit(
+                text, mode=mode, target=target, expected_turn_id=expected_turn_id
+            )
         if not self._runtime_started:
             self._ensure_runtime()
         receipt = self.inputs.submit(
@@ -1305,6 +1365,10 @@ class HarnessSession:
 
     def run_user(self, query: str) -> str:
         command = HostCommand.parse(query)
+        if self.run_control is not None and not command.local:
+            raise ValueError(
+                "Managed task input uses submit_user_input; execution uses run_episode."
+            )
         if command.name == "inputs":
             with control_scope(Deadline.after(2)):
                 if self._closed:
@@ -1603,6 +1667,68 @@ class HarnessSession:
                     and not self._poller.started
                 ):
                     self.start(include_clock=False)
+
+    def run_episode(self):
+        """One host-controlled segment without adding a synthetic user prompt."""
+        control = self.run_control
+        if control is None:
+            raise ValueError("run_episode requires a managed RunController.")
+        from homebrew_harness.runs.controller import run_scope
+
+        with (
+            capability_scope(self.capabilities),
+            self.gateway.scope(
+                role="lead",
+                context_id="managed",
+                cancel_event=control.cancel,
+                deadline=control.episode_deadline,
+            ),
+            acquired(self.lock),
+            checkpoint_scope(self._checkpoint_writer),
+            self.trace.scope("managed", control.id),
+            run_scope(control),
+            self.inputs.turn(),
+        ):
+            if self._recovery_blocked:
+                raise RecoveryRequired("Managed execution requires host inspection.")
+            self.goal.state and self.goal.state.update(episode_workers=0)
+            if not control.state["submitted"]:
+                self.intent.update(control.spec.prompt, new_task=True)
+                self.user_request = self.intent.original
+                if control.spec.goal:
+                    identity = "goal_" + control.id[4:]
+                    if self.runtime_store.get("goals", identity):
+                        self.goal.restore(identity)
+                    else:
+                        self.goal.set_goal(control.spec.goal, goal_id=identity)
+                    self.goal.state["task_intent"] = self.intent.to_dict()
+                    self.goal._persist()
+                components = replace(
+                    self.loop_components(), on_user_submit=control.submitted
+                )
+                return homebrew_harness.runtime.turns.run_user_turn(
+                    self.client,
+                    self.model,
+                    self.messages,
+                    control.spec.prompt,
+                    self.workdir,
+                    components=components,
+                    max_turns=control.spec.episode_model_calls,
+                    goal_controller=self.goal,
+                    collect_background=True,
+                    stop_event=self.stop_event,
+                    stop_block_cap=self.stop_block_cap,
+                )
+            with homebrew_harness.runtime.assembly._prepare_loop(
+                self.client, self.model, self.workdir, self.loop_components()
+            ) as prepared:
+                return prepared.run(
+                    self.messages,
+                    control.spec.episode_model_calls,
+                    active_request=self.intent.original,
+                    goal_controller=self.goal,
+                    stop_block_cap=self.stop_block_cap,
+                )
 
     def process_once(self) -> bool:
         with capability_scope(self.capabilities):

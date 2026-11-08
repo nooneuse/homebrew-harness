@@ -18,7 +18,7 @@ _CONTROL = ContextVar("execution_host_control", default=None)
 
 @contextmanager
 def cleanup_scope(seconds=2):
-    token = _CLEANUP.set(_CLEANUP.get() or Deadline.after(seconds))
+    token = _CLEANUP.set(_CLEANUP.get() or Deadline.after(seconds, source="cleanup"))
     try:
         yield
     finally:
@@ -40,7 +40,7 @@ def operation_deadline(timeout=None):
     parent = independent or (
         scope.gateway.operation_deadline() if scope.gateway else scope.deadline
     )
-    return parent.intersect(Deadline.after(timeout))
+    return parent.intersect(Deadline.after(timeout, source="tool"))
 
 
 def check(deadline=None, cancel_events=(), *, inherit=True, gateway=True):
@@ -53,7 +53,8 @@ def check(deadline=None, cancel_events=(), *, inherit=True, gateway=True):
         scope.gateway.checkpoint()
     if (deadline or operation_deadline()).remaining() == 0:
         raise ModelDeadlineExceeded(
-            "Execution deadline reached; inspect any action already started."
+            "Execution deadline reached; inspect any action already started.",
+            source=(deadline or operation_deadline()).source,
         )
 
 

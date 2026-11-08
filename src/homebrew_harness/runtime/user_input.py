@@ -27,6 +27,8 @@ class UserInputController:
 
     @property
     def recipient(self):
+        if getattr(self.session, "run_control", None):
+            return "user_" + self.session.run_control.id
         return "user_" + self.session.session_id
 
     def data(self):
@@ -59,6 +61,16 @@ class UserInputController:
             self.changed.set()
 
     def submit(self, text, *, mode="steer", target="lead", expected_turn_id=None):
+        managed = getattr(self.session, "run_control", None)
+        if managed is not None:
+            if target != "lead":
+                raise ValueError("Managed team supervision is not enabled.")
+            receipt = managed.store.submit(
+                managed.id, text, mode=mode, expected_turn_id=expected_turn_id
+            )
+            if mode == "interrupt" and self.active_id is not None:
+                self.cancel.set()
+            return {**receipt, "mode": mode, "target": target}
         if not isinstance(text, str) or not text.strip() or len(text) > 64000:
             raise ValueError(
                 "User input must be nonempty text within 64,000 characters."
@@ -163,7 +175,14 @@ class UserInputController:
         )[-256:]
 
     def token(self):
-        return self.session.runtime_store.input_guard([self.recipient])
+        return self.session.runtime_store.input_guard(self.recipients)
+
+    @property
+    def recipients(self):
+        managed = getattr(self.session, "run_control", None)
+        return (
+            [self.recipient, "reference_" + managed.id] if managed else [self.recipient]
+        )
 
     def superseded(self, token=None):
         return (
@@ -249,6 +268,11 @@ class UserInputController:
                             "ts": record["ts"],
                             "metadata": {
                                 "origin": "host_user",
+                                **(
+                                    {"run_id": self.session.run_control.id}
+                                    if self.session.run_control
+                                    else {}
+                                ),
                                 "input_id": record["id"],
                                 "revision": revision,
                                 "checkpoint": writer.key,

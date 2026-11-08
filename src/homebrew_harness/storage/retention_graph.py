@@ -69,7 +69,6 @@ def external_snapshot(root, *, max_files=10000, max_bytes=64 * 1024 * 1024):
     root = canonical_root(Path(root))
     records, versions, total, seen = {}, {}, 0, 0
     for base in (
-        ".tasks",
         ".harness/goals",
         ".harness/workflows",
         ".harness/containers",

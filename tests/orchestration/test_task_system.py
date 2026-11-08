@@ -33,8 +33,8 @@ class TaskStoreTests(unittest.TestCase):
         self.workdir = Path(temporary.name).resolve()
         self.store = TaskStore(self.workdir)
 
-    def record_path(self, task_id):
-        return self.workdir / ".tasks" / (task_id + ".json")
+    def record(self, task_id):
+        return self.store.runtime.get("tasks", task_id)
 
     def test_empty_read_does_not_create_storage_and_workspaces_are_isolated(self):
         self.assertEqual(self.store.list(), [])
@@ -45,7 +45,7 @@ class TaskStoreTests(unittest.TestCase):
         self.assertEqual(TaskStore(other).list(), [])
         self.assertEqual(TaskStore(self.workdir).load(task.id), task)
         self.assertEqual(
-            json.loads(self.record_path(task.id).read_text()),
+            self.record(task.id),
             {
                 "id": task.id,
                 "subject": task.subject,
@@ -55,6 +55,7 @@ class TaskStoreTests(unittest.TestCase):
                 "blockedBy": [],
                 "worktree": None,
                 "task_intent": None,
+                "stage": None,
             },
         )
 
@@ -103,7 +104,7 @@ class TaskStoreTests(unittest.TestCase):
         a, b, c = [self.store.create(name) for name in ("A", "B", "C")]
         self.store.update_dependencies(b.id, [a.id])
         self.store.update_dependencies(c.id, [b.id])
-        before = self.record_path(a.id).read_bytes()
+        before = self.record(a.id)
         for edges in (
             [a.id],
             [b.id],
@@ -114,7 +115,7 @@ class TaskStoreTests(unittest.TestCase):
         ):
             with self.subTest(edges=edges), self.assertRaises(ValueError):
                 self.store.update_dependencies(a.id, edges)
-            self.assertEqual(self.record_path(a.id).read_bytes(), before)
+            self.assertEqual(self.record(a.id), before)
         d = self.store.create("D")
         with self.assertRaises(ValueError):
             self.store.update_dependencies(d.id, [a.id, "task_00000000"])
@@ -153,10 +154,10 @@ class TaskStoreTests(unittest.TestCase):
             lambda: other.complete(task.id),
             lambda: self.store.update_dependencies(task.id, []),
         ):
-            before = self.record_path(task.id).read_bytes()
+            before = self.record(task.id)
             with self.assertRaises(ValueError):
                 action()
-            self.assertEqual(self.record_path(task.id).read_bytes(), before)
+            self.assertEqual(self.record(task.id), before)
         # Logical identity is insufficient while the first host is still live.
         recovered = TaskStore(self.workdir)
         with self.assertRaises(ValueError):
@@ -176,16 +177,12 @@ class TaskStoreTests(unittest.TestCase):
     def test_missing_or_corrupt_predecessor_blocks_claim(self):
         first, next_task = self.store.create("First"), self.store.create("Next")
         self.store.update_dependencies(next_task.id, [first.id])
-        path = self.record_path(first.id)
-        for corrupt in (None, "invalid json", '{"status":"completed"}'):
+        for corrupt in (None, "invalid record", {"status": "completed"}):
             if corrupt is None:
-                path.unlink()
+                self.store.runtime.remove("tasks", first.id)
             else:
-                path.write_text(corrupt)
-            with (
-                self.subTest(corrupt=corrupt),
-                self.assertRaisesRegex(ValueError, "blocked"),
-            ):
+                self.store.runtime.put("tasks", first.id, corrupt)
+            with self.subTest(corrupt=corrupt), self.assertRaisesRegex(ValueError, "blocked"):
                 self.store.claim(next_task.id)
         self.assertEqual(self.store.load(next_task.id).status, "pending")
 
@@ -207,13 +204,14 @@ class TaskStoreTests(unittest.TestCase):
             {"extra": True},
         ]
         for change in changes:
-            self.record_path(task.id).write_text(json.dumps({**original, **change}))
+            self.store.runtime.put("tasks", task.id, {**original, **change})
             with self.subTest(change=change), self.assertRaises(ValueError):
                 self.store.load(task.id)
 
-    def test_symlink_directory_records_and_lock_cannot_escape(self):
+    def test_symlink_database_and_lock_cannot_escape(self):
         outside = self.workdir / "outside"
         outside.mkdir()
+        self.store.directory.parent.mkdir()
         self.store.directory.symlink_to(outside, target_is_directory=True)
         for action in (lambda: self.store.create("No write"), self.store.list):
             with self.assertRaisesRegex(ValueError, "symlink"):
@@ -223,33 +221,29 @@ class TaskStoreTests(unittest.TestCase):
         task = self.store.create("Original")
         outside_file = outside / "record.json"
         outside_file.write_text(json.dumps(task.to_dict()))
-        self.record_path(task.id).unlink()
-        self.record_path(task.id).symlink_to(outside_file)
-        with self.assertRaisesRegex(ValueError, "symlink"):
-            self.store.load(task.id)
-        self.assertEqual(json.loads(outside_file.read_text()), task.to_dict())
-        lock = self.store.directory / ".lock"
+        lock = self.store.directory / "task-board.lock"
         lock.unlink()
         lock.symlink_to(outside_file)
         with self.assertRaisesRegex(ValueError, "symlink"):
             self.store.create("No lock write")
+        self.assertEqual(json.loads(outside_file.read_text()), task.to_dict())
 
     def test_failed_publication_leaves_old_state_and_releases_lock(self):
         task = self.store.create("Pending")
-        before = self.record_path(task.id).read_bytes()
+        before = self.record(task.id)
         with patch(
-            "homebrew_harness.orchestration.task_store.os.replace",
+            "homebrew_harness.storage.incremental_store.IncrementalStore._put",
             side_effect=OSError("Simulated failure"),
         ):
             with self.assertRaises(OSError):
                 self.store.claim(task.id)
-        self.assertEqual(self.record_path(task.id).read_bytes(), before)
+        self.assertEqual(self.record(task.id), before)
         self.assertEqual(list(self.store.directory.glob("*.tmp")), [])
         self.assertEqual(self.store.claim(task.id).status, "in_progress")
 
     def test_busy_store_fails_without_mutation_then_recovers(self):
         task = self.store.create("Pending")
-        with (self.store.directory / ".lock").open("r+") as handle:
+        with (self.store.directory / "task-board.lock").open("r+") as handle:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
             with self.assertRaisesRegex(ValueError, "busy"):
                 self.store.claim(task.id)
@@ -522,7 +516,7 @@ class TaskDispatchTests(unittest.TestCase):
                     "write",
                     name="write_file",
                     arguments=json.dumps(
-                        {"path": f".tasks/{parent_task.id}.json", "content": "bypass"}
+                        {"path": ".harness/runtime/database/runtime.sqlite3", "content": "bypass"}
                     ),
                 ),
                 call(
@@ -530,7 +524,7 @@ class TaskDispatchTests(unittest.TestCase):
                     name="edit_file",
                     arguments=json.dumps(
                         {
-                            "path": f".tasks/{parent_task.id}.json",
+                            "path": ".harness/runtime/database/runtime.sqlite3",
                             "old_text": "pending",
                             "new_text": "completed",
                         }

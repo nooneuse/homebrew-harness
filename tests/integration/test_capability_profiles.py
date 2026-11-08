@@ -329,6 +329,9 @@ class ConvergenceTests(unittest.TestCase):
                 "write_file",
                 "edit_file",
                 "glob",
+                "search_text",
+                "git_status",
+                "git_diff",
                 "todo_write",
                 "load_skill",
                 "compact",
@@ -359,8 +362,7 @@ class ConvergenceTests(unittest.TestCase):
         with patch.object(ledger, "append", side_effect=OSError("fixture failure")):
             gateway = ModelGateway(client, ledger=ledger)
             self.assertEqual(
-                gateway.request(model="fixture", messages=[], max_tokens=16)
-                .text,
+                gateway.request(model="fixture", messages=[], max_tokens=16).text,
                 "done",
             )
         self.assertFalse(gateway.blocked)

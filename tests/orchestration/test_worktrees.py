@@ -191,10 +191,9 @@ class WorktreeTests(unittest.TestCase):
 
     def test_incomplete_task_record_is_rejected(self):
         task = self.store.create("Incomplete")
-        path = self.store.directory / (task.id + ".json")
         saved = task.to_dict()
         saved.pop("worktree")
-        path.write_text(json.dumps(saved))
+        self.store.runtime.put("tasks", task.id, saved)
         with self.assertRaises(ValueError):
             self.store.load(task.id)
 

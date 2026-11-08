@@ -6,6 +6,7 @@ from functools import partial
 
 import homebrew_harness.tools.catalog
 import homebrew_harness.tools.files
+import homebrew_harness.tools.queries
 import homebrew_harness.tools.shell
 from homebrew_harness.context.compaction import ContextCompactor
 from homebrew_harness.context.skill_loader import SkillLoader
@@ -27,6 +28,9 @@ TOOL_HANDLERS = {
     "write_file": homebrew_harness.tools.files.run_write,
     "edit_file": homebrew_harness.tools.files.run_edit,
     "glob": homebrew_harness.tools.files.run_glob,
+    "search_text": homebrew_harness.tools.queries.search_text,
+    "git_status": homebrew_harness.tools.queries.git_status,
+    "git_diff": homebrew_harness.tools.queries.git_diff,
 }
 
 
@@ -109,19 +113,39 @@ def build_tool_pool(client, model, workdir, components: LoopComponents):
         components.team_member,
     )
     mcp_runtime, workflow_runtime = components.mcp_runtime, components.workflow_runtime
+    managed = (
+        components.run_control
+        if not components.subagent and components.team_member is None
+        else None
+    )
     subagent, stop_event = components.subagent, components.stop_event
     capabilities, tool_allowlist = components.capabilities, components.tool_allowlist
     shell_runner, worktree_manager = (
         components.shell_runner,
         components.worktree_manager,
     )
+    member_run_tools = frozenset()
     if team_member is not None:
         tools = homebrew_harness.tools.catalog.TEAMMATE_TOOLS
+        if getattr(team_member.manager, "managed", None):
+            tools = [
+                tool for tool in tools if tool["function"]["name"] != "submit_plan"
+            ] + [
+                tool
+                for tool in homebrew_harness.tools.catalog.TOOLS
+                if tool["function"]["name"] == "get_handoff"
+            ]
+            member_run_tools = frozenset({"get_handoff"})
         handlers = {
             name: TOOL_HANDLERS[name]
             for name in homebrew_harness.tools.catalog.BASE_TOOL_NAMES
         }
         handlers.update(team_member.handlers())
+        if member_run_tools:
+            handlers["get_handoff"] = partial(
+                team_member.manager.managed.control.stages.read_member_handoff,
+                team_member,
+            )
         handlers.update(
             load_skill=skill_loader.run_tool,
             compact=compactor.request_compact,
@@ -253,6 +277,17 @@ def build_tool_pool(client, model, workdir, components: LoopComponents):
             else None
         )
         mcp_task = execution_context("lead", assignment).task_id
+    if managed is not None:
+        handlers.update(
+            request_attention=managed.request_attention,
+            execute_approved=lambda **_kwargs: None,
+            read_run_event=managed.read_event,
+            get_handoff=managed.read_handoff,
+            integrate_stage=managed.integrate_stage,
+            publish_stage=managed.publish_stage,
+        )
+    from homebrew_harness.runs.spec import RUN_TOOLS
+
     return ToolPool.build(
         tools,
         handlers,
@@ -269,4 +304,5 @@ def build_tool_pool(client, model, workdir, components: LoopComponents):
         bash_policy=components.bash_policy,
         artifacts=components.artifact_store,
         models=components.model_registry,
+        run_tools=RUN_TOOLS if managed is not None else member_run_tools,
     )

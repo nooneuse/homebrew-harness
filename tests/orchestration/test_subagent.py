@@ -3,6 +3,8 @@
 from __future__ import annotations
 from homebrew_harness.runtime.capabilities import Capabilities
 
+from homebrew_harness.runs.spec import RUN_TOOLS
+
 import copy
 import io
 import json
@@ -203,6 +205,7 @@ class SubagentTests(unittest.TestCase):
                         "list_artifacts",
                         "get_artifact",
                         "publish_artifacts",
+                        *RUN_TOOLS,
                     }
                     - {"create_worktree"}
                 )
@@ -221,6 +224,11 @@ class SubagentTests(unittest.TestCase):
         )
         self.assertNotIn("task", child_tools)
         self.assertNotIn("todo_write", child_tools)
+        self.assertTrue(
+            RUN_TOOLS.isdisjoint(
+                parent_tools | child_tools
+            )
+        )
         for result in requests[2]["messages"][-2:]:
             self.assertEqual(json.loads(result["content"])["error"], "Unknown tool.")
         self.assertEqual(len(requests), 4)

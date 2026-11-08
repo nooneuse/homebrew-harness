@@ -298,7 +298,7 @@ class ContainerBackend:
         )
 
     def _snapshot(self, request):
-        from homebrew_harness.execution.test_runner import snapshot
+        from homebrew_harness.execution.source_snapshot import snapshot
 
         return snapshot(request.cwd, request.input_globs)
 

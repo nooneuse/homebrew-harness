@@ -1,0 +1,18 @@
+{
+  "prompt": "阅读项目的主要模块，将简短说明写入 REPORT.md，并读回确认。",
+  "goal": {
+    "condition": "项目说明已保存",
+    "predicates": [
+      {"id": "report", "type": "file_exists", "path": "REPORT.md", "min_bytes": 1}
+    ],
+    "judge": false
+  },
+  "total_seconds": 3600,
+  "episode_seconds": 300,
+  "episode_model_calls": 20,
+  "request_seconds": 60,
+  "retries": 3,
+  "context_chars": 50000,
+  "output_tokens": 4096,
+  "allow_tests": []
+}

@@ -26,6 +26,7 @@ class MessageBus:
 
         self.store = store or DurableStore(workdir)
         self.changed = threading.Condition(threading.RLock())
+        self.run_id = None
         self.consumer = __import__("uuid").uuid4().hex
 
     def send(
@@ -50,6 +51,9 @@ class MessageBus:
             or (metadata is not None and not isinstance(metadata, dict))
         ):
             raise ValueError("Invalid message payload.")
+        from homebrew_harness.runs.controller import current_run
+
+        active = current_run()
         mid = message_id or uuid.uuid4().hex
         record = redact(
             {
@@ -58,7 +62,14 @@ class MessageBus:
                 "to": recipient,
                 "content": content,
                 "type": msg_type,
-                "metadata": metadata or {},
+                "metadata": {
+                    **(metadata or {}),
+                    **(
+                        {"run_id": self.run_id or active.id}
+                        if self.run_id or active is not None
+                        else {}
+                    ),
+                },
                 "ts": time.time(),
             }
         )
@@ -68,20 +79,69 @@ class MessageBus:
 
     def peek(self, name):
         validate_agent_name(name)
-        return self.store.mailbox("peek", name)
+        return (
+            bool(self._scoped(name))
+            if self.run_id
+            else self.store.mailbox("peek", name)
+        )
 
     def available(self, name):
         validate_agent_name(name)
-        return self.store.mailbox("available", name)
+        return (
+            bool(self._scoped(name, pending=True))
+            if self.run_id
+            else self.store.mailbox("available", name)
+        )
 
     def claim(self, name, owner=None):
         validate_agent_name(name)
+        if self.run_id:
+            return self._scoped(
+                name, pending=True, action="claim", owner=owner or self.consumer
+            )
         if not self.store.mailbox("available", name):
             return []
         return self.store.mailbox("claim", name, owner=owner or self.consumer)
 
     def recover(self, name, owner=None):
+        if self.run_id:
+            return self._scoped(name, action="recover")
         return self.store.mailbox("recover", name, owner=owner or self.consumer)
+
+    def proposal_recipient(self, name):
+        return self.run_id + ":" + name if self.run_id else name
+
+    def _scoped(self, name, *, pending=False, action=None, owner=None):
+        import json
+        from contextlib import nullcontext
+        from homebrew_harness.storage.storage_gate import storage_gate
+
+        db = self.store.backend()
+        if not db.exists():
+            return []
+        with storage_gate(self.store.workdir) if action else nullcontext():
+            with db.write() if action else db.connection() as conn:
+                rows = conn.execute(
+                    "SELECT id,record FROM inbox WHERE recipient=?"
+                    + (" AND state='pending'" if pending else ""),
+                    (name,),
+                ).fetchall()
+                selected = [
+                    (identity, json.loads(raw))
+                    for identity, raw in rows
+                    if json.loads(raw).get("metadata", {}).get("run_id") == self.run_id
+                ]
+                if action == "claim":
+                    conn.executemany(
+                        "UPDATE inbox SET state='inflight',owner=? WHERE recipient=? AND id=? AND state='pending'",
+                        [(owner, name, key) for key, _ in selected],
+                    )
+                elif action == "recover":
+                    conn.executemany(
+                        "UPDATE inbox SET state='pending',owner=NULL WHERE recipient=? AND id=? AND state='inflight'",
+                        [(name, key) for key, _ in selected],
+                    )
+                return [record for _, record in selected]
 
     def acknowledge(self, name, records, owner=None):
         return self.store.mailbox(

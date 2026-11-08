@@ -75,6 +75,26 @@ def bundle(state, sid):
 
 def workspace_blockers(state, external, sid):
     reasons = []
+    if any(
+        sid in v.get("session_refs", [v.get("session_id")])
+        and (
+            v.get("status") not in {"completed", "failed", "cancelled"}
+            or not v.get("cleanup_complete")
+        )
+        for v in state.get("runs", {}).values()
+    ):
+        reasons.append("managed_run_unfinished")
+    if any(
+        owns(sid, r.get("checkpoint", "")) and r.get("state") in {"pending", "approved"}
+        for r in state.get("run_requests", {}).values()
+    ):
+        reasons.append("managed_request_unfinished")
+    if any(
+        owns(sid, r.get("checkpoint", ""))
+        and r.get("state") in {"queued", "started", "unknown"}
+        for r in state.get("run_outbox", {}).values()
+    ):
+        reasons.append("managed_effect_unsettled")
     if any(items for items in state["inbox"].values()):
         reasons.append("workspace_unacknowledged_mailbox")
     for record in state["background"].values():
@@ -92,7 +112,7 @@ def workspace_blockers(state, external, sid):
         ) in {None, sid}:
             reasons.append("workspace_unsettled_cron")
     for value in state.get("goals", {}).values():
-        if value.get("status") not in {"achieved", "failed", "cleared", "replaced"}:
+        if value.get("status") not in {"achieved", "failed", "cleared", "replaced", "abandoned"}:
             reasons.append("workspace_unfinished_goal")
     for value in state.get("input_receipts", {}).values():
         if owns(sid, value.get("checkpoint", "")) and value.get("state") in {
@@ -100,15 +120,15 @@ def workspace_blockers(state, external, sid):
             "retry_wait",
         }:
             reasons.append("checkpoint_pending_input")
+    if any(value.get("status") in {"pending", "in_progress"} for value in state.get("tasks", {}).values()):
+        reasons.append("workspace_unfinished_task")
     for path, value in external["records"].items():
         if not isinstance(value, dict):
             continue
         if value.get("session_id") not in {None, sid}:
             continue
         name = Path(path).name
-        if path.startswith(".tasks/") and value.get("status") != "completed":
-            reasons.append("workspace_unfinished_task")
-        elif (
+        if (
             re.fullmatch(r"wf_[0-9a-f]{32}\.json", name)
             and value.get("task", {}).get("status") != "completed"
         ):
@@ -188,11 +208,10 @@ def eligibility(root, state, external, sid):
             sid, snapshot["parent_checkpoint"]
         ):
             reasons.append("cross_session_parent")
-        for field, prefix in (("lead_task", ".tasks/"), ("goal_id", ".harness/goals/")):
+        for field, section in (("lead_task", "tasks"), ("goal_id", "goals")):
             identity = snapshot.get(field)
-            if identity and prefix + identity + ".json" not in external["records"]:
-                if field != "goal_id" or identity not in state.get("goals", {}):
-                    reasons.append("missing_linked_dependency")
+            if identity and identity not in state.get(section, {}):
+                reasons.append("missing_linked_dependency")
         for effect in snapshot.get("effects", []):
             if effect.get("state") in {"started", "unknown", "partial"}:
                 reasons.append("uncertain_tool_effect")

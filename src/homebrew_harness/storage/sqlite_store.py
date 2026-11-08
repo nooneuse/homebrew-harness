@@ -26,6 +26,28 @@ RECORD_SECTIONS = (
     "input_epochs",
     "input_turns",
     "input_receipts",
+    "runs",
+    "run_attempts",
+    "run_episodes",
+    "run_controls",
+    "run_heartbeats",
+    "run_requests",
+    "run_decisions",
+    "run_progress",
+    "run_sources",
+    "run_events",
+    "run_outbox",
+    "tasks",
+    "test_receipts",
+    "stage_submissions",
+    "stage_handoffs",
+    "run_handoffs",
+    "run_transfers",
+    "run_members",
+    "run_member_outcomes",
+    "run_input_applied",
+    "stage_inputs",
+    "run_workspaces",
 )
 DB_PATH = ".harness/runtime/database/runtime.sqlite3"
 SCHEMA = """
@@ -540,8 +562,16 @@ class SQLiteDatabase:
         if cur.rowcount:
             self.metrics.add(rows_written=1, bytes_written=len(raw.encode()))
             meta = record.get("metadata", {})
+            if meta.get("run_id") and record.get("type") == "user_steer":
+                scoped = meta["run_id"] + ":" + name
+                self._put(
+                    conn,
+                    "input_epochs",
+                    scoped,
+                    self._get(conn, "input_epochs", scoped, 0) + 1,
+                )
             if (
-                record.get("type") == "user_steer"
+                record.get("type") in {"user_steer", "run_reference"}
                 or record.get("type") == "user_input"
                 and meta.get("mode") != "queued"
             ):
@@ -591,6 +621,18 @@ class SQLiteDatabase:
 
         with self.write() as conn:
             check_guard(self, conn, guard)
+            if record.get("managed_run"):
+                from homebrew_harness.runs.store import owner_guard
+
+                managed = owner_guard(self, conn, record["managed_run"])
+                if record.get("approval_id"):
+                    from homebrew_harness.runs.requests import consume
+
+                    consume(self, conn, record, managed)
+            if record.get("managed_run") and record.get("test_recipe"):
+                from homebrew_harness.runs.test_authorization import accept
+
+                accept(self, conn, managed, record)
             self._put(conn, "operations", key, record)
 
     @staticmethod

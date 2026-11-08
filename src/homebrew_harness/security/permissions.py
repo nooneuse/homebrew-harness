@@ -31,6 +31,16 @@ _APPROVED_TEST = ContextVar("approved_test", default=None)
 _APPROVED_SPAWN = ContextVar("approved_spawn", default=None)
 _ARTIFACT_POLICY = ContextVar("artifact_policy", default=None)
 _APPROVED_ARTIFACT = ContextVar("approved_artifact", default=None)
+_APPROVAL_CALL = ContextVar("approval_call_id", default=None)
+
+
+@contextmanager
+def approval_call_scope(call_id):
+    token = _APPROVAL_CALL.set(call_id)
+    try:
+        yield
+    finally:
+        _APPROVAL_CALL.reset(token)
 
 
 @contextmanager
@@ -135,6 +145,7 @@ def noninteractive_permissions():
 class PermissionDecision:
     action: Literal["allow", "deny", "ask"]
     reason: str
+    code: str = ""
 
 
 # These patterns illustrate hard policy rules, not a complete Bash parser.
@@ -223,6 +234,8 @@ def check_rules(tool_name: str, arguments: dict, workdir: Path) -> PermissionDec
             "allow",
             "Enabled host-registered workflows use tool-free inference steps and bounded execution.",
         )
+    if tool_name in {"search_text", "git_status", "git_diff"}:
+        return PermissionDecision("allow", "Read-only bounded workspace inspection.")
     if tool_name == "compact":
         return PermissionDecision(
             "allow",
@@ -342,6 +355,44 @@ def ask_user(
     tool_name: str, arguments: dict, workdir: Path, reason: str
 ) -> PermissionDecision:
     """Only a terminal response can approve this exact invocation."""
+    from homebrew_harness.runs.controller import current_run
+    from homebrew_harness.execution.model_gateway import current_scope
+    from homebrew_harness.runs.requests import current_approval
+
+    managed = current_run()
+    if managed is not None:
+        if tool_name == "spawn_teammate" and managed.team_control is not None and current_scope().role == "lead":
+            managed.team_control.authorize(dict(arguments))
+            return PermissionDecision("allow", "Exact host-declared managed member scope.")
+        approved = current_approval()
+        if (
+            approved is not None
+            and approved["tool"] == tool_name
+            and approved["arguments"] == dict(arguments)
+        ):
+            return PermissionDecision("allow", "Exact durable host approval matches.")
+        if current_scope().role != "lead":
+            return PermissionDecision(
+                "deny",
+                "Delegate permission changes through the managed Lead.",
+                "approval_requires_lead",
+            )
+        request = managed.requests.create(
+            managed,
+            "tool",
+            tool=tool_name,
+            arguments=dict(arguments),
+            call_id=_APPROVAL_CALL.get(),
+            reason=reason,
+        )
+        if request["state"] == "denied":
+            return PermissionDecision("deny", "The host declined this exact request.")
+        managed.waiting_request = request["id"]
+        return PermissionDecision(
+            "deny",
+            "Waiting for exact host request " + request["id"],
+            "approval_required",
+        )
     from homebrew_harness.runtime.input_router import current_broker
 
     broker = current_broker()
@@ -352,7 +403,9 @@ def ask_user(
         or threading.current_thread() is not threading.main_thread()
     ):
         return PermissionDecision(
-            "deny", "Scheduled or worker turns cannot request interactive approval."
+            "deny",
+            "Scheduled or worker turns cannot request interactive approval.",
+            "approval_required",
         )
     if not sys.stdin.isatty():
         target = "Bash" if tool_name == "bash" else "this external tool call"
@@ -361,6 +414,7 @@ def ask_user(
             "Interactive approval is unavailable; run from a terminal to approve "
             + target
             + ".",
+            "approval_required",
         )
 
     print(f"\n[permission] {reason}", file=sys.stderr)
@@ -403,6 +457,35 @@ def check_permission(
     tool_name: str, arguments: dict, workdir: Path
 ) -> PermissionDecision:
     """Hard denial first, then rule matching, then approval when required."""
+    from homebrew_harness.runs.controller import current_run
+
+    managed = current_run()
+    if (
+        managed is not None
+        and tool_name in {"write_file", "edit_file"}
+        and not managed.write_allowed(workdir, arguments["path"])
+    ):
+        return PermissionDecision(
+            "deny",
+            "The path is outside this Run's host-authorized write prefixes.",
+            "write_boundary",
+        )
+    if managed is not None and tool_name in {"request_attention", "read_run_event", "get_handoff", "integrate_stage", "publish_stage"}:
+        return PermissionDecision("allow", "Use the owning Run's control records.")
+    if (
+        managed is not None
+        and tool_name == "publish_artifacts"
+        and _ARTIFACT_POLICY.get() is not None
+    ):
+        if any(
+            not managed.write_allowed(workdir, row["target"])
+            for row in _ARTIFACT_POLICY.get()["files"]
+        ):
+            return PermissionDecision(
+                "deny",
+                "Artifact targets exceed this Run's authorized write prefixes.",
+                "write_boundary",
+            )
     if tool_name == "bash":
         reason = check_deny_list(arguments["command"])
         if reason:
