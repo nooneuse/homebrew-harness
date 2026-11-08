@@ -1,14 +1,16 @@
 ---
 name: text-summary
-description: 对本地说明文档或文本做简明摘要，保留目标、关键事实、限制和待确认项。
+description: Summarize local documents or text concisely, preserving the objective, key facts, limitations, and open questions.
 ---
 
-# 文本摘要
+# Text summarization
 
-1. 先读取用户指定的文件，再根据原文组织摘要。文件内容被截断或资料不足时明确说明。
-2. 使用三个部分组织输出：**目标**、**要点**、**限制与待确认**。
-3. 要点最多五条，保留会改变理解或决策的事实，避免重复原文的修辞和宣传语。
-4. 将原文明确陈述的内容与自己的推断分开。无法确认的细节放入“限制与待确认”，不要补造数据。
-5. 除非当前用户要求产出文件，否则只返回摘要，不修改源文件。
+**English** | [简体中文](SKILL.zh-CN.md)
 
-本技能只提供整理方法，不执行脚本、不安装依赖，也不改变宿主权限。
+1. Read the files selected by the user before organizing the summary. State when content is truncated or information is incomplete.
+2. Use three sections: **Objective**, **Key points**, and **Limitations and open questions**.
+3. Include at most five key points. Preserve facts that affect understanding or decisions, and avoid repeating rhetoric or promotional language.
+4. Distinguish statements in the source from your own inferences. Put unconfirmed details in Limitations and open questions.
+5. Return the summary without editing source files unless the current user requests a file artifact.
+
+This skill provides a method for organizing text. It runs no scripts, installs no dependencies, and changes no host permissions.

@@ -1,137 +1,153 @@
-# homebrew-harness 设计
+# homebrew-harness design
 
-homebrew-harness 将模型的推理循环与具体执行能力组合成一个运行时。宿主选择模型、工具和工作目录；模型提出动作；工具结果进入上下文，形成下一轮推理的依据。
+**English** | [简体中文](DESIGN.zh-CN.md) · [README](../README.md)
 
-设计围绕三个对象展开：模型请求、有效工具池和持久会话。编排组件在这一基础上表达任务分工、固定流程和完成条件。
+homebrew-harness combines a model reasoning loop with execution capabilities. The host selects models, tools, and a working directory. The model proposes actions, and tool results provide evidence for the next turn.
 
-## 运行流程
+The design centers on three objects: model requests, an effective tool pool, and persistent sessions. Orchestration components build task assignment, fixed workflows, and completion conditions on this foundation.
+
+## Execution flow
 
 ```mermaid
 flowchart LR
-    U[用户输入] --> S[Session]
-    S --> C[准备上下文]
+    U[User input] --> S[Session]
+    S --> C[Prepare context]
     C --> M[ModelGateway]
-    M --> D{模型结果}
-    D -->|工具提议| T[工具分发]
-    T --> R[结果与状态保存]
+    M --> D{Model response}
+    D -->|Tool proposal| T[Tool dispatch]
+    T --> R[Save results and state]
     R --> C
-    D -->|最终回答| G[Hooks 与 Goal]
-    G -->|继续工作| C
-    G -->|完成当前回合| S
+    D -->|Final answer| G[Hooks and Goal]
+    G -->|Continue work| C
+    G -->|Finish the turn| S
 ```
 
-`HarnessSession` 持有 Lead 上下文、输入控制、共享执行资源与 checkpoint。`LoopComponents` 描述一次循环使用的组件，准备阶段组装实际工具池和模型输入。主循环只处理统一的模型结果和工具调用。
+`HarnessSession` owns Lead context, input control, shared execution resources, and checkpoints. `LoopComponents` describes the components used by a loop. Preparation assembles the actual tool pool and model input; the main loop handles normalized responses and tool calls.
 
-宿主命令负责查看状态、设置目标、授权和恢复。普通用户请求进入模型上下文；工作期间的 steering 在工具批次边界应用。后台、定时和团队事件通过持久收件箱进入对应循环。
+Host commands inspect state, set goals, authorize actions, and recover execution. User requests enter model context, and steering is applied at tool-batch boundaries. Background, scheduled, and team events arrive through durable inboxes.
 
-## 模型接入
+## Model integration
 
-`ModelGateway` 管理请求的并发、期限、取消、连接状态和用量观察。适配器负责具体协议的请求转换、流式聚合和响应解析，向循环返回 `ModelResponse` 与 `ToolInvocation`。
+`ModelGateway` manages concurrency, deadlines, cancellation, connection state, and usage observations. Protocol adapters prepare requests, aggregate streams, and parse responses into `ModelResponse` and `ToolInvocation`.
 
-当前协议为 Chat Completions、Responses、DashScope Generation 和 Anthropic Messages。协议需要的推理回传保存在所属上下文的附件中；普通历史保持统一消息形式。
+Supported protocols are Chat Completions, Responses, DashScope Generation, and Anthropic Messages. Protocol-specific reasoning state lives in attachments owned by its context; ordinary history uses a shared message representation.
 
-模型目录分为连接和用途配置。连接引用外部环境变量，配置声明模型、上下文、输出和能力。Lead、成员和 Subagent 可选不同配置，辅助调用使用对应模型入口。配置身份随 checkpoint 保存，连接值由宿主运行环境提供。
+The model catalog separates connections from usage profiles. Connections reference external environment variables; profiles declare models, context limits, output limits, and capabilities. Lead, teammate, and subagent roles can select different profiles. Auxiliary calls use the appropriate model entry point. Configuration identity is saved with checkpoints, and the host supplies connection values.
 
-上下文准备会计入适配器展开后的实际请求内容，并复用准备结果。用量记录用于观察请求成本和运行状态，费用控制由提供商管理。
+Context preparation accounts for the request after adapter expansion and reuses the prepared result. Usage records describe request cost and execution state; the provider manages spending limits.
 
-## 工具与执行
+## Tools and execution
 
-工具目录保存描述和参数 schema，handler 提供实现。每轮有效工具池由启用能力、角色和当前资源组成；MCP 工具也进入同一个池。
+The tool catalog defines descriptions and parameter schemas; handlers implement capabilities. Each turn's effective pool reflects enabled modules, role, and available resources. MCP tools join the same pool.
 
-工具分发依次执行参数检查、前置 Hook、权限判断、动作接受、handler 与后置观察，再将结果加入历史。文件、Bash、测试和 MCP 使用各自执行器，共享期限、取消和操作记录。
+Dispatch performs parameter validation, pre-tool Hooks, permission checks, action acceptance, handler execution, and post-tool observation. Results enter history. Files, Bash, tests, and MCP use their own executors with shared deadlines, cancellation, and operation records.
 
-文件工具提供读取、匹配和版本化写入。Bash 可运行于宿主或容器；TestRunner 执行登记的 recipe 并生成关联代码快照的结果。MCP 通过真实传输发现和调用外部工具，本地 stdio 服务可使用容器后端。
+File tools support reading, matching, and versioned writes. Bash runs on the host or in a container. TestRunner executes registered recipes and produces receipts linked to code snapshots. MCP discovers and calls external tools over real transports; local stdio services can use a container backend.
 
-容器产物先按宿主登记规则收集为 bundle，再单独发布到任务工作区。产物清单、内容和发布结果共同构成后续检查的依据。
+Container outputs are collected into bundles using host-registered rules, then published separately to a task workspace. Manifests, content, and publication results provide evidence for subsequent checks.
 
-## 上下文与知识
+## Context and knowledge
 
-`TaskIntent` 保存原始用户要求和有序修订。会话历史包含模型结果、工具结果和运行观察；当前约束由独立宿主状态提供。
+`TaskIntent` stores the original user request and ordered amendments. History contains model responses, tool results, and execution observations. Separate host state supplies the current constraints.
 
-技能加载分为目录和正文两层：默认提供简介，用到时读取技能内容。Memory 提供可选的跨会话召回和维护。
+Skills expose a short catalog first and load instructions on demand. Memory provides optional cross-session recall and maintenance.
 
-压缩器按上下文压力缩短较旧结果、保存完整归档，并在需要时调用模型形成工作摘要。工具批次作为完整消息组处理，归档保留可回读的原始记录。
+The compactor shortens older results under context pressure, archives full content, and can ask the model for a working summary. Tool batches remain complete message groups, and original records remain readable from archives.
 
-Todo 表达当前可见计划；它不承担持久任务依赖或完成证明。
+Todo represents the current visible plan. Persistent dependencies and completion evidence belong to Tasks and Goals.
 
-## 工作组织
+## Work organization
 
-| 组件 | 表达的内容 |
+| Component | Responsibility |
 | --- | --- |
-| Subagent | 一次局部委派，使用独立上下文并返回结果 |
-| Task System | 持久任务、依赖关系、认领和完成 |
-| Agent Teams | 持续存在的成员、消息协作、计划审批与分工 |
-| Worktree | 与任务绑定的独立 Git 工作目录 |
-| Background | 慢命令的登记、结果查询和完成通知 |
-| Cron | 根据时间条件将登记的请求送入执行循环 |
-| Workflow | 宿主登记的固定异步脚本、步骤结果和恢复 |
-| Goal | 用户完成条件、执行证据与结束判断 |
+| Subagent | A local delegation with independent context and a returned result |
+| Task System | Persistent tasks, dependencies, claims, and completion |
+| Agent Teams | Persistent members, messaging, plan review, and assignment |
+| Worktree | A separate Git directory bound to a task |
+| Background | Command registration, result queries, and completion notices |
+| Cron | Delivery of registered requests when time conditions are met |
+| Workflow | Host-registered async scripts with saved step results and recovery |
+| Goal | User completion conditions, execution evidence, and stop decisions |
 
-这些组件复用同一循环和模型入口。一次性委派侧重隔离局部上下文，团队侧重持续协作；Workflow 表达固定编排，Task 表达依赖关系。
+These components reuse the same loop and model gateway. Subagents isolate a local context; teams support ongoing collaboration. Workflows express fixed orchestration, and Tasks express dependencies.
 
-Goal 可以使用自然语言条件，也可以使用文件与测试的结构化条件。结束判断先形成候选决定，再结合当前用户修订和执行状态提交结果。测试通过记录对应实际被测版本。
+Goals can use natural-language conditions or structured file and test predicates. A stop proposal is checked against current user amendments and execution state before it is committed. A test pass refers to the version actually tested.
 
-## 持久状态与恢复
+## Persistence and recovery
 
-SQLite 保存会话 checkpoint、inbox、操作记录、Task、Goal、产物及会话生命周期。checkpoint 使用增量消息与组件版本，减少重复保存历史正文。Task 的状态、依赖与认领保存在同一数据库；Memory 使用独立知识文件。
+SQLite stores session checkpoints, inboxes, operation records, Tasks, Goals, artifacts, and session lifecycle state. Checkpoints use incremental messages and component versions to reduce repeated history storage. Task state, dependencies, and claims share the database; Memory uses separate knowledge files.
 
-输入被接受、加入历史、投递给成员和成员实际应用都有对应状态。历史更新、输入确认和成员消息在同一事务边界推进；工具提议也关联它所依据的输入版本。
+Input acceptance, history application, member delivery, and member application have distinct saved states. History updates, input acknowledgments, and member messages advance at the same transaction boundary. Tool proposals also reference the input version on which they depend.
 
-操作记录保存接受与执行结果。正常结果继续进入循环，尚待确认的结果由恢复入口呈现。执行租约标识资源的实际占用，关闭过程跟踪组件停止、状态保存和释放完成。
+Operation records track acceptance and results. Known results rejoin the loop; unresolved effects are exposed through recovery inspection. Execution leases represent actual resource occupancy. Closing tracks component shutdown, state persistence, and release completion.
 
-完整工具输出和 transcript 保存在归档区。GC 从会话、任务、目标和产物的引用关系确定保留内容；checkpoint 退休将较旧且已结清会话转为可管理的冷记录。
+Full tool outputs and transcripts live in archives. GC follows session, task, goal, and artifact references to retain content. Checkpoint retirement turns older, settled sessions into manageable cold records.
 
-## 受管理运行
+## Managed runs
 
-Run 表达一个持久任务，ExecutionAttempt 表达当前执行进程，Episode 表达会话中的一段有界推进。`RunController` 接入 Session 的准备、输入和 checkpoint；正常 yield 后继续原上下文，运行结果与输入、Goal 在同一提交边界保存。
+A Run represents a persistent task, an ExecutionAttempt represents its worker process, and an Episode represents a bounded segment of progress. `RunController` connects Session preparation, input, and checkpoints. A normal yield continues the same context; outcomes, input, and Goal decisions share a commit boundary.
 
-`RunSupervisor` 管理执行进程、等待与恢复。执行者保留实际资源租约，宿主根据进程、心跳、操作和收尾事实决定是否接续。固定测试授权、总期限与恢复计数随 Run 保存，模型用量仍用于观察。 Deadline 保留实际起作用的期限来源，控制器据此安排请求恢复、Episode 接续或停止；持续成员使用自身请求期限与 Run 期限。
+`RunSupervisor` manages worker processes, waiting, and recovery. Workers hold actual resource leases; the host decides whether to continue from process, heartbeat, operation, and cleanup facts. Fixed-test authorizations, overall deadlines, and recovery counts persist with the Run. Model usage remains observational.
 
-Run 的输入收件人跨执行段和进程保持稳定。宿主控制与业务输入分别登记；工具提议关联输入版本。正常单次/交互 Session 继续使用原入口，受管理执行通过 `harness-run` 组织。
+Deadline retains the source of the active limit. The controller distinguishes request recovery, Episode continuation, and stopping. Persistent members use their own request deadlines and the Run deadline.
 
-`runs/` 包保存 RunSpec、RunOutcome、SQLite 状态适配、会话控制和进程监督。它复用已有工具、上下文、Goal 和数据库，不维护另一套工作依赖图。
+Run input recipients stay stable across Episodes and processes. Host controls and business input have separate records, and tool proposals reference input versions. One-shot and interactive Sessions keep their usual entry points; `harness-run` manages persistent execution.
 
-固定测试许可按成员、任务、工作区和 recipe 保存；到期或耗尽时，持久请求连接宿主续期与成员等待。许可更新和唤醒一起提交，使用次数在动作接受事务中消费。TestRunner 使用持久许可的运行时投影，普通源码编辑继续由新的测试凭证验证。
+The `runs/` package contains RunSpec, RunOutcome, SQLite state access, session control, and process supervision. It reuses the existing tools, context, Goals, database, and Task dependency graph.
 
-人工工具审批与需求问题保存为持久请求。工具批准通过统一分发层重新核验，接受操作与一次性授权消费同事务提交；需求回答通过稳定用户 inbox 应用。进展控制使用执行失败和文件状态等事实组织局部重规划。
+### Permissions and progress
 
-可选 PR 来源将事件、读取位置和 reference inbox 投递一起保存。参考输入与用户修订分开，模型提议和完成提交核对两者版本。`RunServices` 处理来源、同库 wake 和最小通知 outbox；通知结果与业务完成分别记录。
+Fixed-test grants are stored by member, task, workspace, and recipe. On expiry or exhaustion, a durable request connects host renewal with member waiting. Grant updates and wake hints commit together; use counts are consumed in the action-acceptance transaction. TestRunner and Goal availability checks share the persistent authorization source. Fresh test receipts verify ordinary source edits.
 
-阶段直接引用 Task DAG。宿主冻结阶段定义，模型提交产物后，由硬条件检查形成验收记录；Task 完成与阶段交接在同一事务中保存，下游由此解锁。最终 Goal 同时核对交付条件和各阶段证据。
+Human tool approvals and requirement questions use durable requests. Approved calls pass through normal dispatch again; operation acceptance and one-time permission consumption share a transaction. Requirement answers enter the stable user inbox. Progress control uses execution failures and file-state observations to organize local replanning.
 
-受管理测试凭证关联 Run、任务、需求版本、测试定义、执行环境和输入快照。新进程读取凭证并核对当前状态，阶段交接保存原始要求、验收事实、历史引用和模型提出的下一步。阶段通常继续当前会话，完整交接可按需回读。
+### Sources and notifications
 
-阶段的声明输入由宿主在认领前交付，清单绑定前驱 submission 与内容版本。消费者的输入覆盖层和产物基线分别保存，输入变更会使旧证明失效。文件效果与任务认领通过已保存的输入清单连接。 阶段快照只保存有关内容；声明的源码依赖也关联验收版本。范围外使用文件元数据与 Git 身份检查变更，内容与清单分别保留规模上限。
+Optional PR sources save events, cursors, and reference-inbox delivery together. Reference input and user amendments remain separate; proposals and completion commits check both versions. `RunServices` handles sources, database wake events, and a minimal notification outbox. Notification delivery and business completion have separate results.
 
-受管理团队使用 RunSpec 中的固定成员与阶段归属，继续由 TeamManager 执行。成员在独立 worktree 中工作，恢复计数保存在 Run 记录中。显式集成收集已验收产物，核对目标版本并生成发布清单；多文件发布结果与任务验收分别保存。
+### Stage evidence and inputs
 
-成员工作段保存结构化结果：等待输入、等待具体事件、需要 Lead 指示、完成或阻塞。输入应用、版本提示和 checkpoint 共同推进，正常修订不消耗故障恢复次数。宿主等待只用于真实执行或明确事件，其余待办进入 Lead 决策。
+Stages directly reference the Task dependency graph. The host freezes stage definitions, and structured checks accept submitted outputs. Task completion and handoff commit together to unlock successors. The final Goal checks delivery conditions and stage evidence.
 
-终态 Run 在真实资源和未知效果结清后结束未完成节点的归属，保留历史结果。显式恢复确认与新的 Gateway 观察一起保存，随后接续同一模型。
+Managed test receipts reference the Run, task, requirement version, test definition, execution environment, and input snapshot. New processes check receipts against current state. Handoffs contain original requirements, acceptance facts, history references, and model-proposed next steps. Stages normally continue the current session, with full handoffs available on demand.
 
-模型交接创建新的 Lead 会话，Run 保持稳定身份。原始要求、阶段证据与会话引用进入交接，协议私有内容保留在原会话中。备用策略按宿主声明的故障类别推进，成员绑定、权限范围与总期限继续沿用原配置。
+The host delivers declared predecessor inputs before a task is claimed. Input manifests reference predecessor submissions and content versions. Input overlays and output baselines remain separate; changed inputs invalidate old evidence. A saved manifest connects file effects with task claims.
 
-Run 导出提供要求、状态与证据索引。安全停靠后的备份组合一致性 SQLite 数据库和附件清单；恢复先重建可检查状态。会话引用保护覆盖模型交接前后的上下文，磁盘余量在业务边界检查。
+Snapshots store relevant content, including declared source dependencies linked to acceptance versions. File metadata and Git identity checks detect changes outside the content scope. Content snapshots and inventories have separate scale limits.
 
-## 能力组合与扩展
+### Teams and model handoff
 
-默认 core 提供常用工具，可选模块由 `Capabilities` 启用。有效能力与实际组件共同决定模型看到的工具，避免工具目录与资源实例分离。
+Managed teams use fixed members and stage ownership from RunSpec, executed by TeamManager. Members work in separate worktrees, with recovery counts saved in Run records. Explicit integration collects accepted outputs, checks target versions, and creates a publication manifest. File publication and task acceptance have separate saved results.
 
-新增工具通常只需要描述/schema、handler 和权限策略。新增模型协议实现适配器契约；新增固定编排注册 Workflow 脚本。宿主可使用 `LoopComponents` 将自定义组件接入 Session 或独立循环。
+Member work segments produce structured outcomes: completed, waiting for input or an event, needing Lead direction, blocked, or failed. Input application, version hints, and checkpoints advance together. Normal input amendments leave infrastructure recovery counts unchanged. Host waiting is driven by actual execution or concrete events; other action items go to the Lead.
 
-Hooks 在用户输入、工具前后和准备结束时提供扩展点。控制 Hook 决定是否继续，观察 Hook 用于日志、计划展示和统计。
+Terminal Runs settle unfinished task ownership after resources and unknown effects are resolved, retaining historical results. Explicit resume acknowledgment is saved with updated Gateway observations before the same model continues.
 
-## 代码组织
+Model handoff creates a new Lead session while preserving Run identity. Original requirements, stage evidence, and session references enter the handoff; protocol-private state stays in its original session. Fallback follows host-declared failure classes. Member bindings, permissions, and the overall deadline remain in effect.
 
-| 目录 | 职责 |
+### Export and maintenance
+
+Run exports contain requirements, state, and evidence indexes. Backups taken after safe shutdown combine a consistent SQLite database with an attachment manifest; restoration first creates inspectable state. Session references protect context before and after model handoff. Runtime boundaries check available disk space.
+
+## Capabilities and extension
+
+The default `core` profile provides common tools. `Capabilities` enables optional modules, and the effective pool reflects both configuration and instantiated resources.
+
+A new tool typically adds a description/schema, handler, and permission policy. A new model protocol implements the adapter contract; a fixed workflow registers a script. Hosts can compose components through `LoopComponents` in a Session or an independent loop.
+
+Hooks expose extension points at user input, before and after tools, and before finishing. Control Hooks decide whether work continues; observation Hooks support logs, plan display, and statistics.
+
+## Code organization
+
+| Directory | Responsibility |
 | --- | --- |
-| `runtime/` | Session、循环、输入、Hooks、组件准备和宿主控制 |
-| `runs/` | 持久任务、Episode、结构化结果、进程监督与恢复 |
-| `execution/` | 模型网关、协议适配器、进程、容器、Bash、测试与执行租约 |
-| `tools/` | 工具目录、分发、有效工具池和 MCP 传输 |
-| `context/` | 任务原文、历史、压缩、技能、记忆和 Todo |
-| `orchestration/` | Task、Team、Worktree、Workflow、Goal、后台事件编排 |
-| `storage/` | SQLite、增量 checkpoint、消息、产物、备份和历史维护 |
-| `security/` | 权限策略、文件访问和输出数据处理 |
+| `runtime/` | Sessions, loops, input, Hooks, preparation, and host control |
+| `runs/` | Persistent Runs, Episodes, outcomes, process supervision, and recovery |
+| `execution/` | Model gateway, adapters, processes, containers, Bash, tests, snapshots, and leases |
+| `tools/` | Catalog, dispatch, effective pools, and MCP transports |
+| `context/` | Task intent, history, compaction, skills, memory, and Todo |
+| `orchestration/` | Tasks, teams, worktrees, Workflows, Goals, and event orchestration |
+| `storage/` | SQLite, incremental checkpoints, messages, artifacts, backups, and history maintenance |
+| `security/` | Permission policies, file access, and output handling |
 
-`cli.py`、`workflow_cli.py`、`runs/cli.py` 和 `admin.py` 分别提供会话、固定工作流、受管理运行与宿主管理入口。测试按相同模块组织，`integration/` 验证组件协作，`system/` 验证真实容器执行。
+`cli.py`, `workflow_cli.py`, `runs/cli.py`, and `admin.py` provide entry points for Sessions, fixed Workflows, managed Runs, and host administration. Tests follow the same module layout; `integration/` checks composition and `system/` exercises real container execution.
