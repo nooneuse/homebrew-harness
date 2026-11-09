@@ -85,6 +85,9 @@ class MemberCheckpointControl:
     def test_grant_key(self, name, workdir):
         return self.team.control.test_grant_key(name, workdir)
 
+    def mcp_operation_fields(self, name, workdir):
+        return self.team.control.mcp_operation_fields(name, workdir)
+
     def test_authorization_fields(self, name, workdir):
         return self.team.control.test_authorization_fields(name, workdir)
 

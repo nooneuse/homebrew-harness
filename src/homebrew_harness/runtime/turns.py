@@ -151,7 +151,11 @@ def run_subagent(
             "get_test_result",
             "load_skill",
         }
-        effects = [e for e in writer.effects if e["name"] not in readonly]
+        effects = [
+            e
+            for e in writer.effects
+            if e["name"] not in readonly and e.get("read_only") is not True
+        ]
         status = (
             "unknown"
             if any(e["state"] == "started" or e["state"] == "unknown" for e in effects)

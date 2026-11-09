@@ -115,6 +115,14 @@ Run input recipients stay stable across Episodes and processes. Host controls an
 
 The `runs/` package contains RunSpec, RunOutcome, SQLite state access, session control, and process supervision. It reuses the existing tools, context, Goals, database, and Task dependency graph.
 
+### External tools in Runs
+
+RunSpec selects server aliases and raw MCP tool names. Host configuration provides transports, connection values, execution backends and tool policies. A shared preparation path assembles selected bindings into the effective pool and saves a stable declaration and schema manifest. Live connections belong to the worker; a new worker reconnects and checks the same manifest.
+
+MCP approvals use the same durable requests, invocation dispatch and action-acceptance transaction as other Run tools. Known responses become tool evidence. Lost read responses remain failed observations, while uncertain writes enter the existing inspection flow. Local stdio services share a fixed resource owner linked to the worker lifeline. The owner closes host process groups or uses the container backend to remove its resources, then records actual release.
+
+Lead owns external capabilities by default. Optional read-only delegation intersects the selected host policies with the child tool scope. Workspace services prepare and reuse connections for each assigned task. Idle scopes release containers when the connection limit needs room; queued and active invocations retain their owners. Automatic routing selects from the host tool catalog, and Session handoff transfers stable declarations after source actors close.
+
 ### Permissions and progress
 
 Fixed-test grants are stored by member, task, workspace, and recipe. On expiry or exhaustion, a durable request connects host renewal with member waiting. Grant updates and wake hints commit together; use counts are consumed in the action-acceptance transaction. TestRunner and Goal availability checks share the persistent authorization source. Fresh test receipts verify ordinary source edits.

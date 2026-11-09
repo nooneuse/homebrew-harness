@@ -9,9 +9,10 @@ import logging
 import os
 import re
 import threading
+import time
 import uuid
 from contextlib import AsyncExitStack
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from pathlib import Path
 from urllib.parse import urlsplit
@@ -50,6 +51,16 @@ PRIVATE_MODEL_ENV = {
 class MCPError(ValueError):
     """Safe client errors: provider endpoints and credentials are never included."""
 
+    reason_code = "mcp_preparation_failed"
+
+
+class MCPBindingChanged(MCPError):
+    reason_code = "mcp_binding_changed"
+
+
+class MCPSelectionMissing(MCPError):
+    reason_code = "mcp_selection_unavailable"
+
 
 def normalize_mcp_name(name: str) -> str:
     if not isinstance(name, str) or not name:
@@ -77,6 +88,7 @@ class ServerSpec:
     timeout_seconds: float = 20
     connect_timeout_seconds: float = 30
     execution: MCPExecutionPolicy = field(default_factory=MCPExecutionPolicy)
+    revision: str = "1"
 
     def __post_init__(self):
         if not isinstance(self.execution, MCPExecutionPolicy):
@@ -152,6 +164,7 @@ def load_specs(path: Path, *, missing_ok: bool = False) -> dict[str, ServerSpec]
             "timeout_seconds",
             "connect_timeout_seconds",
             "execution",
+            "revision",
         }:
             raise MCPError("Unknown MCP server configuration fields.")
         try:
@@ -288,7 +301,13 @@ def load_specs(path: Path, *, missing_ok: bool = False) -> dict[str, ServerSpec]
             float(timeout),
             float(connect_timeout),
             execution,
+            data.get("revision", "1"),
         )
+        if (
+            not isinstance(specs[name].revision, str)
+            or not 1 <= len(specs[name].revision) <= 100
+        ):
+            raise MCPError("MCP revision must be bounded host text.")
     return specs
 
 
@@ -358,6 +377,23 @@ class MCPBinding:
     policy: ToolPolicy
     connection: object
     validator: object
+    output_schema: dict | None = None
+
+    def identity(self):
+        from .selection import digest
+
+        return {
+            "server": self.connection.spec.name,
+            "raw_tool": self.raw_name,
+            "alias": self.alias,
+            "definition": digest(
+                {"input": self.definition, "output": self.output_schema}
+            ),
+            "policy": {
+                "action": self.policy.action,
+                "read_only": self.policy.read_only,
+            },
+        }
 
     def validate(self, arguments: dict) -> None:
         if not isinstance(arguments, dict):
@@ -424,6 +460,7 @@ class _Connection:
         self.active_waiter = None
         self.requests = set()
         self.cancel_requested = False
+        self.used_at = time.monotonic()
 
     def abort(self):
         self.stopping = True
@@ -489,10 +526,15 @@ class _Connection:
                         for key, value in supplied.items()
                         if re.search(r"key|token|secret|password", key, re.I) and value
                     ]
+                    if self.owner is not None and spec.execution.mode == "host":
+                        self.owner.environment = env
                     streams = await stack.enter_async_context(
                         controlled_stdio(
                             spec,
-                            {} if self.owner is not None else env,
+                            {}
+                            if self.owner is not None
+                            and spec.execution.mode == "container"
+                            else env,
                             owner=self.owner,
                         )
                     )
@@ -610,6 +652,7 @@ class _Connection:
                     pending = None
         except BaseException as error:
             safe = MCPError(f"MCP transport stopped ({type(error).__name__}).")
+            safe.__cause__ = error
             if not self.ready.done():
                 self.ready.set_exception(safe)
             if pending is not None and not pending.done():
@@ -631,6 +674,7 @@ class _Connection:
             raise MCPError(
                 "MCP transport is closed; reconnect explicitly before using it."
             )
+        self.used_at = time.monotonic()
         waiter = asyncio.get_running_loop().create_future()
         waiter._mcp_ticket = ticket
         deadline = deadline or Deadline.after(self.spec.timeout_seconds)
@@ -653,6 +697,19 @@ class _Connection:
             await self.queue.put(("close", None, waiter, Deadline.after(0)))
         await self.task
 
+    async def close_idle(self):
+        # This decision and the stopping flag execute on the SDK event loop;
+        # a queued or active invocation cannot race an idle eviction.
+        if (
+            self.closed
+            or self.stopping
+            or self.active_waiter is not None
+            or not self.queue.empty()
+        ):
+            return False
+        await self.close()
+        return self.owner is None or not self.owner._leased
+
 
 class MCPRuntime:
     def __init__(
@@ -662,6 +719,9 @@ class MCPRuntime:
         workdir: Path,
         reserved_names=(),
         environment=None,
+        selection=None,
+        delegation="lead_only",
+        resource_scope=None,
         max_container_connections=8,
     ):
         if (
@@ -670,8 +730,47 @@ class MCPRuntime:
         ):
             raise MCPError("MCP container connection limit must be between 1 and 32.")
         self.max_container_connections = max_container_connections
-        self.specs = dict(specs)
-        self.environment = dict(environment) if environment is not None else None
+        from .selection import declaration, validate_selection, host_executable
+        from homebrew_harness.execution.test_runner import executable_identity
+
+        self.environment = (
+            dict(os.environ if environment is None else environment)
+            if environment is not None or selection is not None
+            else None
+        )
+        self.selection = (
+            validate_selection(selection) if selection is not None else None
+        )
+        if not isinstance(delegation, str) or delegation not in {
+            "lead_only",
+            "read_only",
+        }:
+            raise MCPError("Invalid MCP delegation policy.")
+        self.delegation = delegation
+        self.resource_scope = dict(resource_scope or {})
+        self.specs = (
+            {name: specs[name] for name in self.selection}
+            if self.selection is not None and set(self.selection) <= set(specs)
+            else dict(specs)
+        )
+        self.declaration = (
+            declaration(self.specs, self.selection, self.environment)
+            if self.selection is not None
+            else None
+        )
+        self.expected_manifest = None
+        self.prepared = False
+        self._host_executables = {}
+        if self.selection is not None:
+            for name, spec in self.specs.items():
+                if spec.transport == "stdio" and spec.execution.mode == "host":
+                    executable = host_executable(
+                        spec, _resolve_values(spec.env, self.environment)
+                    )
+                    self._host_executables[name] = (
+                        executable,
+                        executable_identity(executable),
+                    )
         self.workdir = canonical_root(workdir)
         self.leases = ExecutionLeases(self.workdir)
         self._scoped_bindings = {}
@@ -759,6 +858,15 @@ class MCPRuntime:
     async def _open(self, spec: ServerSpec, workspace=None, deadline=None):
         if self._closed:
             raise MCPError("MCP runtime closed before connection acceptance.")
+        if spec.name in self._host_executables:
+            from homebrew_harness.execution.test_runner import executable_identity
+
+            executable, identity = self._host_executables[spec.name]
+            if executable_identity(executable) != identity:
+                raise MCPBindingChanged(
+                    "MCP executable changed before connection acceptance."
+                )
+            spec = replace(spec, command=executable)
         owner = (
             MCPContainerOwner(
                 spec,
@@ -766,10 +874,22 @@ class MCPRuntime:
                 workspace,
                 self.leases,
                 deadline or Deadline.after(spec.connect_timeout_seconds),
+                resource_scope=self.resource_scope,
             )
             if spec.execution.mode == "container"
             else None
         )
+        if owner is None and spec.transport == "stdio" and self.resource_scope:
+            from homebrew_harness.execution.mcp_process import MCPProcessOwner
+
+            owner = MCPProcessOwner(
+                spec,
+                self.workdir,
+                self.leases,
+                self.resource_scope,
+                deadline or Deadline.after(spec.connect_timeout_seconds),
+                self.environment,
+            )
         connection = _Connection(spec, owner, workspace, self.environment)
         self._actors.add(connection)
         try:
@@ -786,6 +906,11 @@ class MCPRuntime:
         bindings = {}
         for tool in definitions:
             raw = tool.get("name")
+            if (
+                self.selection is not None
+                and raw not in self.selection[connection.spec.name]
+            ):
+                continue
             alias = f"mcp__{normalize_mcp_name(connection.spec.name)}__{normalize_mcp_name(raw)}"
             if len(alias) > 64 or alias in bindings or alias in self.reserved_names:
                 raise MCPError(
@@ -809,14 +934,36 @@ class MCPRuntime:
                         + connection.spec.execution.inputs
                         + "; no host writeback."
                         if getattr(connection, "owner", None) is not None
+                        and connection.spec.execution.mode == "container"
                         else ""
                     ),
                     "parameters": self._redact(schema, connection),
                 },
             }
             bindings[alias] = MCPBinding(
-                alias, raw, definition, policy, connection, validator
+                alias,
+                raw,
+                definition,
+                policy,
+                connection,
+                validator,
+                copy.deepcopy(tool.get("outputSchema")),
             )
+            if (
+                self.expected_manifest is not None
+                and self.expected_manifest.get(alias) != bindings[alias].identity()
+            ):
+                raise MCPBindingChanged("MCP tool definition changed before reconnect.")
+        if self.selection is not None:
+            from .selection import selected_names
+
+            required = selected_names(
+                {connection.spec.name: self.selection[connection.spec.name]}
+            )
+            if required - set(bindings):
+                raise MCPSelectionMissing(
+                    "Selected MCP tools are missing from the service."
+                )
         return bindings
 
     def connect(self, name: str, *, workdir=None, task_id=None) -> dict:
@@ -843,7 +990,13 @@ class MCPRuntime:
                         for alias, binding in self._bindings.items()
                         if binding.connection is not old_connection
                     }
-            self._actors = {actor for actor in self._actors if not actor.task.done()}
+            self._actors = {
+                actor
+                for actor in self._actors
+                if not actor.task.done()
+                or actor.owner is not None
+                and actor.owner._leased
+            }
             connection = self._connections.get(key)
             if connection is not None and (connection.closed or connection.stopping):
                 self._disconnect_key(key)
@@ -861,10 +1014,41 @@ class MCPRuntime:
                     connection = None
             new = connection is None
             if new:
+
+                def container_count():
+                    return sum(
+                        c.spec.execution.mode == "container"
+                        and (not c.closed or c.owner is not None and c.owner._leased)
+                        for c in self._actors
+                    )
+
+                if (
+                    self.selection is not None
+                    and workspace is not None
+                    and container_count() >= self.max_container_connections
+                ):
+                    candidates = sorted(
+                        [
+                            (k, c)
+                            for k, c in self._connections.items()
+                            if c.workspace is not None
+                            and c.spec.execution.mode == "container"
+                        ],
+                        key=lambda item: item[1].used_at,
+                    )
+                    for old_key, actor in candidates:
+                        if self._submit(
+                            actor.close_idle(),
+                            operation_deadline(
+                                spec.connect_timeout_seconds
+                            ).remaining(),
+                        ):
+                            self._disconnect_key(old_key)
+                            if container_count() < self.max_container_connections:
+                                break
                 if (
                     spec.execution.mode == "container"
-                    and sum(c.owner is not None and not c.closed for c in self._actors)
-                    >= self.max_container_connections
+                    and container_count() >= self.max_container_connections
                 ):
                     raise MCPError(
                         "Too many active MCP containers; close unused host connections before opening another."
@@ -959,9 +1143,123 @@ class MCPRuntime:
                 for name, binding in bindings.items()
                 if not binding.connection.closed and not binding.connection.stopping
             }
+            for binding in bindings.values():
+                binding.connection.used_at = time.monotonic()
             return [
                 copy.deepcopy(binding.definition) for binding in bindings.values()
             ], bindings
+
+    def manifest(self, *, workdir=None, task_id=None):
+        _, bindings = self.snapshot(workdir=workdir, task_id=task_id)
+        result = {name: binding.identity() for name, binding in bindings.items()}
+        if self.selection is not None:
+            from .selection import selected_names
+
+            if set(result) != set(selected_names(self.selection)):
+                raise MCPError("Selected MCP pool is not ready in this workspace.")
+        return result
+
+    def descriptor(self, name, *, workdir=None, task_id=None):
+        _, bindings = self.snapshot(workdir=workdir, task_id=task_id)
+        binding = bindings.get(name)
+        if binding is None:
+            raise MCPError("MCP invocation has no current binding.")
+        self.validate_context(
+            binding, workdir=workdir, task_id=task_id, check_inputs=False
+        )
+        value = {
+            "binding": binding.identity(),
+            "declaration": self.declaration,
+            "cwd": str((workdir or self.workdir).relative_to(self.workdir)),
+            "task_id": task_id,
+        }
+        if binding.connection.spec.execution.mode == "container":
+            value["execution"] = binding.connection.owner.metadata()
+            value["execution"].pop("cleanup_complete", None)
+        return value
+
+    def visible(self, binding, role):
+        return (
+            self.selection is None
+            or role == "lead"
+            or self.delegation == "read_only"
+            and binding.policy.action == "allow"
+            and binding.policy.read_only
+        )
+
+    def ensure_scope(self, *, workdir=None, task_id=None, role="lead"):
+        if self.selection is None or not self.prepared:
+            return
+        for name, tools in self.selection.items():
+            if role != "lead" and (
+                self.delegation != "read_only"
+                or not any(
+                    self.specs[name].tools[t].action == "allow"
+                    and self.specs[name].tools[t].read_only
+                    for t in tools
+                )
+            ):
+                continue
+            spec = self.specs[name]
+            workspace = (
+                MCPWorkspace.select(self.workdir, workdir or self.workdir, task_id)
+                if spec.execution.inputs == "workspace"
+                else None
+            )
+            key = (name, workspace.key) if workspace else name
+            with self._lock:
+                connection = self._connections.get(key)
+            if (
+                connection is not None
+                and not connection.closed
+                and not connection.stopping
+            ):
+                if workspace is None:
+                    continue
+                try:
+                    connection.owner.validate(
+                        self.workdir,
+                        workspace.cwd,
+                        task_id,
+                        operation_deadline(spec.connect_timeout_seconds),
+                    )
+                    continue
+                except ValueError:
+                    pass
+            self.connect(name, workdir=workdir, task_id=task_id)
+
+    def checkpoint(self, *, workdir=None, task_id=None):
+        with self._lock:
+            bindings = dict(self._bindings)
+            if self.workspace_scoped:
+                scope = MCPWorkspace.select(
+                    self.workdir, workdir or self.workdir, task_id
+                )
+                for (_, key), group in self._scoped_bindings.items():
+                    if key == scope.key:
+                        bindings.update(group)
+        selection = self.selection or {}
+        if self.selection is None:
+            for binding in bindings.values():
+                selection.setdefault(binding.connection.spec.name, []).append(
+                    binding.raw_name
+                )
+        from .selection import declaration
+
+        try:
+            declared = (
+                self.declaration
+                if self.selection is not None
+                else declaration(self.specs, selection, self.environment)
+            )
+        except ValueError:
+            return {"supported": False}
+        return {
+            "supported": True,
+            "declaration": declared,
+            "manifest": {name: b.identity() for name, b in bindings.items()},
+            "delegation": self.delegation,
+        }
 
     def _redact(self, value, connection):
         register_private_values(*connection.secrets)
@@ -982,7 +1280,10 @@ class MCPRuntime:
             raise MCPError("MCP binding does not belong to this runtime.")
         if binding.connection.closed or binding.connection.stopping:
             raise MCPError("MCP connection is closing; reconnect explicitly.")
-        if binding.connection.owner is not None:
+        if (
+            binding.connection.owner is not None
+            and binding.connection.spec.execution.mode == "container"
+        ):
             try:
                 binding.connection.owner.validate(
                     self.workdir,
@@ -1022,6 +1323,18 @@ class MCPRuntime:
                 binding.connection.stopping = True
                 if self._loop is not None:
                     self._loop.call_soon_threadsafe(binding.connection.abort)
+            if self.selection is not None and binding.policy.read_only:
+                return json.dumps(
+                    {
+                        "error": str(error),
+                        "outcome": "failed",
+                        "request_state": "sent_response_unknown"
+                        if ticket.started
+                        else "not_sent",
+                        "read_only": True,
+                        "retryable": True,
+                    }
+                )
             raise
         finally:
             ticket.abandon()  # A sent failed request belongs to its closing actor.
@@ -1165,6 +1478,9 @@ class MCPRuntime:
                     raise
         if self._cleanup_future is not None:
             self._cleanup_future.result()
+        for actor in self._actors:
+            if actor.owner is not None and actor.owner._leased:
+                actor.owner.settle()
         if not loop.is_closed():
             loop.call_soon_threadsafe(loop.stop)
         self._loop_workers.wait(None)

@@ -314,6 +314,11 @@ def build_tool_pool(client, model, workdir, components: LoopComponents):
         mcp_workdir=mcp_cwd,
         mcp_task_id=mcp_task,
         mcp_allow_workspace=mcp_allow_workspace,
+        mcp_role="teammate"
+        if team_member is not None
+        else "subagent"
+        if subagent
+        else "lead",
         allow_connect=not subagent and team_member is None,
         allowlist=tool_allowlist,
         bash_policy=components.bash_policy,

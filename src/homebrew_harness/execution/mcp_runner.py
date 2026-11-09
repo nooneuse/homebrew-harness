@@ -129,7 +129,7 @@ class MCPContainerBackend(ContainerBackend):
 
 
 class MCPContainerOwner:
-    def __init__(self, spec, root, workspace, leases, deadline):
+    def __init__(self, spec, root, workspace, leases, deadline, resource_scope=None):
         self.spec = spec
         self.root = canonical_root(Path(root))
         self.workspace = workspace
@@ -140,6 +140,14 @@ class MCPContainerOwner:
         self.process = None
         self._leased = False
         self.activity = track_activity(self)
+        self.process_owner = None
+        if resource_scope:
+            from homebrew_harness.execution.mcp_process import MCPProcessOwner
+
+            self.process_owner = MCPProcessOwner(
+                spec, self.root, leases, resource_scope, deadline, {}
+            )
+            self.process_owner.cancel = self.cancel
 
     def launch(self):
         self.leases.acquire("session")
@@ -154,20 +162,31 @@ class MCPContainerOwner:
                     != self.workspace
                 ):
                     raise ValueError("MCP workspace changed before container launch.")
-                self.process = self.backend.launch(
-                    ExecutionRequest(
-                        self.backend.policy.argv,
-                        cwd,
-                        {},
-                        self.deadline,
-                        recipe_argv=self.backend.policy.native_argv,
-                        cpu_seconds=execution.cpu_seconds,
-                        file_bytes=execution.file_bytes,
-                        open_files=execution.open_files,
-                        cancel_events=(self.cancel,),
-                        owner_root=self.root,
-                    )
+                request = ExecutionRequest(
+                    self.backend.policy.argv,
+                    cwd,
+                    {},
+                    self.deadline,
+                    recipe_argv=self.backend.policy.native_argv,
+                    cpu_seconds=execution.cpu_seconds,
+                    file_bytes=execution.file_bytes,
+                    open_files=execution.open_files,
+                    cancel_events=(self.cancel,),
+                    owner_root=self.root,
                 )
+                if self.process_owner is None:
+                    self.process = self.backend.launch(request)
+                else:
+                    from dataclasses import asdict
+
+                    self.backend.inputs = self.backend._snapshot(request)
+                    self.process_owner.container_config = {
+                        "execution": asdict(execution),
+                        "cwd": str(cwd),
+                        "inputs": self.backend.inputs,
+                        "expires_at": self.deadline.expires_at,
+                    }
+                    self.process = self.process_owner.launch()
             return self.process
         except BaseException:
             # The actor calls settle even if preparation ended with a pending container.
@@ -200,6 +219,13 @@ class MCPContainerOwner:
         from homebrew_harness.execution.background import ShellRunner
 
         self.cancel.set()
+        if self.process_owner is not None:
+            self.process_owner.settle()
+            if self._leased:
+                self.leases.release("session")
+                self._leased = False
+            settle_activity(self.activity, self)
+            return
         while True:
             try:
                 with cleanup_scope():
@@ -234,5 +260,7 @@ class MCPContainerOwner:
             "input_fingerprint": hashlib.sha256(
                 json.dumps(self.backend.inputs, sort_keys=True).encode()
             ).hexdigest(),
-            "cleanup_complete": self.backend.status()["cleanup_complete"],
+            "cleanup_complete": self.process_owner.metadata()["cleanup_complete"]
+            if self.process_owner is not None
+            else self.backend.status()["cleanup_complete"],
         }

@@ -74,6 +74,7 @@ class ToolPool:
         mcp_workdir=None,
         mcp_task_id=None,
         mcp_allow_workspace=True,
+        mcp_role="lead",
         models=None,
         run_tools=frozenset(),
     ):
@@ -159,6 +160,10 @@ class ToolPool:
             tools.append(tool)
         bindings = {}
         if capabilities.has("mcp") and mcp is not None:
+            if mcp_allow_workspace and getattr(mcp, "selection", None) is not None:
+                mcp.ensure_scope(
+                    workdir=mcp_workdir, task_id=mcp_task_id, role=mcp_role
+                )
             external, candidates = (
                 mcp.snapshot(
                     workdir=mcp_workdir,
@@ -170,7 +175,10 @@ class ToolPool:
             )
             for tool in external:
                 name = tool["function"]["name"]
-                if access is None or name in access:
+                if (access is None or name in access) and (
+                    not hasattr(mcp, "visible")
+                    or mcp.visible(candidates[name], mcp_role)
+                ):
                     tools.append(copy.deepcopy(tool))
                     bindings[name] = candidates[name]
         names = [tool["function"]["name"] for tool in tools]

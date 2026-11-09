@@ -478,6 +478,7 @@ class SkillTests(unittest.TestCase):
 
     def test_invalid_explicit_skill_directory_fails_before_model_startup(self):
         with (
+            patch("homebrew_harness.session_cli.load_dotenv"),
             patch("homebrew_harness.session_cli.OpenAI") as client,
             self.assertRaises(SystemExit) as error,
         ):

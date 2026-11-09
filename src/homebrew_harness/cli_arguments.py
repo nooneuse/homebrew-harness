@@ -47,6 +47,13 @@ def add_host_config_arguments(parser):
         help="Bash policy JSON outside the workspace; container mode requires a host-approved image.",
     )
 
+    parser.add_argument(
+        "--mcp-config",
+        type=Path,
+        default=Path.home() / ".config" / "homebrew-harness" / "mcp.json",
+        help="External MCP server/permission configuration; absent default means no registered servers.",
+    )
+
 
 def add_lead_model_argument(parser):
     parser.add_argument(
@@ -141,12 +148,6 @@ def add_session_arguments(parser):
         type=float,
         default=5,
         help="Bounded local shutdown wait in seconds (default: 5).",
-    )
-    parser.add_argument(
-        "--mcp-config",
-        type=Path,
-        default=Path.home() / ".config" / "homebrew-harness" / "mcp.json",
-        help="External MCP server/permission configuration; absent default means no registered servers.",
     )
     parser.add_argument(
         "--allow-tests",

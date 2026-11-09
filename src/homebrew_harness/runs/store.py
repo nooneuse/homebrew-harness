@@ -464,8 +464,14 @@ class RunStore:
         with storage_gate(self.root), db.write() as conn:
             prior = db._get(conn, "input_submissions", mid)
             if prior is not None:
-                if prior["to"] != "user_" + rid or prior["content"] != text or prior["metadata"]["mode"] != mode:
-                    raise ValueError("Input ID was already accepted with another payload or target.")
+                if (
+                    prior["to"] != "user_" + rid
+                    or prior["content"] != text
+                    or prior["metadata"]["mode"] != mode
+                ):
+                    raise ValueError(
+                        "Input ID was already accepted with another payload or target."
+                    )
                 return {"input_id": mid, "state": "queued"}
             value = db._get(conn, "runs", rid)
             if not value or value["status"] in TERMINAL:
@@ -741,6 +747,11 @@ class RunStore:
     def status(self, identity):
         value = self.get(identity)
         value["heartbeat"] = self.runtime.get("run_heartbeats", identity)
+        value["mcp_resources"] = [
+            row
+            for row in self.runtime.items("mcp_resources").values()
+            if row.get("run_id") == identity
+        ]
         from .requests import HumanRequests
 
         requests = HumanRequests(self).records(identity)

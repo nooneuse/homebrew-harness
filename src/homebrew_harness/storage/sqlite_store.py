@@ -48,6 +48,7 @@ RECORD_SECTIONS = (
     "run_input_applied",
     "stage_inputs",
     "run_workspaces",
+    "mcp_resources",
 )
 DB_PATH = ".harness/runtime/database/runtime.sqlite3"
 SCHEMA = """
@@ -129,10 +130,23 @@ class SQLiteDatabase:
             except FileNotFoundError:
                 pass
         try:
-            with SafeFile(self.workdir, DB_PATH) as target, target.open_read():
+            with SafeFile(self.workdir, DB_PATH) as target:
+                self._database_info(target)
                 return True
         except FileNotFoundError:
             return False
+
+    @staticmethod
+    def _database_info(target):
+        # Closing an unrelated descriptor to a SQLite database drops the
+        # process's POSIX locks, including those held by its live connections.
+        # Check the anchored path without opening another database descriptor.
+        target.verify_binding()
+        info = os.stat(target.parts[-1], dir_fd=target.fds[-1], follow_symlinks=False)
+        if not stat.S_ISREG(info.st_mode):
+            raise RecoveryRequired("Runtime database must be a regular file.")
+        target.verify_binding()
+        return info
 
     def schema_statements(self):
         raise NotImplementedError(
@@ -168,8 +182,7 @@ class SQLiteDatabase:
                     os.close(fd)
                 except FileExistsError:
                     pass
-            with target.open_read() as stream:
-                before = os.fstat(stream.fileno())
+            before = self._database_info(target)
             parent = os.fstat(target.fds[-1])
             if parent.st_uid != os.getuid() or stat.S_IMODE(parent.st_mode) & 0o077:
                 raise RecoveryRequired(

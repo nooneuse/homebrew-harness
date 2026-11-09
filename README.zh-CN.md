@@ -129,9 +129,9 @@ homebrew-harness --host-config ~/.config/homebrew-harness/interaction.json
 
 唯一已展示的工具请求也接受完整短回答，如 `允许这次操作`、`拒绝`；混合正文作为 steering 保留。唯一已展示的需求问题接受普通文字回答。测试续期仍需明确边界。管道输入不获得交互审批权限。
 
-首版每个工作区只有一个活动任务。Task／Team／worktree、MCP、Cron、未结束的异步工作或不确定操作会阻挡 Session→Run 交接。交接保留原始需求、已知结果、归档引用、观察用量、剩余期限和测试授权的剩余次数；旧 Session 保持记录并停止恢复执行，目标重新获得验证证据。
+首版每个工作区只有一个活动任务。Task／Team／worktree、Cron、未结束的异步工作或不确定操作会阻挡 Session→Run 交接。已选定 MCP 工具的 Session 在 Actor 关闭后可以交接，目标会核验相同的服务器声明和工具 manifest。交接保留原始需求、已知结果、归档引用、观察用量、剩余期限和测试授权的剩余次数；旧 Session 保持记录并停止恢复执行，目标重新获得验证证据。
 
-关闭 attached 界面会有界停止其持有的执行。`/detach` 明确请求独立 supervisor；`detached: true` 是对自动规划的 managed 任务的宿主生命周期偏好。重新打开入口会附着已有 Run。启动以持久 ACK 和执行租约确认；若启动不确定，`/status` 展示 token，核实旧执行结束后用 `/supervisor-recover TOKEN` 封锁旧启动，再用 `/resume` 重试。Run 当前不支持 MCP 和 Cron。
+关闭 attached 界面会有界停止其持有的执行。`/detach` 明确请求独立 supervisor；`detached: true` 是对自动规划的 managed 任务的宿主生命周期偏好。重新打开入口会附着已有 Run。启动以持久 ACK 和执行租约确认；若启动不确定，`/status` 展示 token，核实旧执行结束后用 `/supervisor-recover TOKEN` 封锁旧启动，再用 `/resume` 重试。Run 支持选定的 MCP 工具；Cron 继续用于 Session。
 
 ## 受管理运行（无人值守）
 
@@ -157,7 +157,7 @@ homebrew-harness run --cwd /path/to/project cancel RUN_ID
 
 `supervise RUN_ID` 在监督进程重启后接管可恢复任务。`steer --mode queued` 将输入留到下一 Episode；`--mode interrupt` 请求取消当前可取消步骤。独立任务使用新的 Run。
 
-默认工具覆盖文件、上下文和测试。阶段端点仅在 Run 具有相应阶段能力时加入。`allow_tests` 预授权固定测试 recipe。`enabled` 可以启用 Subagent、后台执行或登记的 Workflow，`tools` 选择其工具。通过 `--env-file`、`--models-config`、`--test-config` 和 `--bash-config` 指定工作区外的宿主配置。
+默认工具覆盖文件、上下文和测试。阶段端点仅在 Run 具有相应阶段能力时加入。`allow_tests` 预授权固定测试 recipe。`enabled` 可以启用 Subagent、后台执行或登记的 Workflow，`tools` 选择其工具。通过 `--env-file`、`--models-config`、`--test-config`、`--bash-config` 和 `--mcp-config` 指定工作区外的宿主配置。
 
 状态包含运行结果、停止原因、心跳、成员结果和收尾状态。`recovery RUN_ID` 查看需要检查的操作；核对效果后，使用 `inspect RUN_ID OPERATION_ID REVISION` 并显式恢复。恢复需等待原执行完成收尾。
 
@@ -302,7 +302,20 @@ homebrew-harness session --enable mcp \
   "连接 docs 服务，搜索 Hooks，并查询服务版本"
 ```
 
-`/mcp` 查看连接，`/mcp close CONNECTION_ID` 关闭指定实例。配置和脚本位于 [examples](examples/)。
+`/mcp` 查看 Session 连接，`/mcp close CONNECTION_ID` 关闭指定实例。配置和脚本位于 [examples](examples/)。
+
+Run 从宿主配置中选择明确的原始工具名，参见 [MCP Run 示例](examples/config/run-mcp.example.json)：
+
+```sh
+homebrew-harness run --mcp-config ~/.config/homebrew-harness/mcp.json \
+  start --spec examples/config/run-mcp.example.json
+```
+
+`mcp` 映射指定服务器别名及工具列表，同时为 Run 开启 MCP。选中的工具与文件、测试工具进入同一个有效工具池。宿主策略决定权限，`confirm` 调用沿用 Run 的持久请求与一次性批准。worker 重建时重新连接，比较保存的声明和工具 schema；业务状态由外部服务自己的存储保存。
+
+`mcp_delegation` 默认是 `lead_only`。设为 `read_only` 后，成员和 Subagent 可在继承的工具范围内使用已选定且宿主策略为 `allow` + `read_only` 的工具。工作区服务按实际任务准备独立输入。自动交互入口使用同一选择契约，也覆盖 detached 执行及已收尾 Session 的交接。
+
+读取响应丢失会保存为失败观察；写入结果不确定时，先检查恢复记录再继续。Run 状态包含宿主与容器 stdio 的资源记录。若 owner 未能提交关闭事实，宿主核实服务已停止后可用 `run mcp-resource-inspect RUN_ID RESOURCE_ID REVISION --token TOKEN --confirmed-stopped` 保存该检查决定。
 
 直接执行模型 Workflow 可用 `--models-config PATH --model ALIAS` 选择已注册配置；也支持单模型环境配置。选中的配置提供协议、选项与请求限制。Session 内的 Workflow 同样使用完整模型绑定；更换绑定后需创建新的 Workflow 运行。
 

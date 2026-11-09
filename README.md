@@ -129,9 +129,9 @@ A new task uses one bounded planning request and carries the result into executi
 
 A unique displayed tool request also accepts a complete short answer such as `yes` or `no`; mixed prose becomes steering. A unique displayed requirement question accepts a plain answer. Test grants continue to require their exact bounds. Piped input does not acquire interactive approval authority.
 
-The first release has one active task per workspace. Task/Team/worktree, MCP, Cron, unfinished asynchronous work, and uncertain operations prevent Session-to-Run handoff. A handoff preserves original requirements, known results, archive references, observed usage, the remaining deadline and remaining test grants. The old Session retains its records and stops accepting resumed execution; the target obtains fresh verification evidence.
+The first release has one active task per workspace. Task/Team/worktree, Cron, unfinished asynchronous work, and uncertain operations prevent Session-to-Run handoff. A selected MCP Session can hand off after its actors close; the target verifies the same server declaration and tool manifest. A handoff preserves original requirements, known results, archive references, observed usage, the remaining deadline and remaining test grants. The old Session retains its records and stops accepting resumed execution; the target obtains fresh verification evidence.
 
-Closing an attached interface stops its owned execution with bounded cleanup. `/detach` explicitly requests an independent supervisor; `detached: true` is a host lifecycle preference for automatically planned managed tasks. Reopening attaches to the existing Run. Startup uses a durable ACK and execution leases. If startup is uncertain, `/status` exposes its token; after inspecting stopped execution, `/supervisor-recover TOKEN` fences the old launch, and `/resume` can retry. Run currently supports neither MCP nor Cron.
+Closing an attached interface stops its owned execution with bounded cleanup. `/detach` explicitly requests an independent supervisor; `detached: true` is a host lifecycle preference for automatically planned managed tasks. Reopening attaches to the existing Run. Startup uses a durable ACK and execution leases. If startup is uncertain, `/status` exposes its token; after inspecting stopped execution, `/supervisor-recover TOKEN` fences the old launch, and `/resume` can retry. Run supports selected MCP tools; Cron remains available in Sessions.
 
 ## Managed runs (hands-off)
 
@@ -157,7 +157,7 @@ homebrew-harness run --cwd /path/to/project cancel RUN_ID
 
 `supervise RUN_ID` takes over a recoverable task after the supervisor restarts. `steer --mode queued` applies input at the next Episode; `--mode interrupt` requests cancellation of the current cancellable step. Use a new Run for an independent task.
 
-The default tools cover files, context, and tests. Stage endpoints are included only when the Run has the corresponding stage capabilities. `allow_tests` preauthorizes fixed test recipes. `enabled` can add subagents, background execution, or registered Workflows; `tools` selects their tools. Use `--env-file`, `--models-config`, `--test-config`, and `--bash-config` to select external host configuration.
+The default tools cover files, context, and tests. Stage endpoints are included only when the Run has the corresponding stage capabilities. `allow_tests` preauthorizes fixed test recipes. `enabled` can add subagents, background execution, or registered Workflows; `tools` selects their tools. Use `--env-file`, `--models-config`, `--test-config`, `--bash-config`, and `--mcp-config` to select external host configuration.
 
 Run status includes outcomes, stop reasons, heartbeats, member outcomes, and cleanup state. `recovery RUN_ID` lists operations requiring inspection. After checking their effects, use `inspect RUN_ID OPERATION_ID REVISION` and explicitly resume. Recovery waits for the previous execution to finish cleanup.
 
@@ -313,7 +313,20 @@ homebrew-harness session --enable mcp \
   "Connect to the docs service, search for Hooks, and query its version"
 ```
 
-`/mcp` shows connections; `/mcp close CONNECTION_ID` closes one instance. Configuration and demonstration scripts are in [examples](examples/).
+`/mcp` shows Session connections; `/mcp close CONNECTION_ID` closes one instance. Configuration and demonstration scripts are in [examples](examples/).
+
+Runs select explicit raw tool names from that host configuration. See the [MCP Run example](examples/config/run-mcp.example.json):
+
+```sh
+homebrew-harness run --mcp-config ~/.config/homebrew-harness/mcp.json \
+  start --spec examples/config/run-mcp.example.json
+```
+
+The `mcp` map selects server aliases and tool lists, and enables MCP for the Run. Selected tools enter the same effective pool as file and test tools. Host policies determine permission; `confirm` calls use the usual Run requests and one-time approvals. Recreated workers reconnect and compare the saved declaration and tool schemas. Business state persists in the external service's own storage.
+
+`mcp_delegation` defaults to `lead_only`. Set it to `read_only` to expose selected host `allow` + `read_only` tools to teammates and Subagents within their inherited tool scope. Workspace services prepare a separate input scope for the assigned task. Automatic interaction uses the same selection contract, including detached execution and settled Session handoff.
+
+A lost read response is saved as a failed observation. A write with an uncertain result requires recovery inspection before continuing. Run status includes local stdio resource records for host and container execution. If an owner cannot publish closure, inspect the stopped service and use `run mcp-resource-inspect RUN_ID RESOURCE_ID REVISION --token TOKEN --confirmed-stopped` to record that host decision.
 
 ## Optional container execution
 

@@ -24,7 +24,7 @@ from homebrew_harness.runtime.runtime_state import RecoveryRequired
 from homebrew_harness.tools.tool_outcome import needs_inspection
 from homebrew_harness.security.data_boundary import redact
 from .spec import RunSpec, RunOutcome, EpisodeYield, RunStopped
-from .store import RunStore
+from .store import RunStore, owner_guard
 
 _RUN = ContextVar("managed_run", default=None)
 
@@ -400,6 +400,16 @@ class RunController:
             raise ValueError("This Run has no stages.")
         return self.stages.read_handoff(**arguments)
 
+    def mcp_operation_fields(self, name, cwd):
+        from homebrew_harness.execution.test_runner import execution_context
+
+        context = execution_context("lead")
+        return {
+            "mcp": self.session.mcp.descriptor(
+                name, workdir=cwd, task_id=context.task_id
+            )
+        }
+
     def identity(self):
         return {
             "run_id": self.id,
@@ -602,6 +612,90 @@ class RunController:
             or saved["managed_run"].get("spec_hash") != self.identity()["spec_hash"]
         ):
             raise RecoveryRequired("Managed resume requires the original run binding.")
+        from homebrew_harness.tools.mcp.selection import safe_read
+        from homebrew_harness.context.tracked_history import encoded_message
+
+        results, batch = {}, None
+        for message in restored:
+            if message.get("role") == "assistant":
+                batch = encoded_message(message)[1]
+            elif message.get("role") == "tool":
+                results.setdefault((batch, message.get("tool_call_id")), []).append(
+                    message
+                )
+
+        def replace_result(row, output):
+            from homebrew_harness.tools.tool_outcome import needs_inspection
+
+            messages = results.get((row.get("batch_id"), row["call_id"]), [])
+            if len(messages) > 1:
+                messages = [
+                    message
+                    for message in messages
+                    if needs_inspection(message.get("content", ""))
+                ]
+            for message in messages:
+                message["content"] = output
+
+        for row in operations:
+            if (
+                row.get("state") == "done"
+                and row.get("recovered_read")
+                and safe_read(row, self.state)
+            ):
+                replace_result(row, row["output"])
+                uncertain = [value for value in uncertain if value != row["call_id"]]
+                saved["recovery_blocked"] = [
+                    value
+                    for value in saved.get("recovery_blocked", [])
+                    if value != row["call_id"]
+                ]
+                continue
+            if row.get("state") in {"started", "unknown", "partial"} and safe_read(
+                row, self.state
+            ):
+                output = json.dumps(
+                    {
+                        "error": "Worker stopped before a read response was committed.",
+                        "outcome": "failed",
+                        "request_state": "sent_response_unknown",
+                        "read_only": True,
+                        "retryable": True,
+                    }
+                )
+                replace_result(row, output)
+                uncertain = [
+                    call_id for call_id in uncertain if call_id != row["call_id"]
+                ]
+                db = self.store.runtime.backend()
+                settled = {
+                    **row,
+                    "state": "done",
+                    "output": output,
+                    "recovered_read": True,
+                    "revision": row["revision"] + 1,
+                }
+                try:
+                    with db.write() as conn:
+                        current_run = owner_guard(db, conn, self.header)
+                        current = db._get(conn, "operations", row["operation_id"])
+                        if current != row or not safe_read(current, current_run):
+                            raise RecoveryRequired("MCP read changed during recovery.")
+                        db._put(conn, "operations", row["operation_id"], settled)
+                except Exception:
+                    if (
+                        self.store.runtime.get("operations", row["operation_id"])
+                        != settled
+                    ):
+                        raise
+                    self.check_owner()
+                # The caller builds its recovery gate from these same records.
+                row.update(settled)
+                saved["recovery_blocked"] = [
+                    value
+                    for value in saved.get("recovery_blocked", [])
+                    if value != row["call_id"]
+                ]
         # A persisted proposal with no write-ahead operation was never accepted.
         accepted = {r["call_id"] for r in operations}
         unstarted = set(uncertain) - accepted
@@ -617,7 +711,18 @@ class RunController:
                             "error": "Host restarted before this tool was accepted.",
                         }
                     )
-        return [v for v in uncertain if v not in unstarted]
+        return list(
+            dict.fromkeys(
+                [
+                    *[v for v in uncertain if v not in unstarted],
+                    *[
+                        row["call_id"]
+                        for row in operations
+                        if row["state"] in {"started", "unknown", "partial"}
+                    ],
+                ]
+            )
+        )
 
     def prepare(self):
         if self.store.runtime.get_meta("restore_required", False):
@@ -644,6 +749,18 @@ class RunController:
             and self.state["expected_binding"] != s.lead_binding.identity()
         ):
             raise RunStopped("binding_changed")
+        if self.spec.mcp:
+            bindings["mcp"] = s.mcp.declaration
+            if (
+                self.state.get("expected_mcp")
+                and self.state["expected_mcp"] != s.mcp.declaration
+            ):
+                self.requests.invalidate_mcp(self)
+                raise RunStopped("mcp_binding_changed")
+        if self.state["bindings"] and self.state["bindings"].get("mcp") != bindings.get(
+            "mcp"
+        ):
+            self.requests.invalidate_mcp(self)
         head = git_head(s.workdir)
         if self.state["bindings"] is not None and (
             self.state["bindings"] != bindings or self.state["git_head"] != head
@@ -771,6 +888,69 @@ class RunController:
                 }
             )
         s._ensure_runtime(self.deadline().intersect(Deadline.after(2)))
+        if self.spec.mcp:
+            from homebrew_harness.tools.mcp.selection import prepare_runtime
+
+            s.mcp.expected_manifest = self.state.get("mcp_manifest")
+            token = s.inputs.token()
+            try:
+                with s.gateway.scope(
+                    deadline=self.deadline().intersect(self.episode_deadline),
+                    cancel_event=self.cancel,
+                ):
+                    manifest = prepare_runtime(
+                        s.mcp,
+                        workdir=s.workspace.lead_cwd(),
+                        task_id=s.workspace.lead_assignment.id
+                        if s.workspace.lead_assignment
+                        else None,
+                    )
+            except ValueError as error:
+                from homebrew_harness.tools.mcp.runtime import (
+                    MCPBindingChanged,
+                    MCPSelectionMissing,
+                )
+
+                if isinstance(error, (MCPBindingChanged, MCPSelectionMissing)):
+                    self.requests.invalidate_mcp(self)
+                raise
+            if (
+                self.state.get("mcp_manifest") is not None
+                and manifest != self.state["mcp_manifest"]
+            ):
+                self.requests.invalidate_mcp(self)
+                raise RunStopped("mcp_binding_changed")
+            db = self.store.runtime.backend()
+            from homebrew_harness.storage.control_boundary import check_guard
+
+            acceptance = uuid.uuid4().hex
+            try:
+                with db.write() as conn:
+                    owner_guard(db, conn, self.header)
+                    check_guard(db, conn, token)
+                    value = db._get(conn, "runs", self.id)
+                    db._put(
+                        conn,
+                        "runs",
+                        self.id,
+                        {
+                            **value,
+                            "mcp_manifest": manifest,
+                            "mcp_preparation": acceptance,
+                            "revision": value["revision"] + 1,
+                        },
+                    )
+            except Exception:
+                committed = self.store.get(self.id)
+                if (
+                    committed.get("mcp_manifest") != manifest
+                    or committed.get("mcp_preparation") != acceptance
+                    or committed.get("bindings", {}).get("mcp") != s.mcp.declaration
+                ):
+                    raise
+            self.refresh()
+            s.mcp.expected_manifest = manifest
+            s.mcp.prepared = True
         if (
             not handoff
             and self.state.get("handoff_from")
@@ -1000,6 +1180,9 @@ class RunController:
             ModelGatewayError,
             ProposalSuperseded,
         ) as error:
+            from homebrew_harness.tools.mcp.runtime import MCPError
+            from homebrew_harness.security.data_boundary import redact
+
             reason = getattr(
                 error,
                 "reason_code",
@@ -1039,8 +1222,16 @@ class RunController:
                         reason,
                         s.checkpoint_key,
                         required_host_actions=(
-                            "Inspect run configuration or recovery state",
+                            "Check the selected MCP service and frozen configuration"
+                            if isinstance(error, MCPError)
+                            else "Inspect run configuration or recovery state",
                         ),
+                        details={
+                            "error_type": type(error).__name__,
+                            "message": redact(str(error)),
+                        }
+                        if isinstance(error, MCPError)
+                        else {},
                     ).data(),
                 },
             )

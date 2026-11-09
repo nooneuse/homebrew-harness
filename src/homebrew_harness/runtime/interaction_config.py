@@ -28,6 +28,7 @@ class InteractionConfig:
     memory_mode: str = "off"
     demo_workflows: bool = False
     managed_bash: bool = False
+    mcp_delegation: str = "lead_only"
     model_planning: bool = True
     prefer_session: bool = False
     detached: bool = False
@@ -47,6 +48,11 @@ class InteractionConfig:
         ):
             raise ValueError("Invalid automatic host capability catalog.")
         Capabilities(self.allowed, self.memory_mode)
+        if not isinstance(self.mcp_delegation, str) or self.mcp_delegation not in {
+            "lead_only",
+            "read_only",
+        }:
+            raise ValueError("Invalid MCP delegation preference.")
         for name in (
             "demo_workflows",
             "managed_bash",
@@ -122,7 +128,13 @@ class InteractionConfig:
 
     def worker_arguments(self, workdir):
         args = []
-        for name in ("env_file", "models_config", "test_config", "bash_config"):
+        for name in (
+            "env_file",
+            "models_config",
+            "test_config",
+            "bash_config",
+            "mcp_config",
+        ):
             path = getattr(self, name)
             if path is not None:
                 path = Path(path).expanduser().resolve()
@@ -177,6 +189,14 @@ class InteractionAssembler:
                 "tests": sorted(tests.recipes),
                 "write_paths": list(config.write_paths),
                 "managed_bash": config.managed_bash,
+                "mcp": {
+                    name: {
+                        tool: {"action": policy.action, "read_only": policy.read_only}
+                        for tool, policy in spec.tools.items()
+                        if policy.action != "deny"
+                    }
+                    for name, spec in self.mcp_specs.items()
+                },
             }
         finally:
             tests.close()
@@ -297,6 +317,8 @@ class InteractionAssembler:
                     workdir=self.workdir,
                     reserved_names=TOOL_SCHEMAS,
                     environment=self.environment,
+                    selection=route.mcp or None,
+                    delegation=c.mcp_delegation,
                 )
                 if "mcp" in route.capabilities
                 else None
@@ -370,6 +392,8 @@ class InteractionAssembler:
                 goal=goal or route.goal_candidate,
                 enabled=route.capabilities,
                 memory_mode=c.memory_mode,
+                mcp=route.mcp,
+                mcp_delegation=c.mcp_delegation if route.mcp else "lead_only",
                 stages=route.stages,
                 members=route.members,
                 write_paths=c.write_paths,
@@ -426,6 +450,12 @@ class InteractionAssembler:
                     else HOST_POLICY
                 ).identity(),
             }
+            if spec.mcp:
+                from homebrew_harness.tools.mcp.selection import declaration
+
+                self.run_bindings["mcp"] = declaration(
+                    self.mcp_specs, spec.mcp, self.environment
+                )
             self.run_head = git_head(self.workdir)
             return spec
 

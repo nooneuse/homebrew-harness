@@ -116,6 +116,9 @@ def context(control, tool=None, arguments=None):
                 "kind": "paths",
                 "values": [r["target"] for r in value["artifact"]["files"]],
             }
+        if tool.startswith("mcp__"):
+            value["mcp"] = s.mcp.descriptor(tool, workdir=cwd, task_id=value["task_id"])
+            watch = {"kind": "paths", "values": []}
         value["watch"] = watch
         value["workspace"] = workspace_digest(cwd, watch)
     return value
@@ -128,6 +131,12 @@ def matches_record(db, conn, request, run):
         from types import SimpleNamespace
 
         return valid(SimpleNamespace(root=db.workdir), run, ctx, conn=conn, db=db)
+    mcp = ctx.get("mcp")
+    if mcp is not None and (
+        mcp["binding"] != (run.get("mcp_manifest") or {}).get(request["tool"])
+        or mcp["declaration"] != (run.get("bindings") or {}).get("mcp")
+    ):
+        return False
     return (
         request["run_id"] == run["id"]
         and run["status"] not in TERMINAL
@@ -215,7 +224,28 @@ class HumanRequests:
     ):
         if kind not in {"tool", "attention", "test_grant"}:
             raise ValueError("Unknown human request kind.")
-        if kind == "tool" and tool not in {"bash", "run_tests", "publish_artifacts"}:
+        mcp_tool = (
+            kind == "tool"
+            and isinstance(tool, str)
+            and tool.startswith("mcp__")
+            and tool in control.spec.effective_tools()
+            and control.session.mcp is not None
+        )
+        if mcp_tool:
+            descriptor = control.session.mcp.descriptor(
+                tool,
+                workdir=control.session.workspace.lead_cwd(),
+                task_id=control.session.workspace.lead_assignment.id
+                if control.session.workspace.lead_assignment
+                else None,
+            )
+            if descriptor["binding"]["policy"]["action"] != "confirm":
+                raise ValueError("MCP approval requires a verified confirm policy.")
+        if (
+            kind == "tool"
+            and tool not in {"bash", "run_tests", "publish_artifacts"}
+            and not mcp_tool
+        ):
             raise ValueError(
                 "Managed approval covers exact registered Bash, test and publication calls."
             )
@@ -446,6 +476,22 @@ class HumanRequests:
             )
         return updated
 
+    def invalidate_mcp(self, control):
+        db = self.store.runtime.backend()
+        with storage_gate(self.store.root), db.write() as conn:
+            owner_guard(db, conn, control.header)
+            for row in self.records(control.id):
+                if row.get("context", {}).get("mcp") and row["state"] in {
+                    "pending",
+                    "approved",
+                }:
+                    db._put(
+                        conn,
+                        "run_requests",
+                        row["id"],
+                        {**row, "state": "stale", "revision": row["revision"] + 1},
+                    )
+
     def reconcile(self, control):
         rows = self.records(control.id)
         db = self.store.runtime.backend()
@@ -498,7 +544,7 @@ class HumanRequests:
             request["state"] != "approved"
             or request["kind"] != "tool"
             or request["tool"] not in available
-            or request["tool"] not in control.spec.tools
+            or request["tool"] not in control.spec.effective_tools()
             or time.time() > request["expires_at"]
             or request["context"]
             != context(control, request["tool"], request["arguments"])

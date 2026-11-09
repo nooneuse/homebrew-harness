@@ -45,6 +45,8 @@ class RunSpec:
     members: tuple = ()
     enabled: tuple = ()
     memory_mode: str = "off"
+    mcp: dict = field(default_factory=dict)
+    mcp_delegation: str = "lead_only"
     tools: tuple = DEFAULT_TOOLS
     allow_tests: tuple = ()
     write_paths: tuple = (".",)
@@ -78,7 +80,35 @@ class RunSpec:
     )
 
     def __post_init__(self):
-        if not isinstance(self.memory_mode, str) or self.memory_mode not in {"off", "recall", "auto"}:
+        from homebrew_harness.tools.mcp.selection import validate_selection
+
+        if (
+            not isinstance(self.enabled, (list, tuple))
+            or any(not isinstance(value, str) or not value for value in self.enabled)
+            or len(set(self.enabled)) != len(self.enabled)
+        ):
+            raise ValueError("Run collections must contain unique names: enabled")
+        object.__setattr__(self, "mcp", validate_selection(self.mcp))
+        if (
+            not isinstance(self.mcp_delegation, str)
+            or self.mcp_delegation not in {"lead_only", "read_only"}
+            or not self.mcp
+            and self.mcp_delegation != "lead_only"
+        ):
+            raise ValueError(
+                "MCP delegation requires an explicit selected MCP capability."
+            )
+        if self.mcp:
+            object.__setattr__(
+                self, "enabled", tuple(sorted(set(self.enabled) | {"mcp"}))
+            )
+        elif "mcp" in self.enabled:
+            raise ValueError("Managed MCP requires explicit server/tool selection.")
+        if not isinstance(self.memory_mode, str) or self.memory_mode not in {
+            "off",
+            "recall",
+            "auto",
+        }:
             raise ValueError("Invalid managed memory mode.")
         if (
             not isinstance(self.prompt, str)
@@ -173,6 +203,7 @@ class RunSpec:
             "tasks",
             "teams",
             "worktrees",
+            "mcp",
         }:
             raise ValueError(
                 "Managed single-agent runs enable subagents/background/workflow; team and scheduler supervision are separate capabilities."
@@ -190,6 +221,7 @@ class RunSpec:
             | ({"task"} if "subagents" in self.enabled else set())
             | ({"check_background"} if "background" in self.enabled else set())
             | ({"workflow"} if "workflow" in self.enabled else set())
+            | ({"connect_mcp"} if self.mcp else set())
         )
         if self.tools == DEFAULT_TOOLS:
             extra = (
@@ -208,6 +240,7 @@ class RunSpec:
                 | ({"task"} if "subagents" in self.enabled else set())
                 | ({"check_background"} if "background" in self.enabled else set())
                 | ({"workflow"} if "workflow" in self.enabled else set())
+                | ({"connect_mcp"} if self.mcp else set())
             )
             object.__setattr__(self, "tools", tuple(sorted(set(self.tools) | extra)))
         if not self.tools or set(self.tools) - allowed:
@@ -215,6 +248,8 @@ class RunSpec:
         object.__setattr__(
             self, "tools", tuple(sorted(set(self.tools) | RUN_CONTROL_TOOLS))
         )
+        if len(self.effective_tools()) > 128:
+            raise ValueError("Effective managed tool pool exceeds 128 tools.")
         for name, low, high in (
             ("min_free_bytes", 0, 100_000_000_000),
             ("context_chars", 10000, 2000000),
@@ -269,6 +304,11 @@ class RunSpec:
             or not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", self.model_profile)
         ):
             raise ValueError("Run model profile must be a host alias.")
+
+    def effective_tools(self):
+        from homebrew_harness.tools.mcp.selection import selected_names
+
+        return frozenset(self.tools) | selected_names(self.mcp)
 
     def data(self):
         return copy.deepcopy(asdict(self))

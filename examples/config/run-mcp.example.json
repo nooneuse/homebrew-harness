@@ -1,0 +1,15 @@
+{
+  "prompt": "Search the selected docs service for Agent Loop, write a short explanation to REPORT.md, and read it back.",
+  "mcp": {
+    "docs": ["search"]
+  },
+  "goal": {
+    "condition": "The explanation has been saved",
+    "judge": false,
+    "predicates": [
+      {"id": "report", "type": "file_exists", "path": "REPORT.md", "min_bytes": 1}
+    ]
+  },
+  "write_paths": ["REPORT.md"],
+  "total_seconds": 600
+}

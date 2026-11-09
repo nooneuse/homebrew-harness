@@ -592,6 +592,18 @@ class HarnessSession:
                 else {}
             ),
             "capabilities": self.capabilities.manifest(),
+            **(
+                {
+                    "mcp": self.mcp.checkpoint(
+                        workdir=self.workspace.lead_cwd(),
+                        task_id=self.workspace.lead_assignment.id
+                        if self.workspace.lead_assignment
+                        else None,
+                    )
+                }
+                if isinstance(self.mcp, MCPRuntime)
+                else {}
+            ),
             "bash_policy": self.bash_policy.identity(),
             "model_binding": self.lead_binding.identity(),
             "model_registry": self.models.manifest(),
@@ -633,7 +645,7 @@ class HarnessSession:
             if getattr(self, "_pending_user", None)
             else None,
             run_control=self.run_control,
-            tool_allowlist=frozenset(self.run_control.spec.tools)
+            tool_allowlist=self.run_control.spec.effective_tools()
             if self.run_control
             else None,
         )

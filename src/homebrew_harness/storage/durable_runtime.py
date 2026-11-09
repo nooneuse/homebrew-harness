@@ -236,7 +236,7 @@ class CheckpointWriter:
                 self.key, value, ack=ack, expected_revision=expected, boundary=boundary
             )
 
-    def tool_started(self, call, workdir, *, track=False, guard=None):
+    def tool_started(self, call, workdir, *, track=False, guard=None, read_only=False):
         operation_id = uuid.uuid4().hex + ":" + call.id
         self.effects.append(
             {
@@ -244,6 +244,7 @@ class CheckpointWriter:
                 "call_id": call.id,
                 "name": call.name,
                 "state": "started",
+                **({"read_only": True} if read_only else {}),
             }
         )
         record = {
@@ -254,6 +255,7 @@ class CheckpointWriter:
             "call_id": call.id,
             "cwd": str(workdir.resolve().relative_to(self.store.workdir)),
             "time": time.time(),
+            **({"read_only": True} if read_only else {}),
         }
         if getattr(self, "run_control", None):
             record["managed_run"] = self.run_control.header
@@ -270,6 +272,11 @@ class CheckpointWriter:
                     approval_arguments=digest(json.loads(call.arguments)),
                     operation_id=operation_id,
                 )
+            if call.name.startswith("mcp__") and hasattr(
+                self.run_control, "mcp_operation_fields"
+            ):
+                record.update(self.run_control.mcp_operation_fields(call.name, workdir))
+                record["operation_id"] = operation_id
             if call.name == "run_tests":
                 record["test_recipe"] = json.loads(call.arguments)["name"]
                 record["test_grant_key"] = self.run_control.test_grant_key(

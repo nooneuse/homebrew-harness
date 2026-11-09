@@ -550,14 +550,14 @@ class InteractionHost:
                 if (
                     pending
                     or session.capabilities.enabled
-                    & {"tasks", "teams", "worktrees", "mcp", "cron"}
+                    & {"tasks", "teams", "worktrees", "cron"}
                     or self.broker.records()
                     or session.recovery_operations()
                 ):
                     self.state.update(
                         task["id"],
                         state="blocked",
-                        error="Handoff requires a settled single-agent Session without task/team/worktree, MCP or Cron ownership.",
+                        error="Handoff requires a settled single-agent Session without task/team/worktree or Cron ownership.",
                     )
                     return
                 self.state.update(task["id"], state="handoff_pending")
@@ -1007,7 +1007,15 @@ class InteractionHost:
             if goal_state
             else task["route"].get("goal_candidate")
         )
+        mcp = saved.get("mcp", {})
+        if "mcp" in task["route"]["capabilities"] and (
+            not mcp.get("supported") or not mcp.get("declaration", {}).get("selection")
+        ):
+            raise ValueError(
+                "MCP handoff requires a prepared host-selected server/tool manifest."
+            )
         route = TaskRoute(
+            mcp=mcp.get("declaration", {}).get("selection", {}),
             execution_mode="managed",
             capabilities=tuple(task["route"]["capabilities"]),
             goal_candidate=goal,

@@ -99,6 +99,25 @@ class RetirementCases:
         purge_preview(self.root, now=NOW)
         self.assertEqual(before, self.store.read())
 
+    def test_mcp_resources_block_pending_retirement_and_archive_closed_records(self):
+        self.session()
+        row = {
+            "id": "mcp_fixture",
+            "checkpoint": "lead:old",
+            "session_id": "old",
+            "phase": "started",
+            "revision": 0,
+        }
+        self.store.put("mcp_resources", row["id"], row)
+        self.assertIn(
+            "workspace_mcp_cleanup_pending", self.plan()["sessions"][0]["reasons"]
+        )
+        self.store.update_fields("mcp_resources", row["id"], {"phase": "closed"})
+        self.do_retire()
+        self.assertEqual(self.store.items("mcp_resources"), {})
+        unretire(self.root, "old", now=NOW + DAY)
+        self.assertEqual(self.store.get("mcp_resources", row["id"])["phase"], "closed")
+
     def test_active_lease_blocks_preview_and_saved_plan_execution(self):
         self.session()
         plan = self.plan()

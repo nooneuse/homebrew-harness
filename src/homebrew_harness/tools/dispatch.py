@@ -275,7 +275,11 @@ def _execute_tool(
                 or call.name not in handlers
             ):
                 raise ValueError("Exact execution requires the owning managed Lead.")
-            request = run.requests.approved(run, raw["request_id"], handlers)
+            request = run.requests.approved(
+                run,
+                raw["request_id"],
+                frozenset(handlers) | frozenset(mcp_bindings or {}),
+            )
             original = ToolInvocation(
                 call.id, request["tool"], json.dumps(request["arguments"])
             )
@@ -545,7 +549,9 @@ def _execute_tool(
     approval = current_approval()
     if approval is not None:
         try:
-            run.requests.approved(run, approval["id"], handlers)
+            run.requests.approved(
+                run, approval["id"], frozenset(handlers) | frozenset(mcp_bindings or {})
+            )
         except Exception as error:
             return finish(tool_error(error))
     writer = active_writer()
@@ -554,7 +560,15 @@ def _execute_tool(
             before_start.accept()
         operation_id = (
             writer.tool_started(
-                call, workdir, track=True, guard=getattr(before_start, "token", None)
+                call,
+                workdir,
+                track=True,
+                guard=getattr(before_start, "token", None),
+                **(
+                    {"read_only": True}
+                    if binding is not None and binding.policy.read_only is True
+                    else {}
+                ),
             )
             if writer
             else None

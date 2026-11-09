@@ -131,6 +131,32 @@ class MCPContainerTests(unittest.TestCase):
             "mcp__docs__" + tool
         ]
 
+    def test_managed_scopes_retire_idle_containers_before_hitting_the_limit(self):
+        runtime = self.runtime(
+            selection={"docs": ["read_text"]}, max_container_connections=2
+        )
+        scopes = []
+        for index in range(3):
+            cwd = self.root / ".worktrees" / str(index)
+            cwd.mkdir(parents=True)
+            (cwd / "input.txt").write_text(str(index))
+            task = "task_" + str(index) * 8
+            runtime.connect("docs", workdir=cwd, task_id=task)
+            binding = self.binding(runtime, cwd, task, "read_text")
+            self.assertEqual(
+                json.loads(
+                    runtime.call(
+                        binding, {"path": "input.txt"}, workdir=cwd, task_id=task
+                    )
+                )["structuredContent"]["text"],
+                str(index),
+            )
+            scopes.append(binding)
+        self.assertTrue(scopes[0].connection.closed)
+        self.assertFalse(scopes[0].connection.owner._leased)
+        self.assertFalse(scopes[-1].connection.closed)
+        self.assertLessEqual(sum(not c.closed for c in runtime._actors), 2)
+
     def test_policy_and_loader_reject_network_credentials_host_paths_and_mutable_images(
         self,
     ):
@@ -188,6 +214,14 @@ class MCPContainerTests(unittest.TestCase):
         )
         with self.assertRaises(MCPError):
             load_specs(path)
+        from urllib.parse import urlunsplit
+
+        with self.assertRaisesRegex(MCPError, "Container MCP"):
+            replace(
+                self.spec,
+                transport="streamable_http",
+                url=urlunsplit(("http", "example.invalid", "/mcp", "", "")),
+            )
 
     def test_connection_reuses_one_process_and_holds_session_lease(self):
         runtime = self.runtime()

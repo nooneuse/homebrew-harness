@@ -20,6 +20,12 @@ def register(groups):
     commands = parser.add_subparsers(dest="command", required=True)
     start = commands.add_parser("start")
     start.add_argument("--spec", type=Path, required=True)
+    resource = commands.add_parser("mcp-resource-inspect")
+    resource.add_argument("run_id")
+    resource.add_argument("resource_id")
+    resource.add_argument("revision", type=int)
+    resource.add_argument("--token", required=True)
+    resource.add_argument("--confirmed-stopped", action="store_true", required=True)
     for name in ("supervise", "status", "pause", "resume", "cancel", "recovery"):
         commands.add_parser(name).add_argument("run_id")
     for name in (
@@ -120,11 +126,46 @@ def execute(args, parser):
                 raw = f.read(100001)
             if len(raw) > 100000:
                 raise ValueError("RunSpec exceeds its size limit.")
-            value = store.create(RunSpec.from_dict(json.loads(raw)))
+            spec = RunSpec.from_dict(json.loads(raw))
+            declared = None
+            if spec.mcp:
+                from homebrew_harness.execution.model_connections import (
+                    read_environment,
+                )
+                from homebrew_harness.tools.mcp.runtime import load_specs
+                from homebrew_harness.tools.mcp.selection import declaration
+
+                environment = read_environment(args.env_file, store.root)
+                declared = declaration(
+                    load_specs(args.mcp_config), spec.mcp, environment
+                )
+
+            def accept(_db, _conn, value):
+                if declared is not None:
+                    value["expected_mcp"] = declared
+
+            value = store.create(spec, _accept=accept)
             identity = value["id"]
             print(json.dumps({"run_id": identity, "status": "queued"}), flush=True)
         else:
             identity = args.run_id
+
+        if args.command == "mcp-resource-inspect":
+            from homebrew_harness.execution.mcp_process import inspect_resource
+
+            print(
+                json.dumps(
+                    inspect_resource(
+                        store.runtime,
+                        identity,
+                        args.resource_id,
+                        args.revision,
+                        args.token,
+                    ),
+                    ensure_ascii=False,
+                )
+            )
+            return 0
 
         def handoff_model(value, alias, reason, owner=None):
             from dotenv import load_dotenv
@@ -368,7 +409,13 @@ def execute(args, parser):
                 leases.close()
             return 0
         settings = []
-        for name in ("env_file", "models_config", "test_config", "bash_config"):
+        for name in (
+            "env_file",
+            "models_config",
+            "test_config",
+            "bash_config",
+            "mcp_config",
+        ):
             path = getattr(args, name)
             if path is not None:
                 settings.extend(

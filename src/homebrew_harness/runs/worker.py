@@ -23,7 +23,13 @@ from .store import RunStore
 
 
 def make_session(store, control, args):
-    for path in (args.env_file, args.models_config, args.test_config, args.bash_config):
+    for path in (
+        args.env_file,
+        args.models_config,
+        args.test_config,
+        args.bash_config,
+        args.mcp_config,
+    ):
         if path is not None and path.expanduser().resolve().is_relative_to(store.root):
             raise ValueError(
                 "Managed host configuration must be outside the workspace."
@@ -52,6 +58,23 @@ def make_session(store, control, args):
             if args.bash_config
             else HOST_POLICY
         )
+        mcp_runtime = None
+        if control.spec.mcp:
+            from homebrew_harness.tools.mcp.runtime import MCPRuntime, load_specs
+
+            specs = load_specs(args.mcp_config.expanduser())
+            mcp_runtime = MCPRuntime(
+                specs,
+                workdir=store.root,
+                selection=control.spec.mcp,
+                delegation=control.spec.mcp_delegation,
+                environment=os.environ,
+                resource_scope={
+                    **control.header,
+                    "session_id": control.state["session_id"],
+                },
+            )
+            resources.callback(mcp_runtime.close)
         alias = host_models.alias
         binding = host_models.open(
             context_chars=control.spec.context_chars,
@@ -67,6 +90,7 @@ def make_session(store, control, args):
             capabilities=Capabilities(control.spec.enabled, control.spec.memory_mode),
             run_control=control,
             test_runner=tests,
+            mcp_runtime=mcp_runtime,
             bash_policy=bash,
             context_chars=control.spec.context_chars,
             worker_output_tokens=control.spec.output_tokens,

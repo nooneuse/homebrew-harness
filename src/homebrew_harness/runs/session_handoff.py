@@ -126,6 +126,22 @@ def accept_session_handoff(store, interaction, task, spec, config):
                         "revision": source_meta["revision"] + 1,
                     },
                 )
+                mcp = saved.get("mcp", {})
+                if spec.mcp:
+                    if (
+                        not mcp.get("supported")
+                        or mcp["declaration"]["selection"] != spec.mcp
+                    ):
+                        raise ValueError(
+                            "Source MCP manifest does not match the target selection."
+                        )
+                    if mcp["delegation"] != spec.mcp_delegation:
+                        raise ValueError(
+                            "Source MCP delegation does not match the target policy."
+                        )
+                    run.update(
+                        expected_mcp=mcp["declaration"], mcp_manifest=mcp["manifest"]
+                    )
                 run.update(
                     test_grants=source_grants,
                     test_runs=tests["runs"],

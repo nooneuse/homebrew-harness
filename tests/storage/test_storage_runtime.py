@@ -39,6 +39,37 @@ class CurrentStorageTests(unittest.TestCase):
         self.assertFalse((self.root / ".harness/runtime/backend.json").exists())
         self.assertFalse((self.root / ".harness/runtime/state.json").exists())
 
+    def test_database_checks_preserve_live_sqlite_locks_across_process_exit(self):
+        from homebrew_harness.runs import RunStore, RunSpec
+
+        run_store = RunStore(self.root)
+        self.addCleanup(run_store.close)
+        run = run_store.create(RunSpec("Retain active database connection"))
+        run_store.get(run["id"])
+        self.store.put("cron", "live-anchor", {"state": "executed"})
+        wal = Path(str(self.store.path) + "-wal")
+        self.assertTrue(wal.exists())
+        # A second process closing its last connection must see the parent's
+        # SQLite lock and leave its WAL sidecars in place.
+        for _ in range(3):
+            self.assertTrue(self.store.backend().exists())
+            child = subprocess.run(
+                [
+                    sys.executable,
+                    "-I",
+                    "-c",
+                    "import sqlite3,sys;c=sqlite3.connect(sys.argv[1]);c.execute('SELECT count(*) FROM records').fetchone();c.close()",
+                    str(self.store.path),
+                ],
+                capture_output=True,
+                timeout=5,
+            )
+            self.assertEqual(child.returncode, 0, child.stderr.decode())
+            self.assertTrue(wal.exists())
+            self.assertEqual(
+                run_store.get(run["id"])["spec"]["prompt"], run["spec"]["prompt"]
+            )
+
     def test_obsolete_runtime_files_are_rejected_without_conversion(self):
         directory = self.root / ".harness/runtime"
         directory.mkdir(parents=True)

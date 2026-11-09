@@ -75,12 +75,26 @@ def bundle(state, sid):
             for k, v in state.get("input_receipts", {}).items()
             if owns(sid, v.get("checkpoint", ""))
         },
+        "mcp_resources": {
+            k: copy.deepcopy(v)
+            for k, v in state.get("mcp_resources", {}).items()
+            if owns(sid, v.get("checkpoint", ""))
+        },
     }
 
 
 def workspace_blockers(state, external, sid):
     reasons = []
-    if any((v.get("target") or {}).get("id") == sid and v.get("state") not in {"finished", "cancelled"} for v in state.get("interaction_tasks", {}).values()):
+    if any(
+        owns(sid, row.get("checkpoint", "")) and row.get("phase") != "closed"
+        for row in state.get("mcp_resources", {}).values()
+    ):
+        reasons.append("workspace_mcp_cleanup_pending")
+    if any(
+        (v.get("target") or {}).get("id") == sid
+        and v.get("state") not in {"finished", "cancelled"}
+        for v in state.get("interaction_tasks", {}).values()
+    ):
         reasons.append("interaction_task_unfinished")
     if any(
         sid in v.get("session_refs", [v.get("session_id")])
@@ -410,7 +424,11 @@ def _load_archive(root, sid, archive):
         or any(not owns(sid, key) for key in data["checkpoints"])
         or any(
             not owns(sid, value.get("checkpoint", ""))
-            for value in [*data["input_receipts"].values(), *data["input_submissions"].values()]
+            for value in [
+                *data["input_receipts"].values(),
+                *data["input_submissions"].values(),
+                *data.get("mcp_resources", {}).values(),
+            ]
         )
     ):
         raise RecoveryRequired("Cold snapshot ownership does not match.")
@@ -507,6 +525,8 @@ def retire(root, plan, *, now=None):
                     del current["checkpoints"][key]
                 for key in data["operations"]:
                     del current["operations"][key]
+                for key in data["mcp_resources"]:
+                    del current["mcp_resources"][key]
                 for key in data["input_receipts"]:
                     del current["input_receipts"][key]
                 for key in data["input_submissions"]:
@@ -548,6 +568,7 @@ def unretire(root, sid, *, now=None):
                 raise ValueError("Recovery records conflict with the retired snapshot.")
             state["checkpoints"].update(data["checkpoints"])
             state["operations"].update(data["operations"])
+            state.setdefault("mcp_resources", {}).update(data.get("mcp_resources", {}))
             state.setdefault("input_receipts", {}).update(data["input_receipts"])
             state.setdefault("input_submissions", {}).update(data["input_submissions"])
             if data["team"] is not None:

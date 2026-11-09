@@ -629,7 +629,7 @@ class AsyncExitTests(Fixture):
             '{"exit_code":9,"stdout":"","stderr":"failed"}'
         )
         session.background.start("fixture")
-        self.assertEqual(session.drain(timeout=2), 1)
+        self.assertEqual(session.drain(timeout=5), 1)
 
     def test_drain_timeout_reports_pending_then_cancels_command(self):
         release = threading.Event()

@@ -94,6 +94,11 @@ class RunSupervisor:
         if not execution_owned and not self.execution_free():
             return False
         runtime = self.store.runtime
+        for row in runtime.items("mcp_resources").values():
+            if row.get("run_id") == value["id"] and row["phase"] != "closed":
+                return False
+        from homebrew_harness.tools.mcp.selection import safe_read
+
         for sid in value.get("session_refs", [value["session_id"]]):
             scopes = [
                 runtime.items("operations", owner="lead:" + sid),
@@ -102,6 +107,7 @@ class RunSupervisor:
             ]
             if any(
                 r.get("state") in {"started", "unknown", "partial"}
+                and not safe_read(r, value)
                 for rows in scopes
                 for r in rows.values()
             ):
@@ -131,6 +137,17 @@ class RunSupervisor:
             except (ValueError, OSError):
                 return False
         return True
+
+    def wait_mcp_cleanup(self, value, seconds):
+        """Give surviving stdio owners a bounded chance to publish closure."""
+        until = time.monotonic() + seconds
+        while any(
+            row.get("run_id") == value["id"] and row["phase"] != "closed"
+            for row in self.store.runtime.items("mcp_resources").values()
+        ):
+            if time.monotonic() >= until:
+                return
+            time.sleep(min(0.05, max(0, until - time.monotonic())))
 
     def reconcile_completed(self, value):
         if (
@@ -382,6 +399,8 @@ class RunSupervisor:
                                 break
                         time.sleep(0.05)
                     current = self.store.get(identity)
+                    if spec.mcp:
+                        self.wait_mcp_cleanup(current, spec.shutdown_seconds)
                     if current["cleanup_complete"] and current["status"] == "waiting":
                         continue
                     if current["cleanup_complete"] and current["status"] in TERMINAL:
