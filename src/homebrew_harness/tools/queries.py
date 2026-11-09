@@ -11,7 +11,8 @@ from homebrew_harness.security.safe_files import (
     canonical_root,
     relative_parts,
 )
-from .files import run_glob
+from .file_iteration import FileWalk
+from homebrew_harness.security.file_visibility import assert_visible, visible
 
 QUERY_TOOLS = {"search_text", "git_status", "git_diff"}
 
@@ -24,19 +25,20 @@ def search_text(text, *, workdir, pattern="**/*", limit=50):
         or not 1 <= limit <= 100
     ):
         raise ValueError("Search needs a literal string and a limit between 1 and 100.")
-    selected = json.loads(run_glob(pattern, workdir))
-    found, skipped, total = [], 0, 0
-    truncated = selected["truncated"]
-    for path in selected["paths"]:
+    walk = FileWalk(workdir, pattern)
+    found, skipped, total, reason = [], 0, 0, None
+    for path in walk:
         check()
-        with SafeFile(workdir, path) as target:
-            try:
+        try:
+            assert_visible(walk.root, path)
+            with SafeFile(walk.root, path) as target:
                 content, _, _ = target.snapshot(
                     max_bytes=min(2_000_000, 8_000_000 - total)
                 )
-            except ValueError:
-                skipped += 1
-                continue
+                assert_visible(walk.root, path)
+        except (OSError, ValueError):
+            skipped += 1
+            continue
         if content is None:
             skipped += 1
             continue
@@ -51,28 +53,36 @@ def search_text(text, *, workdir, pattern="**/*", limit=50):
             continue
         for line, value in enumerate(decoded.splitlines(), 1):
             check()
-            if text in value:
-                found.append({"path": path, "line": line, "text": value[:1000]})
+            column = value.find(text)
+            if column >= 0:
+                start = max(0, column - 200)
+                found.append(
+                    {
+                        "path": path,
+                        "line": line,
+                        "column": column + 1,
+                        "text": value[start : start + 1000],
+                    }
+                )
                 if len(found) == limit:
-                    return json.dumps(
-                        redact(
-                            {
-                                "matches": found,
-                                "truncated": True,
-                                "skipped_files": skipped,
-                            }
-                        ),
-                        ensure_ascii=False,
-                    )
+                    reason = "match_limit"
+                    break
+        if reason:
+            break
         if total >= 8_000_000:
-            truncated = True
+            reason = "byte_limit"
             break
     return json.dumps(
         redact(
             {
                 "matches": found,
-                "truncated": truncated or bool(skipped),
-                "skipped_files": skipped,
+                "truncated": bool(reason)
+                or walk.truncated
+                or bool(skipped or walk.skipped),
+                "skipped_files": skipped + walk.skipped,
+                "stop_reason": reason
+                or walk.reason
+                or ("unreadable_file" if skipped else None),
             }
         ),
         ensure_ascii=False,
@@ -82,6 +92,8 @@ def search_text(text, *, workdir, pattern="**/*", limit=50):
 def _visible(root, path):
     try:
         if not path or Path(path).is_absolute() or ".." in Path(path).parts:
+            return False
+        if not visible(root, path):
             return False
         parts = relative_parts(path, root)
         if sensitive_path(parts):

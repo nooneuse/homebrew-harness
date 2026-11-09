@@ -79,6 +79,29 @@ def preview(text, limit):
     )
 
 
+@dataclass
+class PreparedGoal:
+    state: dict
+    lease: object
+    owns_lease: bool
+    entries: list
+
+
+def commit_goal_binding(db, conn, entries):
+    from homebrew_harness.storage.control_boundary import ProposalSuperseded
+
+    for entry in entries:
+        value, expected = entry["state"], entry["expected"]
+        previous = db._get(conn, "goals", value["goal_id"])
+        if (
+            previous is not None
+            if expected is None
+            else previous is None or previous.get("revision", 0) != expected
+        ):
+            raise ProposalSuperseded("Goal changed before task binding.")
+        db._put(conn, "goals", value["goal_id"], value)
+
+
 class GoalStore:
     def __init__(self, workdir):
         self.workdir = Path(workdir).resolve()
@@ -341,6 +364,7 @@ class GoalController:
             on_event,
         )
         self.state, self.lease, self._cache = None, None, None
+        self._retired_leases = []
         self.pending_work = None
         self.hard_verifier = hard_verifier or HardVerifier(workdir)
         self.verification_since = time.monotonic()
@@ -377,13 +401,28 @@ class GoalController:
             ) from error
         self._emit()
 
+    def _release_retired(self):
+        failure = None
+        for lease in list(self._retired_leases):
+            try:
+                self.store.release(lease)
+            except Exception as error:
+                failure = failure or error
+            else:
+                self._retired_leases.remove(lease)
+        if failure is not None:
+            raise GoalError("Goal lease cleanup remains pending.") from failure
+
     def _release(self):
         if getattr(self, "_draft", False):
             return
-        self.store.release(self.lease)
-        self.lease = None
+        if self.lease is not None:
+            self._retired_leases.append(self.lease)
+            self.lease = None
+        self._release_retired()
 
-    def set_goal(self, condition, *, goal_id=None):
+    def prepare_goal(self, condition, *, goal_id=None):
+        self._release_retired()
         spec = validate_spec(condition) if isinstance(condition, dict) else None
         if spec is not None:
             for predicate in spec["predicates"]:
@@ -405,15 +444,13 @@ class GoalController:
             raise GoalError(
                 "Goal must be a nonempty completion condition under 4000 characters."
             )
-        if self.pending:
-            self.state.update(
-                status="replaced", last_reason="Replaced by an explicit user goal."
-            )
-            self._persist()
-        self._release()
         goal_id = goal_id or self.store.new_id()
-        self.lease = self.store.claim(goal_id)
-        self.state = {
+        same = self.state is not None and self.state["goal_id"] == goal_id
+        lease = (
+            self.lease if same and self.lease is not None else self.store.claim(goal_id)
+        )
+        expected = self.state.get("revision", 0) if same else None
+        state = {
             "format": 3,
             "goal_id": goal_id,
             "condition": condition.strip(),
@@ -433,10 +470,63 @@ class GoalController:
                 "cached_checks": 0,
             },
         }
-        self.state["spec"] = spec
+        state["spec"] = spec
+        state["revision"] = 1 if expected is None else expected + 1
+        state["binding_id"] = uuid.uuid4().hex
+        entries = []
+        if self.pending and not same:
+            previous = copy.deepcopy(self.state)
+            entries.append(
+                {
+                    "expected": previous.get("revision", 0),
+                    "state": {
+                        **previous,
+                        "status": "replaced",
+                        "last_reason": "Replaced by an explicit user goal.",
+                        "revision": previous.get("revision", 0) + 1,
+                    },
+                }
+            )
+        entries.append({"expected": expected, "state": state})
+        return PreparedGoal(state, lease, lease is not self.lease, entries)
+
+    def discard_prepared(self, prepared):
+        if prepared.owns_lease and prepared.lease is not None:
+            self._retired_leases.append(prepared.lease)
+            prepared.lease = None
+            self._release_retired()
+
+    def adopt_prepared(self, prepared):
+        previous = self.lease
+        self.state, self.lease = prepared.state, prepared.lease
+        prepared.lease = None
         self.verification_since = time.monotonic()
         self._cache = None
-        self._persist()
+        if previous is not None and previous is not self.lease:
+            self._retired_leases.append(previous)
+            self._release_retired()
+        self._emit()
+
+    def set_goal(self, condition, *, goal_id=None):
+        prepared = self.prepare_goal(condition, goal_id=goal_id)
+        try:
+            try:
+                from homebrew_harness.execution.execution_control import cleanup_scope
+
+                with cleanup_scope(), self.store.runtime.backend().write() as conn:
+                    commit_goal_binding(
+                        self.store.runtime.backend(), conn, prepared.entries
+                    )
+            except Exception:
+                if (
+                    self.store.runtime.get("goals", prepared.state["goal_id"])
+                    != prepared.state
+                ):
+                    raise
+            self.adopt_prepared(prepared)
+        except BaseException:
+            self.discard_prepared(prepared)
+            raise
 
     def begin_query(self):
         if self.pending:

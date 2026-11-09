@@ -1123,6 +1123,8 @@ class HarnessSession:
             pending.append("user_input")
         if self.tests.active.is_set():
             pending.append("tests")
+        if self.workflow is not None and self.workflow.pending():
+            pending.append("workflow")
         if (
             (self.background.running_paths() if self.background else [])
             or (self.background is not None and self.background.has_ready())
@@ -1363,8 +1365,61 @@ class HarnessSession:
         self._drain_changed.set()
         return True
 
-    def run_user(self, query: str) -> str:
-        command = HostCommand.parse(query)
+    def _bind_task_goal(self, query, definition):
+        from homebrew_harness.context.task_intent import TaskIntent
+        from homebrew_harness.storage.control_boundary import ProposalSuperseded
+
+        intent = TaskIntent()
+        intent.restore(self.intent.to_dict())
+        intent.update(query)
+        prepared = self.goal.prepare_goal(definition)
+        prepared.state["task_intent"] = intent.to_dict()
+        identity = uuid.uuid4().hex
+        try:
+            try:
+                self._checkpoint_writer.save(
+                    "idle",
+                    boundary={
+                        "goal_binding": prepared.entries,
+                        "guard": self.inputs.token(),
+                    },
+                    overrides={
+                        "intent": intent.to_dict(),
+                        "context_intent": intent.to_dict(),
+                        "goal_id": prepared.state["goal_id"],
+                        "boundary_id": identity,
+                    },
+                )
+            except Exception:
+                if (
+                    self.runtime_store.get("checkpoints", self.checkpoint_key, {}).get(
+                        "boundary_id"
+                    )
+                    != identity
+                ):
+                    raise
+            self.intent.restore(intent.to_dict())
+            self.user_request = self.intent.original
+            self.goal.adopt_prepared(prepared)
+        except ProposalSuperseded as error:
+            self.goal.discard_prepared(prepared)
+            raise RecoveryRequired(
+                "Task/Goal binding changed; inspect the current input before retrying."
+            ) from error
+        except BaseException:
+            self.goal.discard_prepared(prepared)
+            raise
+
+    def run_user(self, query: str, *, goal_spec=None) -> str:
+        if goal_spec is not None:
+            from homebrew_harness.orchestration.hard_conditions import validate_spec
+
+            goal_spec = validate_spec(goal_spec)
+            if not isinstance(query, str) or not query.strip():
+                raise ValueError("A Goal-bound task needs nonempty text.")
+        command = (
+            HostCommand(query) if goal_spec is not None else HostCommand.parse(query)
+        )
         if self.run_control is not None and not command.local:
             raise ValueError(
                 "Managed task input uses submit_user_input; execution uses run_episode."
@@ -1389,9 +1444,15 @@ class HarnessSession:
             control_scope(deadline) if command.local else nullcontext(),
             acquired(self._runtime_init_lock, deadline, inherit=not command.local),
         ):
-            return self._run_user(command, deadline)
+            return (
+                self._run_user(command, deadline)
+                if goal_spec is None
+                else self._run_user(command, deadline, goal_spec=goal_spec)
+            )
 
-    def _run_user(self, command: HostCommand, turn_deadline: Deadline) -> str:
+    def _run_user(
+        self, command: HostCommand, turn_deadline: Deadline, *, goal_spec=None
+    ) -> str:
         if self._closed:
             raise ValueError("Harness session is closed.")
         query = command.query
@@ -1572,7 +1633,9 @@ class HarnessSession:
                         }
                     ]
                     self.goal.clear()
-                if command.name == "goal":
+                if goal_spec is not None:
+                    self._bind_task_goal(query, goal_spec)
+                elif command.name == "goal":
                     if command.action == "resume":
                         goal_id = command.argument or (
                             self.goal.state["goal_id"] if self.goal.state else ""

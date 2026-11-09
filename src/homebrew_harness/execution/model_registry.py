@@ -289,11 +289,22 @@ class ModelRegistry:
                     "protocol": adapter.protocol,
                     "adapter_revision": adapter.revision,
                     "options": adapter.options_json,
+                    **(
+                        {"model_spec": self.specs[chosen].identity()}
+                        if chosen is not None
+                        else {}
+                    ),
                 },
             )
             return ModelBinding(
                 client, model, chosen, fingerprint, context_chars, max_output_tokens
             )
+
+    def own_client(self, client):
+        with acquired(self._lock):
+            if self._closed or "@inherited" in self._clients:
+                raise ValueError("Inherited model client already has an owner.")
+            self._clients["@inherited"] = client
 
     def close(self):
         # Session invokes this only after shared gateway and member execution end.
@@ -312,8 +323,9 @@ class ModelRegistry:
                 raise ClosePending("Model client cleanup is pending; retry host close.")
 
 
-def load_model_registry(path, workdir, *, client_factory=None):
+def load_model_registry(path, workdir, *, client_factory=None, environment=None):
     """Current two-level configuration; no prerelease-format migration."""
+    environment = os.environ if environment is None else environment
     path = Path(path).expanduser().resolve()
     if path.is_relative_to(Path(workdir).resolve()):
         raise ValueError("Model configuration must be outside the workspace.")
@@ -357,7 +369,7 @@ def load_model_registry(path, workdir, *, client_factory=None):
                 raise ValueError(
                     "Model configuration requires an environment variable name."
                 )
-            value = os.getenv(name, "").strip()
+            value = str(environment.get(name) or "").strip()
             if not value:
                 raise ValueError("A registered model environment variable is missing.")
             register_model_environment(names=(name,))

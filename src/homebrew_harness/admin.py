@@ -1,49 +1,29 @@
 """Host CLI for storage/GC/benchmarks; deliberately absent from model tool schemas."""
 
-import io
 import json
-import os
-import stat
 import sys
 from pathlib import Path
 
-from homebrew_harness.cli_arguments import add_location_arguments
+from homebrew_harness.cli_arguments import (
+    add_location_arguments,
+    add_direct_model_arguments,
+)
 
 
 def external_model_config(path, workspace):
-    from dotenv import dotenv_values
+    from homebrew_harness.execution.model_connections import read_environment
 
-    from homebrew_harness.security.data_boundary import register_private_values
-
-    path = Path(path).expanduser()
-    if path.resolve().is_relative_to(workspace.resolve()) or path.is_symlink():
-        raise ValueError(
-            "Benchmark connection settings must be a private host file outside the workspace."
-        )
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    try:
-        info = os.fstat(fd)
-        if (
-            not stat.S_ISREG(info.st_mode)
-            or info.st_uid != os.getuid()
-            or info.st_mode & 0o077
-        ):
-            raise ValueError(
-                "Benchmark connection file must be private and owner-only."
-            )
-        with os.fdopen(fd, "rb", closefd=False) as stream:
-            raw = stream.read(65537)
-        if len(raw) > 65536:
-            raise ValueError("Benchmark connection file exceeds the size limit.")
-    finally:
-        os.close(fd)
-    values = dotenv_values(stream=io.StringIO(raw.decode()), interpolate=False)
-    names = ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL")
-    config = {name: os.getenv(name) or values.get(name) for name in names}
-    if any(not value for value in config.values()):
+    values = read_environment(path, workspace, private=True)
+    config = {
+        name: values.get(name)
+        for name in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL")
+    }
+    if not all(config.values()):
         raise ValueError(
             "Benchmark connection file requires OPENAI_API_KEY, OPENAI_BASE_URL and OPENAI_MODEL."
         )
+    from homebrew_harness.security.data_boundary import register_private_values
+
     register_private_values(config["OPENAI_API_KEY"], config["OPENAI_BASE_URL"])
     return config
 
@@ -118,6 +98,7 @@ def register(groups):
             command.add_argument("--checkpoint-days", type=int, default=15)
             command.add_argument("--keep-recent", type=int, default=10)
         if name == "benchmark":
+            add_direct_model_arguments(command)
             command.add_argument(
                 "--live",
                 action="store_true",
@@ -255,26 +236,41 @@ def execute(args, parser):
 
             client = None
             model = "offline-fixture"
+            binding = None
+            if not args.live and (
+                args.models_config is not None or args.model is not None
+            ):
+                raise ValueError("Model selection requires --live for benchmark.")
             if args.live:
-                from openai import OpenAI
-
-                config = external_model_config(args.env_file, root)
-                client = OpenAI(
-                    api_key=config["OPENAI_API_KEY"],
-                    base_url=config["OPENAI_BASE_URL"],
-                    max_retries=0,
+                from homebrew_harness.execution.model_connections import (
+                    HostModels,
+                    read_environment,
                 )
-                model = config["OPENAI_MODEL"]
+
+                host_models = HostModels(
+                    root,
+                    config=args.models_config,
+                    alias=args.model,
+                    environment=read_environment(args.env_file, root, private=True),
+                )
+                binding = host_models.open()
+                client, model = binding.client, binding.model
             try:
                 result = run_benchmark(
                     client,
                     model,
                     max_turns=args.max_turns,
                     timeout_seconds=args.timeout_seconds,
+                    **(
+                        {"binding": binding, "on_gateway": host_models.track_gateway}
+                        if binding
+                        else {}
+                    ),
                 )
             finally:
-                if client is not None:
-                    client.close()
+                if "host_models" in locals():
+                    if not host_models.close_when_idle():
+                        return 2
         if args.output:
             publish(root, args.output, result)
         print(json.dumps(result, ensure_ascii=False, indent=2))

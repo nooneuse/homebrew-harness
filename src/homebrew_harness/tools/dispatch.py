@@ -145,7 +145,10 @@ def execute_tool(
             )[1]
         else:
             mcp_bindings = mcp_runtime.snapshot()[1] if mcp_runtime else {}
+    from homebrew_harness.security.file_visibility import file_access_scope
+
     with (
+        file_access_scope(archive_store, restrict_archives=restrict_archives),
         test_approval_scope(),
         spawn_approval_scope(),
         mcp_policies({name: binding.policy for name, binding in mcp_bindings.items()}),
@@ -396,10 +399,10 @@ def _execute_tool(
         ):
             workdir = goal_controller.store.workdir
         if (
-            call.name == "glob"
+            call.name in {"glob", "search_text"}
             and not restrict_archives
             and goal_controller is not None
-            and goal_controller.owns_pattern(arguments["pattern"])
+            and goal_controller.owns_pattern(arguments.get("pattern", "**/*"))
         ):
             workdir = goal_controller.store.workdir
         event = ToolEvent(call.name, arguments, workdir, getattr(call, "id", ""))

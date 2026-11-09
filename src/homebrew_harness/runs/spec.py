@@ -12,22 +12,28 @@ from homebrew_harness.security.data_boundary import redact
 from homebrew_harness.execution.model_gateway import ModelGatewayError
 
 TERMINAL = {"completed", "failed", "cancelled"}
-RUN_TOOLS = frozenset(
-    {
-        "request_attention",
-        "execute_approved",
-        "read_run_event",
-        "get_handoff",
-        "integrate_stage",
-        "publish_stage",
-    }
+RUN_CONTROL_TOOLS = frozenset(
+    {"request_attention", "execute_approved", "read_run_event"}
 )
+RUN_STAGE_TOOLS = frozenset({"get_handoff", "integrate_stage", "publish_stage"})
+RUN_TOOLS = RUN_CONTROL_TOOLS | RUN_STAGE_TOOLS
 DEFAULT_TOOLS = tuple(
     sorted(
         (CORE_TOOLS - {"bash", "list_artifacts", "get_artifact", "publish_artifacts"})
-        | RUN_TOOLS
+        | RUN_CONTROL_TOOLS
     )
 )
+
+
+def stage_run_tools(stages):
+    result = set()
+    if stages:
+        result.add("get_handoff")
+    if any(stage.get("integrates") for stage in stages):
+        result.add("integrate_stage")
+    if any(stage.get("publish") for stage in stages):
+        result.add("publish_stage")
+    return frozenset(result)
 
 
 @dataclass(frozen=True)
@@ -176,14 +182,16 @@ class RunSpec:
                 if self.members
                 else set()
             )
-            | RUN_TOOLS
+            | RUN_CONTROL_TOOLS
+            | stage_run_tools(self.stages)
             | ({"task"} if "subagents" in self.enabled else set())
             | ({"check_background"} if "background" in self.enabled else set())
             | ({"workflow"} if "workflow" in self.enabled else set())
         )
         if self.tools == DEFAULT_TOOLS:
             extra = (
-                (STAGE_TOOLS if self.stages else set())
+                stage_run_tools(self.stages)
+                | (STAGE_TOOLS if self.stages else set())
                 | (
                     {
                         "spawn_teammate",
@@ -201,7 +209,9 @@ class RunSpec:
             object.__setattr__(self, "tools", tuple(sorted(set(self.tools) | extra)))
         if not self.tools or set(self.tools) - allowed:
             raise ValueError("Run tool selection exceeds its enabled capabilities.")
-        object.__setattr__(self, "tools", tuple(sorted(set(self.tools) | RUN_TOOLS)))
+        object.__setattr__(
+            self, "tools", tuple(sorted(set(self.tools) | RUN_CONTROL_TOOLS))
+        )
         for name, low, high in (
             ("min_free_bytes", 0, 100_000_000_000),
             ("context_chars", 10000, 2000000),

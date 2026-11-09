@@ -41,6 +41,10 @@ def apply_boundary(db, conn, boundary):
         from homebrew_harness.runs.team import commit_member_outcome
 
         commit_member_outcome(db, conn, boundary["member_outcome"])
+    if boundary.get("goal_binding"):
+        from homebrew_harness.orchestration.goal_loop import commit_goal_binding
+
+        commit_goal_binding(db, conn, boundary["goal_binding"])
     goal = boundary.get("goal")
     if goal is not None:
         previous = db._get(conn, "goals", goal["goal_id"])

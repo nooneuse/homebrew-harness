@@ -92,7 +92,7 @@ class ManagementTests(unittest.TestCase):
         (self.root / "link.py").symlink_to(self.root / ".env")
         result = json.loads(search_text("needle", workdir=self.root))
         self.assertEqual(
-            result["matches"], [{"path": "code.py", "line": 2, "text": "needle here"}]
+            result["matches"], [{"path": "code.py", "line": 2, "column": 1, "text": "needle here"}]
         )
         with self.assertRaises(ValueError):
             search_text("needle", workdir=self.root, pattern="../*")

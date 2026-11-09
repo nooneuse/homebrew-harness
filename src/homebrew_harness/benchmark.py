@@ -153,6 +153,8 @@ def run_benchmark(
     output_tokens=4096,
     max_turns=4,
     timeout_seconds=120,
+    binding=None,
+    on_gateway=None,
 ):
     if (
         type(count) is not int
@@ -183,6 +185,17 @@ def run_benchmark(
                 "results": [{"id": key, "ok": value} for key, value in result.items()],
             }
 
+    if binding is not None:
+        output_tokens = min(output_tokens, binding.max_output_tokens)
+        from homebrew_harness.execution.providers import adapter_for
+
+        adapter = (
+            binding.client._adapter
+            if isinstance(binding.client, ModelGateway)
+            else adapter_for(binding.client)
+        )
+        if not adapter.capabilities.tools:
+            raise ValueError("Benchmark model requires file tool support.")
     started = time.monotonic()
     report = {
         "format": 1,
@@ -194,11 +207,22 @@ def run_benchmark(
         "quality_claim": "small_file_task_sample"
         if client is not None
         else "protocol_and_verifier_only",
+        "model_profile": binding.profile if binding else None,
         "model_fingerprint": profile_fingerprint(
             client or OfflineClient(TASKS[0]),
             model,
-            profile="benchmark-v1",
-            settings={"output_tokens": output_tokens},
+            profile=binding.profile if binding else "benchmark-v1",
+            settings={
+                "output_tokens": output_tokens,
+                **(
+                    {
+                        "binding": binding.identity(),
+                        "context_chars": min(50000, binding.context_chars),
+                    }
+                    if binding
+                    else {}
+                ),
+            },
         ),
         "tasks": [],
         "uncovered": [],
@@ -222,6 +246,8 @@ def run_benchmark(
             ),
             workdir=base,
         )
+        if on_gateway is not None:
+            on_gateway(gateway)
         gateway.configure_worker_output(output_tokens)
         for task in TASKS[:count]:
             root = base / task["id"]
@@ -231,7 +257,12 @@ def run_benchmark(
             transport = gateway.bind(
                 client if client is not None else OfflineClient(task)
             )
-            compactor = ContextCompactor(transport, model, root)
+            compactor = ContextCompactor(
+                transport,
+                model,
+                root,
+                context_chars=min(50000, binding.context_chars) if binding else 50000,
+            )
             compactor.intent.update(task["prompt"])
             messages = [
                 {

@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 import json
-import os
 from contextlib import contextmanager
 from pathlib import Path
 
 from homebrew_harness.execution.execution_control import check as execution_check
 from homebrew_harness.execution.execution_leases import file_update_lease
-from homebrew_harness.security.data_boundary import sensitive_path
+from homebrew_harness.security.file_visibility import assert_visible, private_parts
 from homebrew_harness.security.safe_files import (
     FilePublicationError,
     SafeFile,
@@ -32,20 +31,14 @@ def safe_path(path: str, workdir: Path) -> Path:
 
 
 def model_file_path(path):
-    parts = Path(path).parts
-    if any(
-        parts[i : i + 2] == (".harness", "protocol-state")
-        for i in range(len(parts) - 1)
-    ):
-        raise ValueError(
-            "Opaque provider replay state is private runtime data, not a file-tool resource."
-        )
+    if private_parts(Path(path).parts):
+        raise ValueError("Private runtime files are not model file resources.")
 
 
 def run_read(
     path: str, workdir: Path, limit: int | None = None, offset: int = 0
 ) -> str:
-    model_file_path(path)
+    assert_visible(workdir, path)
     with SafeFile(workdir, path) as target, target.open_read() as stream:
         import io
 
@@ -60,7 +53,9 @@ def run_read(
         execution_check()
         content = reader.read(OUTPUT_CHAR_LIMIT + 1)
         reader.detach()
+        target.verify_binding()
         relative = "/".join(target.parts)
+        assert_visible(target.root, relative)
     selected = (
         content if limit is None else "".join(content.splitlines(keepends=True)[:limit])
     )
@@ -127,67 +122,28 @@ def run_edit(path: str, old_text: str, new_text: str, workdir: Path) -> str:
 
 
 def run_glob(pattern: str, workdir: Path) -> str:
-    root = canonical_root(workdir)
-    if Path(pattern).is_absolute() or ".." in Path(pattern).parts:
-        raise ValueError("glob requires a relative pattern without '..'.")
-    safe_path(pattern, root)
-    import fnmatch
-    from functools import lru_cache
+    from .file_iteration import FileWalk
 
-    pattern_parts = Path(pattern).parts
-
-    def matches_pattern(relative):
-        parts = relative.parts
-
-        @lru_cache(None)
-        def match(i, j):
-            if j == len(pattern_parts):
-                return i == len(parts)
-            if pattern_parts[j] == "**":
-                return match(i, j + 1) or i < len(parts) and match(i + 1, j)
-            return (
-                i < len(parts)
-                and fnmatch.fnmatchcase(parts[i], pattern_parts[j])
-                and match(i + 1, j + 1)
-            )
-
-        return match(0, 0)
-
-    matches = set()
-    visited = 0
-    for directory, dirs, files in os.walk(root, followlinks=False):
-        execution_check()
-        parent = Path(directory)
-        dirs[:] = [
-            name
-            for name in dirs
-            if not (parent / name).is_symlink() and not sensitive_path((name,))
-        ]
-        for name in files:
-            execution_check()
-            visited += 1
-            if visited > 100_000:
-                raise ValueError(
-                    "Directory traversal exceeds the host limit; use a narrower directory."
-                )
-            candidate = parent / name
-            relative = candidate.relative_to(root)
-            text = relative.as_posix()
-            if not matches_pattern(relative):
-                continue
-            if candidate.is_symlink() or sensitive_path(relative.parts):
-                continue
-            with SafeFile(root, text) as target, target.open_read():
-                matches.add(text)
-            if len(matches) > GLOB_RESULT_LIMIT:
-                break
-        if len(matches) > GLOB_RESULT_LIMIT:
+    walk = FileWalk(workdir, pattern)
+    paths = []
+    for path in walk:
+        try:
+            with SafeFile(walk.root, path) as target, target.open_read():
+                assert_visible(walk.root, path)
+                paths.append(path)
+        except (OSError, ValueError):
+            walk.skipped += 1
+            walk.truncated, walk.reason = True, "unreadable_file"
+        if len(paths) > GLOB_RESULT_LIMIT:
             break
-    paths = sorted(matches)
+    truncated = len(paths) > GLOB_RESULT_LIMIT or walk.truncated
     return json.dumps(
         {
-            "paths": paths[:GLOB_RESULT_LIMIT],
-            "truncated": len(paths) > GLOB_RESULT_LIMIT,
+            "paths": sorted(paths[:GLOB_RESULT_LIMIT]),
+            "truncated": truncated,
+            "stop_reason": "result_limit"
+            if len(paths) > GLOB_RESULT_LIMIT
+            else walk.reason,
         },
         ensure_ascii=False,
     )

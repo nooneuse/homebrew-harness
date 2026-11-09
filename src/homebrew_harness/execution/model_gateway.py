@@ -614,6 +614,13 @@ class ModelGateway:
                 for receipt in self._state.inflight.values()
             )
 
+    def inflight_context(self, context_id):
+        with self._state.condition:
+            return sum(
+                r.metadata.get("context_id") == context_id
+                for r in self._state.inflight.values()
+            )
+
     @property
     def inflight(self):
         with self._state.condition:

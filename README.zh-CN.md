@@ -86,6 +86,8 @@ homebrew-harness session --resume-session
 
 工作目录默认为启动命令时所在的目录。`--cwd` 选择其他工作区，会话状态保存在该工作区中。
 
+文件查询以有界结果检查源码，默认跳过 Git、依赖和运行时目录；显式完整结果引用按所属上下文读取。
+
 默认 `core` 配置包含基础工具。按需启用可选模块：
 
 ```sh
@@ -123,7 +125,7 @@ homebrew-harness run --cwd /path/to/project cancel RUN_ID
 
 `supervise RUN_ID` 在监督进程重启后接管可恢复任务。`steer --mode queued` 将输入留到下一 Episode；`--mode interrupt` 请求取消当前可取消步骤。独立任务使用新的 Run。
 
-默认工具覆盖文件、上下文和测试。`allow_tests` 预授权固定测试 recipe。`enabled` 可以启用 Subagent、后台执行或登记的 Workflow，`tools` 选择其工具。通过 `--env-file`、`--models-config`、`--test-config` 和 `--bash-config` 指定工作区外的宿主配置。
+默认工具覆盖文件、上下文和测试。阶段端点仅在 Run 具有相应阶段能力时加入。`allow_tests` 预授权固定测试 recipe。`enabled` 可以启用 Subagent、后台执行或登记的 Workflow，`tools` 选择其工具。通过 `--env-file`、`--models-config`、`--test-config` 和 `--bash-config` 指定工作区外的宿主配置。
 
 状态包含运行结果、停止原因、心跳、成员结果和收尾状态。`recovery RUN_ID` 查看需要检查的操作；核对效果后，使用 `inspect RUN_ID OPERATION_ID REVISION` 并显式恢复。恢复需等待原执行完成收尾。
 
@@ -244,6 +246,8 @@ homebrew-harness session --allow-tests unit-tests \
   --goal-spec ~/.config/homebrew-harness/goal.json
 ```
 
+同时提供任务描述和 `--goal-spec` 时，描述仍是任务正文，文件提供完成条件；运行时在模型工作前保存两者。Goal 文件使用有界的 UTF-8 JSON 输入。
+
 工作区包含 `tests/` 时，默认登记 `unit-tests`。自定义测试使用 [TestRunner 模板](examples/config/.test-runner.example.json) 和 `--test-config`。`/tests` 查看 recipe，`/tests approve NAME` 或 `--allow-tests NAME` 授权执行。结果关联被测代码快照，供 Goal 检查。
 
 ## Workflow 与 MCP
@@ -267,6 +271,17 @@ homebrew-harness session --enable mcp \
 ```
 
 `/mcp` 查看连接，`/mcp close CONNECTION_ID` 关闭指定实例。配置和脚本位于 [examples](examples/)。
+
+直接执行模型 Workflow 可用 `--models-config PATH --model ALIAS` 选择已注册配置；也支持单模型环境配置。选中的配置提供协议、选项与请求限制。
+
+```sh
+homebrew-harness workflow --models-config ~/.config/homebrew-harness/models.json \
+  --model planner run review-changes --changes-file changes.txt
+homebrew-harness admin benchmark --live \
+  --models-config ~/.config/homebrew-harness/models.json --model planner
+```
+
+benchmark 默认离线，`--live` 显式选择模型执行，验收范围是一组小型文件任务。Workflow 状态包含收尾情况，暂停的运行在实际收尾结束后可恢复；调用者有界返回，未结束的执行继续被运行时持有。
 
 ## 可选容器执行
 

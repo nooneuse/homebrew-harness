@@ -425,8 +425,9 @@ class FollowupTests(unittest.TestCase):
                 "homebrew_harness.runtime.session.HarnessSession", side_effect=construct
             ),
         ):
-            result = homebrew_harness.cli.main(["session"] +
-                [
+            result = homebrew_harness.cli.main(
+                ["session"]
+                + [
                     "--profile",
                     "core",
                     "--context-chars",
@@ -669,7 +670,7 @@ class FollowupTests(unittest.TestCase):
         )
         self.assertIn("Also inspect tests", inherited["content"])
 
-    def test_builtin_workflow_uses_only_gateway_transport_thread_and_checkpoint_journal(
+    def test_builtin_workflow_uses_one_execution_owner_and_gateway_transport(
         self,
     ):
         from homebrew_harness.orchestration.workflow_runtime import (
@@ -681,7 +682,10 @@ class FollowupTests(unittest.TestCase):
 
         response = reply("saved")
         from openai.types import CompletionUsage
-        response.usage = CompletionUsage(total_tokens=23, prompt_tokens=0, completion_tokens=23)
+
+        response.usage = CompletionUsage(
+            total_tokens=23, prompt_tokens=0, completion_tokens=23
+        )
         client, _ = fake_client([response])
 
         async def script(ctx, args):
@@ -696,11 +700,13 @@ class FollowupTests(unittest.TestCase):
         )
         self.addCleanup(runtime.close)
         with patch.object(
-            runtime._threads,
-            "start",
-            side_effect=AssertionError("unexpected waiting thread"),
-        ):
+            runtime._threads, "start", wraps=runtime._threads.start
+        ) as start:
             result = runtime.run("fixture", {})
+        self.assertEqual(
+            [call.kwargs.get("name") for call in start.call_args_list],
+            ["workflow-execution"],
+        )
         self.assertEqual(result["task"]["status"], "completed")
         rows = [
             json.loads(line)

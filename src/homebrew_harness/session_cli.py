@@ -77,44 +77,24 @@ def execute(args, parser) -> int:
     if args.skills_dir is not None and not skills_dir.is_dir():
         parser.error("--skills-dir must be an existing directory")
 
-    config = {
-        name: os.getenv(name, "").strip()
-        for name in homebrew_harness.configuration.CONFIG_VARIABLES
-    }
-    from homebrew_harness.execution.model_registry import (
-        ModelRegistry,
-        load_model_registry,
-    )
+    from homebrew_harness.execution.model_connections import HostModels
 
     try:
-        models = (
-            load_model_registry(args.models_config, workdir)
-            if args.models_config
-            else ModelRegistry()
+        host_models = HostModels(
+            workdir,
+            config=args.models_config,
+            alias=args.lead_model,
+            environment=os.environ,
+            client_factory=OpenAI,
         )
-        lead_alias = (
-            args.lead_model if args.lead_model is not None else models.lead_default
-        )
-        if lead_alias is not None:
-            models.validate(lead_alias)
     except ValueError as error:
-        print(str(error), file=sys.stderr)
+        print(redact(str(error)), file=sys.stderr)
         return 1
-    missing = (
-        [name for name, value in config.items() if not value]
-        if lead_alias is None
-        else []
-    )
-    if missing:
-        print("Missing configuration: " + ", ".join(missing), file=sys.stderr)
-        return 1
-
-    client_factory = OpenAI
-    models.client_factory = client_factory
+    models, lead_alias = host_models.registry, host_models.alias
     effective_model = (
         models.specs[lead_alias].model
-        if lead_alias is not None
-        else config["OPENAI_MODEL"]
+        if lead_alias
+        else host_models.environment["OPENAI_MODEL"]
     )
     skill_loader = None
     if args.skills_dir is not None:
@@ -124,6 +104,18 @@ def execute(args, parser) -> int:
             parser.error("Cannot scan the configured skills directory")
 
     try:
+        from homebrew_harness.orchestration.goal_input import load_goal_input
+
+        goal_spec = (
+            load_goal_input(args.goal_spec) if args.goal_spec is not None else None
+        )
+        prompt = (
+            args.prompt
+            if args.prompt is not None
+            else goal_spec["condition"]
+            if goal_spec
+            else None
+        )
         with ExitStack() as host_resources:
             if args.bash_mode == "host":
                 bash_policy = HOST_POLICY
@@ -147,8 +139,6 @@ def execute(args, parser) -> int:
             host_resources.callback(test_runner.close)
             for name in args.allow_tests:
                 test_runner.approve(name)
-            if args.goal_spec is not None:
-                args.prompt = "/goal spec " + args.goal_spec.expanduser().read_text()
             mcp_path = args.mcp_config.expanduser().resolve()
             specs = (
                 load_specs(
@@ -161,18 +151,11 @@ def execute(args, parser) -> int:
                 if selected.has("mcp")
                 else {}
             )
-            client = None
-            if lead_alias is None:
-                client = host_resources.enter_context(
-                    client_factory(
-                        api_key=config["OPENAI_API_KEY"],
-                        base_url=config["OPENAI_BASE_URL"],
-                        timeout=60.0,
-                        max_retries=0,
-                    )
-                )
-            else:
-                client = models.select(lead_alias).client
+            binding = host_models.open(
+                context_chars=args.context_chars,
+                output_tokens=args.worker_output_tokens or 4096,
+            )
+            client, effective_model = binding.client, binding.model
             with termination_guard():
                 mcp_runtime = (
                     MCPRuntime(
@@ -214,7 +197,7 @@ def execute(args, parser) -> int:
                     or effective_model,
                     goal_check_tokens=args.goal_check_tokens,
                     goal_input_chars=args.goal_input_chars,
-                    mode="one_shot" if args.prompt is not None else "interactive",
+                    mode="one_shot" if prompt is not None else "interactive",
                     shutdown_timeout=args.shutdown_timeout,
                     gateway_limits=gateway_limits_from_args(args),
                     test_runner=test_runner,
@@ -227,8 +210,12 @@ def execute(args, parser) -> int:
                     model_registry=models,
                     lead_model_profile=lead_alias,
                 ) as session:
-                    if args.prompt is not None:
-                        print(session.run_user(args.prompt))
+                    if prompt is not None:
+                        print(
+                            session.run_user(prompt)
+                            if goal_spec is None
+                            else session.run_user(prompt, goal_spec=goal_spec)
+                        )
                         status = session.drain(timeout=args.wait_timeout)
                         if status:
                             print(

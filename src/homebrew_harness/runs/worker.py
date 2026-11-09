@@ -15,7 +15,7 @@ from homebrew_harness.cli_arguments import (
 )
 from homebrew_harness.execution.bash_policy import HOST_POLICY, load_bash_policy
 from homebrew_harness.execution.model_gateway import GatewayLimits
-from homebrew_harness.execution.model_registry import ModelRegistry, load_model_registry
+from homebrew_harness.execution.model_connections import HostModels
 from homebrew_harness.execution.test_runner import load_test_runner
 
 from .controller import RunController
@@ -32,11 +32,13 @@ def make_session(store, control, args):
     from contextlib import ExitStack
 
     with ExitStack() as resources:
-        models = (
-            load_model_registry(args.models_config, store.root)
-            if args.models_config
-            else ModelRegistry()
+        host_models = HostModels(
+            store.root,
+            config=args.models_config,
+            alias=control.state.get("selected_model") or control.spec.model_profile,
+            environment=os.environ,
         )
+        models = host_models.registry
         resources.callback(models.close)
         tests = load_test_runner(
             args.test_config.expanduser(),
@@ -50,30 +52,12 @@ def make_session(store, control, args):
             if args.bash_config
             else HOST_POLICY
         )
-        alias = (
-            control.state.get("selected_model")
-            or control.spec.model_profile
-            or models.lead_default
+        alias = host_models.alias
+        binding = host_models.open(
+            context_chars=control.spec.context_chars,
+            output_tokens=control.spec.output_tokens,
         )
-        raw = None
-        if alias is None:
-            from openai import OpenAI
-
-            values = {
-                n: os.getenv(n, "").strip()
-                for n in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL")
-            }
-            if not all(values.values()):
-                raise ValueError("Missing external managed model configuration.")
-            raw = OpenAI(
-                api_key=values["OPENAI_API_KEY"],
-                base_url=values["OPENAI_BASE_URL"],
-                max_retries=0,
-            )
-            resources.callback(raw.close)
-            model = values["OPENAI_MODEL"]
-        else:
-            model = ""
+        raw, model = binding.client, binding.model
         session = HarnessSession(
             raw,
             model,
@@ -94,7 +78,7 @@ def make_session(store, control, args):
             mode="service",
         )
         resources.pop_all()
-        return session, raw
+        return session, None
 
 
 def exit_status(value):

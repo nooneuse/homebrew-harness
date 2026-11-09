@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import json
-import os
 import sys
 from pathlib import Path
 
-from homebrew_harness.cli_arguments import add_gateway_arguments, add_location_arguments
+from homebrew_harness.cli_arguments import (
+    add_gateway_arguments,
+    add_location_arguments,
+    add_direct_model_arguments,
+)
 
 
 def register(groups):
@@ -16,6 +19,7 @@ def register(groups):
     )
     add_location_arguments(parser)
     add_gateway_arguments(parser)
+    add_direct_model_arguments(parser)
     parser.add_argument(
         "--model-profile", help="Host model capability revision for cache identity."
     )
@@ -80,28 +84,32 @@ def execute(args, parser):
         if offline:
             runner = DemoWorkflowRunner()
         else:
-            from dotenv import load_dotenv
-            from openai import OpenAI
-
-            load_dotenv(args.env_file.expanduser(), override=False)
-            config = {
-                name: os.getenv(name, "").strip()
-                for name in ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL")
-            }
-            missing = [name for name, value in config.items() if not value]
-            if missing:
-                raise WorkflowError("Missing configuration: " + ", ".join(missing))
-            client = OpenAI(
-                api_key=config["OPENAI_API_KEY"],
-                base_url=config["OPENAI_BASE_URL"],
-                timeout=30,
-                max_retries=0,
+            from homebrew_harness.execution.model_connections import (
+                HostModels,
+                read_environment,
             )
+
+            host_models = HostModels(
+                workdir,
+                config=args.models_config,
+                alias=args.model,
+                environment=read_environment(args.env_file, workdir),
+            )
+            binding = host_models.open(output_tokens=args.max_output_tokens)
+            client = binding.client
             gateway = ModelGateway(
                 client, gateway_limits_from_args(args), workdir=workdir
             )
+            limits = WorkflowLimits(
+                concurrency=args.concurrency,
+                max_output_tokens=min(
+                    args.max_output_tokens, binding.max_output_tokens
+                ),
+                timeout_seconds=args.timeout_seconds,
+            )
+            host_models.track_gateway(gateway)
             runner = ModelWorkflowRunner(
-                gateway, config["OPENAI_MODEL"], profile=args.model_profile
+                gateway, binding.model, profile=args.model_profile, binding=binding
             )
 
         def event(kind, **fields):
@@ -151,7 +159,13 @@ def execute(args, parser):
                 workdir=workdir / snapshot["execution_dir"],
             )
         print(json.dumps(output, ensure_ascii=False, indent=2))
-        return 0 if output["task"]["status"] == "completed" else 1
+        return (
+            0
+            if output["task"]["status"] == "completed"
+            else 2
+            if output.get("execution_pending")
+            else 1
+        )
     except WorkflowError as error:
         print(str(error), file=sys.stderr)
         return 1
@@ -176,5 +190,18 @@ def execute(args, parser):
                 "[model usage] " + json.dumps(gateway.summary(), ensure_ascii=False),
                 file=sys.stderr,
             )
-        if client is not None:
-            client.close()
+        if "runtime" in locals():
+            runtime.close()
+        if "host_models" in locals():
+            closed = host_models.close_when_idle(
+                limits.cleanup_seconds,
+                wait=(lambda: runtime.wait_closed(None))
+                if "runtime" in locals()
+                else None,
+            )
+            if not closed:
+                print(
+                    "Workflow shutdown remains pending; inspect its saved state before resuming.",
+                    file=sys.stderr,
+                )
+                return 2

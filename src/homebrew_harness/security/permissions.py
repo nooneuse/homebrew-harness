@@ -307,11 +307,18 @@ def check_rules(tool_name: str, arguments: dict, workdir: Path) -> PermissionDec
             return PermissionDecision(
                 "deny", "The requested file path could not be resolved."
             )
-        if ".harness/artifact-bundles/" in str(resolved):
-            return PermissionDecision(
-                "deny",
-                "Use get_artifact with the owning bundle; raw artifact archives are host-managed.",
-            )
+        from homebrew_harness.security.file_visibility import (
+            assert_visible,
+            check_pattern,
+        )
+
+        try:
+            if tool_name == "read_file":
+                assert_visible(root, path)
+            elif tool_name == "glob":
+                check_pattern(path)
+        except ValueError as error:
+            return PermissionDecision("deny", str(error))
         if sensitive_path(Path(path).parts) or sensitive_path(
             resolved.relative_to(root).parts if resolved.is_relative_to(root) else ()
         ):
@@ -361,9 +368,15 @@ def ask_user(
 
     managed = current_run()
     if managed is not None:
-        if tool_name == "spawn_teammate" and managed.team_control is not None and current_scope().role == "lead":
+        if (
+            tool_name == "spawn_teammate"
+            and managed.team_control is not None
+            and current_scope().role == "lead"
+        ):
             managed.team_control.authorize(dict(arguments))
-            return PermissionDecision("allow", "Exact host-declared managed member scope.")
+            return PermissionDecision(
+                "allow", "Exact host-declared managed member scope."
+            )
         approved = current_approval()
         if (
             approved is not None
@@ -470,7 +483,13 @@ def check_permission(
             "The path is outside this Run's host-authorized write prefixes.",
             "write_boundary",
         )
-    if managed is not None and tool_name in {"request_attention", "read_run_event", "get_handoff", "integrate_stage", "publish_stage"}:
+    if managed is not None and tool_name in {
+        "request_attention",
+        "read_run_event",
+        "get_handoff",
+        "integrate_stage",
+        "publish_stage",
+    }:
         return PermissionDecision("allow", "Use the owning Run's control records.")
     if (
         managed is not None

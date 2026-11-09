@@ -182,3 +182,15 @@ def add_session_arguments(parser):
         default=8,
         help="Maximum consecutive Stop continuations (default: 8).",
     )
+
+
+def add_direct_model_arguments(parser):
+    parser.add_argument(
+        "--models-config",
+        type=Path,
+        help="External model registry; connection values remain in the host environment.",
+    )
+    parser.add_argument(
+        "--model",
+        help="Host model profile alias; otherwise the catalog default or single-model environment.",
+    )

@@ -40,6 +40,8 @@ Supported protocols are Chat Completions, Responses, DashScope Generation, and A
 
 The model catalog separates connections from usage profiles. Connections reference external environment variables; profiles declare models, context limits, output limits, and capabilities. Lead, teammate, and subagent roles can select different profiles. Auxiliary calls use the appropriate model entry point. Configuration identity is saved with checkpoints, and the host supplies connection values.
 
+Host model preparation shares the catalog and bindings across entry points, including direct Workflows and live benchmarks. Binding identity includes configuration, API version, capabilities, and effective limits.
+
 Context preparation accounts for the request after adapter expansion and reuses the prepared result. Usage records describe request cost and execution state; the provider manages spending limits.
 
 ## Tools and execution
@@ -60,6 +62,8 @@ Skills expose a short catalog first and load instructions on demand. Memory prov
 
 The compactor shortens older results under context pressure, archives full content, and can ask the model for a working summary. Tool batches remain complete message groups, and original records remain readable from archives.
 
+Task text and explicit Goal definitions bind independently and commit with the session checkpoint before model work.
+
 Todo represents the current visible plan. Persistent dependencies and completion evidence belong to Tasks and Goals.
 
 ## Work organization
@@ -74,6 +78,8 @@ Todo represents the current visible plan. Persistent dependencies and completion
 | Cron | Delivery of registered requests when time conditions are met |
 | Workflow | Host-registered async scripts with saved step results and recovery |
 | Goal | User completion conditions, execution evidence, and stop decisions |
+
+Each Workflow execution owns its event loop, run lock, journal, and child requests. Foreground waiting and actual cleanup have separate records; paused work retains unfinished resources until settlement permits recovery.
 
 These components reuse the same loop and model gateway. Subagents isolate a local context; teams support ongoing collaboration. Workflows express fixed orchestration, and Tasks express dependencies.
 
@@ -136,6 +142,8 @@ Model handoff creates a new Lead session while preserving Run identity. Original
 Run exports contain requirements, state, and evidence indexes. Backups taken after safe shutdown combine a consistent SQLite database with an attachment manifest; restoration first creates inspectable state. Session references protect context before and after model handoff. Runtime boundaries check available disk space.
 
 ## Capabilities and extension
+
+File visibility and physical path safety have separate checks. Reads, matching, and content search share traversal and access boundaries. Run tool pools reflect host stage declarations, roles, and instantiated resources.
 
 The default `core` profile provides common tools. `Capabilities` enables optional modules, and the effective pool reflects both configuration and instantiated resources.
 

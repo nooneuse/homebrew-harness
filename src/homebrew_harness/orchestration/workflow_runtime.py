@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import copy
 import fcntl
 import hashlib
 import inspect
@@ -12,14 +11,13 @@ import json
 import math
 import os
 import re
-import sys
 import threading
 import time
 import uuid
 from concurrent.futures import Future
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
@@ -34,7 +32,7 @@ from homebrew_harness.execution.execution_control import (
     operation_deadline,
 )
 from homebrew_harness.execution.model_gateway import ModelGatewayError, ensure_gateway
-from homebrew_harness.runtime.runtime_control import WorkAccepted, Workers
+from homebrew_harness.runtime.runtime_control import WorkAccepted, Workers, Shutdown
 from homebrew_harness.security.data_boundary import model_request
 from homebrew_harness.security.safe_files import SafeFile
 
@@ -153,7 +151,7 @@ class WorkflowRegistry:
         schema_validator(spec.args_schema)
         if spec.name in self._specs:
             raise WorkflowError("Workflow name is already registered.")
-        self._specs[spec.name] = copy.deepcopy(spec)
+        self._specs[spec.name] = replace(spec, args_schema=clone(spec.args_schema))
 
     def get(self, name):
         if not isinstance(name, str) or name not in self._specs:
@@ -161,7 +159,7 @@ class WorkflowRegistry:
         spec = self._specs[name]
         if not spec.allowed:
             raise WorkflowError("Workflow is denied by host policy.")
-        return copy.deepcopy(spec)
+        return replace(spec, args_schema=clone(spec.args_schema))
 
     def catalog(self):
         return [
@@ -181,8 +179,16 @@ class WorkflowLimits:
     max_output_tokens: int = 2048
     max_input_chars: int = 16_000
     timeout_seconds: float = 300
+    cleanup_seconds: float = 0.2
 
     def __post_init__(self):
+        if (
+            not math.isfinite(self.cleanup_seconds)
+            or not 0 <= self.cleanup_seconds <= 60
+        ):
+            raise WorkflowError(
+                "Workflow cleanup window must be bounded nonnegative seconds."
+            )
         if not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
             raise WorkflowError("Workflow timeout must be finite positive seconds.")
         for name, lower, upper in (
@@ -204,7 +210,9 @@ class RunnerOutput:
 class ModelWorkflowRunner:
     """One tool-free API request with fresh context; SDK retries are disabled."""
 
-    def __init__(self, client, model: str, *, profile=None, settings=None):
+    def __init__(
+        self, client, model: str, *, profile=None, settings=None, binding=None
+    ):
         client = ensure_gateway(client)
         self.client = (
             client.with_options(max_retries=0)
@@ -214,14 +222,23 @@ class ModelWorkflowRunner:
         self.model = model
         from homebrew_harness.execution.model_profile import profile_fingerprint
 
+        self.binding = binding
         self.settings = dict(settings or {})
         if set(self.settings) - {"temperature", "top_p", "reasoning_effort"}:
             raise WorkflowError("Unsupported model capability settings.")
-        self.identity = "openai-json-step-v2:" + profile_fingerprint(
-            client, model, profile=profile, settings=self.settings
+        self.identity = "model-json-step-v3:" + profile_fingerprint(
+            client,
+            model,
+            profile=profile,
+            settings={
+                **self.settings,
+                **({"binding": binding.identity()} if binding else {}),
+            },
         )
 
     def parameters(self, prompt, schema, max_tokens):
+        if self.binding:
+            max_tokens = min(max_tokens, self.binding.max_output_tokens)
         request = prompt
         if schema is not None:
             request += (
@@ -244,6 +261,10 @@ class ModelWorkflowRunner:
         }
         if schema is not None:
             kwargs["output_contract"] = {"type": "json_schema", "schema": schema}
+        if self.binding and len(json_text(kwargs)) > self.binding.context_chars:
+            raise WorkflowError(
+                "Workflow step exceeds the selected model context limit."
+            )
         return kwargs
 
     def run(self, prompt, schema, label, max_tokens):
@@ -524,6 +545,7 @@ class ExecutionState:
             else {
                 "semaphore": asyncio.Semaphore(runtime.limits.concurrency),
                 "inflight": {},
+                "threads": set(),
             }
         )
         self._phase = ContextVar("workflow_phase", default=None)
@@ -747,6 +769,223 @@ class ExecutionState:
             await asyncio.gather(*pending, return_exceptions=True)
 
 
+class WorkflowExecution:
+    """One lock/journal/loop owner; public waiting never owns final cleanup."""
+
+    def __init__(self, runtime, name, args, resume, directory, stop_event):
+        self.runtime, self.name, self.args = runtime, name, args
+        self.resume, self.directory = resume, directory
+        self.run_id = resume or runtime.store.new_id()
+        self.identity = uuid.uuid4().hex
+        self.deadline = operation_deadline(runtime.limits.timeout_seconds)
+        self.stop = stop_event if stop_event is not None else threading.Event()
+        self.guard = threading.RLock()
+        self.ready, self.settled = threading.Event(), threading.Event()
+        self.body_done = threading.Event()
+        self.resources_closed = False
+        self.result = Future()
+        self.snapshot = self.journal = self.ctx = None
+        self.loop = self.task = None
+        self.reason = None
+        self.pause_writer = Shutdown()
+        self.output = None
+        self.failure = None
+
+    def attach(self, snapshot, journal, ctx):
+        with self.guard:
+            self.snapshot, self.journal, self.ctx = snapshot, journal, ctx
+            snapshot["task"]["cleanup"] = {
+                "state": "pending",
+                "execution_id": self.identity,
+            }
+            snapshot["execution"] = {"id": self.identity, "pid": os.getpid()}
+            self.runtime.store.write(self.run_id, snapshot)
+            self.ready.set()
+
+    def response(self, *, pending=False):
+        with self.guard:
+            task = (
+                clone(self.snapshot["task"])
+                if self.snapshot
+                else {
+                    "run_id": self.run_id,
+                    "status": "paused",
+                    "inspection_required": True,
+                    "cleanup": {"state": "pending", "execution_id": self.identity},
+                }
+            )
+            if pending:
+                if not self.pause_writer.finished.is_set():
+                    task["inspection_required"] = True
+                task["status"] = "paused"
+                task["cleanup"] = {"state": "pending", "execution_id": self.identity}
+            result = (
+                {"error": self.reason or "Workflow execution remains pending."}
+                if pending or self.reason
+                else (self.output or {}).get(
+                    "result", {"error": "Workflow execution failed."}
+                )
+            )
+            return {
+                "launched": {"run_id": self.run_id, "name": self.name},
+                "task": task,
+                "result": clone(result),
+                "execution_pending": pending,
+                "persistence_confirmed": self.snapshot is not None
+                and self.pause_writer.finished.is_set()
+                if pending
+                else True,
+            }
+
+    def request_stop(self, reason, *, cancel_task=True):
+        with self.guard:
+            if self.settled.is_set() or self.resources_closed:
+                return
+            self.reason = self.reason or reason
+            self.stop.set()
+
+        def persist():
+            while not self.ready.wait(0.01):
+                if self.settled.is_set() or self.body_done.is_set():
+                    return
+            with self.guard, cleanup_scope():
+                if self.settled.is_set():
+                    return
+                self.snapshot["task"].update(
+                    status="paused",
+                    cleanup={"state": "pending", "execution_id": self.identity},
+                )
+                self.runtime.store.write(
+                    self.run_id, {"error": self.reason}, ".output.json"
+                )
+                self.runtime.store.write(self.run_id, self.snapshot)
+
+        self.pause_writer.request(persist, 0)
+
+    def write(self, value, suffix=".json"):
+        with self.guard, cleanup_scope():
+            if self.reason and self.snapshot is not None:
+                self.snapshot["task"]["status"] = "paused"
+                if suffix == ".output.json":
+                    value = {"error": self.reason}
+            self.runtime.store.write(self.run_id, value, suffix)
+
+    def run(self):
+        try:
+            with self.runtime.store.lock(self.run_id):
+                self.loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(self.loop)
+                self.task = self.loop.create_task(
+                    self.runtime._execute(
+                        self.name,
+                        self.args,
+                        self.resume,
+                        workdir=self.directory,
+                        stop_event=self.stop,
+                        owner=self,
+                    )
+                )
+                try:
+                    self.output = self.loop.run_until_complete(self.task)
+                except asyncio.CancelledError:
+                    self.reason = self.reason or "Workflow cancelled."
+                except BaseException as error:
+                    self.failure = error
+                finally:
+                    self.body_done.set()
+
+                    async def settle_loop():
+                        pending = [
+                            t
+                            for t in asyncio.all_tasks()
+                            if t is not asyncio.current_task() and not t.done()
+                        ]
+                        if pending:
+                            self.request_stop(
+                                "Workflow has unfinished child tasks.",
+                                cancel_task=False,
+                            )
+                            for task in pending:
+                                task.cancel()
+                            await asyncio.gather(*pending, return_exceptions=True)
+                        await self.loop.shutdown_asyncgens()
+                        await self.loop.shutdown_default_executor()
+
+                    self.loop.run_until_complete(settle_loop())
+                    self.loop.close()
+                    if self.ctx is not None:
+                        while any(
+                            t.is_alive() for t in self.ctx.shared.get("threads", ())
+                        ):
+                            threading.Event().wait(0.01)
+                    if isinstance(self.runtime.runner, ModelWorkflowRunner):
+                        gateway = ensure_gateway(self.runtime.runner.client)
+                        while gateway.inflight_context(self.run_id):
+                            threading.Event().wait(0.01)
+                    self.pause_writer.workers.wait(None)
+                    if self.journal is not None:
+                        try:
+                            self.journal.close()
+                        except BaseException as error:
+                            self.failure = self.failure or WorkflowError(
+                                "Workflow journal close failed; saved results require inspection."
+                            )
+                            self.runtime.cleanup_errors.append(
+                                {
+                                    "component": "workflow_journal",
+                                    "run_id": self.run_id,
+                                    "error_type": type(error).__name__,
+                                }
+                            )
+                            self.snapshot["task"].setdefault(
+                                "cleanup_errors", []
+                            ).append(self.runtime.cleanup_errors[-1])
+                            self.snapshot["task"].update(
+                                status="failed", inspection_required=True
+                            )
+                    if self.snapshot is not None:
+                        with self.guard, cleanup_scope():
+                            if self.reason and not self.failure:
+                                self.snapshot["task"]["status"] = "paused"
+                                self.runtime.store.write(
+                                    self.run_id, {"error": self.reason}, ".output.json"
+                                )
+                            self.snapshot["task"]["cleanup"] = {
+                                "state": "error" if self.failure else "complete",
+                                "execution_id": self.identity,
+                            }
+                            try:
+                                self.runtime.store.write(self.run_id, self.snapshot)
+                            except BaseException as error:
+                                self.runtime.cleanup_errors.append(
+                                    {
+                                        "component": "workflow_cleanup_record",
+                                        "run_id": self.run_id,
+                                        "error_type": type(error).__name__,
+                                    }
+                                )
+                                self.failure = self.failure or error
+                    self.resources_closed = True
+        except BaseException as error:
+            self.failure = self.failure or error
+        finally:
+            if self.failure:
+                self.result.set_exception(self.failure)
+            else:
+                self.result.set_result(self.response())
+            self.settled.set()
+            with self.runtime._guard:
+                self.runtime._owners.pop(self.run_id, None)
+                self.runtime._stops.pop(self.run_id, None)
+            if self.snapshot is not None:
+                self.runtime.emit(
+                    "task_notification",
+                    run_id=self.run_id,
+                    status=self.snapshot["task"]["status"],
+                    **self.snapshot["task"]["progress"],
+                )
+
+
 class WorkflowRuntime:
     def __init__(
         self, workdir, runner, registry=None, *, limits=None, on_event=None, on_log=None
@@ -766,6 +1005,7 @@ class WorkflowRuntime:
         self.limits = limits or WorkflowLimits()
         self.on_event, self.on_log = on_event, on_log
         self._stops = {}
+        self._owners = {}
         self._guard = threading.Lock()
         self._closed = False
         self._workers = set()
@@ -798,7 +1038,11 @@ class WorkflowRuntime:
         with self._guard:
             self._workers.add(result)
         try:
-            self._threads.start(invoke, name="workflow-request")
+            self._threads.start(
+                invoke,
+                name="workflow-request",
+                on_created=lambda thread: ctx.shared["threads"].add(thread),
+            )
         except WorkAccepted:
             raise
         except BaseException as error:
@@ -834,13 +1078,7 @@ class WorkflowRuntime:
         deadline = None if timeout is None else time.monotonic() + max(0, timeout)
         while True:
             with self._guard:
-                if (
-                    not self._workers
-                    and not self._stops
-                    and all(
-                        gateway.inflight == 0 for gateway in self._gateways.values()
-                    )
-                ):
+                if not self._workers and not self._owners and not self._stops:
                     return True
             if deadline is not None and time.monotonic() >= deadline:
                 return False
@@ -857,11 +1095,17 @@ class WorkflowRuntime:
             except Exception:
                 pass  # Presentation failures cannot invalidate durable work.
 
-    def close(self):
+    def close(self, timeout=0):
         with self._guard:
             self._closed = True
-            for stop in self._stops.values():
-                stop.set()
+            owners = list(self._owners.values())
+        for owner in owners:
+            owner.request_stop("Workflow runtime closed.")
+        return self.wait_closed(timeout)
+
+    def pending(self):
+        with self._guard:
+            return bool(self._owners)
 
     def inspect(self, run_id):
         snapshot = self.store.read(run_id)
@@ -894,12 +1138,21 @@ class WorkflowRuntime:
         except (WorkflowError, ValueError, OSError):
             return False
 
-    async def arun(
-        self, name, args=None, resume_from_run_id=None, *, workdir=None, stop_event=None
+    async def _execute(
+        self,
+        name,
+        args=None,
+        resume_from_run_id=None,
+        *,
+        workdir=None,
+        stop_event=None,
+        owner=None,
     ):
-        if self._closed:
+        if self._closed and not owner:
             raise WorkflowError("Workflow runtime is closed.")
-        self._run_deadline.set(operation_deadline(self.limits.timeout_seconds))
+        self._run_deadline.set(
+            owner.deadline if owner else operation_deadline(self.limits.timeout_seconds)
+        )
         spec = self.registry.get(name)
         if args is not None:
             args = clone(args)
@@ -918,10 +1171,23 @@ class WorkflowRuntime:
                 raise WorkflowError("Workflow arguments failed the registered schema.")
             if len(json_text(args)) > self.limits.max_input_chars:
                 raise WorkflowError("Workflow arguments exceed the host input limit.")
-        run_id = resume_from_run_id if resume else self.store.new_id()
-        with self.store.lock(run_id):
+        run_id = (
+            owner.run_id
+            if owner
+            else resume_from_run_id
+            if resume
+            else self.store.new_id()
+        )
+        with nullcontext():
             if resume:
                 snapshot = self.inspect(run_id)
+                if (
+                    snapshot["task"].get("cleanup", {}).get("state", "complete")
+                    != "complete"
+                ):
+                    raise WorkflowError(
+                        "Saved workflow cleanup is not confirmed; inspect before recovery."
+                    )
                 if snapshot["task"].get("inspection_required"):
                     raise WorkflowError(
                         "Saved journal persistence failed; inspect artifacts and start a new run. Automatic resume is refused."
@@ -979,10 +1245,12 @@ class WorkflowRuntime:
             result, cancelled = None, False
             script_task = None
             try:
-                self.store.write(run_id, snapshot)
+                owner.write(snapshot)
+                owner.attach(snapshot, journal, ctx)
                 self.emit("task_started", run_id=run_id, name=name, resumed=resume)
-                script_task = asyncio.create_task(spec.script(ctx, clone(args)))
                 try:
+                    ctx.check_stop()
+                    script_task = asyncio.create_task(spec.script(ctx, clone(args)))
                     while not script_task.done():
                         await asyncio.wait({script_task}, timeout=0.02)
                         ctx.check_stop()
@@ -994,9 +1262,11 @@ class WorkflowRuntime:
                 except asyncio.CancelledError:
                     cancelled = True
                     stop.set()
-                    script_task.cancel()
+                    if script_task is not None:
+                        script_task.cancel()
                     try:
-                        await asyncio.shield(script_task)
+                        if script_task is not None:
+                            await asyncio.shield(script_task)
                     except (Exception, asyncio.CancelledError):
                         pass
                     await ctx.drain()
@@ -1005,8 +1275,9 @@ class WorkflowRuntime:
                         "error": "Workflow interrupted; completed checkpoints are available for resume."
                     }
                 except Exception as error:
-                    script_task.cancel()
-                    await asyncio.gather(script_task, return_exceptions=True)
+                    if script_task is not None:
+                        script_task.cancel()
+                        await asyncio.gather(script_task, return_exceptions=True)
                     await ctx.drain()
                     task["status"] = (
                         "paused" if isinstance(error, WorkflowStopped) else "failed"
@@ -1018,51 +1289,13 @@ class WorkflowRuntime:
                     }
                 task["durable_steps"] = len(journal.cache)
                 task["inspection_required"] = journal.failed
-                self.store.write(run_id, result, ".output.json")
-                self.store.write(run_id, snapshot)
-                self.emit(
-                    "task_notification",
-                    run_id=run_id,
-                    status=task["status"],
-                    **task["progress"],
-                )
+                owner.write(result, ".output.json")
+                owner.write(snapshot)
+
             finally:
-                primary_error = sys.exc_info()[1]
-                close_error = None
-                try:
-                    journal.close()
-                except Exception as error:
-                    close_error = error
-                    record = {
-                        "component": "workflow_journal",
-                        "run_id": run_id,
-                        "error_type": type(error).__name__,
-                    }
-                    with self._guard:
-                        self.cleanup_errors.append(record)
-                    task.setdefault("cleanup_errors", []).append(record)
-                    task["inspection_required"] = True
-                    task["status"] = "failed"
-                    self.emit("cleanup_error", **record)
-                    try:
-                        with cleanup_scope():
-                            self.store.write(run_id, snapshot)
-                    except Exception as persistence_error:
-                        with self._guard:
-                            self.cleanup_errors.append(
-                                {
-                                    "component": "workflow_cleanup_record",
-                                    "run_id": run_id,
-                                    "error_type": type(persistence_error).__name__,
-                                }
-                            )
-                finally:
-                    with self._guard:
-                        self._stops.pop(run_id, None)
-                if close_error is not None and primary_error is None and not cancelled:
-                    raise WorkflowError(
-                        "Workflow journal close failed; saved results were retained for host inspection."
-                    ) from close_error
+                if owner.journal is None:
+                    owner.journal, owner.snapshot, owner.ctx = journal, snapshot, ctx
+                    owner.ready.set()
             if cancelled:
                 raise asyncio.CancelledError
             return {
@@ -1071,17 +1304,140 @@ class WorkflowRuntime:
                 "task": clone(task),
             }
 
+    def _submit(self, name, args, resume, workdir, stop_event):
+        if self._closed:
+            raise WorkflowError("Workflow runtime is closed.")
+        spec = self.registry.get(name)
+        directory = Path(workdir or self.store.workdir).resolve()
+        if not directory.is_dir() or not directory.is_relative_to(self.store.workdir):
+            raise WorkflowError(
+                "Workflow execution directory must be inside its base workspace."
+            )
+        args = clone(args) if args is not None else None
+        if args is not None and (
+            not isinstance(args, dict)
+            or not matches(schema_validator(spec.args_schema), args)
+            or len(json_text(args)) > self.limits.max_input_chars
+        ):
+            raise WorkflowError("Workflow arguments failed validation or size limit.")
+        if (
+            resume is None
+            and args is None
+            and not matches(schema_validator(spec.args_schema), {})
+        ):
+            raise WorkflowError("Workflow arguments failed the registered schema.")
+        owner = WorkflowExecution(self, name, args, resume, directory, stop_event)
+        with self._guard:
+            if self._closed or owner.run_id in self._owners:
+                raise WorkflowError("Workflow execution is closed or already active.")
+            self._owners[owner.run_id] = owner
+        try:
+            self._threads.start(owner.run, name="workflow-execution")
+        except WorkAccepted:
+            raise
+        except Exception as error:
+            with self._guard:
+                self._owners.pop(owner.run_id, None)
+            owner.resources_closed = True
+            owner.result.set_result(
+                {
+                    "launched": {
+                        "run_id": owner.run_id,
+                        "name": name,
+                        "started": False,
+                    },
+                    "task": {
+                        "run_id": owner.run_id,
+                        "status": "failed",
+                        "cleanup": {"state": "complete"},
+                        "progress": {"calls": 0, "cached_steps": 0},
+                    },
+                    "result": {
+                        "error": "Workflow execution could not start ("
+                        + type(error).__name__
+                        + ")."
+                    },
+                    "execution_pending": False,
+                    "persistence_confirmed": False,
+                }
+            )
+            owner.settled.set()
+        except BaseException:
+            with self._guard:
+                self._owners.pop(owner.run_id, None)
+            raise
+        return owner
+
+    def _stopping(self, owner):
+        if owner.stop.is_set():
+            return "Workflow cancellation requested."
+        try:
+            execution_check(owner.deadline)
+        except ModelGatewayError as error:
+            return str(error)
+        return None
+
+    def _pending_response(self, owner):
+        return owner.response(pending=True)
+
+    async def arun(
+        self, name, args=None, resume_from_run_id=None, *, workdir=None, stop_event=None
+    ):
+        owner = self._submit(name, args, resume_from_run_id, workdir, stop_event)
+        try:
+            while not owner.result.done():
+                reason = self._stopping(owner)
+                if reason:
+                    owner.request_stop(reason)
+                    end = time.monotonic() + self.limits.cleanup_seconds
+                    while not owner.result.done() and time.monotonic() < end:
+                        await asyncio.sleep(0.01)
+                    return (
+                        owner.result.result()
+                        if owner.result.done()
+                        else self._pending_response(owner)
+                    )
+                await asyncio.sleep(0.01)
+            return owner.result.result()
+        except asyncio.CancelledError:
+            owner.request_stop("Workflow cancelled by its caller.")
+            end = time.monotonic() + self.limits.cleanup_seconds
+            while not owner.result.done() and time.monotonic() < end:
+                await asyncio.sleep(0.01)
+            raise
+
     def run(
         self, name, args=None, resume_from_run_id=None, *, workdir=None, stop_event=None
     ):
-        return asyncio.run(
-            self.arun(
-                name, args, resume_from_run_id, workdir=workdir, stop_event=stop_event
-            )
-        )
+        owner = self._submit(name, args, resume_from_run_id, workdir, stop_event)
+        try:
+            while not owner.result.done():
+                reason = self._stopping(owner)
+                if reason:
+                    owner.request_stop(reason)
+                    owner.settled.wait(self.limits.cleanup_seconds)
+                    return (
+                        owner.result.result()
+                        if owner.result.done()
+                        else self._pending_response(owner)
+                    )
+                owner.settled.wait(0.01)
+            return owner.result.result()
+        except KeyboardInterrupt:
+            owner.request_stop("Workflow interrupted by its caller.")
+            owner.settled.wait(self.limits.cleanup_seconds)
+            raise
 
     def run_tool(self, name, workdir, args=None, resume_from_run_id=None):
         out = self.run(name, args, resume_from_run_id, workdir=workdir)
+        if out.get("execution_pending"):
+            from homebrew_harness.tools.tool_outcome import ToolExecutionError
+
+            raise ToolExecutionError(
+                "Workflow cleanup remains pending; inspect after execution ends.",
+                outcome="unknown",
+                details=out,
+            )
         if out["task"]["status"] != "completed":
             out["error"] = out["result"]["error"]
         if len(json_text(out["result"])) > 6000:

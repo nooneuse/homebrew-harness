@@ -277,16 +277,31 @@ def build_tool_pool(client, model, workdir, components: LoopComponents):
             else None
         )
         mcp_task = execution_context("lead", assignment).task_id
+    from homebrew_harness.runs.spec import RUN_CONTROL_TOOLS, stage_run_tools
+
+    run_tools = member_run_tools
     if managed is not None:
         handlers.update(
             request_attention=managed.request_attention,
             execute_approved=lambda **_kwargs: None,
             read_run_event=managed.read_event,
-            get_handoff=managed.read_handoff,
-            integrate_stage=managed.integrate_stage,
-            publish_stage=managed.publish_stage,
         )
-    from homebrew_harness.runs.spec import RUN_TOOLS
+        available = (
+            stage_run_tools(managed.spec.stages)
+            if managed.stages is not None
+            else frozenset()
+        )
+        endpoints = {
+            "get_handoff": managed.read_handoff,
+            "integrate_stage": managed.integrate_stage,
+            "publish_stage": managed.publish_stage,
+        }
+        for name in available:
+            if name == "get_handoff" or managed.transfers is not None:
+                handlers[name] = endpoints[name]
+        run_tools = RUN_CONTROL_TOOLS | frozenset(
+            name for name in available if name in handlers
+        )
 
     return ToolPool.build(
         tools,
@@ -304,5 +319,5 @@ def build_tool_pool(client, model, workdir, components: LoopComponents):
         bash_policy=components.bash_policy,
         artifacts=components.artifact_store,
         models=components.model_registry,
-        run_tools=RUN_TOOLS if managed is not None else member_run_tools,
+        run_tools=run_tools,
     )

@@ -86,6 +86,8 @@ homebrew-harness session --resume-session
 
 The working directory defaults to the directory from which you launch the command. `--cwd` selects another workspace; session state is stored there.
 
+File queries inspect source files with bounded results and skip Git, dependency, and runtime directories by default. Explicit full-result references use their owning context.
+
 The default `core` profile includes the basic tools. Enable optional modules as needed:
 
 ```sh
@@ -123,7 +125,7 @@ homebrew-harness run --cwd /path/to/project cancel RUN_ID
 
 `supervise RUN_ID` takes over a recoverable task after the supervisor restarts. `steer --mode queued` applies input at the next Episode; `--mode interrupt` requests cancellation of the current cancellable step. Use a new Run for an independent task.
 
-The default tools cover files, context, and tests. `allow_tests` preauthorizes fixed test recipes. `enabled` can add subagents, background execution, or registered Workflows; `tools` selects their tools. Use `--env-file`, `--models-config`, `--test-config`, and `--bash-config` to select external host configuration.
+The default tools cover files, context, and tests. Stage endpoints are included only when the Run has the corresponding stage capabilities. `allow_tests` preauthorizes fixed test recipes. `enabled` can add subagents, background execution, or registered Workflows; `tools` selects their tools. Use `--env-file`, `--models-config`, `--test-config`, and `--bash-config` to select external host configuration.
 
 Run status includes outcomes, stop reasons, heartbeats, member outcomes, and cleanup state. `recovery RUN_ID` lists operations requiring inspection. After checking their effects, use `inspect RUN_ID OPERATION_ID REVISION` and explicitly resume. Recovery waits for the previous execution to finish cleanup.
 
@@ -244,6 +246,8 @@ homebrew-harness session --allow-tests unit-tests \
   --goal-spec ~/.config/homebrew-harness/goal.json
 ```
 
+When a task description and `--goal-spec` are supplied together, the description remains the task and the file supplies its completion conditions. The runtime saves both before model work begins. Goal files use bounded UTF-8 JSON input.
+
 A workspace containing `tests/` registers `unit-tests` by default. Custom tests use the [TestRunner template](examples/config/.test-runner.example.json) and `--test-config`. `/tests` lists recipes; `/tests approve NAME` or `--allow-tests NAME` authorizes execution. Results are linked to the tested code snapshot for Goal verification.
 
 ## Workflows and MCP
@@ -254,6 +258,17 @@ Workflows use host-registered Python async scripts to organize fixed steps, save
 homebrew-harness workflow list
 homebrew-harness workflow --cwd /tmp/harness-example demo
 ```
+
+Direct model workflows select a registered profile with `--models-config PATH --model ALIAS`; the single-model environment remains available. The chosen profile supplies its protocol, options, and request limits.
+
+```sh
+homebrew-harness workflow --models-config ~/.config/homebrew-harness/models.json \
+  --model planner run review-changes --changes-file changes.txt
+homebrew-harness admin benchmark --live \
+  --models-config ~/.config/homebrew-harness/models.json --model planner
+```
+
+The benchmark is offline by default; `--live` explicitly selects model execution. It checks a small suite of file tasks. Workflow status includes cleanup state. A paused workflow can be resumed after its execution finishes cleanup; callers receive bounded results while unfinished execution remains owned.
 
 The main session loads it with `--demo-workflows`. Register custom scripts through `WorkflowRegistry`; see the [design document](docs/DESIGN.md) for component composition.
 

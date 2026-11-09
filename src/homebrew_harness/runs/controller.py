@@ -1081,6 +1081,7 @@ class RunController:
                         if set(outcome.pending_work) - {
                             "background",
                             "tests",
+                            "workflow",
                             "goal",
                             "user_input",
                             "reference",
