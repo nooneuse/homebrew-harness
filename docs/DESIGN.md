@@ -40,7 +40,7 @@ Supported protocols are Chat Completions, Responses, DashScope Generation, and A
 
 The model catalog separates connections from usage profiles. Connections reference external environment variables; profiles declare models, context limits, output limits, and capabilities. Lead, teammate, and subagent roles can select different profiles. Auxiliary calls use the appropriate model entry point. Configuration identity is saved with checkpoints, and the host supplies connection values.
 
-Host model preparation shares the catalog and bindings across entry points, including direct Workflows and live benchmarks. Binding identity includes configuration, API version, capabilities, and effective limits.
+Host model preparation shares the catalog and bindings across entry points, including direct Workflows and live benchmarks. Binding identity includes configuration, API version, capabilities, and effective limits. Model workflows take a complete binding and use the gateway’s protocol preparation for their input and output limits.
 
 Context preparation accounts for the request after adapter expansion and reuses the prepared result. Usage records describe request cost and execution state; the provider manages spending limits.
 
@@ -79,7 +79,7 @@ Todo represents the current visible plan. Persistent dependencies and completion
 | Workflow | Host-registered async scripts with saved step results and recovery |
 | Goal | User completion conditions, execution evidence, and stop decisions |
 
-Each Workflow execution owns its event loop, run lock, journal, and child requests. Foreground waiting and actual cleanup have separate records; paused work retains unfinished resources until settlement permits recovery.
+Each Workflow execution owns its event loop, run lock, journal, child requests, and serialized state writes. Foreground cancellation and state observation use separate memory controls. A completion receipt binds the final snapshot and output; recovery and retention use that confirmation alongside actual cleanup.
 
 These components reuse the same loop and model gateway. Subagents isolate a local context; teams support ongoing collaboration. Workflows express fixed orchestration, and Tasks express dependencies.
 

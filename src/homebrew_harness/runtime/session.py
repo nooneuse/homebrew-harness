@@ -251,7 +251,9 @@ class HarnessSession:
                         homebrew_harness.orchestration.workflow_runtime.WorkflowRuntime(
                             self.workdir,
                             homebrew_harness.orchestration.workflow_runtime.ModelWorkflowRunner(
-                                client, model, profile=model_profile
+                                self.lead_binding,
+                                gateway=self.gateway,
+                                profile=model_profile,
                             ),
                             on_event=lambda kind, **fields: self._emit_trace(
                                 "workflow_" + kind, source="workflow", **fields

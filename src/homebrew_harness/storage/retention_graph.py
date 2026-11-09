@@ -96,7 +96,9 @@ def external_snapshot(root, *, max_files=10000, max_bytes=64 * 1024 * 1024):
                     raise ValueError(
                         "Lifecycle dependencies exceed the file count limit."
                     )
-                if not name.endswith(".json"):
+                if not name.endswith(".json") and not (
+                    base == ".harness/workflows" and name.endswith(".commit")
+                ):
                     continue
                 path = (Path(parent) / name).relative_to(root).as_posix()
                 with SafeFile(root, path) as target:
@@ -108,6 +110,25 @@ def external_snapshot(root, *, max_files=10000, max_bytes=64 * 1024 * 1024):
                 total += len(raw)
                 records[path] = json.loads(raw)
                 versions[path] = [*identity[:-1], identity[-1].hex()]
+    for path, value in records.items():
+        if not re.fullmatch(
+            r"\.harness/workflows/wf_[0-9a-f]{32}\.json", path
+        ) or not isinstance(value, dict):
+            continue
+        prefix = path[:-5]
+        receipt = records.get(prefix + ".commit", {})
+        output_version = versions.get(prefix + ".output.json", [])
+        confirmed = (
+            isinstance(receipt, dict)
+            and receipt.get("execution_id") == value.get("execution", {}).get("id")
+            and receipt.get("snapshot") == versions[path][-1]
+            and bool(output_version)
+            and receipt.get("output") == output_version[-1]
+        )
+        if not confirmed:
+            value.setdefault("task", {}).update(
+                inspection_required=True, cleanup={"state": "pending"}
+            )
     path = ".harness/artifact-pins.json"
     try:
         with SafeFile(root, path) as target:

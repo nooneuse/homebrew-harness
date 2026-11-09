@@ -176,9 +176,7 @@ def execute(args, parser) -> int:
 
                     workflow_runtime = WorkflowRuntime(
                         workdir,
-                        ModelWorkflowRunner(
-                            client, effective_model, profile=args.model_profile
-                        ),
+                        ModelWorkflowRunner(binding, profile=args.model_profile),
                         default_registry(),
                     )
                     host_resources.callback(workflow_runtime.close)

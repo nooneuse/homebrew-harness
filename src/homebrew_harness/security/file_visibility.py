@@ -8,14 +8,52 @@ from .data_boundary import sensitive_path
 from .safe_files import relative_parts, canonical_root
 
 _ACCESS = ContextVar("model_file_access", default=None)
+_MANAGED = frozenset({".git", ".harness", ".tasks", ".mailboxes", ".memory", ".venv"})
+
+
+def reserved_alias(parts):
+    return any(
+        part != part.casefold()
+        and (
+            part.casefold() in _MANAGED | {".worktrees"}
+            or part.casefold().startswith(".scheduled_tasks")
+        )
+        for part in parts
+    )
+
+
+def host_managed_parts(parts):
+    return any(
+        part.casefold() in _MANAGED or part.casefold().startswith(".scheduled_tasks")
+        for part in parts
+    )
+
+
+def model_parts(root, path):
+    root = Path(root)
+    selected = Path(path)
+    if selected.is_absolute() and selected.is_relative_to(root.absolute()):
+        selected = selected.relative_to(root.absolute())
+    root = canonical_root(root)
+    return root, relative_parts(str(selected), root)
+
+
+def assert_model_write(root, path):
+    _, parts = model_parts(root, path)
+    if host_managed_parts(parts) or reserved_alias(parts):
+        raise ValueError(
+            "Runtime, task, memory and Git records are host-managed; use their registered tools."
+        )
 
 
 def private_parts(parts):
+    folded = tuple(part.casefold() for part in parts)
     return (
         sensitive_path(parts)
-        or ".git" in parts
+        or reserved_alias(parts)
+        or ".git" in folded
         or any(
-            parts[i : i + 2]
+            folded[i : i + 2]
             in {(".harness", "protocol-state"), (".harness", "artifact-bundles")}
             for i in range(len(parts) - 1)
         )
@@ -33,11 +71,7 @@ def file_access_scope(archive_store=None, *, restrict_archives=False):
 
 def visible(root, path):
     try:
-        selected = Path(path)
-        if selected.is_absolute() and selected.is_relative_to(root.absolute()):
-            selected = selected.relative_to(root.absolute())
-        root = canonical_root(root)
-        parts = relative_parts(str(selected), root)
+        root, parts = model_parts(root, path)
         if private_parts(parts):
             return False
         access = _ACCESS.get()

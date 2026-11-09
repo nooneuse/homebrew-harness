@@ -40,6 +40,15 @@ def validate_spec(spec):
         if not isinstance(raw, dict):
             raise ConditionError("Goal predicate must be an object.")
         kind, predicate_id = raw.get("type"), raw.get("id")
+        if not isinstance(kind, str) or kind not in {
+            "file_exists",
+            "file_contains",
+            "file_sha256",
+            "tests_passed",
+        }:
+            raise ConditionError(
+                "Predicate type must be a supported string identifier."
+            )
         if (
             not isinstance(predicate_id, str)
             or not re.fullmatch(r"[a-z][a-z0-9_-]{0,63}", predicate_id)

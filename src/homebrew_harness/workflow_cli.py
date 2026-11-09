@@ -109,7 +109,7 @@ def execute(args, parser):
             )
             host_models.track_gateway(gateway)
             runner = ModelWorkflowRunner(
-                gateway, binding.model, profile=args.model_profile, binding=binding
+                binding, gateway=gateway, profile=args.model_profile
             )
 
         def event(kind, **fields):

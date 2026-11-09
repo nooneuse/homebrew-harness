@@ -1,5 +1,7 @@
 """Post-convergence regressions: exercise the next step after a failure."""
 
+from tests.support.clients import model_binding
+
 import io
 import asyncio
 import json
@@ -693,7 +695,7 @@ class FollowupTests(unittest.TestCase):
 
         runtime = WorkflowRuntime(
             self.root,
-            ModelWorkflowRunner(client, "fixture"),
+            ModelWorkflowRunner(model_binding(client, "fixture")),
             WorkflowRegistry(
                 [WorkflowSpec("fixture", "fixture", script, {"type": "object"})]
             ),

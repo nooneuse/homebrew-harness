@@ -64,3 +64,9 @@ def conversation(messages):
         for message in messages
         if message.get("name") not in {"task_intent", "inherited_task_constraints"}
     ]
+
+
+def model_binding(client, model):
+    from homebrew_harness.execution.model_registry import ModelRegistry
+
+    return ModelRegistry().select(client=client, model=model)

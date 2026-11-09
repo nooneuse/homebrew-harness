@@ -308,6 +308,7 @@ def check_rules(tool_name: str, arguments: dict, workdir: Path) -> PermissionDec
                 "deny", "The requested file path could not be resolved."
             )
         from homebrew_harness.security.file_visibility import (
+            assert_model_write,
             assert_visible,
             check_pattern,
         )
@@ -317,6 +318,9 @@ def check_rules(tool_name: str, arguments: dict, workdir: Path) -> PermissionDec
                 assert_visible(root, path)
             elif tool_name == "glob":
                 check_pattern(path)
+            else:
+                assert_model_write(root, path)
+                assert_model_write(root, resolved)
         except ValueError as error:
             return PermissionDecision("deny", str(error))
         if sensitive_path(Path(path).parts) or sensitive_path(
@@ -329,25 +333,6 @@ def check_rules(tool_name: str, arguments: dict, workdir: Path) -> PermissionDec
         if not resolved.is_relative_to(root):
             return PermissionDecision(
                 "deny", "File tools cannot access paths outside the working directory."
-            )
-        if tool_name in {"write_file", "edit_file"} and resolved.is_relative_to(
-            root / ".tasks"
-        ):
-            return PermissionDecision(
-                "deny", "Persistent task records must be updated through task tools."
-            )
-        if tool_name in {"write_file", "edit_file"} and any(
-            resolved.is_relative_to(root / name)
-            for name in (".mailboxes", ".git", ".memory", ".harness", ".venv")
-        ):
-            return PermissionDecision(
-                "deny", "Runtime, memory, mailbox and Git records are host-managed."
-            )
-        if tool_name in {"write_file", "edit_file"} and (
-            resolved.name.startswith(".scheduled_tasks") and resolved.parent == root
-        ):
-            return PermissionDecision(
-                "deny", "Scheduled task records must be updated through cron tools."
             )
         return PermissionDecision(
             "allow", "File operation is inside the working directory."

@@ -86,7 +86,7 @@ homebrew-harness session --resume-session
 
 The working directory defaults to the directory from which you launch the command. `--cwd` selects another workspace; session state is stored there.
 
-File queries inspect source files with bounded results and skip Git, dependency, and runtime directories by default. Explicit full-result references use their owning context.
+File queries inspect source files with bounded results and skip Git, dependency, and runtime directories by default. Reserved runtime paths and their case variants remain host-managed. Explicit full-result references use their owning context.
 
 The default `core` profile includes the basic tools. Enable optional modules as needed:
 
@@ -195,7 +195,7 @@ Notifications are off by default. When enabled, they report decision requests, b
 
 `export RUN_ID --output FILE` exports requirements and state. `backup RUN_ID --output DIR` backs up the database and attachments after supervision stops and cleanup completes. `verify-backup DIR` checks the manifest; `restore-backup DIR --output NEW_DIR` restores into a new inspection directory. The host checks workspace and Git identity before execution. `min_free_bytes` sets the runtime disk floor and defaults to 128 MiB.
 
-`search_text`, `git_status`, and `git_diff` provide bounded content and change inspection.
+`search_text`, `git_status`, and `git_diff` provide bounded content and change inspection. Explicit `git_diff` paths select their changes independently of the status display limit, including both visible ends of a rename.
 
 The local integration demonstration creates a text-normalization project and exercises requirement answers, exact approvals, supervisor restarts, PR feedback, stage acceptance, model handoff, member recovery, test-grant renewal, request-timeout recovery, and dependent-file integration in a repository with 5,001 unrelated files. It also checks publication, export, backup, cancellation, a new Run, and same-model resume:
 
@@ -259,7 +259,7 @@ homebrew-harness workflow list
 homebrew-harness workflow --cwd /tmp/harness-example demo
 ```
 
-Direct model workflows select a registered profile with `--models-config PATH --model ALIAS`; the single-model environment remains available. The chosen profile supplies its protocol, options, and request limits.
+Direct model workflows select a registered profile with `--models-config PATH --model ALIAS`; the single-model environment remains available. The chosen profile supplies its protocol, options, and request limits. Session workflows use the same complete model binding; changing that binding requires a new workflow run.
 
 ```sh
 homebrew-harness workflow --models-config ~/.config/homebrew-harness/models.json \
@@ -268,7 +268,7 @@ homebrew-harness admin benchmark --live \
   --models-config ~/.config/homebrew-harness/models.json --model planner
 ```
 
-The benchmark is offline by default; `--live` explicitly selects model execution. It checks a small suite of file tasks. Workflow status includes cleanup state. A paused workflow can be resumed after its execution finishes cleanup; callers receive bounded results while unfinished execution remains owned.
+The benchmark is offline by default; `--live` explicitly selects model execution. It checks a small suite of file tasks. Workflow status distinguishes bounded foreground return, confirmed persistence, and actual cleanup. A paused workflow can be resumed after cleanup and its completion record are confirmed; unfinished execution remains owned even when storage is busy.
 
 The main session loads it with `--demo-workflows`. Register custom scripts through `WorkflowRegistry`; see the [design document](docs/DESIGN.md) for component composition.
 

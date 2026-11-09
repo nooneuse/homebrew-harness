@@ -8,7 +8,7 @@ from pathlib import Path
 
 from homebrew_harness.execution.execution_control import check as execution_check
 from homebrew_harness.execution.execution_leases import file_update_lease
-from homebrew_harness.security.file_visibility import assert_visible, private_parts
+from homebrew_harness.security.file_visibility import assert_visible, assert_model_write
 from homebrew_harness.security.safe_files import (
     FilePublicationError,
     SafeFile,
@@ -28,11 +28,6 @@ def safe_path(path: str, workdir: Path) -> Path:
     if not resolved.is_relative_to(root):
         raise ValueError("File paths must stay inside the working directory.")
     return resolved
-
-
-def model_file_path(path):
-    if private_parts(Path(path).parts):
-        raise ValueError("Private runtime files are not model file resources.")
 
 
 def run_read(
@@ -85,7 +80,7 @@ def file_publication_outcome():
 
 
 def run_write(path: str, content: str, workdir: Path) -> str:
-    model_file_path(path)
+    assert_model_write(workdir, path)
     with (
         file_publication_outcome(),
         file_update_lease(workdir, path),
@@ -101,7 +96,7 @@ def run_write(path: str, content: str, workdir: Path) -> str:
 
 
 def run_edit(path: str, old_text: str, new_text: str, workdir: Path) -> str:
-    model_file_path(path)
+    assert_model_write(workdir, path)
     with (
         file_publication_outcome(),
         file_update_lease(workdir, path),

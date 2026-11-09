@@ -1,3 +1,4 @@
+from tests.support.clients import model_binding
 from tests.support.tools import queued_cli_input
 
 """Cross-component regressions for second-review findings R13--R23."""
@@ -437,8 +438,9 @@ with patch.object(GoalController,'accept_candidate',crash):
         ):
             factory.return_value.__enter__.return_value = c
             self.assertEqual(
-                homebrew_harness.cli.main(["session"] +
-                    ["--profile", "full"]
+                homebrew_harness.cli.main(
+                    ["session"]
+                    + ["--profile", "full"]
                     + [
                         "--cwd",
                         str(self.root),
@@ -577,10 +579,14 @@ with patch.object(GoalController,'accept_candidate',crash):
         )
         a, _ = fake_client([reply("old")], identity=None)
         b, _ = fake_client([reply("new")], identity=None)
-        first = WorkflowRuntime(self.root, ModelWorkflowRunner(a, "same"), registry)
+        first = WorkflowRuntime(
+            self.root, ModelWorkflowRunner(model_binding(a, "same")), registry
+        )
         result = first.run("fixture", {})
         first.close()
-        second = WorkflowRuntime(self.root, ModelWorkflowRunner(b, "same"), registry)
+        second = WorkflowRuntime(
+            self.root, ModelWorkflowRunner(model_binding(b, "same")), registry
+        )
         with self.assertRaisesRegex(WorkflowError, "runner"):
             second.run("fixture", resume_from_run_id=result["task"]["run_id"])
         second.close()
@@ -694,14 +700,14 @@ with patch.object(GoalController,'accept_candidate',crash):
         b, _ = fake_client([])
         first = WorkflowRuntime(
             self.root,
-            ModelWorkflowRunner(a, "same", profile="stable-fixture"),
+            ModelWorkflowRunner(model_binding(a, "same"), profile="stable-fixture"),
             registry,
         )
         result = first.run("fixture", {})
         first.close()
         second = WorkflowRuntime(
             self.root,
-            ModelWorkflowRunner(b, "same", profile="stable-fixture"),
+            ModelWorkflowRunner(model_binding(b, "same"), profile="stable-fixture"),
             registry,
         )
         try:

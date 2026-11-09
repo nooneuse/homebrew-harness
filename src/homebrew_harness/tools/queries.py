@@ -113,89 +113,157 @@ def _visible(root, path):
         return False
 
 
-def _status(workdir):
+GIT_METADATA_LIMIT = 100000
+
+
+def _git(workdir):
     root = canonical_root(workdir)
     git = WorktreeManager(root, None)
     top = Path(git._git(["rev-parse", "--show-toplevel"]).stdout.strip()).resolve()
     if top != root:
         raise ValueError("Git inspection requires the bound repository root.")
+    return git
+
+
+def _status_records(git, *, untracked):
     result = git._git(
         [
             "--no-optional-locks",
             "status",
             "--porcelain=v1",
             "-z",
-            "--untracked-files=all",
+            "--untracked-files=" + ("all" if untracked else "no"),
         ]
     )
-    entries, values = [], iter(result.stdout.split("\0"))
+    values = iter(result.stdout.split("\0"))
+    count = 0
     for raw in values:
+        check()
         if not raw:
             continue
+        count += 1
+        if count > GIT_METADATA_LIMIT:
+            raise ValueError(
+                "Git metadata limit reached; the requested changes were not fully inspected."
+            )
+        if len(raw) < 4 or raw[2] != " ":
+            raise ValueError("Invalid Git status metadata.")
         code, path = raw[:2], raw[3:]
-        original = next(values, "") if "R" in code or "C" in code else None
-        if (
-            not _visible(root, path)
-            or original is not None
-            and not _visible(root, original)
-        ):
-            continue
-        entries.append(
-            {
-                "status": code,
-                "path": path,
-                **({"original": original} if original else {}),
-            }
-        )
-        if len(entries) > 200:
-            break
-    return git, entries
+        original = next(values, None) if "R" in code or "C" in code else None
+        if ("R" in code or "C" in code) and not original:
+            raise ValueError("Incomplete Git rename metadata.")
+        yield {
+            "status": code,
+            "path": path,
+            **({"original": original} if original else {}),
+        }
+
+
+def _entry_visible(git, entry):
+    return _visible(git.workdir, entry["path"]) and (
+        "original" not in entry or _visible(git.workdir, entry["original"])
+    )
 
 
 def git_status(*, workdir):
-    _, entries = _status(workdir)
+    git = _git(workdir)
+    entries = []
+    for row in _status_records(git, untracked=True):
+        if _entry_visible(git, row):
+            entries.append(row)
+            if len(entries) > 200:
+                break
     return json.dumps(
         redact({"files": entries[:200], "truncated": len(entries) > 200}),
         ensure_ascii=False,
     )
 
 
+def _untracked(git, paths):
+    result = git._git(
+        [
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            *(
+                ["--", *(":(literal)" + p for p in sorted(paths))]
+                if paths is not None
+                else []
+            ),
+        ]
+    )
+    found = []
+    for index, path in enumerate(filter(None, result.stdout.split("\0"))):
+        check()
+        if index >= GIT_METADATA_LIMIT:
+            raise ValueError("Git untracked metadata limit reached.")
+        if (paths is None or path in paths) and _visible(git.workdir, path):
+            found.append(path)
+            if len(found) > 200:
+                break
+    return found[:200], len(found) > 200
+
+
 def git_diff(*, workdir, paths=None):
-    git, entries = _status(workdir)
+    git = _git(workdir)
     if paths is not None and (
         not isinstance(paths, list)
         or not 1 <= len(paths) <= 32
         or any(not isinstance(p, str) or not _visible(git.workdir, p) for p in paths)
     ):
         raise ValueError("Diff paths must be 1-32 visible relative workspace files.")
-    tracked = {v["path"] for v in entries if v["status"] != "??"}
-    selected = sorted(tracked if paths is None else tracked & set(paths))[:32]
+    requested = set(paths) if paths is not None else None
+    selected, entries, reason = set(), 0, None
+    for row in _status_records(git, untracked=False):
+        pair = {row["path"]} | ({row["original"]} if "original" in row else set())
+        if requested is not None and not requested.intersection(pair):
+            continue
+        if not _entry_visible(git, row):
+            continue
+        entries += 1
+        if requested is None and entries > 32:
+            reason = "file_limit"
+            break
+        selected.update(pair)
+    untracked, truncated = [], False
+    remaining = requested - selected if requested is not None else None
+    if not selected or remaining:
+        untracked, truncated = _untracked(git, remaining)
     if not selected:
         return json.dumps(
-            {
-                "diff": "",
-                "truncated": len(entries) > 200,
-                "untracked": [v["path"] for v in entries if v["status"] == "??"],
-            }
+            redact(
+                {
+                    "diff": "",
+                    "truncated": truncated,
+                    "untracked": untracked,
+                    "stop_reason": "untracked_limit" if truncated else None,
+                }
+            ),
+            ensure_ascii=False,
         )
+    # Do not rediscover rename partners that were not checked above.
     result = git._git(
         [
             "diff",
             "HEAD",
+            "--no-renames",
             "--no-ext-diff",
             "--no-textconv",
             "--no-color",
             "--",
-            *(":(literal)" + p for p in selected),
+            *(":(literal)" + p for p in sorted(selected)),
         ]
     )
+    if len(result.stdout) > 12000:
+        reason = "output_limit"
     return json.dumps(
         redact(
             {
                 "diff": result.stdout[:12000],
-                "truncated": len(result.stdout) > 12000
-                or len(tracked) > 32
-                or len(entries) > 200,
+                "truncated": reason is not None,
+                "stop_reason": reason,
+                **({"untracked": untracked} if requested is not None else {}),
             }
         ),
         ensure_ascii=False,

@@ -13,6 +13,7 @@ from homebrew_harness.context.task_intent import TaskIntent
 from homebrew_harness.execution.model_gateway import ModelGatewayError
 from homebrew_harness.security.data_boundary import model_request, redact
 from homebrew_harness.security.safe_files import SafeFile
+from homebrew_harness.security.file_visibility import reserved_alias
 from homebrew_harness.storage.storage_gate import storage_gate
 
 
@@ -78,12 +79,16 @@ class ArchiveStore:
 
     def owns(self, reference: str) -> bool:
         try:
+            if reserved_alias(Path(reference).parts):
+                return False
             return (self.workdir / reference).resolve() in self._saved
         except (OSError, ValueError, RuntimeError):
             return False
 
     def is_archive(self, reference: str, cwd: Path) -> bool:
         try:
+            if reserved_alias(Path(reference).parts):
+                return True
             return any(
                 (root / reference).resolve().is_relative_to(self.workdir / ".harness")
                 for root in (cwd, self.workdir)

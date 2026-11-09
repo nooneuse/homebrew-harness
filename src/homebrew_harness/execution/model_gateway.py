@@ -1045,7 +1045,17 @@ class ModelGateway:
             )
         return (request, prepared, configured_timeout), metadata, expires, cancels
 
-    def input_size(self, model, messages, tools, root, output_tokens=None):
+    def input_size(
+        self,
+        model,
+        messages,
+        tools,
+        root,
+        output_tokens=None,
+        *,
+        output_contract=None,
+        settings=None,
+    ):
         params, _, _, _ = self._prepare_request(
             "context_prepare",
             None,
@@ -1053,11 +1063,17 @@ class ModelGateway:
             None,
             None,
             {
+                **(settings or {}),
                 "model": model,
                 "messages": messages,
                 "tools": tools or [],
                 "max_tokens": output_tokens or self.worker_output_tokens,
                 "protocol_root": root,
+                **(
+                    {"output_contract": output_contract}
+                    if output_contract is not None
+                    else {}
+                ),
             },
         )
         return len(json.dumps(params[1], ensure_ascii=False))

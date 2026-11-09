@@ -1,5 +1,7 @@
 """Global model costs, real deadlines and cross-component usage contracts."""
 
+from tests.support.clients import model_binding
+
 from homebrew_harness.runtime.capabilities import Capabilities
 
 import io
@@ -667,7 +669,7 @@ class IntegrationTests(Fixture):
         gateway, _ = self.gateway(client)
         runtime = WorkflowRuntime(
             self.root,
-            ModelWorkflowRunner(gateway, "test"),
+            ModelWorkflowRunner(model_binding(gateway, "test")),
             WorkflowRegistry(
                 [
                     WorkflowSpec(
@@ -801,10 +803,10 @@ class IntegrationTests(Fixture):
             [WorkflowSpec("test", "test", script, {"type": "object", "properties": {}})]
         )
         first = WorkflowRuntime(
-            self.root, ModelWorkflowRunner(gateway, "test"), registry
+            self.root, ModelWorkflowRunner(model_binding(gateway, "test")), registry
         ).run("test", {})
         resumed = WorkflowRuntime(
-            self.root, ModelWorkflowRunner(gateway, "test"), registry
+            self.root, ModelWorkflowRunner(model_binding(gateway, "test")), registry
         ).run("test", resume_from_run_id=first["task"]["run_id"])
         self.assertEqual(resumed["task"]["status"], "completed")
         self.assertEqual(resumed["task"]["progress"]["calls"], 0)

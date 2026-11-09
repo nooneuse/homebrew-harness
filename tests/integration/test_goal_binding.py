@@ -1,6 +1,7 @@
 """Goal binding preserves task text and commits before any model work."""
 
 import io
+import copy
 import json
 import os
 import tempfile
@@ -207,12 +208,109 @@ class GoalBindingTests(unittest.TestCase):
                 )
             )
 
+    def test_invalid_goal_types_preserve_existing_goal_and_checkpoint(self):
+        session, client, _ = self.session()
+        session.run_user("/usage")
+        session.intent.update("Original task")
+        session.goal.set_goal("Existing goal")
+        previous = copy.deepcopy(session.goal.state)
+        checkpoint = session.runtime_store.get("checkpoints", session.checkpoint_key)
+        lease = session.goal.lease
+        for kind in ([], {}, None, 1, 1.0, True, "", "unknown"):
+            spec = self.spec()
+            spec["predicates"][0]["type"] = kind
+            with self.subTest(kind=kind), self.assertRaises(ValueError):
+                session.run_user("Replace task", goal_spec=spec)
+            self.assertEqual(session.goal.state, previous)
+            self.assertIs(session.goal.lease, lease)
+            self.assertEqual(
+                session.runtime_store.get("checkpoints", session.checkpoint_key),
+                checkpoint,
+            )
+        self.assertEqual(session.intent.original, "Original task")
+        client.chat.completions.create.assert_not_called()
+
 
 class GoalInputTests(unittest.TestCase):
     def setUp(self):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name).resolve()
+
+    def test_invalid_discriminator_types_have_normal_cli_errors(self):
+        path = self.root / "goal.json"
+        for kind in ([], {}, None, 1, False):
+            path.write_text(
+                json.dumps(
+                    {
+                        "condition": "finish",
+                        "predicates": [
+                            {"id": "target", "type": kind, "path": "out.txt"}
+                        ],
+                    }
+                )
+            )
+            captured = io.StringIO()
+            with (
+                self.subTest(kind=kind),
+                patch.dict(
+                    os.environ,
+                    {
+                        "OPENAI_API_KEY": "fixture-key",
+                        "OPENAI_BASE_URL": "fixture",
+                        "OPENAI_MODEL": "fixture",
+                    },
+                ),
+                patch("homebrew_harness.session_cli.load_dotenv"),
+                patch("homebrew_harness.session_cli.OpenAI") as factory,
+                redirect_stderr(captured),
+            ):
+                self.assertEqual(
+                    main(
+                        [
+                            "session",
+                            "--cwd",
+                            str(self.root),
+                            "--goal-spec",
+                            str(path),
+                            "task",
+                        ]
+                    ),
+                    1,
+                )
+                factory.assert_not_called()
+            self.assertIn("--goal-spec", captured.getvalue())
+            self.assertNotIn("Traceback", captured.getvalue())
+            self.assertFalse((self.root / ".harness").exists())
+
+    def test_field_type_matrix_uses_shared_validation(self):
+        from homebrew_harness.orchestration.hard_conditions import (
+            ConditionError,
+            validate_spec,
+        )
+
+        valid = {
+            "condition": "done",
+            "predicates": [{"id": "result", "type": "file_exists", "path": "out.txt"}],
+        }
+        for field, values in {
+            "id": [[], {}, None, True],
+            "workspace": [[], {}, None, 1],
+            "path": [[], {}, None, 1],
+            "min_bytes": [[], {}, None, True],
+        }.items():
+            for value in values:
+                spec = copy.deepcopy(valid)
+                spec["predicates"][0][field] = value
+                with (
+                    self.subTest(field=field, value=value),
+                    self.assertRaises(ConditionError),
+                ):
+                    validate_spec(spec)
+        original = copy.deepcopy(valid)
+        normalized = validate_spec(valid)
+        self.assertEqual(valid, original)
+        self.assertEqual(normalized["predicates"][0]["workspace"], "base")
 
     def test_regular_unicode_definition_is_frozen(self):
         path = self.root / "goal.json"

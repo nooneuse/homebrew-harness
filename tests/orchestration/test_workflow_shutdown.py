@@ -2,6 +2,8 @@
 
 import asyncio
 import io
+import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -61,7 +63,7 @@ class WorkflowShutdownTests(unittest.TestCase):
             WorkflowRegistry(
                 [WorkflowSpec("slow", "slow", script or self.slow, {"type": "object"})]
             ),
-            limits=WorkflowLimits(timeout_seconds=0.06, cleanup_seconds=0.03),
+            limits=WorkflowLimits(timeout_seconds=0.2, cleanup_seconds=0.03),
         )
         self.addCleanup(lambda: rt.wait_closed(3))
         self.addCleanup(rt.close)
@@ -223,3 +225,161 @@ class WorkflowShutdownTests(unittest.TestCase):
         )
         self.release.set()
         self.assertTrue(runtime.wait_closed(2))
+
+    def test_real_maintenance_contention_does_not_block_frontend(self):
+        from homebrew_harness.storage.storage_gate import storage_gate
+
+        runtime = self.runtime()
+        with storage_gate(self.root, exclusive=True):
+            started = time.monotonic()
+            result = runtime.run("slow", {})
+            self.assertLess(time.monotonic() - started, 0.5)
+            self.assertTrue(result["execution_pending"])
+            self.assertFalse(result["persistence_confirmed"])
+            self.assertTrue(result["task"]["inspection_required"])
+            self.assertFalse(runtime.close(0.01))
+            self.assertFalse(self.started.is_set())
+        self.assertTrue(runtime.wait_closed(3))
+
+    def test_blocked_initial_and_final_writes_return_before_release(self):
+        for final in (False, True):
+            with self.subTest(final=final):
+                reached, release = threading.Event(), threading.Event()
+                self.addCleanup(release.set)
+
+                async def script(ctx, args):
+                    return {"ready": True}
+
+                runtime = self.runtime(script)
+                original = runtime.store.write
+
+                def block(identity, value, suffix=".json"):
+                    matches = suffix == ".json" and value.get("task", {}).get(
+                        "cleanup", {}
+                    ).get("state") == ("complete" if final else "pending")
+                    if matches and not reached.is_set():
+                        original(identity, value, suffix)
+                        reached.set()
+                        release.wait(3)
+                    else:
+                        original(identity, value, suffix)
+
+                with patch.object(runtime.store, "write", side_effect=block):
+                    started = time.monotonic()
+                    result = runtime.run("slow", {})
+                    self.assertLess(time.monotonic() - started, 0.5)
+                    self.assertTrue(reached.is_set())
+                    self.assertTrue(result["execution_pending"])
+                    self.assertFalse(result["persistence_confirmed"])
+                    identity = result["task"]["run_id"]
+                    self.assertEqual(
+                        runtime.inspect(identity)["task"]["cleanup"]["state"], "pending"
+                    )
+                    with self.assertRaises(WorkflowError):
+                        runtime.run("slow", resume_from_run_id=identity)
+                    release.set()
+                    self.assertTrue(runtime.wait_closed(3))
+                self.assertEqual(runtime.inspect(identity)["task"]["status"], "paused")
+                self.assertIn("error", runtime.store.read(identity, ".output.json"))
+
+    def test_missing_or_lost_commit_receipt_never_fakes_confirmation(self):
+        async def script(ctx, args):
+            return {"ready": True}
+
+        runtime = self.runtime(script)
+        original = runtime.store.write
+
+        def lost(identity, value, suffix=".json"):
+            original(identity, value, suffix)
+            if suffix == ".commit":
+                raise OSError("commit return lost")
+
+        with patch.object(runtime.store, "write", side_effect=lost):
+            result = runtime.run("slow", {})
+        self.assertEqual(result["task"]["status"], "completed")
+        identity = result["task"]["run_id"]
+        runtime.store.path(identity, ".commit").unlink()
+        self.assertTrue(runtime.inspect(identity)["task"]["inspection_required"])
+        from homebrew_harness.storage.retention_graph import external_snapshot
+        from homebrew_harness.storage.checkpoint_retirement import workspace_blockers
+        from homebrew_harness.storage.durable_runtime import DurableStore
+
+        self.assertIn(
+            "workspace_unfinished_workflow",
+            workspace_blockers(
+                DurableStore(self.root).read(), external_snapshot(self.root), "fixture"
+            ),
+        )
+        with self.assertRaisesRegex(WorkflowError, "not confirmed"):
+            runtime.run("slow", resume_from_run_id=identity)
+
+    def test_blocked_observer_does_not_hold_execution_or_result(self):
+        async def script(ctx, args):
+            return {"ready": True}
+
+        runtime = self.runtime(script)
+        runtime.on_event = lambda *_args, **_kwargs: self.release.wait(3)
+        runtime.limits = WorkflowLimits(timeout_seconds=1, cleanup_seconds=0.03)
+        result = runtime.run("slow", {})
+        self.assertEqual(result["task"]["status"], "completed")
+        self.assertTrue(runtime.wait_closed(0.01))
+        with runtime.store.lock(result["task"]["run_id"]):
+            pass
+
+    def test_async_cancel_during_initial_storage_retains_owner(self):
+        runtime = self.runtime()
+        original = runtime.store.write
+
+        def block(identity, value, suffix=".json"):
+            if suffix == ".json" and not self.started.is_set():
+                self.started.set()
+                self.release.wait(3)
+            return original(identity, value, suffix)
+
+        async def run():
+            task = asyncio.create_task(runtime.arun("slow", {}))
+            while not self.started.is_set():
+                await asyncio.sleep(0.005)
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+            self.assertTrue(runtime.pending())
+            self.assertFalse(runtime.close(0.01))
+
+        with patch.object(runtime.store, "write", side_effect=block):
+            started = time.monotonic()
+            asyncio.run(run())
+            self.assertLess(time.monotonic() - started, 0.5)
+            self.release.set()
+            self.assertTrue(runtime.wait_closed(3))
+
+    def test_process_exit_after_final_snapshot_requires_inspection(self):
+        code = """import os, sys
+from homebrew_harness.orchestration.workflow_runtime import WorkflowRuntime, WorkflowRegistry, WorkflowSpec, RunnerOutput
+class Runner:
+    identity = "workflow-owner-fixture"
+    def run(self, *args): return RunnerOutput("ready")
+async def script(ctx, args): return {"ready": True}
+runtime = WorkflowRuntime(sys.argv[1], Runner(), WorkflowRegistry([WorkflowSpec("slow", "slow", script, {"type": "object"})]))
+original = runtime.store.write
+def crash(identity, value, suffix=".json"):
+    original(identity, value, suffix)
+    if suffix == ".json" and value.get("task", {}).get("cleanup", {}).get("state") == "complete": os._exit(17)
+runtime.store.write = crash
+runtime.run("slow", {})
+"""
+        result = subprocess.run(
+            [sys.executable, "-I", "-B", "-c", code, str(self.root)],
+            capture_output=True,
+            timeout=15,
+        )
+        self.assertEqual(result.returncode, 17, result.stderr)
+        runtime = self.runtime()
+        identity = next(
+            p.stem
+            for p in (self.root / ".harness/workflows").glob("wf_*.json")
+            if not p.name.endswith(".output.json")
+        )
+        self.assertTrue(runtime.inspect(identity)["task"]["inspection_required"])
+        with self.assertRaisesRegex(WorkflowError, "not confirmed"):
+            runtime.run("slow", resume_from_run_id=identity)

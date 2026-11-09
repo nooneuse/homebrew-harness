@@ -1,6 +1,8 @@
 """Recovery, actual concurrency, bounded usage and existing harness boundaries."""
 
 from __future__ import annotations
+
+from tests.support.clients import model_binding
 from tests.support.paths import PROJECT_ROOT
 from homebrew_harness.runtime.capabilities import Capabilities
 
@@ -560,7 +562,7 @@ class WorkflowTests(unittest.TestCase):
                 completions=SimpleNamespace(create=Mock(return_value=response))
             )
         )
-        runner = ModelWorkflowRunner(client, "test-model")
+        runner = ModelWorkflowRunner(model_binding(client, "test-model"))
         result = runner.run("one step", VALUE_SCHEMA, "one", 100)
         request = client.chat.completions.create.call_args.kwargs
         self.assertEqual(result.value, {"value": 1})
@@ -569,7 +571,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn("tools", request)
         self.assertEqual(request["max_tokens"], 100)
         self.assertEqual(request["response_format"]["type"], "json_schema")
-        self.assertEqual(request["response_format"]["json_schema"]["schema"], VALUE_SCHEMA)
+        self.assertEqual(
+            request["response_format"]["json_schema"]["schema"], VALUE_SCHEMA
+        )
         response.choices[0].finish_reason = "length"
         self.assertFalse(runner.run("one step", VALUE_SCHEMA, "one", 100).complete)
         response.choices[0].finish_reason = "stop"
@@ -578,7 +582,7 @@ class WorkflowTests(unittest.TestCase):
             runner.run("one step", VALUE_SCHEMA, "one", 100).value, str
         )
         configured = SimpleNamespace(with_options=Mock(return_value=client))
-        ModelWorkflowRunner(configured, "test-model")
+        ModelWorkflowRunner(model_binding(configured, "test-model"))
         configured.with_options.assert_called_once_with(max_retries=0)
 
     def test_workflow_tool_closes_one_batch_without_intermediate_model_context(self):
@@ -919,6 +923,9 @@ class WorkflowTests(unittest.TestCase):
                 api_key=uuid.uuid4().hex, base_url=address, timeout=3, max_retries=0
             ) as client:
                 _ = client.default_headers
+                _ = (
+                    client.chat.completions
+                )  # Load SDK resources before the short transport deadline.
 
                 async def script(ctx, args):
                     return await ctx.agent(
@@ -926,7 +933,7 @@ class WorkflowTests(unittest.TestCase):
                     )
 
                 runtime = self.runtime(
-                    script, ModelWorkflowRunner(client, "test-model")
+                    script, ModelWorkflowRunner(model_binding(client, "test-model"))
                 )
                 first = runtime.run("test-flow", {})
                 resumed = runtime.run(

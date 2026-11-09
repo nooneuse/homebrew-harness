@@ -86,7 +86,7 @@ homebrew-harness session --resume-session
 
 工作目录默认为启动命令时所在的目录。`--cwd` 选择其他工作区，会话状态保存在该工作区中。
 
-文件查询以有界结果检查源码，默认跳过 Git、依赖和运行时目录；显式完整结果引用按所属上下文读取。
+文件查询以有界结果检查源码，默认跳过 Git、依赖和运行时目录。保留的运行时路径及其大小写变体均由宿主管理；显式完整结果引用按所属上下文读取。
 
 默认 `core` 配置包含基础工具。按需启用可选模块：
 
@@ -195,7 +195,7 @@ homebrew-harness run --cwd /path/to/project \
 
 `export RUN_ID --output FILE` 导出要求与状态。`backup RUN_ID --output DIR` 在监督停止且完成收尾后备份数据库和附件。`verify-backup DIR` 检查清单，`restore-backup DIR --output NEW_DIR` 恢复到新的检查目录。执行前由宿主核对工作区和 Git 身份。`min_free_bytes` 指定运行时磁盘余量，默认 128 MiB。
 
-`search_text`、`git_status` 和 `git_diff` 提供有界内容和变化检查。
+`search_text`、`git_status` 和 `git_diff` 提供有界内容和变化检查。显式指定 `git_diff` 路径时，目标选择不受状态展示条数限制；重命名会检查两端的可见性。
 
 本地集成演示创建文本规范化项目，执行需求答复、精确审批、监督重启、PR 反馈、阶段验收、模型交接、成员恢复、测试许可续期、请求超时恢复，并在包含 5,001 个无关文件的仓库中完成依赖文件集成。它还检查发布、导出、备份、取消、新 Run 与同模型恢复：
 
@@ -272,7 +272,7 @@ homebrew-harness session --enable mcp \
 
 `/mcp` 查看连接，`/mcp close CONNECTION_ID` 关闭指定实例。配置和脚本位于 [examples](examples/)。
 
-直接执行模型 Workflow 可用 `--models-config PATH --model ALIAS` 选择已注册配置；也支持单模型环境配置。选中的配置提供协议、选项与请求限制。
+直接执行模型 Workflow 可用 `--models-config PATH --model ALIAS` 选择已注册配置；也支持单模型环境配置。选中的配置提供协议、选项与请求限制。Session 内的 Workflow 同样使用完整模型绑定；更换绑定后需创建新的 Workflow 运行。
 
 ```sh
 homebrew-harness workflow --models-config ~/.config/homebrew-harness/models.json \
@@ -281,7 +281,7 @@ homebrew-harness admin benchmark --live \
   --models-config ~/.config/homebrew-harness/models.json --model planner
 ```
 
-benchmark 默认离线，`--live` 显式选择模型执行，验收范围是一组小型文件任务。Workflow 状态包含收尾情况，暂停的运行在实际收尾结束后可恢复；调用者有界返回，未结束的执行继续被运行时持有。
+benchmark 默认离线，`--live` 显式选择模型执行，验收范围是一组小型文件任务。Workflow 状态区分前台有界返回、记录确认和实际收尾。暂停的运行在收尾及完成记录确认后可恢复；即使存储繁忙，未结束的执行仍继续被运行时持有。
 
 ## 可选容器执行
 

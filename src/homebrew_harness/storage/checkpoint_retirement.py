@@ -112,7 +112,13 @@ def workspace_blockers(state, external, sid):
         ) in {None, sid}:
             reasons.append("workspace_unsettled_cron")
     for value in state.get("goals", {}).values():
-        if value.get("status") not in {"achieved", "failed", "cleared", "replaced", "abandoned"}:
+        if value.get("status") not in {
+            "achieved",
+            "failed",
+            "cleared",
+            "replaced",
+            "abandoned",
+        }:
             reasons.append("workspace_unfinished_goal")
     for value in state.get("input_receipts", {}).values():
         if owns(sid, value.get("checkpoint", "")) and value.get("state") in {
@@ -120,7 +126,10 @@ def workspace_blockers(state, external, sid):
             "retry_wait",
         }:
             reasons.append("checkpoint_pending_input")
-    if any(value.get("status") in {"pending", "in_progress"} for value in state.get("tasks", {}).values()):
+    if any(
+        value.get("status") in {"pending", "in_progress"}
+        for value in state.get("tasks", {}).values()
+    ):
         reasons.append("workspace_unfinished_task")
     for path, value in external["records"].items():
         if not isinstance(value, dict):
@@ -128,9 +137,10 @@ def workspace_blockers(state, external, sid):
         if value.get("session_id") not in {None, sid}:
             continue
         name = Path(path).name
-        if (
-            re.fullmatch(r"wf_[0-9a-f]{32}\.json", name)
-            and value.get("task", {}).get("status") != "completed"
+        if re.fullmatch(r"wf_[0-9a-f]{32}\.json", name) and (
+            value.get("task", {}).get("status") != "completed"
+            or value.get("task", {}).get("cleanup", {}).get("state") != "complete"
+            or value.get("task", {}).get("inspection_required")
         ):
             reasons.append("workspace_unfinished_workflow")
         elif (

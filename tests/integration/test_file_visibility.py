@@ -12,7 +12,7 @@ from homebrew_harness import HarnessSession
 from homebrew_harness.context.compaction import ArchiveStore
 from homebrew_harness.execution.model_protocol import save_replay
 from homebrew_harness.security.file_visibility import file_access_scope
-from homebrew_harness.tools.files import run_glob, run_read
+from homebrew_harness.tools.files import run_edit, run_glob, run_read, run_write
 from homebrew_harness.tools.queries import git_diff, git_status, search_text
 from tests.support.clients import call, fake_client, reply
 
@@ -22,6 +22,84 @@ class FileVisibilityTests(unittest.TestCase):
         temp = tempfile.TemporaryDirectory()
         self.addCleanup(temp.cleanup)
         self.root = Path(temp.name).resolve()
+
+    def test_reserved_writes_are_denied_before_creating_parents(self):
+        from homebrew_harness.security.permissions import check_rules
+
+        for name in (".harness", ".tasks", ".mailboxes", ".memory", ".git", ".venv"):
+            for spelling in (name, name.upper()):
+                for prefix in ("", "nested/"):
+                    path = prefix + spelling + "/marker.txt"
+                    with self.subTest(path=path):
+                        self.assertEqual(
+                            check_rules("write_file", {"path": path}, self.root).action,
+                            "deny",
+                        )
+                        with self.assertRaises(ValueError):
+                            run_write(path, "marker", self.root)
+                        with self.assertRaises(ValueError):
+                            run_edit(path, "old", "new", self.root)
+        with self.assertRaises(ValueError):
+            run_write(".HARNESS", "not a directory", self.root)
+        with self.assertRaises(ValueError):
+            run_write(".SCHEDULED_TASKS.json", "{}", self.root)
+        self.assertEqual(list(self.root.iterdir()), [])
+
+    def test_case_aliases_cannot_read_replay_or_write_runtime_through_dispatch(self):
+        state = save_replay(self.root, "foreign", "fixture", {"text": "private-marker"})
+        alias = state["reference"].replace(
+            ".harness/protocol-state", ".HARNESS/PROTOCOL-STATE"
+        )
+        if not (self.root / alias).exists():
+            self.skipTest("Filesystem does not alias differently cased paths")
+        self.assertTrue((self.root / alias).samefile(self.root / state["reference"]))
+        calls = [
+            call("read", name="read_file", arguments=json.dumps({"path": alias})),
+            call(
+                "write",
+                name="write_file",
+                arguments=json.dumps(
+                    {"path": ".HARNESS/marker.txt", "content": "marker"}
+                ),
+            ),
+            call(
+                "search",
+                name="search_text",
+                arguments=json.dumps(
+                    {"pattern": ".HARNESS/PROTOCOL-STATE/**", "text": "private-marker"}
+                ),
+            ),
+        ]
+        client, snapshots = fake_client([reply(calls=calls), reply("Done")])
+        with (
+            redirect_stdout(io.StringIO()),
+            redirect_stderr(io.StringIO()),
+            HarnessSession(client, "fixture", self.root) as session,
+        ):
+            session.run_user("Inspect public files")
+        self.assertTrue(session.wait_closed(5))
+        results = [
+            json.loads(m["content"]) for m in snapshots[-1] if m["role"] == "tool"
+        ]
+        self.assertTrue(all(r.get("error") for r in results), results)
+        self.assertNotIn("private-marker", json.dumps(results))
+        self.assertFalse((self.root / ".harness/marker.txt").exists())
+
+    def test_archive_aliases_reject_without_changing_business_case(self):
+        own = ArchiveStore(self.root, namespace="own")
+        ref = own.save("tool-results", "own-marker")
+        with file_access_scope(own, restrict_archives=True):
+            self.assertIn("own-marker", run_read(ref, self.root))
+            with self.assertRaises(ValueError):
+                run_read(ref.replace(".harness", ".HARNESS"), self.root)
+            with self.assertRaises(ValueError):
+                run_glob(".HARNESS/**", self.root)
+        run_write("Report.md", "business", self.root)
+        self.assertIn("business", run_read("Report.md", self.root))
+        self.assertIn("Report.md", json.loads(run_glob("*.md", self.root))["paths"])
+        if not (self.root / "report.md").exists():
+            run_write("report.md", "different", self.root)
+            self.assertIn("business", run_read("Report.md", self.root))
 
     def test_actual_dispatch_rejects_private_replay_through_all_read_queries(self):
         state = save_replay(
