@@ -1,0 +1,15 @@
+{
+  "allowed": ["subagents", "background", "tasks", "teams", "worktrees"],
+  "model_planning": true,
+  "prefer_session": false,
+  "demo_workflows": false,
+  "managed_bash": false,
+  "detached": false,
+  "memory_mode": "off",
+  "allow_tests": [],
+  "write_paths": ["."],
+  "total_seconds": 3600,
+  "turn_seconds": 300,
+  "request_seconds": 60,
+  "shutdown_seconds": 5
+}

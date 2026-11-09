@@ -65,6 +65,11 @@ def bundle(state, sid):
             if owns(sid, v.get("checkpoint", ""))
         },
         "team": copy.deepcopy(state["team"].get(sid)),
+        "input_submissions": {
+            k: copy.deepcopy(v)
+            for k, v in state.get("input_submissions", {}).items()
+            if owns(sid, v.get("checkpoint", ""))
+        },
         "input_receipts": {
             k: copy.deepcopy(v)
             for k, v in state.get("input_receipts", {}).items()
@@ -75,6 +80,8 @@ def bundle(state, sid):
 
 def workspace_blockers(state, external, sid):
     reasons = []
+    if any((v.get("target") or {}).get("id") == sid and v.get("state") not in {"finished", "cancelled"} for v in state.get("interaction_tasks", {}).values()):
+        reasons.append("interaction_task_unfinished")
     if any(
         sid in v.get("session_refs", [v.get("session_id")])
         and (
@@ -403,7 +410,7 @@ def _load_archive(root, sid, archive):
         or any(not owns(sid, key) for key in data["checkpoints"])
         or any(
             not owns(sid, value.get("checkpoint", ""))
-            for value in data["input_receipts"].values()
+            for value in [*data["input_receipts"].values(), *data["input_submissions"].values()]
         )
     ):
         raise RecoveryRequired("Cold snapshot ownership does not match.")
@@ -502,6 +509,8 @@ def retire(root, plan, *, now=None):
                     del current["operations"][key]
                 for key in data["input_receipts"]:
                     del current["input_receipts"][key]
+                for key in data["input_submissions"]:
+                    del current["input_submissions"][key]
                 current["team"].pop(sid, None)
 
         store.transaction(update)
@@ -540,6 +549,7 @@ def unretire(root, sid, *, now=None):
             state["checkpoints"].update(data["checkpoints"])
             state["operations"].update(data["operations"])
             state.setdefault("input_receipts", {}).update(data["input_receipts"])
+            state.setdefault("input_submissions", {}).update(data["input_submissions"])
             if data["team"] is not None:
                 state["team"][sid] = data["team"]
             original = data["meta"]

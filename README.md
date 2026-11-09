@@ -41,7 +41,7 @@ homebrew-harness workflow --help
 homebrew-harness admin --help
 ```
 
-You can also use `python -m homebrew_harness` with the same subcommands. Running the command without a subcommand starts an interactive session. Use `session` explicitly for a one-shot task or session-specific options.
+You can also use `python -m homebrew_harness` with the same subcommands. Running the command without a subcommand starts automatic interaction. New tasks select an interactive Session or a managed Run and the required capabilities; active text steers the current task. Use `session` explicitly for a one-shot task or session-specific options.
 
 `--cwd` and `--env-file` are shared options and may appear before or after subcommands. If repeated, the last explicit value takes precedence. Other options belong to their feature group; use `homebrew-harness run --help` or the help for an individual operation to see them.
 
@@ -69,7 +69,7 @@ Set the environment variables referenced by the template, and configure tool use
 ## Quick start
 
 ```sh
-# Interactive session
+# Automatic interaction
 homebrew-harness
 
 # One-shot task
@@ -88,7 +88,7 @@ The working directory defaults to the directory from which you launch the comman
 
 File queries inspect source files with bounded results and skip Git, dependency, and runtime directories by default. Reserved runtime paths and their case variants remain host-managed. Explicit full-result references use their owning context.
 
-The default `core` profile includes the basic tools. Enable optional modules as needed:
+The explicit Session entry defaults to the `core` profile with basic tools. Enable optional modules as needed:
 
 ```sh
 homebrew-harness session --enable subagents --enable tasks
@@ -100,6 +100,38 @@ homebrew-harness session --memory-mode recall
 `--profile full` enables all optional modules and defaults memory to `recall`. `--memory-mode auto` enables memory maintenance after normal user turns; `off` disables memory calls.
 
 The bundled skill examples cover [Python code review](skills/code-review/SKILL.md) and [text summarization](skills/text-summary/SKILL.md).
+
+## Automatic interaction
+
+Start `homebrew-harness` in the project directory and enter a task. The host plans new tasks, checks its capability catalog, and prepares the selected Session or managed Run. Each task keeps its original requirements, chosen capabilities, model and execution policy. Ordinary input during execution steers that task; `/queue TEXT` creates an independent follow-up. Completed discussions become reference for the next task, with complete archived content available on demand. Native reasoning and replay stay in their source context.
+
+Optional host settings live outside the workspace:
+
+```sh
+cp examples/config/interaction.example.json ~/.config/homebrew-harness/interaction.json
+homebrew-harness --host-config ~/.config/homebrew-harness/interaction.json
+```
+
+`HARNESS_INTERACTION_CONFIG` can select that file. It accepts external `models_config`, `env_file`, `test_config`, `bash_config`, `mcp_config` and `control_config` references. `allowed` declares available optional modules; the task selects a subset. Set `demo_workflows` to register the bundled review script, or include `mcp` with a configured server catalog. `memory_mode` is independent. `managed_bash` exposes Bash to automatic Runs while retaining per-call approval; its default is false. Registered tests keep their existing authorization policy.
+
+A new task uses one bounded planning request and carries the result into execution. Steering and host controls do not invoke the router. `prefer_session: true` skips routing and fixes new tasks to core Session mode; `model_planning: false` uses core interactive tasks unless `/managed TEXT` explicitly requests a Run.
+
+| Input | Automatic host behavior |
+| --- | --- |
+| `/status` | Inspect the active task, requests, and actual cleanup state |
+| `/managed TEXT` | Queue an explicitly managed task |
+| `/pause`, `/resume`, `/cancel` | Control the current task; pause applies to Runs |
+| `/upgrade` or `continue as managed` | Continue a settled single-agent Session as a Run |
+| `/detach` or `keep running after closing` | Request that a managed task continue after the interface closes |
+| `/approve ID REVISION yes/no` | Decide an exact persistent tool request |
+| `/answer ID REVISION TEXT` | Answer a requirement question |
+| `/grant ID REVISION RUNS SECONDS` | Renew a fixed test grant with explicit bounds |
+
+A unique displayed tool request also accepts a complete short answer such as `yes` or `no`; mixed prose becomes steering. A unique displayed requirement question accepts a plain answer. Test grants continue to require their exact bounds. Piped input does not acquire interactive approval authority.
+
+The first release has one active task per workspace. Task/Team/worktree, MCP, Cron, unfinished asynchronous work, and uncertain operations prevent Session-to-Run handoff. A handoff preserves original requirements, known results, archive references, observed usage, the remaining deadline and remaining test grants. The old Session retains its records and stops accepting resumed execution; the target obtains fresh verification evidence.
+
+Closing an attached interface stops its owned execution with bounded cleanup. `/detach` explicitly requests an independent supervisor; `detached: true` is a host lifecycle preference for automatically planned managed tasks. Reopening attaches to the existing Run. Startup uses a durable ACK and execution leases. If startup is uncertain, `/status` exposes its token; after inspecting stopped execution, `/supervisor-recover TOKEN` fences the old launch, and `/resume` can retry. Run currently supports neither MCP nor Cron.
 
 ## Managed runs (hands-off)
 
@@ -222,7 +254,7 @@ Interactive mode continues reading terminal input while the model works:
 
 The original task and amendment order are saved. Completed tool results remain execution facts; remaining proposals are checked again when new input arrives.
 
-Host Bash requests approval per call by default. Interactive mode uses exact approval IDs. A one-shot terminal prompt accepts `y`/`yes`; pressing Enter declines.
+Host Bash requests approval per call by default. Explicit Session mode uses exact approval IDs; automatic interaction also adapts a unique displayed focus. A one-shot terminal prompt accepts `y`/`yes`; pressing Enter declines.
 
 ## Goals and tests
 

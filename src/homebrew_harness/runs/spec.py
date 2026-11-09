@@ -44,6 +44,7 @@ class RunSpec:
     stages: tuple = ()
     members: tuple = ()
     enabled: tuple = ()
+    memory_mode: str = "off"
     tools: tuple = DEFAULT_TOOLS
     allow_tests: tuple = ()
     write_paths: tuple = (".",)
@@ -77,6 +78,8 @@ class RunSpec:
     )
 
     def __post_init__(self):
+        if not isinstance(self.memory_mode, str) or self.memory_mode not in {"off", "recall", "auto"}:
+            raise ValueError("Invalid managed memory mode.")
         if (
             not isinstance(self.prompt, str)
             or not self.prompt.strip()

@@ -44,7 +44,7 @@ from homebrew_harness.execution.model_gateway import (
     UsageLedger,
     gateway_error,
 )
-from homebrew_harness.execution.test_runner import TestRunnerError
+from homebrew_harness.execution.test_runner import TestRunner, TestRunnerError
 from homebrew_harness.tools.mcp.runtime import MCPRuntime
 from homebrew_harness.orchestration.goal_loop import (
     GoalController,
@@ -586,6 +586,11 @@ class HarnessSession:
             if self.workspace.lead_assignment
             else None,
             "usage": self.gateway.summary(),
+            **(
+                {"test_handoff": self.tests.handoff_state()}
+                if self.run_control is None and isinstance(self.tests, TestRunner)
+                else {}
+            ),
             "capabilities": self.capabilities.manifest(),
             "bash_policy": self.bash_policy.identity(),
             "model_binding": self.lead_binding.identity(),
@@ -702,6 +707,10 @@ class HarnessSession:
             from homebrew_harness.storage.checkpoint_lifecycle import require_retained
 
             require_retained(state.get("session_meta", {}).get(sid))
+            if state.get("session_meta", {}).get(sid, {}).get("handoff_to"):
+                raise RecoveryRequired(
+                    "This Session was handed off; continue its target Run instead of resuming the source."
+                )
             self._prior_meta = copy.deepcopy(state["session_meta"].get(sid))
             saved = state["checkpoints"].get("lead:" + str(sid))
             if saved is None:
@@ -740,6 +749,8 @@ class HarnessSession:
                     saved, operations, restored, uncertain
                 )
             self.messages[:] = restored
+            if self.run_control is None and saved.get("test_handoff"):
+                self.tests.restore_handoff_state(saved["test_handoff"])
             if saved.get("archives"):
                 self.compactor.store.restore_checkpoint(saved["archives"])
             self.intent.restore(saved["intent"])
@@ -1242,16 +1253,24 @@ class HarnessSession:
         }
 
     def submit_user_input(
-        self, text, *, mode="steer", target="lead", expected_turn_id=None
+        self, text, *, mode="steer", target="lead", expected_turn_id=None, input_id=None
     ):
         if self.run_control is not None:
             return self.inputs.submit(
-                text, mode=mode, target=target, expected_turn_id=expected_turn_id
+                text,
+                mode=mode,
+                target=target,
+                expected_turn_id=expected_turn_id,
+                input_id=input_id,
             )
         if not self._runtime_started:
             self._ensure_runtime()
         receipt = self.inputs.submit(
-            text, mode=mode, target=target, expected_turn_id=expected_turn_id
+            text,
+            mode=mode,
+            target=target,
+            expected_turn_id=expected_turn_id,
+            input_id=input_id,
         )
         if not self._poller.started and self.inputs.active_id is None:
             self.start(include_clock=False)

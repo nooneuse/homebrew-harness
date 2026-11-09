@@ -21,19 +21,19 @@ from .spec import RunOutcome, TERMINAL
 EMPTY_CONTROL_ID = digest({"github": None, "notification": None})
 
 
-def env_value(name, *, required=True):
+def env_value(name, environment=None, *, required=True):
     if not isinstance(name, str) or not re.fullmatch(r"[A-Z][A-Z0-9_]{0,100}", name):
         raise ValueError(
             "External service configuration requires an environment variable name."
         )
-    value = os.getenv(name, "").strip()
+    value = (os.environ if environment is None else environment).get(name, "").strip()
     if required and not value:
         raise ValueError("Missing external service environment variable " + name)
     return value
 
 
 class RunServices:
-    def __init__(self, store, config=None):
+    def __init__(self, store, config=None, *, environment=None):
         self.store, self.source, self.notification = store, None, None
         self.started_clock, self.started_monotonic = time.time(), time.monotonic()
         raw = {"version": 1} if config is None else config
@@ -64,7 +64,7 @@ class RunServices:
                 ):
                     raise ValueError("Invalid GitHub subscription fields.")
                 transport = JsonTransport(
-                    env_value(github["api_url_env"]), env_value(github["token_env"])
+                    env_value(github["api_url_env"], environment), env_value(github["token_env"], environment)
                 )
                 resources.callback(transport.close)
                 self.source = GithubPullSource(
@@ -85,8 +85,8 @@ class RunServices:
                 ):
                     raise ValueError("Invalid notification fields.")
                 self.notification = JsonTransport(
-                    env_value(notification["url_env"]),
-                    env_value(notification["token_env"])
+                    env_value(notification["url_env"], environment),
+                    env_value(notification["token_env"], environment)
                     if notification.get("token_env")
                     else "",
                 )
@@ -102,9 +102,9 @@ class RunServices:
             resources.pop_all()
 
     @classmethod
-    def load(cls, store, path):
+    def load(cls, store, path, *, environment=None):
         if path is None:
-            return cls(store)
+            return cls(store, environment=environment)
         path = Path(path).expanduser().resolve()
         if path.is_relative_to(store.root):
             raise ValueError(
@@ -114,7 +114,7 @@ class RunServices:
             raw = file.read(100001)
         if len(raw) > 100000:
             raise ValueError("Managed service configuration exceeds its size limit.")
-        return cls(store, json.loads(raw))
+        return cls(store, json.loads(raw), environment=environment)
 
     def bind(self, identity):
         run = self.store.get(identity)

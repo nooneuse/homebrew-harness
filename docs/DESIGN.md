@@ -8,9 +8,17 @@ The design centers on three objects: model requests, an effective tool pool, and
 
 ## Command entry point
 
-`homebrew-harness` provides interactive sessions, persistent tasks, fixed orchestration, and host administration through `session`, `run`, `workflow`, and `admin`. Without a subcommand it starts an interactive session; one-shot tasks use `session`. Shared working-directory and environment-file options may appear before or after subcommands.
+`homebrew-harness` provides interactive sessions, persistent tasks, fixed orchestration, and host administration through `session`, `run`, `workflow`, and `admin`. Without a subcommand it starts an automatic interaction host; one-shot tasks use `session`. Shared working-directory and environment-file options may appear before or after subcommands.
 
 The entry point defines shared arguments, parses once, and dispatches to the selected module. Each module owns its state and lifecycle, and execution resources load as needed. The dedicated worker remains an internal Run process entry point.
+
+## Automatic interaction
+
+`InteractionHost` owns the active task reference, input routing and terminal lifecycle. New tasks use a bounded `TaskRouter` proposal, checked against host capabilities and prepared resources. An execution mode and a capability set are separate choices; Workflow remains a composable capability. Session and Run retain their existing loops, state and control owners.
+
+Host input records preserve task identity, input versions and acceptance. Active text steers the frozen task; independent requests queue. Exact commands and displayed request focus route to the existing approval and requirement controllers. Planning results remain reference material beside the original `TaskIntent`.
+
+A settled single-agent Session can hand off to a Run through a closed source checkpoint and an atomic target acceptance. The source context stays intact; the target receives requirements, archive references, known results and the remaining deadline. Its Goal and verification evidence are fresh. Optional detached supervision uses a fixed process entry, a startup ACK and actual leases; reopening attaches to the existing Run.
 
 ## Execution flow
 

@@ -41,7 +41,7 @@ homebrew-harness workflow --help
 homebrew-harness admin --help
 ```
 
-也可以使用 `python -m homebrew_harness` 和相同的子命令。无子命令时进入交互会话；单次任务和会话专属选项使用显式的 `session` 子命令。
+也可以使用 `python -m homebrew_harness` 和相同的子命令。无子命令时进入自动交互入口：新任务选择 Session 或受管理 Run 和所需能力，活动任务的普通输入成为 steering；单次任务和会话专属选项使用显式的 `session` 子命令。
 
 `--cwd` 和 `--env-file` 为公共选项，可放在子命令前后；重复提供时，最后一个显式值生效。其他参数属于对应功能组，通过 `homebrew-harness run --help` 或具体操作的帮助页查看。
 
@@ -69,7 +69,7 @@ homebrew-harness session --models-config ~/.config/homebrew-harness/models.json
 ## 快速开始
 
 ```sh
-# 交互会话
+# 自动交互
 homebrew-harness
 
 # 单次任务
@@ -100,6 +100,38 @@ homebrew-harness session --memory-mode recall
 `--profile full` 启用全部可选模块，记忆默认为 `recall`。`--memory-mode auto` 允许正常用户回合结束后的记忆维护；`off` 关闭记忆调用。
 
 项目附带 [Python 代码审查](skills/code-review/SKILL.zh-CN.md) 和 [文本摘要](skills/text-summary/SKILL.zh-CN.md) 两个技能示例。
+
+## 自动交互
+
+在项目目录运行 `homebrew-harness` 并输入需求。宿主为新任务规划执行方式、核验能力目录，再准备选中的 Session 或受管理 Run。每项任务保留原始需求、能力、模型和执行策略；执行期间的普通输入修订当前任务，`/queue TEXT` 创建独立后续任务。 已完成问答作为下一任务的参考，完整内容按需读取归档；原生推理和 replay 状态留在源上下文。
+
+可选宿主设置保存在工作区外：
+
+```sh
+cp examples/config/interaction.example.json ~/.config/homebrew-harness/interaction.json
+homebrew-harness --host-config ~/.config/homebrew-harness/interaction.json
+```
+
+也可用 `HARNESS_INTERACTION_CONFIG` 选择该文件。支持外部 `models_config`、`env_file`、`test_config`、`bash_config`、`mcp_config`、`control_config` 引用。`allowed` 声明允许的可选组件，任务从中选取所需部分。`demo_workflows` 登记内置审查脚本；配置 MCP 服务器目录后可在 `allowed` 中加入 `mcp`。`memory_mode` 独立配置。`managed_bash` 为自动 Run 提供 Bash，调用仍需审批，默认关闭。固定测试保持原有授权策略。
+
+新任务使用一次有界规划请求，并将规划结果作为执行参考。steering 和宿主管理操作不调用路由模型。`prefer_session: true` 跳过路由，固定使用核心 Session；`model_planning: false` 使用核心交互任务，显式 `/managed TEXT` 仍可请求 Run。
+
+| 输入 | 自动宿主行为 |
+| --- | --- |
+| `/status` | 查看当前任务、请求与真实收尾状态 |
+| `/managed TEXT` | 排队一项明确的受管理任务 |
+| `/pause`、`/resume`、`/cancel` | 控制当前任务；暂停适用于 Run |
+| `/upgrade` 或 `转为持续推进` | 在单 Agent 安全边界把 Session 接续为 Run |
+| `/detach` 或 `关闭界面后继续` | 请求受管理任务在关闭界面后继续 |
+| `/approve ID REVISION yes/no` | 回答一项精确的持久工具请求 |
+| `/answer ID REVISION TEXT` | 回答需求问题 |
+| `/grant ID REVISION RUNS SECONDS` | 为固定测试续期指定次数和期限 |
+
+唯一已展示的工具请求也接受完整短回答，如 `允许这次操作`、`拒绝`；混合正文作为 steering 保留。唯一已展示的需求问题接受普通文字回答。测试续期仍需明确边界。管道输入不获得交互审批权限。
+
+首版每个工作区只有一个活动任务。Task／Team／worktree、MCP、Cron、未结束的异步工作或不确定操作会阻挡 Session→Run 交接。交接保留原始需求、已知结果、归档引用、观察用量、剩余期限和测试授权的剩余次数；旧 Session 保持记录并停止恢复执行，目标重新获得验证证据。
+
+关闭 attached 界面会有界停止其持有的执行。`/detach` 明确请求独立 supervisor；`detached: true` 是对自动规划的 managed 任务的宿主生命周期偏好。重新打开入口会附着已有 Run。启动以持久 ACK 和执行租约确认；若启动不确定，`/status` 展示 token，核实旧执行结束后用 `/supervisor-recover TOKEN` 封锁旧启动，再用 `/resume` 重试。Run 当前不支持 MCP 和 Cron。
 
 ## 受管理运行（无人值守）
 
@@ -222,7 +254,7 @@ python examples/managed_run_demo.py --output /tmp/harness-ae-demo
 
 原始任务与修订顺序会保存。已完成工具结果继续作为执行事实；新输入到达后，剩余提议重新核验。
 
-宿主 Bash 默认按调用审批。交互模式使用精确审批 ID；单次任务的终端提示接受 `y`／`yes`，回车表示拒绝。
+宿主 Bash 默认按调用审批。显式 Session 使用精确审批 ID，自动交互还适配唯一已展示的焦点；单次任务的终端提示接受 `y`／`yes`，回车表示拒绝。
 
 ## Goal 与测试
 

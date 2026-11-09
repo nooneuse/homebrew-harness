@@ -210,7 +210,7 @@ class RunStore:
             raise ValueError("Managed run not found or invalid.")
         return value
 
-    def create(self, spec, *, now=None):
+    def create(self, spec, *, now=None, _accept=None):
         if not isinstance(spec, RunSpec):
             raise ValueError("RunSpec is required.")
         now = time.time() if now is None else now
@@ -280,6 +280,8 @@ class RunStore:
                 raise ValueError(
                     "Finish or cancel the existing managed run in this workspace first."
                 )
+            if _accept is not None:
+                _accept(db, conn, state)
             from .stages import create_tasks
 
             create_tasks(db, conn, state, spec.stages)
@@ -439,6 +441,7 @@ class RunStore:
         mode="steer",
         expected_turn_id=None,
         expected_generation=None,
+        input_id=None,
     ):
         from homebrew_harness.runtime.host_commands import HostCommand
 
@@ -455,8 +458,15 @@ class RunStore:
             raise ValueError("Invalid managed input mode.")
         db = self.runtime.backend()
         rid = run_id(identity)
-        mid = "usr_" + uuid.uuid4().hex
+        mid = input_id or "usr_" + uuid.uuid4().hex
+        if not isinstance(mid, str) or not re.fullmatch(r"usr_[0-9a-f]{32}", mid):
+            raise ValueError("Invalid stable user input ID.")
         with storage_gate(self.root), db.write() as conn:
+            prior = db._get(conn, "input_submissions", mid)
+            if prior is not None:
+                if prior["to"] != "user_" + rid or prior["content"] != text or prior["metadata"]["mode"] != mode:
+                    raise ValueError("Input ID was already accepted with another payload or target.")
+                return {"input_id": mid, "state": "queued"}
             value = db._get(conn, "runs", rid)
             if not value or value["status"] in TERMINAL:
                 raise ValueError("Run no longer accepts input.")
@@ -478,6 +488,7 @@ class RunStore:
                 raise ValueError("Managed inbox is full.")
             record = {
                 "id": mid,
+                "checkpoint": "lead:" + value["session_id"],
                 "from": "user",
                 "to": recipient,
                 "type": "user_input",
@@ -491,6 +502,7 @@ class RunStore:
                 },
             }
             db._send(conn, recipient, record)
+            db._put(conn, "input_submissions", mid, record)
             if mode == "interrupt":
                 old = db._get(
                     conn, "run_controls", rid, {"revision": 0, "action": "run"}

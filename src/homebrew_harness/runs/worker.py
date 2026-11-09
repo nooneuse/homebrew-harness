@@ -64,7 +64,7 @@ def make_session(store, control, args):
             store.root,
             model_registry=models,
             lead_model_profile=alias,
-            capabilities=Capabilities(control.spec.enabled),
+            capabilities=Capabilities(control.spec.enabled, control.spec.memory_mode),
             run_control=control,
             test_runner=tests,
             bash_policy=bash,

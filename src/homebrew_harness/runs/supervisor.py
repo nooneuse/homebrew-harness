@@ -20,8 +20,15 @@ class RunSupervisor:
         host_arguments=(),
         services=None,
         model_handoff=None,
+        on_update=None,
     ):
         self.store = store
+        from homebrew_harness.runtime.observability import Observations
+        from homebrew_harness.runtime.runtime_control import Workers
+
+        self.on_update = on_update
+        self._updates, self._observations = Workers(), Observations()
+        self._next_update = 0
         self.model_handoff = model_handoff
         self.worker_command = tuple(
             worker_command
@@ -33,6 +40,21 @@ class RunSupervisor:
         from .services import RunServices
 
         self.services = services or RunServices(store)
+
+    def _tick(self, identity):
+        self.services.tick(identity)
+        callback = self.on_update
+        if (
+            callback is not None
+            and time.monotonic() >= self._next_update
+            and self._updates.wait(0)
+        ):
+            self._next_update = time.monotonic() + 0.2
+            self._updates.start(
+                lambda: self._observations.run("on_update", lambda: callback(identity)),
+                name="run-observer",
+                track_operation=False,
+            )
 
     def execution_free(self):
         try:
@@ -158,7 +180,7 @@ class RunSupervisor:
         with self.leases.use("managed-supervisor"):
             self.services.bind(identity)
             while True:
-                self.services.tick(identity)
+                self._tick(identity)
                 value = self.store.get(identity)
                 spec = RunSpec.from_dict(value["spec"])
                 if self.reconcile_completed(value):
@@ -322,7 +344,7 @@ class RunSupervisor:
                     stopping = None
                     watchdog_reason = None
                     while process.poll() is None:
-                        self.services.tick(identity)
+                        self._tick(identity)
                         now = time.time()
                         control = self.store.runtime.get(
                             "run_controls", identity, {"action": "run"}
@@ -363,7 +385,7 @@ class RunSupervisor:
                     if current["cleanup_complete"] and current["status"] == "waiting":
                         continue
                     if current["cleanup_complete"] and current["status"] in TERMINAL:
-                        self.services.tick(identity)
+                        self._tick(identity)
                     if self.reconcile_completed(current):
                         self.store.finalize_terminal(identity, supervisor=self)
                         return self.store.status(identity)

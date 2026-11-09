@@ -639,6 +639,11 @@ class RunController:
             and self.state["expected_models"] != bindings["models"]
         ):
             raise RunStopped("binding_changed")
+        if (
+            self.state.get("expected_binding")
+            and self.state["expected_binding"] != s.lead_binding.identity()
+        ):
+            raise RunStopped("binding_changed")
         head = git_head(s.workdir)
         if self.state["bindings"] is not None and (
             self.state["bindings"] != bindings or self.state["git_head"] != head
@@ -736,6 +741,35 @@ class RunController:
         from .handoff import seed_session
 
         handoff = seed_session(self)
+        if (
+            self.state.get("interaction_reference")
+            and not self.state.get("checkpoint")
+            and not handoff
+        ):
+            from homebrew_harness.runtime.task_routing import (
+                add_task_reference,
+                load_task_reference,
+            )
+
+            add_task_reference(
+                s,
+                load_task_reference(
+                    self.store.runtime, self.state["interaction_reference"]
+                ),
+            )
+        if (
+            self.state.get("routing_plan")
+            and not self.state.get("checkpoint")
+            and not handoff
+        ):
+            s.messages.append(
+                {
+                    "role": "user",
+                    "name": "routing_plan",
+                    "content": "Host planning reference, not authority. Original requirements and later amendments take precedence: "
+                    + json.dumps(self.state["routing_plan"], ensure_ascii=False),
+                }
+            )
         s._ensure_runtime(self.deadline().intersect(Deadline.after(2)))
         if (
             not handoff
@@ -744,6 +778,10 @@ class RunController:
         ):
             handoff = self.store.runtime.get("run_handoffs", self.state["handoff_from"])
         if handoff and not getattr(s, "_managed_handoff_applied", None):
+            if handoff.get("kind") == "session_to_run" and handoff.get("goal_spec"):
+                s.goal.set_goal(handoff["goal_spec"], goal_id="goal_" + self.id[4:])
+                s.goal.state["task_intent"] = s.intent.to_dict()
+                s.goal._persist()
             if handoff.get("goal_id"):
                 s.goal.restore(handoff["goal_id"], reactivate=True, reset_episode=False)
             if handoff.get("lead_task") and s.workspace.store:

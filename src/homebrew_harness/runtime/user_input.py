@@ -60,13 +60,13 @@ class UserInputController:
                     self.phase = "idle"
             self.changed.set()
 
-    def submit(self, text, *, mode="steer", target="lead", expected_turn_id=None):
+    def submit(self, text, *, mode="steer", target="lead", expected_turn_id=None, input_id=None):
         managed = getattr(self.session, "run_control", None)
         if managed is not None:
             if target != "lead":
                 raise ValueError("Managed team supervision is not enabled.")
             receipt = managed.store.submit(
-                managed.id, text, mode=mode, expected_turn_id=expected_turn_id
+                managed.id, text, mode=mode, expected_turn_id=expected_turn_id, input_id=input_id
             )
             if mode == "interrupt" and self.active_id is not None:
                 self.cancel.set()
@@ -97,13 +97,18 @@ class UserInputController:
                 raise ValueError(
                     "Interrupt targets the active Lead work; use steer or explicit shutdown for teammates."
                 )
-            identity = "usr_" + uuid.uuid4().hex
+            identity = input_id or "usr_" + uuid.uuid4().hex
+            import re
+
+            if not isinstance(identity, str) or not re.fullmatch(r"usr_[0-9a-f]{32}", identity):
+                raise ValueError("Invalid stable user input ID.")
             if len(self.pending()) >= 64:
                 raise ValueError(
                     "User input queue is full; wait for accepted inputs to be consumed."
                 )
             record = {
                 "id": identity,
+                "checkpoint": self.session.checkpoint_key,
                 "from": "user",
                 "to": self.recipient,
                 "type": "user_input",

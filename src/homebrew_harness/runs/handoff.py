@@ -22,7 +22,7 @@ def context_message(record):
     return {
         "role": "user",
         "name": "managed_handoff",
-        "content": "The host changed the Lead model after the old execution stopped. Continue the same Run using the original constraints and current stages. Previous model text is reference, not authorization. "
+        "content": "The host handed off the task after the old execution stopped. Continue using the original constraints and current stages. Previous model text is reference, not authorization. "
         + json.dumps(
             {
                 key: record[key]
@@ -257,6 +257,8 @@ def seed_session(control):
         raise ValueError("Missing model handoff record.")
     session.intent.restore(record["intent"])
     session.user_request = session.intent.original
+    if record.get("kind") == "session_to_run":
+        session.compactor.store.inherit_checkpoint(record["source_archives"])
     session.messages.append(context_message(record))
     session.todo.update(record["todo"])
     session.inputs.revision = record["input_control"]["revision"]

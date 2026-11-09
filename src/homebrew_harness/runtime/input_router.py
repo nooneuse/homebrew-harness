@@ -32,6 +32,7 @@ class ApprovalBroker:
         self.trusted, self.announce = trusted, announce or print
         self.lock = threading.Lock()
         self.pending = {}
+        self.requests = {}
         self.closed = False
         self.owner = owner
 
@@ -52,6 +53,15 @@ class ApprovalBroker:
                 copy.deepcopy(arguments),
                 self.owner.inputs.active_id if self.owner else None,
             )
+            self.requests[identity] = {
+                "id": identity,
+                "revision": 0,
+                "kind": "tool",
+                "tool": tool_name,
+                "arguments": copy.deepcopy(arguments),
+                "directory": str(workdir),
+                "turn_id": self.owner.inputs.active_id if self.owner else None,
+            }
         self.announce(
             "[permission] "
             + redact(
@@ -73,12 +83,23 @@ class ApprovalBroker:
         finally:
             with self.lock:
                 self.pending.pop(identity, None)
+                self.requests.pop(identity, None)
+
+    def records(self):
+        with self.lock:
+            return [
+                copy.deepcopy(self.requests[key])
+                for key, value in self.pending.items()
+                if not value[0].done()
+            ]
 
     def respond(self, identity, approved):
         from homebrew_harness.security.permissions import PermissionDecision
 
         if type(approved) is not bool:
             raise ValueError("Approval must be an explicit boolean host response.")
+        if not self.trusted:
+            raise ValueError("Only trusted host input can answer an approval.")
         with self.lock:
             value = self.pending.get(identity)
             if value is None or value[0].done():
@@ -110,3 +131,21 @@ class ApprovalBroker:
                             "deny", "User steering superseded this pending approval."
                         )
                     )
+
+
+def short_decision(text):
+    """Full matches only; mixed prose remains task text, never authorization."""
+    text = text.strip().casefold()
+    if text in {
+        "yes",
+        "y",
+        "approve",
+        "允许",
+        "允许这次操作",
+        "批准这次操作",
+        "同意这次操作",
+    }:
+        return "approve"
+    if text in {"no", "n", "deny", "拒绝", "拒绝这次操作", "不允许", "不同意"}:
+        return "deny"
+    return None

@@ -596,6 +596,11 @@ class SQLiteDatabase:
     def submit_input(self, record, expected_turn=None):
         name = record["to"]
         with self.write() as conn:
+            prior = self._get(conn, "input_submissions", record["id"])
+            if prior is not None:
+                if any(prior.get(k) != record.get(k) for k in ("to", "content", "type")) or any(prior["metadata"].get(k) != record["metadata"].get(k) for k in ("mode", "target")):
+                    raise ValueError("Input ID was already accepted with another payload or target.")
+                return prior["metadata"].get("turn_id")
             turn = self._get(conn, "input_turns", name)
             if expected_turn is not None and expected_turn != turn:
                 raise ValueError("The targeted turn changed; refresh the input status.")
@@ -608,6 +613,7 @@ class SQLiteDatabase:
                 raise ValueError("User input queue is full.")
             record["metadata"]["turn_id"] = turn
             self._send(conn, name, record)
+            self._put(conn, "input_submissions", record["id"], record)
         return turn
 
     def input_guard(self, names):

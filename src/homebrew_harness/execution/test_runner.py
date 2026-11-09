@@ -296,7 +296,9 @@ class TestRunner:
             raise TestRunnerError("Duplicate test recipe names.")
         self.session_id = uuid.uuid4().hex
         self.lock = threading.RLock()
+        self._account_lock = threading.RLock()
         self.grants = []
+        self._handoff_expiry = {}
         self._receipts = {}
         self.receipt_scope = None
         self.authorizations = None
@@ -323,6 +325,91 @@ class TestRunner:
         return digest(
             {"recipe": recipe.fingerprint(), "backend": self.backend.fingerprint()}
         )
+
+    def handoff_state(self):
+        """Export consumed limits and scoped grants, never test pass evidence."""
+        with self._account_lock:
+            grants = []
+            for grant in self.grants:
+                expires = self._handoff_expiry.setdefault(
+                    grant.id, time.time() + grant.expires - time.monotonic()
+                )
+                grants.append(
+                    {
+                        "recipe": grant.recipe,
+                        "identity": {
+                            "fingerprint": grant.fingerprint,
+                            "locked": grant.locked,
+                        },
+                        "roles": list(grant.roles),
+                        "cwd": grant.cwd,
+                        "task_id": grant.task_id,
+                        "expires_at": expires,
+                        "remaining": grant.remaining,
+                        "id": grant.id,
+                    }
+                )
+            return {
+                "supported": self.authorizations is None,
+                "max_runs": self.max_runs,
+                "total_seconds": self.total_seconds,
+                "runs": self.runs,
+                "seconds": self.seconds,
+                "grants": grants,
+            }
+
+    def restore_handoff_state(self, state):
+        """Restore the same plain Session's consumption instead of renewing it."""
+        if (
+            not isinstance(state, dict)
+            or not state.get("supported")
+            or state.get("max_runs") != self.max_runs
+            or state.get("total_seconds") != self.total_seconds
+            or type(state.get("runs")) is not int
+            or state["runs"] < 0
+            or type(state.get("seconds")) not in {int, float}
+            or not math.isfinite(state["seconds"])
+            or state["seconds"] < 0
+            or not isinstance(state.get("grants"), list)
+        ):
+            raise TestRunnerError(
+                "Test execution policy changed before Session recovery."
+            )
+        restored, expiries = [], {}
+        for row in state["grants"]:
+            recipe = self._recipe(row["recipe"])
+            if (
+                row["identity"]["fingerprint"] != self._fingerprint(recipe)
+                or not isinstance(row["roles"], list)
+                or not set(row["roles"]) <= set(recipe.roles)
+                or type(row["remaining"]) is not int
+                or not 0 <= row["remaining"] <= recipe.max_runs
+                or not math.isfinite(row["expires_at"])
+            ):
+                raise TestRunnerError(
+                    "Saved test grant changed before Session recovery."
+                )
+            restored.append(
+                Grant(
+                    row["recipe"],
+                    row["identity"]["fingerprint"],
+                    row["identity"]["locked"],
+                    tuple(row["roles"]),
+                    row["cwd"],
+                    row["task_id"],
+                    time.monotonic() + row["expires_at"] - time.time(),
+                    row["remaining"],
+                    id=row["id"],
+                )
+            )
+            expiries[row["id"]] = row["expires_at"]
+        with self._account_lock:
+            self._handoff_expiry.update(expiries)
+            self.grants, self.runs, self.seconds = (
+                restored,
+                state["runs"],
+                state["seconds"],
+            )
 
     @classmethod
     def default(cls, workdir):
@@ -404,12 +491,12 @@ class TestRunner:
             time.monotonic() + recipe.approval_seconds,
             runs,
         )
-        with self.lock:
+        with self.lock, self._account_lock:
             self.grants.append(grant)
         return grant
 
     def revoke(self, name):
-        with self.lock:
+        with self.lock, self._account_lock:
             self.grants[:] = [grant for grant in self.grants if grant.recipe != name]
 
     def _grant(self, recipe, cwd, context):
@@ -624,9 +711,10 @@ class TestRunner:
                             "Managed tests require an accepted tool reservation."
                         )
                     self.authorizations.consume_projection()
-            grant.remaining -= 1
-            self.active_test = (name, str(cwd), context.task_id)
-            self.runs += 1
+            with self._account_lock:
+                grant.remaining -= 1
+                self.active_test = (name, str(cwd), context.task_id)
+                self.runs += 1
             run_id = "test_" + uuid.uuid4().hex
             prefix = ".harness/tests/" + self.session_id + "/" + run_id
             with SafeFile(
@@ -840,7 +928,8 @@ class TestRunner:
                 ),
             }
         finally:
-            self.seconds += max(0, time.monotonic() - started)
+            with self._account_lock:
+                self.seconds += max(0, time.monotonic() - started)
             if process is not None:
                 self._kill(process, deadline.expires_at)
                 if isolation is None:

@@ -28,6 +28,10 @@ mcp.json
 mcp.*.json
 .mcp.json
 .mcp.*.json
+interaction.json
+interaction.*.json
+.interaction.json
+.interaction.*.json
 models.json
 models.*.json
 .models.json

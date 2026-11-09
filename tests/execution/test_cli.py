@@ -20,25 +20,51 @@ class UnifiedCLITests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name).resolve()
 
-    def test_no_subcommand_dispatches_interactive_session_with_defaults(self):
-        with patch("homebrew_harness.session_cli.execute", return_value=7) as execute:
+    def test_no_subcommand_dispatches_automatic_interaction(self):
+        with patch(
+            "homebrew_harness.interaction_cli.execute", return_value=7
+        ) as execute:
             self.assertEqual(main([]), 7)
         args, command = execute.call_args.args
-        self.assertEqual(args.entrypoint, "session")
-        self.assertIsNone(args.prompt)
+        self.assertEqual(args.entrypoint, "auto")
         self.assertEqual(args.cwd, Path.cwd())
-        self.assertEqual(args.max_turns, 20)
-        self.assertEqual(command.prog, "homebrew-harness session")
+        self.assertIsNone(args.host_config)
+        self.assertEqual(command.prog, "homebrew-harness")
 
-    def test_default_session_preserves_explicit_shared_locations(self):
-        with patch("homebrew_harness.session_cli.execute", return_value=0) as execute:
+    def test_default_interaction_preserves_explicit_shared_locations(self):
+        with patch(
+            "homebrew_harness.interaction_cli.execute", return_value=0
+        ) as execute:
             self.assertEqual(
                 main(["--cwd", str(self.root), "--env-file", "host.env"]), 0
             )
         args = execute.call_args.args[0]
-        self.assertIsNone(args.prompt)
         self.assertEqual(args.cwd, self.root)
         self.assertEqual(args.env_file, Path("host.env"))
+
+    def test_default_terminal_shows_local_inspection_result(self):
+        from unittest.mock import Mock
+        from homebrew_harness.interaction_cli import execute
+
+        host = Mock(closed=False)
+        host.status.return_value = {"state": "idle"}
+        host.submit.return_value = {
+            "result": "Inspect operation with its exact revision"
+        }
+        host.close.return_value = {"state": "closed"}
+        args = parser().parse_args(["--cwd", str(self.root)])
+        output = io.StringIO()
+        with (
+            patch("homebrew_harness.interaction_cli.InteractionAssembler"),
+            patch(
+                "homebrew_harness.interaction_cli.InteractionHost", return_value=host
+            ),
+            patch("builtins.input", side_effect=["/recovery", "q"]),
+            redirect_stdout(output),
+        ):
+            self.assertEqual(execute(args, parser()), 0)
+        self.assertIn("Inspect operation with its exact revision", output.getvalue())
+        host.submit.assert_called_once_with("/recovery")
 
     def test_explicit_session_dispatches_one_shot_and_its_options(self):
         with patch("homebrew_harness.session_cli.execute", return_value=2) as execute:

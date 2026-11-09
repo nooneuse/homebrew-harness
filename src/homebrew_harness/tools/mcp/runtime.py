@@ -104,16 +104,17 @@ class ServerSpec:
                 )
 
 
-def _resolve_values(values: dict) -> dict[str, str]:
+def _resolve_values(values: dict, environment=None) -> dict[str, str]:
     result = {}
     for key, value in values.items():
         if isinstance(value, dict):
             variable = value["env"]
-            if variable not in os.environ:
+            source = os.environ if environment is None else environment
+            if variable not in source:
                 raise MCPError(
                     "MCP connection needs an unset environment variable: " + variable
                 )
-            value = os.environ[variable]
+            value = source[variable]
         result[key] = value
     return result
 
@@ -406,8 +407,9 @@ class _RequestActivity:
 class _Connection:
     """Each SDK context is entered and exited by this one long-lived task."""
 
-    def __init__(self, spec: ServerSpec, owner=None, workspace=None):
+    def __init__(self, spec: ServerSpec, owner=None, workspace=None, environment=None):
         self.spec = spec
+        self.environment = environment
         self.identity = "mcp_" + uuid.uuid4().hex
         self.owner = owner
         self.workspace = workspace
@@ -480,7 +482,7 @@ class _Connection:
                             if key not in PRIVATE_MODEL_ENV
                         }
                     )
-                    supplied = _resolve_values(spec.env)
+                    supplied = _resolve_values(spec.env, self.environment)
                     env.update(supplied)
                     self.secrets = [
                         value
@@ -495,7 +497,7 @@ class _Connection:
                         )
                     )
                 else:
-                    headers = _resolve_values(spec.headers)
+                    headers = _resolve_values(spec.headers, self.environment)
                     self.secrets = [
                         spec.url,
                         *[
@@ -659,6 +661,7 @@ class MCPRuntime:
         *,
         workdir: Path,
         reserved_names=(),
+        environment=None,
         max_container_connections=8,
     ):
         if (
@@ -668,6 +671,7 @@ class MCPRuntime:
             raise MCPError("MCP container connection limit must be between 1 and 32.")
         self.max_container_connections = max_container_connections
         self.specs = dict(specs)
+        self.environment = dict(environment) if environment is not None else None
         self.workdir = canonical_root(workdir)
         self.leases = ExecutionLeases(self.workdir)
         self._scoped_bindings = {}
@@ -766,7 +770,7 @@ class MCPRuntime:
             if spec.execution.mode == "container"
             else None
         )
-        connection = _Connection(spec, owner, workspace)
+        connection = _Connection(spec, owner, workspace, self.environment)
         self._actors.add(connection)
         try:
             await connection.ready

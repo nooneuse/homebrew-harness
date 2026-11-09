@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import sys
@@ -44,6 +45,7 @@ class ArchiveStore:
             raise ValueError("Invalid archive namespace.")
         self.namespace = namespace
         self._saved: set[Path] = set()
+        self._inherited = []
 
     def checkpoint(self):
         return {
@@ -51,6 +53,7 @@ class ArchiveStore:
             "saved": [
                 p.relative_to(self.workdir).as_posix() for p in sorted(self._saved)
             ],
+            "inherited": copy.deepcopy(self._inherited),
         }
 
     def restore_checkpoint(self, value):
@@ -75,13 +78,37 @@ class ArchiveStore:
             with SafeFile(self.workdir, reference) as target, target.open_read():
                 pass
             restored.add(self.workdir / path)
-        self.namespace, self._saved = namespace, restored
+        inherited = value.get("inherited", [])
+        if not isinstance(inherited, list) or len(inherited) > 16:
+            raise CompactionError("Too many inherited archive contexts.")
+        checked = []
+        for group in inherited:
+            if not isinstance(group, dict) or set(group) != {"namespace", "saved"}:
+                raise CompactionError("Invalid inherited archive context.")
+            source = ArchiveStore(self.workdir)
+            source.restore_checkpoint(group)
+            checked.append({"namespace": source.namespace, "saved": source.checkpoint()["saved"]})
+        self.namespace, self._saved, self._inherited = namespace, restored, checked
+
+    def inherit_checkpoint(self, value):
+        """Delegate only verified source archives; keep new writes in this context."""
+        source = ArchiveStore(self.workdir)
+        source.restore_checkpoint(value)
+        groups = [*self._inherited, {"namespace": source.namespace, "saved": source.checkpoint()["saved"]}, *source._inherited]
+        distinct = []
+        for group in groups:
+            if group not in distinct:
+                distinct.append(group)
+        if len(distinct) > 16:
+            raise CompactionError("Too many inherited archive contexts.")
+        self._inherited = distinct
 
     def owns(self, reference: str) -> bool:
         try:
             if reserved_alias(Path(reference).parts):
                 return False
-            return (self.workdir / reference).resolve() in self._saved
+            path = (self.workdir / reference).resolve()
+            return path in self._saved or any(path == self.workdir / item for group in self._inherited for item in group["saved"])
         except (OSError, ValueError, RuntimeError):
             return False
 
