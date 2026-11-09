@@ -354,24 +354,26 @@ homebrew-harness admin gc-preview --cwd /tmp/harness-example
 ## Python API
 
 ```python
-import os
 from pathlib import Path
-from openai import OpenAI
-from homebrew_harness import HarnessSession
+from homebrew_harness import Harness, HostConfig
 
-client = OpenAI(
-    api_key=os.environ["OPENAI_API_KEY"],
-    base_url=os.environ["OPENAI_BASE_URL"],
-    max_retries=0,
-)
-
-with client:
-    with HarnessSession(client, os.environ["OPENAI_MODEL"], Path.cwd()) as session:
-        answer = session.run_user("Read the project and explain its main modules")
-        print(answer)
+with Harness(workdir=Path.cwd(), config=HostConfig.from_files()) as harness:
+    session = harness.sessions.open()
+    turn = session.submit("Explain the project's main modules", request_id="overview-1")
+    report = turn.wait(120)
+    if report.snapshot.output_available:
+        print(turn.result().text)
 ```
 
-`HarnessSession` is the usual entry point. `Capabilities`, `ModelRegistry`, `LoopComponents`, and `agent_loop` support host composition. Module responsibilities and execution flow are described in [docs/DESIGN.md](docs/DESIGN.md).
+`Harness` provides Session, managed Run, Workflow, automatic interaction, approval, and maintenance services. `AsyncHarness` exposes awaitable views. See [Python API](docs/PYTHON_API.md) for configuration, steering, detached execution, recovery, and resource ownership.
+
+The [application example](examples/python_api.py) supports an offline demonstration:
+
+```sh
+python examples/python_api.py --demo --workspace /tmp/harness-sdk-example
+```
+
+`HarnessSession`, `Capabilities`, `ModelRegistry`, `LoopComponents`, and `agent_loop` remain available for component composition. Module responsibilities and execution flow are described in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Development and license
 

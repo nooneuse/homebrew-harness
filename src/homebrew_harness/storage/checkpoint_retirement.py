@@ -31,6 +31,7 @@ DEFAULT_DAYS = 15
 DEFAULT_KEEP = 10
 GRACE_DAYS = 7
 MAX_BYTES = 64 * 1024 * 1024
+SESSION_API_SECTIONS = ("api_sessions", "api_turns", "api_decisions")
 _COLD = re.compile(r"\.harness/checkpoint-retirement/[0-9a-f]{32}\.json\.gz\Z")
 
 
@@ -79,6 +80,14 @@ def bundle(state, sid):
             k: copy.deepcopy(v)
             for k, v in state.get("mcp_resources", {}).items()
             if owns(sid, v.get("checkpoint", ""))
+        },
+        "api": {
+            section: {
+                k: copy.deepcopy(v)
+                for k, v in state.get(section, {}).items()
+                if owns(sid, v.get("checkpoint", ""))
+            }
+            for section in SESSION_API_SECTIONS
         },
     }
 
@@ -428,6 +437,11 @@ def _load_archive(root, sid, archive):
                 *data["input_receipts"].values(),
                 *data["input_submissions"].values(),
                 *data.get("mcp_resources", {}).values(),
+                *(
+                    row
+                    for values in data.get("api", {}).values()
+                    for row in values.values()
+                ),
             ]
         )
     ):
@@ -531,6 +545,9 @@ def retire(root, plan, *, now=None):
                     del current["input_receipts"][key]
                 for key in data["input_submissions"]:
                     del current["input_submissions"][key]
+                for section, values in data["api"].items():
+                    for key in values:
+                        del current[section][key]
                 current["team"].pop(sid, None)
 
         store.transaction(update)
@@ -571,6 +588,14 @@ def unretire(root, sid, *, now=None):
             state.setdefault("mcp_resources", {}).update(data.get("mcp_resources", {}))
             state.setdefault("input_receipts", {}).update(data["input_receipts"])
             state.setdefault("input_submissions", {}).update(data["input_submissions"])
+            for section, values in data.get("api", {}).items():
+                if section not in SESSION_API_SECTIONS:
+                    raise ValueError("Unknown SDK archive section.")
+                if set(values) & set(state.get(section, {})):
+                    raise ValueError(
+                        "SDK recovery records conflict with the retired snapshot."
+                    )
+                state.setdefault(section, {}).update(values)
             if data["team"] is not None:
                 state["team"][sid] = data["team"]
             original = data["meta"]

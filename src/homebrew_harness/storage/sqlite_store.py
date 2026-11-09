@@ -49,6 +49,10 @@ RECORD_SECTIONS = (
     "stage_inputs",
     "run_workspaces",
     "mcp_resources",
+    "api_turns",
+    "api_sessions",
+    "api_submissions",
+    "api_decisions",
 )
 DB_PATH = ".harness/runtime/database/runtime.sqlite3"
 SCHEMA = """
@@ -587,6 +591,7 @@ class SQLiteDatabase:
                 record.get("type") in {"user_steer", "run_reference"}
                 or record.get("type") == "user_input"
                 and meta.get("mode") != "queued"
+                and (not meta.get("target_input_id") or meta.get("turn_id") is not None)
             ):
                 self._put(
                     conn,
@@ -611,10 +616,36 @@ class SQLiteDatabase:
         with self.write() as conn:
             prior = self._get(conn, "input_submissions", record["id"])
             if prior is not None:
-                if any(prior.get(k) != record.get(k) for k in ("to", "content", "type")) or any(prior["metadata"].get(k) != record["metadata"].get(k) for k in ("mode", "target")):
-                    raise ValueError("Input ID was already accepted with another payload or target.")
+                if any(
+                    prior.get(k) != record.get(k) for k in ("to", "content", "type")
+                ) or any(
+                    prior["metadata"].get(k) != record["metadata"].get(k)
+                    for k in (
+                        "mode",
+                        "target",
+                        "literal",
+                        "sdk_goal",
+                        "target_input_id",
+                        "sdk_turn",
+                    )
+                ):
+                    raise ValueError(
+                        "Input ID was already accepted with another payload or target."
+                    )
                 return prior["metadata"].get("turn_id")
             turn = self._get(conn, "input_turns", name)
+            target_input = record.get("metadata", {}).get("target_input_id")
+            if target_input:
+                target = self._get(conn, "api_turns", target_input)
+                if (
+                    not target
+                    or target["checkpoint"] != record["checkpoint"]
+                    or target["state"] not in {"queued", "running"}
+                    or target["cancel_requested"]
+                ):
+                    raise ValueError("SDK input target ended or changed.")
+                if target["state"] == "queued":
+                    turn = None
             if expected_turn is not None and expected_turn != turn:
                 raise ValueError("The targeted turn changed; refresh the input status.")
             if (
@@ -627,6 +658,9 @@ class SQLiteDatabase:
             record["metadata"]["turn_id"] = turn
             self._send(conn, name, record)
             self._put(conn, "input_submissions", record["id"], record)
+            from homebrew_harness.storage.api_state import accept_turn
+
+            accept_turn(self, conn, record)
         return turn
 
     def input_guard(self, names):

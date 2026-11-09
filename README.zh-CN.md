@@ -354,24 +354,26 @@ homebrew-harness admin gc-preview --cwd /tmp/harness-example
 ## Python 接口
 
 ```python
-import os
 from pathlib import Path
-from openai import OpenAI
-from homebrew_harness import HarnessSession
+from homebrew_harness import Harness, HostConfig
 
-client = OpenAI(
-    api_key=os.environ["OPENAI_API_KEY"],
-    base_url=os.environ["OPENAI_BASE_URL"],
-    max_retries=0,
-)
-
-with client:
-    with HarnessSession(client, os.environ["OPENAI_MODEL"], Path.cwd()) as session:
-        answer = session.run_user("阅读项目并解释主要模块")
-        print(answer)
+with Harness(workdir=Path.cwd(), config=HostConfig.from_files()) as harness:
+    session = harness.sessions.open()
+    turn = session.submit("解释项目的主要模块", request_id="overview-1")
+    report = turn.wait(120)
+    if report.snapshot.output_available:
+        print(turn.result().text)
 ```
 
-`HarnessSession` 是常用入口，`Capabilities`、`ModelRegistry`、`LoopComponents` 和 `agent_loop` 用于宿主组合。模块职责与执行流程参见 [docs/DESIGN.zh-CN.md](docs/DESIGN.zh-CN.md)。
+`Harness` 提供 Session、托管 Run、Workflow、自动入口、审批和维护服务；`AsyncHarness` 提供可等待视图。配置、steering、后台执行、恢复和资源归属用法见 [Python API](docs/PYTHON_API.zh-CN.md)。
+
+[应用示例](examples/python_api.py) 支持离线演示：
+
+```sh
+python examples/python_api.py --demo --workspace /tmp/harness-sdk-example
+```
+
+`HarnessSession`、`Capabilities`、`ModelRegistry`、`LoopComponents` 和 `agent_loop` 继续用于组件组合。模块职责与执行流程参见 [docs/DESIGN.zh-CN.md](docs/DESIGN.zh-CN.md)。
 
 ## 开发与许可
 

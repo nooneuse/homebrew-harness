@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from homebrew_harness.runtime.output import print
+
 import copy
 import json
 import math
@@ -565,6 +567,8 @@ class HarnessSession:
                 else {}
             ),
             "input_control": self.inputs.data(),
+            "api_query": getattr(self, "_api_turn_id", None)
+            or getattr(self, "_api_pending_turn_id", None),
             **(
                 {"handoff_applied": getattr(self, "_managed_handoff_applied", None)}
                 if self.run_control
@@ -772,6 +776,15 @@ class HarnessSession:
             self.todo.update(saved.get("todo", []))
             self.todo._revision = saved.get("todo_revision", self.todo.revision)
             self.last_goal_result = saved.get("last_result", "")
+            query_id = saved.get("api_query")
+            query = self.runtime_store.get("api_turns", query_id) if query_id else None
+            if (
+                query
+                and query["state"] == "running"
+                and saved.get("phase") in {"executed", "idle"}
+            ):
+                self._api_pending_turn_id = query_id
+                self.last_goal_result = query.get("output") or self.last_goal_result
             self._pending_background = saved.get("pending_background", [])
             self._recovery_blocked = list(
                 dict.fromkeys(
@@ -1265,7 +1278,18 @@ class HarnessSession:
         }
 
     def submit_user_input(
-        self, text, *, mode="steer", target="lead", expected_turn_id=None, input_id=None
+        self,
+        text,
+        *,
+        mode="steer",
+        target="lead",
+        expected_turn_id=None,
+        input_id=None,
+        literal=False,
+        sdk_turn=False,
+        request_id=None,
+        goal=None,
+        target_input_id=None,
     ):
         if self.run_control is not None:
             return self.inputs.submit(
@@ -1283,6 +1307,11 @@ class HarnessSession:
             target=target,
             expected_turn_id=expected_turn_id,
             input_id=input_id,
+            literal=literal,
+            sdk_turn=sdk_turn,
+            request_id=request_id,
+            goal=goal,
+            target_input_id=target_input_id,
         )
         if not self._poller.started and self.inputs.active_id is None:
             self.start(include_clock=False)
@@ -1302,6 +1331,10 @@ class HarnessSession:
         self._pending_user = []
 
     def _consume_user_input(self):
+        if getattr(self, "_api_pending_turn_id", None):
+            if self._api_pending_work():
+                return False
+            self._finish_api_pending()
         if (
             self.inputs.active_id
             or self._user_waiting.is_set()
@@ -1317,7 +1350,8 @@ class HarnessSession:
             controls = [
                 r
                 for r in values
-                if HostCommand.parse(r["content"]).allowed_during_recovery
+                if not r.get("metadata", {}).get("literal")
+                and HostCommand.parse(r["content"]).allowed_during_recovery
             ]
             if not controls:
                 self.inputs.release(values)
@@ -1342,7 +1376,12 @@ class HarnessSession:
             raise ValueError("Untrusted inbox data cannot become a user request.")
         if rest:
             self.inputs.release(rest)
-        command = HostCommand.parse(record["content"])
+        literal = record.get("metadata", {}).get("literal", False)
+        command = (
+            HostCommand(record["content"])
+            if literal
+            else HostCommand.parse(record["content"])
+        )
         if self._recovery_blocked and not command.allowed_during_recovery:
             self.inputs.release([record])
             return False
@@ -1351,8 +1390,13 @@ class HarnessSession:
             self.inputs.release([record])
             return False
         self._pending_user = [record]
+        self._api_turn_id = record.get("metadata", {}).get("sdk_turn")
         try:
-            result = self.run_user(record["content"])
+            result = self.run_user(
+                record["content"],
+                literal=literal,
+                goal_spec=record.get("metadata", {}).get("sdk_goal"),
+            )
             if self._pending_user:
                 with cleanup_scope():
                     self._checkpoint_writer.save(
@@ -1378,6 +1422,15 @@ class HarnessSession:
                         },
                     )
                 self._pending_user = []
+            if self._api_turn_id:
+                if self._api_pending_work():
+                    self._api_pending_turn_id = self._api_turn_id
+                else:
+                    self._finish_api_turn(
+                        self._api_turn_id,
+                        "blocked" if self.goal.pending else "completed",
+                        result,
+                    )
             print("\n[runtime] user " + record["id"] + "\n" + result, flush=True)
         except Exception as error:
             if isinstance(error, RecoveryRequired) and not self._recovery_blocked:
@@ -1391,12 +1444,55 @@ class HarnessSession:
                 finally:
                     self._pending_user = []
             self._automatic_failed = True
+            if self._api_turn_id:
+                self._finish_api_turn(
+                    self._api_turn_id,
+                    "blocked" if self._recovery_blocked else "failed",
+                    None,
+                    str(error),
+                )
             print(
                 "[runtime] User work stopped (" + type(error).__name__ + ").",
                 file=sys.stderr,
             )
+        finally:
+            self._api_turn_id = None
         self._drain_changed.set()
         return True
+
+    def _finish_api_turn(self, identity, state, output, error=None):
+        row = self.runtime_store.get("api_turns", identity)
+        if not row or row["state"] in {"completed", "cancelled", "failed"}:
+            return
+        value = {
+            "id": identity,
+            "session_id": self.session_id,
+            "turn_id": row["turn_id"],
+            "state": state,
+            "output": output,
+            "error": error,
+            "input_revision": self.inputs.revision,
+        }
+        with cleanup_scope():
+            self._checkpoint_writer.save("idle", boundary={"api_turn": value})
+
+    def _finish_api_pending(self):
+        identity = getattr(self, "_api_pending_turn_id", None)
+        if identity and not self._api_pending_work():
+            self._finish_api_turn(
+                identity,
+                "blocked"
+                if self.goal.pending or self._automatic_failed
+                else "failed"
+                if self._async_failed
+                else "completed",
+                self.last_goal_result,
+            )
+            self._api_pending_turn_id = None
+
+    def _api_pending_work(self):
+        # Later user queries do not belong to the current query's execution.
+        return set(self.pending_work()) - {"goal", "user_input"}
 
     def _bind_task_goal(self, query, definition):
         from homebrew_harness.context.task_intent import TaskIntent
@@ -1443,7 +1539,7 @@ class HarnessSession:
             self.goal.discard_prepared(prepared)
             raise
 
-    def run_user(self, query: str, *, goal_spec=None) -> str:
+    def run_user(self, query: str, *, goal_spec=None, literal=False) -> str:
         if goal_spec is not None:
             from homebrew_harness.orchestration.hard_conditions import validate_spec
 
@@ -1451,7 +1547,9 @@ class HarnessSession:
             if not isinstance(query, str) or not query.strip():
                 raise ValueError("A Goal-bound task needs nonempty text.")
         command = (
-            HostCommand(query) if goal_spec is not None else HostCommand.parse(query)
+            HostCommand(query)
+            if goal_spec is not None or literal
+            else HostCommand.parse(query)
         )
         if self.run_control is not None and not command.local:
             raise ValueError(
@@ -1482,6 +1580,17 @@ class HarnessSession:
                 if goal_spec is None
                 else self._run_user(command, deadline, goal_spec=goal_spec)
             )
+
+    def control(self, command):
+        """Execute a typed local host control without interpreting task text."""
+        if not isinstance(command, HostCommand) or not command.local:
+            raise ValueError("Host control requires a local HostCommand.")
+        deadline = Deadline.after(2)
+        with (
+            control_scope(deadline),
+            acquired(self._runtime_init_lock, deadline, inherit=False),
+        ):
+            return self._run_user(command, deadline)
 
     def _run_user(
         self, command: HostCommand, turn_deadline: Deadline, *, goal_spec=None

@@ -161,10 +161,13 @@ class RunStore:
         self.runtime = DurableStore(self.root)
         self._anchor = None
         self._anchor_identity = None
+        self._permanently_closed = False
         if self.runtime.backend().exists():
             self._keep_database()
 
     def _keep_database(self):
+        if self._permanently_closed:
+            return
         path = self.runtime.backend().path
         info = os.stat(path, follow_symlinks=False)
         identity = (info.st_dev, info.st_ino)
@@ -190,7 +193,9 @@ class RunStore:
             self._anchor = connection
             self._anchor_identity = identity
 
-    def close(self):
+    def close(self, *, permanent=False):
+        if permanent:
+            self._permanently_closed = True
         if self._anchor is not None:
             self._anchor.close()
             self._anchor = None
@@ -442,6 +447,7 @@ class RunStore:
         expected_turn_id=None,
         expected_generation=None,
         input_id=None,
+        literal=False,
     ):
         from homebrew_harness.runtime.host_commands import HostCommand
 
@@ -449,7 +455,8 @@ class RunStore:
             not isinstance(text, str)
             or not text.strip()
             or len(text) > 64000
-            or HostCommand.parse(text).name
+            or not literal
+            and HostCommand.parse(text).name
         ):
             raise ValueError(
                 "Managed input must be task text; host controls use their dedicated commands."

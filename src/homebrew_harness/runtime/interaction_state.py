@@ -23,13 +23,15 @@ class InteractionState:
         identity = self.runtime.get("interaction_hosts", "workspace", {}).get("active")
         return self.get(identity) if identity else None
 
-    def accept_input(self, text, mode, target, identity=None):
+    def accept_input(self, text, mode, target, identity=None, *, literal=False):
         identity = identity or "usr_" + uuid.uuid4().hex
         if not isinstance(identity, str) or not re.fullmatch(
             r"usr_[0-9a-f]{32}", identity
         ):
             raise ValueError("Input ID must be a stable usr_ identifier.")
         payload = {"text": text, "mode": mode, "target": target}
+        if literal:
+            payload["literal"] = True
         db = self.runtime.backend()
         with storage_gate(self.root), db.write() as conn:
             prior = db._get(conn, "interaction_inputs", identity)
@@ -58,6 +60,7 @@ class InteractionState:
                     "route": None,
                     "config": None,
                     "lifetime": "attached",
+                    **({"literal": True} if literal else {}),
                     "previous_task": active
                     or db._get(conn, "interaction_hosts", "workspace", {}).get("last"),
                 }

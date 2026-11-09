@@ -4,8 +4,13 @@ __version__ = "0.1.0"
 
 
 def __getattr__(name):
+    if name in {"Harness", "AsyncHarness", "HostConfig", "SessionOptions"}:
+        from . import api
+
+        return getattr(api, name)
     if name in {"ModelRegistry", "ModelSpec"}:
         from .execution import model_registry
+
         return getattr(model_registry, name)
     if name in {"ArtifactFile", "ArtifactProfile"}:
         from .execution import artifact_policy
@@ -39,6 +44,10 @@ def __getattr__(name):
 
 
 __all__ = [
+    "Harness",
+    "AsyncHarness",
+    "HostConfig",
+    "SessionOptions",
     "ModelRegistry",
     "ModelSpec",
     "HarnessSession",

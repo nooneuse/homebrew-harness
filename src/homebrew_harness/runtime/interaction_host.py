@@ -98,7 +98,7 @@ class InteractionHost:
                 self._set_focus(self.requests())
             return True
 
-    def submit(self, text, *, mode="auto", target="lead", input_id=None):
+    def submit(self, text, *, mode="auto", target="lead", input_id=None, literal=False):
         if (
             not isinstance(text, str)
             or not text.strip()
@@ -116,7 +116,7 @@ class InteractionHost:
             active = self.state.active()
             if active and (active.get("target") or {}).get("kind") == "run":
                 self.status(active["id"])
-            if mode == "auto":
+            if mode == "auto" and not literal:
                 control = self._command(text)
                 if control is not None:
                     return control
@@ -151,7 +151,9 @@ class InteractionHost:
                 )
             ):
                 raise ValueError("Target must belong to the current interactive team.")
-            record = self.state.accept_input(text, mode, target, input_id)
+            record = self.state.accept_input(
+                text, mode, target, input_id, literal=literal
+            )
             if task and not task.get("target") and task["state"] == "blocked":
                 self.state.update(task["id"], state="queued", error=None)
             self._deliver_pending()
@@ -345,6 +347,9 @@ class InteractionHost:
 
                             def accept(db, conn, run, task=task, route=route):
                                 run.update(
+                                    getattr(self.assembler, "run_control_binding", {})
+                                )
+                                run.update(
                                     routing_plan=route.data(),
                                     interaction_reference=task.get("previous_task"),
                                     bindings=self.assembler.run_bindings,
@@ -467,6 +472,7 @@ class InteractionHost:
                         task["intent"]["original"],
                         mode="queued",
                         input_id=task["input_id"],
+                        literal=task.get("literal", False),
                     )
                 self._deliver_pending()
                 session.start(include_clock=True)
@@ -489,6 +495,7 @@ class InteractionHost:
                     payload["text"],
                     mode=mode,
                     input_id=record["id"],
+                    literal=payload.get("literal", False),
                 )
             elif self.session:
                 with approval_scope(self.broker):
@@ -497,6 +504,7 @@ class InteractionHost:
                         mode=mode,
                         target=payload["target"],
                         input_id=record["id"],
+                        literal=payload.get("literal", False),
                     )
             else:
                 continue
@@ -1023,7 +1031,14 @@ class InteractionHost:
         spec = self.assembler.run_spec(
             route, task["intent"]["original"], goal=goal, remaining=remaining
         )
-        accept_session_handoff(self.runs, self.state, task, spec, self.configuration())
+        accept_session_handoff(
+            self.runs,
+            self.state,
+            task,
+            spec,
+            self.configuration(),
+            service_binding=getattr(self.assembler, "run_control_binding", None),
+        )
         self._announce({"task_id": task["id"], "state": "handed_off"})
         self._run(self.state.get(task["id"]))
 

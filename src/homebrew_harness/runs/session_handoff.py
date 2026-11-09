@@ -6,7 +6,9 @@ import uuid
 from homebrew_harness.execution.execution_leases import ExecutionLeases
 
 
-def accept_session_handoff(store, interaction, task, spec, config):
+def accept_session_handoff(
+    store, interaction, task, spec, config, *, service_binding=None
+):
     from homebrew_harness.storage.retention_graph import references
 
     source = task["target"]["id"]
@@ -42,6 +44,7 @@ def accept_session_handoff(store, interaction, task, spec, config):
             record_id = "handoff_" + uuid.uuid4().hex
 
             def accept(db, conn, run):
+                run.update(service_binding or {})
                 current = db._get(conn, "interaction_tasks", task["id"])
                 if current != task:
                     raise ValueError("Handoff generation changed before acceptance.")

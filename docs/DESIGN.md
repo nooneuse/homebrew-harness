@@ -169,8 +169,11 @@ Hooks expose extension points at user input, before and after tools, and before 
 
 ## Code organization
 
+The Python SDK exposes `Harness` and `AsyncHarness` with Session, Run, Workflow, interaction, request, and maintenance services. Execution handles identify the original unit of work and project state from the existing inbox, checkpoints, Run records and Workflow journal. The host manages attached resource ownership; async applications observe the same execution through awaitable views. See [Python API](PYTHON_API.md) for application usage.
+
 | Directory | Responsibility |
 | --- | --- |
+| `api/` | Application services, execution handles, typed decisions and async views |
 | `runtime/` | Sessions, loops, input, Hooks, preparation, and host control |
 | `runs/` | Persistent Runs, Episodes, outcomes, process supervision, and recovery |
 | `execution/` | Model gateway, adapters, processes, containers, Bash, tests, snapshots, and leases |

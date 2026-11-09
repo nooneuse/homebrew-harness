@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from homebrew_harness.runtime.output import print
+
 import copy
 import json
 import re
@@ -87,14 +89,20 @@ class ArchiveStore:
                 raise CompactionError("Invalid inherited archive context.")
             source = ArchiveStore(self.workdir)
             source.restore_checkpoint(group)
-            checked.append({"namespace": source.namespace, "saved": source.checkpoint()["saved"]})
+            checked.append(
+                {"namespace": source.namespace, "saved": source.checkpoint()["saved"]}
+            )
         self.namespace, self._saved, self._inherited = namespace, restored, checked
 
     def inherit_checkpoint(self, value):
         """Delegate only verified source archives; keep new writes in this context."""
         source = ArchiveStore(self.workdir)
         source.restore_checkpoint(value)
-        groups = [*self._inherited, {"namespace": source.namespace, "saved": source.checkpoint()["saved"]}, *source._inherited]
+        groups = [
+            *self._inherited,
+            {"namespace": source.namespace, "saved": source.checkpoint()["saved"]},
+            *source._inherited,
+        ]
         distinct = []
         for group in groups:
             if group not in distinct:
@@ -108,7 +116,11 @@ class ArchiveStore:
             if reserved_alias(Path(reference).parts):
                 return False
             path = (self.workdir / reference).resolve()
-            return path in self._saved or any(path == self.workdir / item for group in self._inherited for item in group["saved"])
+            return path in self._saved or any(
+                path == self.workdir / item
+                for group in self._inherited
+                for item in group["saved"]
+            )
         except (OSError, ValueError, RuntimeError):
             return False
 

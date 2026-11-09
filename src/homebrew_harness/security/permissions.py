@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from homebrew_harness.runtime.output import print
+
 import builtins
 import json
 import re

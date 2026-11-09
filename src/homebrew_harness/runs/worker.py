@@ -2,107 +2,64 @@
 
 import argparse
 import json
-import os
 import time
 from pathlib import Path
 
-from dotenv import load_dotenv
 
-from homebrew_harness import Capabilities, HarnessSession
 from homebrew_harness.cli_arguments import (
     add_environment_argument,
     add_host_config_arguments,
 )
-from homebrew_harness.execution.bash_policy import HOST_POLICY, load_bash_policy
 from homebrew_harness.execution.model_gateway import GatewayLimits
-from homebrew_harness.execution.model_connections import HostModels
-from homebrew_harness.execution.test_runner import load_test_runner
 
 from .controller import RunController
 from .store import RunStore
 
 
 def make_session(store, control, args):
-    for path in (
-        args.env_file,
-        args.models_config,
-        args.test_config,
-        args.bash_config,
-        args.mcp_config,
-    ):
-        if path is not None and path.expanduser().resolve().is_relative_to(store.root):
-            raise ValueError(
-                "Managed host configuration must be outside the workspace."
-            )
-    load_dotenv(args.env_file.expanduser(), override=False)
-    from contextlib import ExitStack
+    from homebrew_harness.runtime.interaction_config import (
+        InteractionConfig,
+        InteractionAssembler,
+    )
+    from homebrew_harness.runtime.task_routing import TaskRoute
 
-    with ExitStack() as resources:
-        host_models = HostModels(
-            store.root,
-            config=args.models_config,
-            alias=control.state.get("selected_model") or control.spec.model_profile,
-            environment=os.environ,
-        )
-        models = host_models.registry
-        resources.callback(models.close)
-        tests = load_test_runner(
-            args.test_config.expanduser(),
-            store.root,
-            missing_ok=args.test_config.expanduser()
-            == Path.home() / ".config/homebrew-harness/tests.json",
-        )
-        resources.callback(tests.close)
-        bash = (
-            load_bash_policy(args.bash_config, store.root)
-            if args.bash_config
-            else HOST_POLICY
-        )
-        mcp_runtime = None
-        if control.spec.mcp:
-            from homebrew_harness.tools.mcp.runtime import MCPRuntime, load_specs
-
-            specs = load_specs(args.mcp_config.expanduser())
-            mcp_runtime = MCPRuntime(
-                specs,
-                workdir=store.root,
-                selection=control.spec.mcp,
-                delegation=control.spec.mcp_delegation,
-                environment=os.environ,
-                resource_scope={
-                    **control.header,
-                    "session_id": control.state["session_id"],
-                },
-            )
-            resources.callback(mcp_runtime.close)
-        alias = host_models.alias
-        binding = host_models.open(
-            context_chars=control.spec.context_chars,
-            output_tokens=control.spec.output_tokens,
-        )
-        raw, model = binding.client, binding.model
-        session = HarnessSession(
-            raw,
-            model,
-            store.root,
-            model_registry=models,
-            lead_model_profile=alias,
-            capabilities=Capabilities(control.spec.enabled, control.spec.memory_mode),
-            run_control=control,
-            test_runner=tests,
-            mcp_runtime=mcp_runtime,
-            bash_policy=bash,
-            context_chars=control.spec.context_chars,
-            worker_output_tokens=control.spec.output_tokens,
-            gateway_limits=GatewayLimits(
-                request_timeout=control.spec.request_seconds,
-                max_failures=control.spec.retries + 1,
+    spec = control.spec
+    config = InteractionConfig(
+        env_file=args.env_file,
+        models_config=args.models_config,
+        test_config=args.test_config,
+        bash_config=args.bash_config,
+        mcp_config=args.mcp_config,
+        lead_model=control.state.get("selected_model") or spec.model_profile,
+        allowed=spec.enabled,
+        memory_mode=spec.memory_mode,
+        allow_tests=spec.allow_tests,
+        write_paths=spec.write_paths,
+        mcp_delegation=spec.mcp_delegation,
+        demo_workflows="workflow" in spec.enabled,
+        total_seconds=spec.total_seconds,
+        turn_seconds=spec.episode_seconds,
+        request_seconds=spec.request_seconds,
+        shutdown_seconds=spec.shutdown_seconds,
+        context_chars=spec.context_chars,
+        output_tokens=spec.output_tokens,
+        max_turns=spec.episode_model_calls,
+    )
+    builder = InteractionAssembler(store.root, config)
+    try:
+        session = builder.session(
+            TaskRoute(
+                execution_mode="managed", capabilities=spec.enabled, mcp=spec.mcp
             ),
-            shutdown_timeout=control.spec.shutdown_seconds,
+            run_control=control,
             mode="service",
+            gateway_limits=GatewayLimits(
+                request_timeout=spec.request_seconds, max_failures=spec.retries + 1
+            ),
         )
-        resources.pop_all()
         return session, None
+    finally:
+        builder.close()
 
 
 def exit_status(value):

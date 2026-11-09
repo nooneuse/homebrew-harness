@@ -235,6 +235,21 @@ class RetirementCases:
         self.assertEqual(self.store.get("checkpoints", "member:old:worker"), member)
         self.assertEqual(self.store.get("team", "old"), team)
 
+    def test_sdk_results_and_decisions_retire_and_restore_with_their_session(self):
+        self.session()
+        records = {
+            section: {"checkpoint": "lead:old", "id": section, "state": "completed"}
+            for section in ("api_sessions", "api_turns", "api_decisions")
+        }
+        for section, row in records.items():
+            self.store.put(section, section, row)
+        self.do_retire()
+        for section in records:
+            self.assertIsNone(self.store.get(section, section))
+        unretire(self.root, "old", now=NOW + 1)
+        for section, row in records.items():
+            self.assertEqual(self.store.get(section, section), row)
+
     def test_retired_and_purged_sessions_reject_resume_and_writes(self):
         self.session()
         self.do_retire()

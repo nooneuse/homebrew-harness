@@ -626,6 +626,14 @@ class ModelGateway:
         with self._state.condition:
             return len(self._state.inflight)
 
+    def inflight_cancel(self, cancel_event):
+        """Observe requests belonging to a particular live cancellation scope."""
+        with self._state.condition:
+            return cancel_event is not None and any(
+                cancel_event in receipt.cancel_events
+                for receipt in self._state.inflight.values()
+            )
+
     @property
     def blocked(self):
         return (

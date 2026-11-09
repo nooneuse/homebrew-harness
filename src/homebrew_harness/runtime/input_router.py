@@ -93,7 +93,7 @@ class ApprovalBroker:
                 if not value[0].done()
             ]
 
-    def respond(self, identity, approved):
+    def respond(self, identity, approved, *, revision=None, before=None):
         from homebrew_harness.security.permissions import PermissionDecision
 
         if type(approved) is not bool:
@@ -104,6 +104,10 @@ class ApprovalBroker:
             value = self.pending.get(identity)
             if value is None or value[0].done():
                 raise ValueError("Approval ID is stale or unknown.")
+            if revision is not None and self.requests[identity]["revision"] != revision:
+                raise ValueError("Approval revision changed.")
+            if before is not None:
+                before()
             value[0].set_result(
                 PermissionDecision(
                     "allow" if approved else "deny",

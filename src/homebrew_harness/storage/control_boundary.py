@@ -20,6 +20,10 @@ def apply_boundary(db, conn, boundary):
     if not boundary:
         return
     check_guard(db, conn, boundary.get("guard"))
+    if boundary.get("api_turn"):
+        from homebrew_harness.storage.api_state import commit_turn
+
+        commit_turn(db, conn, boundary["api_turn"])
     resume = boundary.get("resume")
     if resume:
         run = db._get(conn, "runs", resume["run_id"])

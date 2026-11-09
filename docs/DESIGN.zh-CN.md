@@ -169,8 +169,11 @@ Hooks 在用户输入、工具前后和结束前提供扩展点。控制 Hook �
 
 ## 代码组织
 
+Python SDK 通过 `Harness` 和 `AsyncHarness` 提供 Session、Run、Workflow、自动入口、请求和维护服务。执行句柄标识原始工作单位，从现有 inbox、checkpoint、Run 记录和 Workflow journal 投影状态。宿主管理附着执行的资源归属，异步应用通过可等待视图观察同一执行。应用用法见 [Python API](PYTHON_API.zh-CN.md)。
+
 | 目录 | 职责 |
 | --- | --- |
+| `api/` | 应用服务、执行句柄、类型化决定和异步视图 |
 | `runtime/` | Session、循环、输入、Hooks、准备和宿主控制 |
 | `runs/` | 持久 Run、Episode、结果、进程监督和恢复 |
 | `execution/` | 模型网关、适配器、进程、容器、Bash、测试、快照和租约 |

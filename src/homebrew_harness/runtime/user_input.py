@@ -19,6 +19,7 @@ class UserInputController:
         self.consumer = "input_" + uuid.uuid4().hex
         self.lock = threading.RLock()
         self.active_id = None
+        self.api_cancel_events = {}
         self.cancel = threading.Event()
         self.phase = "idle"
         self.revision = 0
@@ -49,7 +50,31 @@ class UserInputController:
             self.phase = "starting"
             self.turn_texts = []
             turn_id = self.active_id
-            self.session.runtime_store.put("input_turns", self.recipient, turn_id)
+            db = self.session.runtime_store.backend()
+            try:
+                with db.write() as conn:
+                    db._put(conn, "input_turns", self.recipient, turn_id)
+                    from homebrew_harness.storage.api_state import bind_turn
+
+                    bind_turn(
+                        db,
+                        conn,
+                        getattr(self.session, "_api_turn_id", None),
+                        self.session.session_id,
+                        turn_id,
+                    )
+            except BaseException:
+                self.active_id = None
+                self.phase = "idle"
+                raise
+        query = getattr(self.session, "_api_turn_id", None)
+        if query:
+            self.api_cancel_events = {
+                identity: event
+                for identity, event in self.api_cancel_events.items()
+                if self.session.gateway.inflight_cancel(event)
+            }
+            self.api_cancel_events[query] = self.cancel
         try:
             yield self
         finally:
@@ -60,13 +85,30 @@ class UserInputController:
                     self.phase = "idle"
             self.changed.set()
 
-    def submit(self, text, *, mode="steer", target="lead", expected_turn_id=None, input_id=None):
+    def submit(
+        self,
+        text,
+        *,
+        mode="steer",
+        target="lead",
+        expected_turn_id=None,
+        input_id=None,
+        literal=False,
+        sdk_turn=False,
+        request_id=None,
+        goal=None,
+        target_input_id=None,
+    ):
         managed = getattr(self.session, "run_control", None)
         if managed is not None:
             if target != "lead":
                 raise ValueError("Managed team supervision is not enabled.")
             receipt = managed.store.submit(
-                managed.id, text, mode=mode, expected_turn_id=expected_turn_id, input_id=input_id
+                managed.id,
+                text,
+                mode=mode,
+                expected_turn_id=expected_turn_id,
+                input_id=input_id,
             )
             if mode == "interrupt" and self.active_id is not None:
                 self.cancel.set()
@@ -77,7 +119,7 @@ class UserInputController:
             )
         if mode not in {"steer", "queued", "interrupt"}:
             raise ValueError("User input mode must be steer, queued or interrupt.")
-        command = HostCommand.parse(text)
+        command = HostCommand(text) if literal else HostCommand.parse(text)
         if command.name and mode != "queued":
             raise ValueError(
                 "Host control commands use queued input; they cannot become model steering text."
@@ -100,7 +142,9 @@ class UserInputController:
             identity = input_id or "usr_" + uuid.uuid4().hex
             import re
 
-            if not isinstance(identity, str) or not re.fullmatch(r"usr_[0-9a-f]{32}", identity):
+            if not isinstance(identity, str) or not re.fullmatch(
+                r"usr_[0-9a-f]{32}", identity
+            ):
                 raise ValueError("Invalid stable user input ID.")
             if len(self.pending()) >= 64:
                 raise ValueError(
@@ -119,6 +163,17 @@ class UserInputController:
                     "mode": mode,
                     "target": target,
                     "turn_id": self.active_id,
+                    **({"literal": True} if literal else {}),
+                    **(
+                        {
+                            "sdk_turn": identity,
+                            "sdk_request_id": request_id,
+                            "sdk_goal": goal,
+                        }
+                        if sdk_turn
+                        else {}
+                    ),
+                    **({"target_input_id": target_input_id} if target_input_id else {}),
                 },
             }
             accepted_turn = self.session.runtime_store.submit_input(
@@ -139,8 +194,18 @@ class UserInputController:
     def pending(self, *, active_only=False):
         with cleanup_scope():
             values = self.session.runtime_store.mailbox("inspect", self.recipient)
+        query = getattr(self.session, "_api_turn_id", None) or getattr(
+            self.session, "_api_pending_turn_id", None
+        )
         return [
-            r for r in values if not active_only or r["metadata"]["mode"] != "queued"
+            r
+            for r in values
+            if not active_only
+            or r["metadata"]["mode"] != "queued"
+            and (
+                not r["metadata"].get("target_input_id")
+                or r["metadata"]["target_input_id"] == query
+            )
         ]
 
     def status(self):
@@ -202,7 +267,16 @@ class UserInputController:
         records = self.session.runtime_store.mailbox(
             "claim", self.recipient, owner=self.consumer
         )
-        chosen = [r for r in records if r["metadata"]["mode"] != "queued"]
+        chosen = [
+            r
+            for r in records
+            if r["metadata"]["mode"] != "queued"
+            and (
+                not r["metadata"].get("target_input_id")
+                or r["metadata"]["target_input_id"]
+                == getattr(self.session, "_api_turn_id", None)
+            )
+        ]
         self.release([r for r in records if r not in chosen])
         if not chosen:
             return False
@@ -347,6 +421,26 @@ class UserInputController:
         boundary = {"guard": token}
         if ended:
             boundary["end_turn"] = (self.recipient, self.active_id)
+            identity = getattr(self.session, "_api_turn_id", None)
+            if identity:
+                output = next(
+                    (
+                        m.get("content", "")
+                        for m in reversed(messages)
+                        if m.get("role") == "assistant" and not m.get("tool_calls")
+                    ),
+                    "",
+                )
+                boundary["api_turn"] = {
+                    "id": identity,
+                    "session_id": self.session.session_id,
+                    "turn_id": self.active_id,
+                    "state": "running"
+                    if self.session._api_pending_work() or self.session.goal.pending
+                    else "completed",
+                    "output": output,
+                    "input_revision": self.revision,
+                }
         if state is not None:
             state = {**state, "revision": expected + 1}
             boundary.update(goal=state, goal_expected=expected)

@@ -72,7 +72,7 @@ class InteractionConfig:
             if (
                 type(value) not in {int, float}
                 or not math.isfinite(value)
-                or not 0.1 <= value <= 604800
+                or not (0.1 if name == "total_seconds" else 0.01) <= value <= 604800
             ):
                 raise ValueError("Invalid host deadline: " + name)
         for name, low, high in (
@@ -151,14 +151,28 @@ class InteractionConfig:
 
 
 class InteractionAssembler:
-    def __init__(self, workdir, config, *, client_factory=None, workflow_registry=None):
+    def __init__(
+        self,
+        workdir,
+        config,
+        *,
+        client_factory=None,
+        workflow_registry=None,
+        environment=None,
+        model_provider=None,
+    ):
         from homebrew_harness.orchestration.workflow_runtime import WorkflowRegistry
         from homebrew_harness.orchestration.workflows import default_registry
         from homebrew_harness.tools.mcp.runtime import load_specs
 
         self.workdir, self.config = Path(workdir).resolve(), config
         config.worker_arguments(self.workdir)
-        self.environment = read_environment(config.env_file, self.workdir)
+        self.environment = (
+            dict(environment)
+            if environment is not None
+            else read_environment(config.env_file, self.workdir)
+        )
+        self.model_provider = model_provider
         self.registry = workflow_registry or (
             default_registry() if config.demo_workflows else WorkflowRegistry()
         )
@@ -269,6 +283,8 @@ class InteractionAssembler:
             )
 
     def models(self):
+        if self.model_provider is not None:
+            return self.model_provider()
         return HostModels(
             self.workdir,
             config=self.config.models_config,
@@ -277,7 +293,16 @@ class InteractionAssembler:
             client_factory=self.factory,
         )
 
-    def session(self, route, *, resume=None):
+    def session(
+        self,
+        route,
+        *,
+        resume=None,
+        run_control=None,
+        hooks=None,
+        mode="interactive",
+        gateway_limits=None,
+    ):
         from homebrew_harness.orchestration.workflow_runtime import (
             ModelWorkflowRunner,
             WorkflowRuntime,
@@ -302,8 +327,9 @@ class InteractionAssembler:
             resources.callback(tests.close)
             if self.test_identity(tests) != self.tests_identity:
                 raise ValueError("Test registry changed during task preparation.")
-            for name in c.allow_tests:
-                tests.approve(name)
+            if run_control is None:
+                for name in c.allow_tests:
+                    tests.approve(name)
             bash = (
                 load_bash_policy(c.bash_config, self.workdir)
                 if c.bash_config
@@ -319,6 +345,12 @@ class InteractionAssembler:
                     environment=self.environment,
                     selection=route.mcp or None,
                     delegation=c.mcp_delegation,
+                    resource_scope={
+                        **run_control.header,
+                        "session_id": run_control.state["session_id"],
+                    }
+                    if run_control
+                    else None,
                 )
                 if "mcp" in route.capabilities
                 else None
@@ -338,6 +370,9 @@ class InteractionAssembler:
                 binding.client,
                 binding.model,
                 self.workdir,
+                hooks=hooks,
+                mode=mode,
+                run_control=run_control,
                 model_registry=models.registry,
                 lead_model_profile=models.alias,
                 test_runner=tests,
@@ -345,7 +380,8 @@ class InteractionAssembler:
                 mcp_runtime=mcp,
                 workflow_runtime=workflow,
                 capabilities=Capabilities(route.capabilities, c.memory_mode),
-                gateway_limits=GatewayLimits(
+                gateway_limits=gateway_limits
+                or GatewayLimits(
                     request_timeout=c.request_seconds, session_timeout=c.total_seconds
                 ),
                 context_chars=c.context_chars,
@@ -457,6 +493,24 @@ class InteractionAssembler:
                     self.mcp_specs, spec.mcp, self.environment
                 )
             self.run_head = git_head(self.workdir)
+            from homebrew_harness.runs.store import RunStore
+            from homebrew_harness.runs.services import RunServices
+
+            service_store = RunStore(self.workdir)
+            try:
+                services = RunServices.load(
+                    service_store, c.control_config, environment=self.environment
+                )
+                try:
+                    self.run_control_binding = {
+                        "control_identity": services.identity,
+                        "notify_enabled": services.notification is not None,
+                        "source_enabled": services.source is not None,
+                    }
+                finally:
+                    services.close()
+            finally:
+                service_store.close()
             return spec
 
     def close(self):

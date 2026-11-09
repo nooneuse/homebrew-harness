@@ -372,7 +372,7 @@ class WorkflowStore:
                 target.__exit__()
             local.release()
 
-    def read(self, run_id, suffix=".json"):
+    def read(self, run_id, suffix=".json", *, object_only=True):
         path = self.path(run_id, suffix)
         try:
             with (
@@ -386,7 +386,7 @@ class WorkflowStore:
                 value = json.loads(raw)
         except (OSError, ValueError) as error:
             raise WorkflowError("Workflow snapshot is missing or invalid.") from error
-        if not isinstance(value, dict):
+        if object_only and not isinstance(value, dict):
             raise WorkflowError("Invalid workflow snapshot.")
         return value
 
@@ -461,6 +461,22 @@ class WorkflowStore:
         run_id = "wf_" + uuid.uuid4().hex
         self.reserve(run_id)
         return run_id
+
+    def inspect(self, run_id):
+        snapshot = self.read(run_id)
+        if (
+            snapshot.get("format") != 2
+            or snapshot.get("run_id") != run_id
+            or not isinstance(snapshot.get("task"), dict)
+            or not isinstance(snapshot.get("args"), dict)
+        ):
+            raise WorkflowError("Invalid workflow snapshot identity or format.")
+        if snapshot["task"].get("cleanup", {}).get(
+            "state"
+        ) == "complete" and not self.confirmed(run_id, snapshot):
+            snapshot["task"].update(status="paused", inspection_required=True)
+            snapshot["task"]["cleanup"]["state"] = "pending"
+        return snapshot
 
 
 class WorkflowJournal:
@@ -1251,20 +1267,7 @@ class WorkflowRuntime:
             return bool(self._owners)
 
     def inspect(self, run_id):
-        snapshot = self.store.read(run_id)
-        if (
-            snapshot.get("format") != 2
-            or snapshot.get("run_id") != run_id
-            or not isinstance(snapshot.get("task"), dict)
-            or not isinstance(snapshot.get("args"), dict)
-        ):
-            raise WorkflowError("Invalid workflow snapshot identity or format.")
-        if snapshot["task"].get("cleanup", {}).get(
-            "state"
-        ) == "complete" and not self.store.confirmed(run_id, snapshot):
-            snapshot["task"].update(status="paused", inspection_required=True)
-            snapshot["task"]["cleanup"]["state"] = "pending"
-        return snapshot
+        return self.store.inspect(run_id)
 
     def owns_result(self, reference, execution_dir):
         """Resolve only a saved result belonging to this Lead execution scope."""
@@ -1455,12 +1458,16 @@ class WorkflowRuntime:
                 "task": clone(task),
             }
 
-    def _submit(self, name, args, resume, workdir, stop_event):
+    def validate_submission(self, name, args=None, *, resume=None, workdir=None):
+        """Validate a host submission before durable acceptance or launch."""
         if self._closed:
             raise WorkflowError("Workflow runtime is closed.")
-        deadline = operation_deadline(self.limits.timeout_seconds)
         spec = self.registry.get(name)
-        directory = Path(workdir or self.store.workdir)
+        directory = Path(workdir or self.store.workdir).resolve()
+        if not directory.is_dir() or not directory.is_relative_to(self.store.workdir):
+            raise WorkflowError(
+                "Workflow execution directory must be inside its base workspace."
+            )
         if resume is not None and (
             not isinstance(resume, str) or not RUN_ID.fullmatch(resume)
         ):
@@ -1478,9 +1485,20 @@ class WorkflowRuntime:
             and not matches(schema_validator(spec.args_schema), {})
         ):
             raise WorkflowError("Workflow arguments failed the registered schema.")
+        return args, directory
+
+    def _submit(self, name, args, resume, workdir, stop_event, *, identity=None):
+        args, directory = self.validate_submission(
+            name, args, resume=resume, workdir=workdir
+        )
+        deadline = operation_deadline(self.limits.timeout_seconds)
         owner = WorkflowExecution(
             self, name, args, resume, directory, stop_event, deadline
         )
+        if identity is not None:
+            if not isinstance(identity, str) or not RUN_ID.fullmatch(identity):
+                raise WorkflowError("Invalid reserved workflow identity.")
+            owner.run_id = identity
         with self._guard:
             if self._closed or owner.run_id in self._owners:
                 raise WorkflowError("Workflow execution is closed or already active.")
@@ -1488,7 +1506,7 @@ class WorkflowRuntime:
         try:
             self._threads.start(owner.run, name="workflow-execution")
         except WorkAccepted:
-            raise
+            return owner
         except Exception as error:
             with self._guard:
                 self._owners.pop(owner.run_id, None)
@@ -1521,6 +1539,21 @@ class WorkflowRuntime:
                 self._owners.pop(owner.run_id, None)
             raise
         return owner
+
+    def start(
+        self,
+        name,
+        args=None,
+        *,
+        resume_from_run_id=None,
+        workdir=None,
+        stop_event=None,
+        identity=None,
+    ):
+        """Accept an execution and return its live owner without blocking for output."""
+        return self._submit(
+            name, args, resume_from_run_id, workdir, stop_event, identity=identity
+        )
 
     def _stopping(self, owner):
         if owner.stop.is_set():
