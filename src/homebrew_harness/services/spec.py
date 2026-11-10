@@ -57,6 +57,7 @@ class ServiceSpec:
     control_port: int = 0
     sources: tuple = ()
     maintenance: dict = field(default_factory=dict)
+    delivery: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if self.profile not in {"manual", "repository_maintenance"}:
@@ -105,6 +106,11 @@ class ServiceSpec:
                     self.maintenance, self.run_spec("Validate maintenance scope")
                 ),
             )
+        from .delivery.spec import validate as validate_delivery
+
+        object.__setattr__(self, "delivery", validate_delivery(self.delivery))
+        if self.delivery and self.profile != "repository_maintenance":
+            raise ValueError("Delivery requires a maintenance profile.")
         if type(self.control_port) is not int or not 0 <= self.control_port <= 65535:
             raise ValueError("Invalid service control port.")
 

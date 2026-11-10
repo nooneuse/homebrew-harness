@@ -65,6 +65,7 @@ class ServiceRuntime:
         self.child = None
         self.maintenance = None
         self.current = None
+        self.children = {}
         self.error = None
         self.start_error = None
         self.next_close_retry = 0
@@ -84,6 +85,7 @@ class ServiceRuntime:
             self.child = Harness(
                 workdir=self.spec.workspace, config=saved_config(meta["config"])
             )
+            self.children[str(self.child.workdir)] = self.child
             binding = self._binding()
             if self.spec.profile == "repository_maintenance":
                 binding["maintenance"] = meta["binding"].get("maintenance")
@@ -146,6 +148,15 @@ class ServiceRuntime:
                 )
             except WorkAccepted:
                 pass
+        if self.maintenance and self.maintenance.delivery:
+            try:
+                self.workers.start(
+                    self.maintenance.delivery.loop,
+                    name="service-delivery",
+                    track_operation=False,
+                )
+            except WorkAccepted:
+                pass
         self.store.update(
             self.header, launch={"token": self.token, "phase": "accepted"}, error=None
         )
@@ -185,6 +196,12 @@ class ServiceRuntime:
             "maintenance": {
                 "running": not self.maintenance.finished.is_set(),
                 "error": self.maintenance.error,
+                "delivery": {
+                    "running": not self.maintenance.delivery.finished.is_set(),
+                    "error": self.maintenance.delivery.error,
+                }
+                if self.maintenance.delivery
+                else None,
             }
             if self.maintenance is not None
             else None,
@@ -211,6 +228,17 @@ class ServiceRuntime:
                         state="paused",
                         scope="all",
                         error="maintenance_restart_required",
+                    )
+                if (
+                    self.maintenance
+                    and self.maintenance.delivery
+                    and self.maintenance.delivery.finished.is_set()
+                ):
+                    self.store.update(
+                        self.header,
+                        state="paused",
+                        scope="all",
+                        error="delivery_restart_required",
                     )
                 with self.lock:
                     self.recover_commands()
@@ -263,8 +291,25 @@ class ServiceRuntime:
                         },
                     )
 
+    def child_for(self, work):
+        workspace = Path(work.get("run_workspace") or self.spec.workspace)
+        if str(workspace) not in self.children:
+            if not workspace.resolve().is_relative_to(
+                self.store.root / ".harness/delivery/repairs"
+            ):
+                raise ValueError(
+                    "Run workspace is outside the declared delivery owner."
+                )
+            from homebrew_harness.api.core import Harness
+
+            self.children[str(workspace)] = Harness(
+                workdir=workspace,
+                config=saved_config(self.store.get(self.id)["config"]),
+            )
+        return self.children[str(workspace)]
+
     def _handle(self, work):
-        handle = self.child.runs.get(work["run_id"], control=True)
+        handle = self.child_for(work).runs.get(work["run_id"], control=True)
         if self.current is None or self.current.id != handle.id:
             self.current = handle
         return self.current
@@ -303,6 +348,7 @@ class ServiceRuntime:
                     error="authority_required",
                 )
                 return
+        child = self.child_for(work)
         if not work["run_id"]:
             if (
                 meta["state"] != "running"
@@ -314,9 +360,13 @@ class ServiceRuntime:
                 raise ValueError(
                     "Installed service runtime changed; restart with its pinned version."
                 )
+            if self.maintenance and self.maintenance.delivery:
+                if self.maintenance.delivery.preparing:
+                    return
+                work = self.maintenance.delivery.baseline(work, child)
             self.store.update_work(self.header, work["id"], state="in_progress")
             try:
-                handle = self.child.runs.start(
+                handle = child.runs.start(
                     __import__(
                         "homebrew_harness.runs.spec", fromlist=["RunSpec"]
                     ).RunSpec(**work["run_spec"]),
@@ -324,7 +374,7 @@ class ServiceRuntime:
                 )
             except Exception as error:
                 # External work may occupy this workspace. Never control or cancel it.
-                with self.child.store.backend().connection() as conn:
+                with child.store.backend().connection() as conn:
                     busy = conn.execute(
                         "SELECT 1 FROM records WHERE section='runs' AND (json_extract(value,'$.status') NOT IN ('completed','failed','cancelled') OR json_extract(value,'$.finalized_at') IS NULL) LIMIT 1"
                     ).fetchone()
@@ -340,9 +390,9 @@ class ServiceRuntime:
                 self.header, work["id"], run_id=handle.id, error=None
             )
         handle = self._handle(work)
-        state = self.child.run_store.get(handle.id)
+        state = child.run_store.get(handle.id)
         self.store.update(self.header, active_work=work["id"], active_run=handle.id)
-        controls = self.child.store.get("run_controls", handle.id, {})
+        controls = child.store.get("run_controls", handle.id, {})
         if work["cancel_requested"] and state["status"] not in {
             "completed",
             "failed",
@@ -382,7 +432,7 @@ class ServiceRuntime:
         if state["status"] in {"completed", "failed", "cancelled"}:
             if handle.supervisor is None:
                 handle.supervise()
-            latest = self.child.run_store.get(handle.id)
+            latest = child.run_store.get(handle.id)
             if latest["cleanup_complete"] and latest.get("finalized_at"):
                 outcome = latest.get("last_outcome") or {}
                 stale_requirements = self.maintenance is not None and (
@@ -434,6 +484,15 @@ class ServiceRuntime:
                 if self.maintenance is not None:
                     with self.store.db.write() as conn:
                         self.maintenance.store.changed(conn, work["id"])
+                if (
+                    self.maintenance
+                    and self.maintenance.delivery
+                    and completed_state == "review"
+                ):
+                    with self.store.db.write() as conn:
+                        self.maintenance.delivery.store.create(
+                            conn, self.store.work(work["id"], self.id)
+                        )
                 self.current = None
         if snapshot.reason:
             self.store.update(self.header, error=None)
@@ -444,7 +503,10 @@ class ServiceRuntime:
         if work["run_id"]:
             work = {
                 **work,
-                "execution": self.child.runs.get(work["run_id"]).snapshot().data(),
+                "execution": self.child_for(work)
+                .runs.get(work["run_id"])
+                .snapshot()
+                .data(),
             }
         return work
 
@@ -459,7 +521,7 @@ class ServiceRuntime:
             return pending
         return pending + [
             r.data()
-            for r in self.child.requests.list(
+            for r in self.child_for(work).requests.list(
                 target=ExecutionRef("run", work["run_id"])
             )
         ]
@@ -684,7 +746,7 @@ class ServiceRuntime:
                 arguments = {
                     k: payload[k] for k in ("text", "runs", "seconds") if k in payload
                 }
-                result = getattr(self.child.requests, action)(
+                result = getattr(self.child_for(target).requests, action)(
                     reference, decision_id="service-control-" + key, **arguments
                 )
             else:
@@ -720,6 +782,8 @@ class ServiceRuntime:
                 raise ValueError("This service has no maintenance profile.")
             from .protocol import QUERY_METHODS
 
+            if method in {"delivery_inspect", "batch_decide"}:
+                return self.maintenance.command(method, payload, request_id)
             with self.lock:
                 return (
                     self.maintenance.query(method, payload)
@@ -794,13 +858,15 @@ class ServiceRuntime:
             work = self.store.next_work(self.id)
             if work is not None and work["run_id"]:
                 handle = self._handle(work)
-                native = self.child.run_store.get(handle.id)
+                native = self.child_for(work).run_store.get(handle.id)
                 if native["status"] in {"queued", "running", "waiting", "retrying"}:
                     if not work["pause_requested"]:
                         self.store.update_work(
                             self.header, work["id"], service_paused=True
                         )
-                    controls = self.child.store.get("run_controls", handle.id, {})
+                    controls = self.child_for(work).store.get(
+                        "run_controls", handle.id, {}
+                    )
                     if controls.get("action") != "pause":
                         handle.pause()
                 if (
@@ -808,14 +874,16 @@ class ServiceRuntime:
                     and not handle.owned
                 ):
                     handle.supervise()
-            report = self.child.close(self.spec.shutdown_seconds)
-        while not report.resources_closed:
-            report = self.child.wait_closed(0.1)
-            if self.child.shutdown.error:
-                raise SDKError(
-                    "Native Run cleanup requires inspection or retry.",
-                    code="cleanup_pending",
-                )
+            children = list(self.children.values())
+            reports = [child.close(self.spec.shutdown_seconds) for child in children]
+        for child, report in zip(children, reports):
+            while not report.resources_closed:
+                report = child.wait_closed(0.1)
+                if child.shutdown.error:
+                    raise SDKError(
+                        "Native Run cleanup requires inspection or retry.",
+                        code="cleanup_pending",
+                    )
         if self.server_started:
             self.server.close()
         else:
@@ -831,7 +899,9 @@ class ServiceRuntime:
                 "token": (self.store.get(self.id).get("launch") or {}).get("token"),
                 "phase": "ended",
             },
-            error=self.start_error if report.persistence_ok else "persistence_failed",
+            error=self.start_error
+            if all(report.persistence_ok for report in reports)
+            else "persistence_failed",
         )
         self.workspace_lease.close()
         self.leases.close()

@@ -12,12 +12,14 @@ from .http import JsonTransport
 
 from .github.repository import GithubRepository, validate_project
 from .github.feedback import GithubFeedback
+from .github.delivery import GithubDelivery
 
 PROVIDERS = {
     "github": {
         "project": validate_project,
         "repository_events": GithubRepository,
         "change_request_feedback": GithubFeedback,
+        "delivery": GithubDelivery,
     }
 }
 

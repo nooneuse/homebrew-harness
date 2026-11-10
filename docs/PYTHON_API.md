@@ -203,3 +203,7 @@ Async views reuse the same execution state. Service and control methods are awai
 Run the [application example](../examples/python_api.py) with `--demo` for a deterministic Session, async Session, or registered Workflow without model access.
 
 Maintenance profiles add `converse`, `conversation`, `records`, `record`, `reports`, `report`, `acknowledge_report` and `retry_job` to the same service view. `work.revise` proposes a new inactive work contract; `work.revoke` withdraws its authority. Service work-authority and information requests appear in `requests()` and use the same explicit decision API. See [Services](SERVICES.md#repository-maintenance-p2) for the host policy and workflow.
+
+### Service delivery controls
+
+The Service view adds `delivery`, `prepare_delivery`, `plan_delivery`, `inspect_delivery`, `request_delivery`, `refresh_delivery`, `batch` and `decide_batch`. Local and remote views use the same control protocol, and AsyncHarness exposes the corresponding awaitable methods. [Repository delivery](DELIVERY.md) documents fixed candidate identity, per-item decisions and unknown-action inspection.

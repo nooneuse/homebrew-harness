@@ -8,6 +8,7 @@ VERSION = 1
 MAX_FRAME = 256 * 1024
 SERVICE_ID = re.compile(r"svc_[0-9a-f]{32}\Z")
 MAINTENANCE_QUERIES = {
+    "delivery_status": {"kind", "id"},
     "service_page": {"kind", "cursor", "limit", "state"},
     "service_read": {"kind", "identity", "offset", "limit"},
     "job_get": {"id"},
@@ -27,6 +28,13 @@ QUERY_METHODS = {
     "receipt": {"request_id"},
 }
 MAINTENANCE_COMMANDS = {
+    "delivery_prepare": {"id", "revision"},
+    "delivery_plan": {"id", "revision", "kind", "body", "subject"},
+    "delivery_request": {"id"},
+    "delivery_inspect": {"id", "conclusion", "confirmed"},
+    "delivery_refresh": {"id"},
+    "batch_create": {"refs"},
+    "batch_decide": {"id", "revision", "decisions"},
     "conversation_submit": {"text", "context", "work_id", "revision"},
     "service_decide": {"id", "revision", "decision", "text"},
     "report_create": set(),

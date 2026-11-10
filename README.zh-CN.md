@@ -354,7 +354,7 @@ homebrew-harness admin gc-preview --cwd /tmp/harness-example
 
 ## Python 接口
 
-持久 Service 提供工作队列、固定周期调度、原生审批，以及通过认证 HTTP 控制 API 连接的 Text UI。独立程序使用 `RemoteService`，远程操作者可通过外部 `--connection` 文件连接。设置与生命周期操作见 [Services](docs/SERVICES.zh-CN.md)。manual profile 将有界工作交给已有 Run；repository_maintenance 增加平台收件（当前为 GitHub）、范围化工作决定、持久对话与报告。
+持久 Service 提供工作队列、固定周期调度、原生审批，以及通过认证 HTTP 控制 API 连接的 Text UI。独立程序使用 `RemoteService`，远程操作者可通过外部 `--connection` 文件连接。设置与生命周期操作见 [Services](docs/SERVICES.zh-CN.md)。可选的 [仓库交付](docs/DELIVERY.zh-CN.md) 提供固定候选、质量检查、CI 接续和操作者批准的发布。manual profile 将有界工作交给已有 Run；repository_maintenance 增加平台收件（当前为 GitHub）、范围化工作决定、持久对话与报告。
 
 ```python
 from pathlib import Path

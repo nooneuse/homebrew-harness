@@ -113,6 +113,7 @@ class ExecutionSnapshot(Data):
     def terminal(self):
         return self.state in {
             "completed",
+            "delivered",
             "failed",
             "cancelled",
             "abandoned",

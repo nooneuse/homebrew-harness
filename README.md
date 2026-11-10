@@ -18,7 +18,7 @@ The model proposes an action, the runtime executes the corresponding tool, and t
 | Interaction | Steering during execution, queued requests, interrupts, and separate tool approvals |
 | Execution | Host Bash; optional container backends for Bash, TestRunner, and local MCP; artifact collection and publication |
 | State | SQLite checkpoints, durable inboxes, recovery inspection, backups, and history maintenance |
-| Services | Persistent work queue, fixed schedules, local operator controls and dependency-free Text UI |
+| Services | Persistent work queue, fixed schedules, repository triage, fixed-candidate delivery, CI continuation, grouped approvals and Text UI |
 
 ## Installation
 
@@ -389,4 +389,4 @@ Tests cover local protocol services, files and databases, recovery flows, and co
 
 The project uses the [MIT license](LICENSE). Some ideas and code draw on the learn-claude-code tutorial; its upstream license is preserved in [licenses](licenses/learn-claude-code-LICENSE). Runtime dependencies retain their own licenses.
 
-Code-platform integration uses explicit adapters. GitHub is currently implemented; common execution and maintenance state can be reused by future providers. See [Code platforms](docs/PLATFORMS.md).
+Code-platform integration uses explicit adapters. GitHub is currently implemented; common execution and maintenance state can be reused by future providers. See [Code platforms](docs/PLATFORMS.md). Optional [Repository delivery](docs/DELIVERY.md) adds fixed candidates, local quality checks, CI continuation and operator-approved publication.

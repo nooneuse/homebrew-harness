@@ -198,3 +198,7 @@ async def execute(config):
 [应用示例](../examples/python_api.py) 的 `--demo` 模式可在不接入模型时运行确定性 Session、异步 Session 或注册 Workflow。
 
 维护 profile 在同一 service 视图提供 `converse`、`conversation`、`records`、`record`、`reports`、`report`、`acknowledge_report` 和 `retry_job`。`work.revise` 修订非活动工作的契约，`work.revoke` 撤销授权。服务级工作授权与信息请求通过 `requests()` 展示并使用明确的决定 API。策略与流程见 [Services](SERVICES.zh-CN.md#仓库维护p2)。
+
+### Service 交付控制
+
+Service 视图增加 `delivery`、`prepare_delivery`、`plan_delivery`、`inspect_delivery`、`request_delivery`、`refresh_delivery`、`batch` 和 `decide_batch`。本地与远程视图共用控制协议，AsyncHarness 提供对应可等待方法。固定候选、逐项决定和未知动作查证见 [仓库交付](DELIVERY.zh-CN.md)。

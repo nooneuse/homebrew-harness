@@ -20,7 +20,7 @@ SERVICE_TOOLS = frozenset({"service_read", "service_propose", "service_read_code
 
 
 class ServiceAgent:
-    def __init__(self, runtime, store, stop):
+    def __init__(self, runtime, store, stop, *, model_profile=None):
         self.runtime, self.store, self.stop = runtime, store, stop
         settings = runtime.core.config.settings
         environment = (
@@ -31,7 +31,7 @@ class ServiceAgent:
         self.models = HostModels(
             runtime.store.root,
             config=settings.models_config,
-            alias=store.policy["model_profile"] or settings.lead_model,
+            alias=model_profile or store.policy["model_profile"] or settings.lead_model,
             environment=environment,
         )
         self.binding = self.models.open(
@@ -90,6 +90,9 @@ class ServiceAgent:
             "decisions",
             "sources",
             "evidence",
+            "changesets",
+            "actions",
+            "batches",
         }:
             return json.dumps(
                 self.store.read(kind, identity, offset=offset, limit=limit),
@@ -145,12 +148,21 @@ class ServiceAgent:
             ensure_ascii=False,
         )
 
+    def code_root(self):
+        if self.job and self.job["kind"] in {"review", "ci_triage"}:
+            return Path(
+                self.store.get("changesets", self.job["target"])["candidate"][
+                    "workspace"
+                ]
+            )
+        return Path(self.runtime.spec.workspace)
+
     def glob(self, pattern, workdir=None):
         from homebrew_harness.tools.files import run_glob
         from homebrew_harness.security.file_visibility import file_access_scope
 
         with file_access_scope(restrict_archives=True):
-            return run_glob(pattern, Path(self.runtime.spec.workspace))
+            return run_glob(pattern, self.code_root())
 
     def search(self, text, pattern="**/*", limit=20, workdir=None):
         from homebrew_harness.tools.queries import search_text
@@ -161,7 +173,7 @@ class ServiceAgent:
                 text,
                 pattern=pattern,
                 limit=limit,
-                workdir=Path(self.runtime.spec.workspace),
+                workdir=self.code_root(),
             )
 
     def read_code(self, path, offset=0, limit=100, workdir=None):
@@ -171,7 +183,7 @@ class ServiceAgent:
             host_managed_parts,
         )
 
-        root = Path(self.runtime.spec.workspace)
+        root = self.code_root()
         _, parts = model_parts(root, path)
         if host_managed_parts(parts) or ".worktrees" in parts:
             raise ValueError(
@@ -187,18 +199,45 @@ class ServiceAgent:
         return json.dumps({"candidate_saved": True, "authorized": False})
 
     def run(self, job):
+        if (
+            job["kind"] == "review"
+            and self.runtime.spec.delivery.get("review_model")
+            and self.runtime.spec.delivery["review_model"] != self.models.alias
+        ):
+            actor = ServiceAgent(
+                self.runtime,
+                self.store,
+                self.stop,
+                model_profile=self.runtime.spec.delivery["review_model"],
+            )
+            try:
+                return actor.run(job)
+            finally:
+                actor.close()
         self.job, self.proposal = job, None
         kind = job["kind"]
         primary = (
-            self.store.store.work(job["target"], self.store.id)
-            if kind == "triage"
-            else self.store.get(
-                "messages" if kind == "conversation" else "reports", job["target"]
+            self.store.get("changesets", job["target"])
+            if kind in {"review", "ci_triage"}
+            else (
+                self.store.store.work(job["target"], self.store.id)
+                if kind == "triage"
+                else self.store.get(
+                    "messages" if kind == "conversation" else "reports", job["target"]
+                )
             )
         )
+        if kind in {"review", "ci_triage"}:
+            self.store.delivery.git.verify(primary["candidate"])
         preview = {
-            k: v for k, v in primary.items() if k not in {"run_spec", "result", "facts"}
+            k: v
+            for k, v in primary.items()
+            if k not in {"run_spec", "result", "facts", "candidate", "baseline"}
         }
+        if primary.get("candidate"):
+            preview["candidate"] = {
+                k: primary["candidate"][k] for k in ("commit", "tree", "delta")
+            }
         directory = (
             self.runtime.store.root / ".harness" / "service_reasoning" / job["id"]
         )
@@ -211,6 +250,7 @@ class ServiceAgent:
             "For triage provide disposition (accept/needs_info/defer/reject/merge/decide), category (bug/feature/documentation/maintenance/question), reason, plan (include concrete verification/acceptance), scope (host alias for accept/decide), priority (0-100), optional related_work. "
             "Read all linked events relevant to the current requirements; the original prompt is only the initial source. Major changes require decide. A merge links local work only. "
             "For conversation/report provide text, optionally work_id and a triage-shaped plan for a work explicitly targeted by this conversation. "
+            "For review submit text and findings ([{severity:blocking/warning,path,message}]); read fixed candidate code, and do not judge a different workspace. For ci_triage submit classification (code/baseline/flaky/infrastructure/unknown), reason and a bounded plan. Neither proposal publishes or authorizes work. "
             "Acknowledge uncertainty and distinguish delegated review from published changes. Reports must read the complete stored facts via service_read; conversation history is available. "
             "Work verification IDs refer to frozen evidence records: use service_read kind=evidence to inspect actual test receipts and the requirements version they verified. "
             "Full source and user text are queryable by reference; previews may be shortened. Skills:\n"
@@ -261,6 +301,8 @@ class ServiceAgent:
             )
         if self.proposal is None:
             raise ValueError("Service reasoning did not submit a structured proposal.")
+        if kind in {"review", "ci_triage"}:
+            self.store.delivery.git.verify(primary["candidate"])
         return self.proposal
 
     def close(self):

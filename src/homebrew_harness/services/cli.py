@@ -89,6 +89,9 @@ def commands(parser, *, attach=True):
                     "decisions",
                     "messages",
                     "reports",
+                    "changesets",
+                    "actions",
+                    "batches",
                 ),
             )
             item.add_argument("--cursor", type=int, default=0)
@@ -106,6 +109,9 @@ def commands(parser, *, attach=True):
                     "decisions",
                     "messages",
                     "reports",
+                    "changesets",
+                    "actions",
+                    "batches",
                 ),
             )
             item.add_argument("identity")
@@ -129,6 +135,54 @@ def commands(parser, *, attach=True):
             item.add_argument("--limit", type=int, default=20)
         elif name == "report":
             item.add_argument("identity", nargs="?")
+    delivery = actions.add_parser("delivery")
+    if attach:
+        delivery.add_argument("service_id")
+    delivery_ops = delivery.add_subparsers(dest="delivery_command", required=True)
+    listing = delivery_ops.add_parser("list")
+    listing.add_argument("--cursor", type=int, default=0)
+    listing.add_argument("--limit", type=int, default=20)
+    listing.add_argument("--state")
+    for name in ("show", "action", "prepare", "request", "refresh"):
+        item = delivery_ops.add_parser(name)
+        item.add_argument("identity")
+        item.add_argument("--request-id")
+    plan = delivery_ops.add_parser("plan")
+    plan.add_argument("identity")
+    plan.add_argument(
+        "kind",
+        choices=(
+            "publish_branch",
+            "ensure_change_request",
+            "publish_target",
+            "post_comment",
+        ),
+    )
+    plan.add_argument("--body")
+    plan.add_argument("--subject-file", type=Path)
+    plan.add_argument("--request-id")
+    inspect = delivery_ops.add_parser("inspect")
+    inspect.add_argument("identity")
+    inspect.add_argument(
+        "--conclusion", choices=("reconcile", "retry_not_executed"), default="reconcile"
+    )
+    inspect.add_argument("--confirmed", action="store_true")
+    inspect.add_argument("--request-id")
+    batch = actions.add_parser("batch")
+    if attach:
+        batch.add_argument("service_id")
+    batch_ops = batch.add_subparsers(dest="batch_command", required=True)
+    create = batch_ops.add_parser("create")
+    create.add_argument("--ids", nargs="+")
+    create.add_argument("--request-id")
+    show = batch_ops.add_parser("show")
+    show.add_argument("identity")
+    decide = batch_ops.add_parser("decide")
+    decide.add_argument("identity")
+    decide.add_argument("--approve", nargs="*", default=[])
+    decide.add_argument("--deny", nargs="*", default=[])
+    decide.add_argument("--revision", type=int, default=0)
+    decide.add_argument("--request-id")
     tasks = work.add_subparsers(dest="work_command", required=True)
     submit = tasks.add_parser("submit")
     submit.add_argument("text")
@@ -213,6 +267,53 @@ def submit(service, text, *, priority=0, request_id=None):
 
 
 def operate(service, args):
+    if args.command == "delivery":
+        op = args.delivery_command
+        if op == "list":
+            return service.records(
+                "changesets", cursor=args.cursor, limit=args.limit, state=args.state
+            )
+        if op in {"show", "action"}:
+            return service.delivery(
+                args.identity, kind="changesets" if op == "show" else "actions"
+            )
+        if op == "prepare":
+            return service.prepare_delivery(args.identity, request_id=args.request_id)
+        if op == "plan":
+            return service.plan_delivery(
+                args.identity,
+                args.kind,
+                body=args.body,
+                subject=json.loads(args.subject_file.read_text())
+                if args.subject_file
+                else None,
+                request_id=args.request_id,
+            )
+        if op == "inspect":
+            return service.inspect_delivery(
+                args.identity,
+                conclusion=args.conclusion,
+                confirmed=args.confirmed,
+                request_id=args.request_id,
+            )
+        return getattr(
+            service, "request_delivery" if op == "request" else "refresh_delivery"
+        )(args.identity, request_id=args.request_id)
+    if args.command == "batch":
+        if args.batch_command == "create":
+            return service.batch(
+                [r for r in service.requests() if not args.ids or r.ref.id in args.ids],
+                request_id=args.request_id,
+            )
+        if args.batch_command == "show":
+            return service.delivery(args.identity, kind="batches")
+        return service.decide_batch(
+            args.identity,
+            [{"id": i, "decision": "approve"} for i in args.approve]
+            + [{"id": i, "decision": "deny"} for i in args.deny],
+            revision=args.revision,
+            request_id=args.request_id,
+        )
     if args.command == "reports":
         return service.reports(
             context=args.context, cursor=args.cursor, limit=args.limit

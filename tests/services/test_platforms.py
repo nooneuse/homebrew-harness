@@ -51,7 +51,11 @@ class PlatformTests(unittest.TestCase):
             [
                 {
                     "provider": "github",
-                    "capabilities": ["change_request_feedback", "repository_events"],
+                    "capabilities": [
+                        "change_request_feedback",
+                        "delivery",
+                        "repository_events",
+                    ],
                 }
             ],
         )

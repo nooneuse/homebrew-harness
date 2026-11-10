@@ -6,9 +6,10 @@ from .protocol import request_key
 
 
 def collect(runtime, work):
-    native = runtime.child.run_store.get(work["run_id"])
+    child = runtime.child_for(work)
+    native = child.run_store.get(work["run_id"])
     checkpoint = "lead:" + native["session_id"]
-    with runtime.child.store.backend().connection() as conn:
+    with child.store.backend().connection() as conn:
         rows = conn.execute(
             "SELECT value FROM records WHERE section='test_receipts' "
             "AND (owner=? OR json_extract(value,'$.scope.run_id')=?) "

@@ -35,6 +35,8 @@ class WorkHandle(Handle):
             execution_pending=pending,
             details={
                 "run_id": value["run_id"],
+                "changeset_id": value.get("changeset_id"),
+                "ci_fix_attempts": value.get("ci_fix_attempts", 0),
                 "authority": value.get("authority"),
                 "verification": value.get("verification"),
                 "triage": value.get("triage_summary"),
@@ -166,6 +168,71 @@ class ServiceControls:
             )
         return self.command(
             "decide", {"ref": ref.data(), "decision": decision, **values}, control_id
+        )
+
+    def delivery(self, identity, *, kind="changesets"):
+        return self.query("delivery_status", {"kind": kind, "id": identity})
+
+    def prepare_delivery(self, work_id, *, revision=None, request_id=None):
+        revision = (
+            self.work.get(work_id).snapshot().revision if revision is None else revision
+        )
+        return self.command(
+            "delivery_prepare", {"id": work_id, "revision": revision}, request_id
+        )
+
+    def plan_delivery(
+        self, identity, kind, *, revision=None, body=None, subject=None, request_id=None
+    ):
+        revision = self.delivery(identity)["revision"] if revision is None else revision
+        return self.command(
+            "delivery_plan",
+            {
+                "id": identity,
+                "revision": revision,
+                "kind": kind,
+                "body": body,
+                "subject": subject,
+            },
+            request_id,
+        )
+
+    def inspect_delivery(
+        self, identity, *, conclusion="reconcile", confirmed=False, request_id=None
+    ):
+        return self.command(
+            "delivery_inspect",
+            {"id": identity, "conclusion": conclusion, "confirmed": confirmed},
+            request_id,
+        )
+
+    def request_delivery(self, identity, *, request_id=None):
+        return self.command("delivery_request", {"id": identity}, request_id)
+
+    def refresh_delivery(self, identity, *, request_id=None):
+        return self.command("delivery_refresh", {"id": identity}, request_id)
+
+    def batch(self, requests, *, request_id=None):
+        return self.command(
+            "batch_create",
+            {
+                "refs": [
+                    r.ref.data()
+                    if hasattr(r, "ref")
+                    else r.data()
+                    if hasattr(r, "data")
+                    else r
+                    for r in requests
+                ]
+            },
+            request_id,
+        )
+
+    def decide_batch(self, identity, decisions, *, revision=0, request_id=None):
+        return self.command(
+            "batch_decide",
+            {"id": identity, "revision": revision, "decisions": decisions},
+            request_id,
         )
 
     def records(self, kind, *, cursor=0, limit=20, state=None):

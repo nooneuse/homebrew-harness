@@ -26,6 +26,7 @@ class Maintenance:
         self.error = None
         self.closed_sources = set()
         self.agent_closed = False
+        self.delivery = None
         settings = runtime.core.config.settings
         environment = (
             read_environment(settings.env_file, runtime.store.root)
@@ -40,13 +41,22 @@ class Maintenance:
                     roots=(runtime.store.root, runtime.spec.workspace),
                 )
             self.agent = ServiceAgent(runtime, self.store, self.stop)
+            if runtime.spec.delivery:
+                from .delivery.runtime import Delivery
+
+                self.delivery = Delivery(runtime, self.store, environment)
         except BaseException:
+            if self.delivery:
+                self.delivery.close()
+            if self.agent:
+                self.agent.close()
             for source in self.sources.values():
                 source.close()
             raise
 
     def identity(self):
         return {
+            "delivery": self.delivery.identity() if self.delivery else None,
             "agent": self.agent.identity(),
             "sources": {name: source.identity for name, source in self.sources.items()},
         }
@@ -104,6 +114,8 @@ class Maintenance:
 
     def close(self):
         self.stop.set()
+        if self.delivery:
+            self.delivery.close()
         if not self.started:
             self.finished.set()
         self.finished.wait()
@@ -116,6 +128,13 @@ class Maintenance:
             self.agent_closed = True
 
     def command(self, method, payload, request_id):
+        if method.startswith(("delivery_", "batch_")):
+            if self.delivery is None:
+                raise ValueError("Delivery is not configured for this service.")
+            from .delivery.controls import command
+
+            return command(self.delivery, method, payload, request_id)
+
         def apply(conn):
             meta = self.runtime.store.guard(conn, self.runtime.header)
             if meta["state"] in {"stopped", "stopping"}:
@@ -159,6 +178,18 @@ class Maintenance:
                     next_attempt=0,
                     attempt_limit=job["attempts"] + self.store.policy["job_attempts"],
                 )
+                if job["kind"] in {"review", "ci_triage"}:
+                    row = self.store.get("changesets", job["target"], conn)
+                    self.delivery.store.current(row, conn)
+                    row.update(
+                        state="reviewing"
+                        if job["kind"] == "review"
+                        else "ci_diagnosing",
+                        error=None,
+                        revision=row["revision"] + 1,
+                    )
+                    job["revision"] = row["revision"]
+                    self.store.put(conn, "changesets", row)
                 if job["kind"] == "report":
                     report = self.store.get("reports", job["target"], conn)
                     report.update(state="queued", error=None)
@@ -242,6 +273,12 @@ class Maintenance:
         )
 
     def query(self, method, payload):
+        if method == "delivery_status":
+            if self.delivery is None:
+                raise ValueError("Delivery is not configured.")
+            from .delivery.controls import status
+
+            return status(self.delivery, payload["kind"], payload["id"])
         if method == "report_inbox":
             context = text(payload.get("context", "default"), "context", 100)
             from .maintenance_spec import number
@@ -300,6 +337,16 @@ class Maintenance:
             value = json.loads(raw)
             if work_id and value["work_id"] != work_id:
                 continue
+            if value["kind"] == "delivery_authority":
+                action = self.store.get("actions", value["action_id"])
+                if action["state"] in {"superseded", "denied", "confirmed"}:
+                    continue
+                try:
+                    self.delivery.store.current(
+                        self.store.get("changesets", value["changeset_id"])
+                    )
+                except ValueError:
+                    continue
             work = self.runtime.store.work(value["work_id"], self.store.id)
             if value["requirements_revision"] != work["requirements_revision"]:
                 continue

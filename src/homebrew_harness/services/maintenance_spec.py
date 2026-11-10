@@ -128,6 +128,37 @@ def validate_policy(raw, run_spec):
 
 
 def validate_proposal(raw, kind, policy):
+    if kind == "review":
+        if (
+            not isinstance(raw, dict)
+            or set(raw) != {"text", "findings"}
+            or not isinstance(raw["findings"], list)
+            or len(raw["findings"]) > 32
+        ):
+            raise ValueError("Invalid independent review proposal.")
+        text(raw["text"], maximum=16000)
+        for item in raw["findings"]:
+            if (
+                not isinstance(item, dict)
+                or set(item) != {"severity", "path", "message"}
+                or item["severity"] not in {"blocking", "warning"}
+            ):
+                raise ValueError("Invalid review finding.")
+            text(item["path"], maximum=1000)
+            text(item["message"], maximum=4000)
+        return raw
+    if kind == "ci_triage":
+        if (
+            not isinstance(raw, dict)
+            or set(raw) != {"classification", "reason", "plan"}
+            or raw["classification"]
+            not in {"code", "baseline", "flaky", "infrastructure", "unknown"}
+        ):
+            raise ValueError("Invalid CI diagnosis.")
+        text(raw["reason"], maximum=8000)
+        text(raw["plan"], maximum=16000)
+        return raw
+
     if kind != "triage":
         if not isinstance(raw, dict) or set(raw) - {"text", "work_id", "plan"}:
             raise ValueError(

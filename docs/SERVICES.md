@@ -272,3 +272,7 @@ python examples/maintenance_demo.py --output /tmp/harness-maintenance-demo
 The scenario polls a local GitHub fixture, automatically handles a scoped bug, retains a feature decision across a service restart, executes fixed tests, restores a discussion, and creates a report. It uses no paid model access.
 
 Work snapshots expose a verification reference. Read its `evidence` record to inspect the actual native test receipts and the requirements version they belong to. When source requirements change during execution, completion of the earlier Run remains historical evidence; the updated work continues through triage and authority. Structured Goals submitted with work remain in the compiled RunSpec. Expired requests stay expired until an explicit refresh. Repository sweeps reconcile page identities before advancing their watermark; an unstable sweep exposes `rescan_required` and keeps the old position.
+
+## Fixed-candidate delivery (P3)
+
+Optional delivery prepares a private Git candidate from reviewed work, rechecks fixed tests and original Goal conditions, runs an independent review, publishes a review branch/change request, and waits for exact-SHA CI. The operator approves target publication and public comments separately. CI code repair reuses native Runs with the original scope and cumulative limits. Grouped decisions, action receipts and restart recovery use the same HTTP/SDK/Text UI. See [Repository delivery](DELIVERY.md) for configuration and the offline demonstration.

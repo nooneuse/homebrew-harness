@@ -64,6 +64,13 @@ class ExecutionLeases:
             info = os.fstat(fd)
             self._held[resource] = (fd, 1, (info.st_dev, info.st_ino))
 
+    def descriptor(self, resource: str):
+        """Transfer a held lock to a trusted child; it remains live until child exit."""
+        with self._lock:
+            if not self.held(resource):
+                raise ValueError("Execution lease is not held.")
+            return self._held[resource][0]
+
     def release(self, resource: str):
         with self._lock:
             if not self.held(resource):

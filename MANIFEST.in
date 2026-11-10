@@ -11,3 +11,4 @@ recursive-include tests *.py
 recursive-include src/homebrew_harness/services/skills *.md *.yaml
 
 include docs/PLATFORMS.md docs/PLATFORMS.zh-CN.md
+include docs/DELIVERY.md docs/DELIVERY.zh-CN.md

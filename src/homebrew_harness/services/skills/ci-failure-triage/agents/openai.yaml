@@ -1,0 +1,4 @@
+interface:
+  display_name: "CI Failure Triage"
+  short_description: "Diagnose current candidate checks and repair scope"
+  default_prompt: "Use $ci-failure-triage to assess the recorded candidate CI failure."

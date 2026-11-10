@@ -257,3 +257,7 @@ python examples/maintenance_demo.py --output /tmp/harness-maintenance-demo
 演示轮询本地 GitHub fixture，自动处理范围内的 Bug，跨服务重启保留功能请求的决定，实际执行固定测试，恢复讨论并生成报告，不调用付费模型。
 
 工作快照提供 verification 引用，通过 `evidence` 记录可查原生测试凭证与所属需求版本。执行中来源发生更新时，旧 Run 的完成结果作为历史证据保留，新版工作继续研判和授权；用户提交的结构化 Goal 保留在编译后的 RunSpec。过期请求保持过期直到显式刷新。仓库扫描在推进游标前核对分页对象；列表未稳定时显示 `rescan_required` 并保留旧位置。
+
+## 固定候选交付（P3）
+
+可选 delivery 从已完成开发的工作准备私有 Git 候选，重新验证固定测试和原始 Goal 硬条件，进行独立审查，发布审查分支及变更请求，并等待确切 SHA 的 CI。操作者分别批准目标更新和公开评论。代码修复复用原生 Run，保留范围并累计次数。分组决定、动作回执和重启恢复共用 HTTP/SDK/Text UI。配置及离线演示见 [仓库交付](DELIVERY.zh-CN.md)。

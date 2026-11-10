@@ -123,6 +123,7 @@ class GithubFeedback:
                         row.get("conclusion"),
                         kind == "review"
                         and (row.get("state") == "PENDING" or not version),
+                        row.get("name") if kind == "check" else None,
                     )
                 )
         latest = max(

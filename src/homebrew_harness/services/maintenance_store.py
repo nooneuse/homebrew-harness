@@ -15,6 +15,9 @@ SECTIONS = {
     "reports",
     "work",
     "evidence",
+    "changesets",
+    "actions",
+    "batches",
 }
 
 
@@ -26,6 +29,7 @@ class MaintenanceStore:
     def __init__(self, store, header, policy):
         self.store, self.db, self.header, self.policy = store, store.db, header, policy
         self.id = header["id"]
+        self.delivery = None
 
     def get(self, kind, identity, conn=None):
         if kind not in SECTIONS:
@@ -260,7 +264,15 @@ class MaintenanceStore:
             )
 
     def fail_target(self, conn, job):
-        if job["kind"] in {"conversation", "report"}:
+        if job["kind"] in {"review", "ci_triage"}:
+            row = self.get("changesets", job["target"], conn)
+            row.update(
+                state="quality_failed" if job["kind"] == "review" else "blocked",
+                error=job["error"],
+                revision=row["revision"] + 1,
+            )
+            self.put(conn, "changesets", row)
+        elif job["kind"] in {"conversation", "report"}:
             kind = "messages" if job["kind"] == "conversation" else "reports"
             target = self.get(kind, job["target"], conn)
             target.update(state="failed", error=job["error"])
@@ -537,6 +549,10 @@ class MaintenanceStore:
                             else:
                                 self.work_request(conn, work, result)
                         self.changed(conn, work["id"])
+                elif job["kind"] in {"review", "ci_triage"}:
+                    current["state"] = self.delivery.store.finish_model(
+                        conn, job, result
+                    )
                 elif job["kind"] == "conversation":
                     message = self.get("messages", job["target"], conn)
                     message.update(state="answered", result=result)
@@ -654,6 +670,8 @@ class MaintenanceStore:
             or decision["state"] != "pending"
         ):
             raise ValueError("Decision is stale; refresh requests.")
+        if decision["kind"] in {"delivery_authority", "ci_repair"}:
+            return self.delivery.store.decide(conn, decision, payload, request_id)
         work = self.store.work(decision["work_id"], self.id)
         if (
             decision["expires_at"] <= time.time()

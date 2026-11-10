@@ -162,6 +162,7 @@ class FeedbackEvent:
     status: str | None
     conclusion: str | None
     pending: bool = False
+    name: str | None = None
 
 
 @dataclass(frozen=True)

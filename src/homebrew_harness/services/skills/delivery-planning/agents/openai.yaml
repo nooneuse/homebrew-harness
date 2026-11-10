@@ -1,0 +1,4 @@
+interface:
+  display_name: "Delivery Planning"
+  short_description: "Explain fixed delivery plans and approval scope"
+  default_prompt: "Use $delivery-planning to explain the candidate delivery steps."
