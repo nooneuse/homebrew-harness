@@ -157,6 +157,15 @@ class GithubDelivery:
                 str(number),
                 number,
             ).data(),
+            "object": ObjectRef(
+                self.spec["provider"],
+                self.spec["instance"],
+                self.spec["project"],
+                "change_request",
+                str(number),
+                number,
+            ).data(),
+            "actor_id": (row.get("user") or {}).get("id"),
             "head": row["head"]["sha"],
             "state": row.get("state"),
             "merged": row.get("merged", False),
@@ -189,7 +198,19 @@ class GithubDelivery:
             row = matches[0]
         if type(row.get("id")) is not int:
             raise RuntimeError("Comment response is not confirmed.")
-        return {"confirmed": True, "id": str(row["id"]), "subject": plan["subject"]}
+        return {
+            "confirmed": True,
+            "id": str(row["id"]),
+            "subject": plan["subject"],
+            "object": ObjectRef(
+                self.spec["provider"],
+                self.spec["instance"],
+                self.spec["project"],
+                "comment",
+                str(row["id"]),
+            ).data(),
+            "actor_id": (row.get("user") or {}).get("id"),
+        }
 
     @serialized
     def target_guard(self):

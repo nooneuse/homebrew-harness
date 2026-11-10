@@ -196,6 +196,37 @@ def commands(parser, *, attach=True):
         item = op_actions.add_parser("upgrade-rollback")
         item.add_argument("identity")
         item.add_argument("--request-id", required=True)
+    discussion = actions.add_parser("discussion")
+    if attach:
+        discussion.add_argument("service_id")
+    discussion_ops = discussion.add_subparsers(dest="discussion_command", required=True)
+    listing = discussion_ops.add_parser("list")
+    listing.add_argument("--cursor", type=int, default=0)
+    listing.add_argument("--limit", type=int, default=20)
+    listing.add_argument("--state")
+    for name in ("show", "events", "assess", "pause", "reopen", "prepare-review"):
+        item = discussion_ops.add_parser(name)
+        item.add_argument("identity")
+        item.add_argument("--request-id")
+    publication = actions.add_parser("communication")
+    if attach:
+        publication.add_argument("service_id")
+    publication_ops = publication.add_subparsers(
+        dest="communication_command", required=True
+    )
+    listing = publication_ops.add_parser("list")
+    listing.add_argument("--cursor", type=int, default=0)
+    listing.add_argument("--limit", type=int, default=20)
+    listing.add_argument("--state")
+    for name in ("show", "inspect", "request-authority"):
+        item = publication_ops.add_parser(name)
+        item.add_argument("identity")
+        item.add_argument("--request-id")
+    item = publication_ops.add_parser("plan")
+    item.add_argument("identity")
+    item.add_argument("--plan-file", type=Path, required=True)
+    item.add_argument("--request-id")
+
     delivery = actions.add_parser("delivery")
     if attach:
         delivery.add_argument("service_id")
@@ -424,6 +455,40 @@ def operate(service, args):
     if args.command == "record":
         return service.record(
             args.kind, args.identity, offset=args.offset, limit=args.limit
+        )
+    if args.command == "discussion":
+        if args.discussion_command == "list":
+            return service.discussions(
+                cursor=args.cursor, limit=args.limit, state=args.state
+            )
+        if args.discussion_command == "show":
+            return service.discussion(args.identity)
+        if args.discussion_command == "events":
+            return service.discussion_events(args.identity)
+        return service.control_discussion(
+            args.identity,
+            args.discussion_command.replace("-", "_"),
+            request_id=args.request_id,
+        )
+    if args.command == "communication":
+        if args.communication_command == "list":
+            return service.communication_actions(
+                cursor=args.cursor, limit=args.limit, state=args.state
+            )
+        if args.communication_command == "show":
+            return service.communication(args.identity)
+        if args.communication_command == "inspect":
+            return service.inspect_communication(
+                args.identity, request_id=args.request_id
+            )
+        if args.communication_command == "request-authority":
+            return service.request_communication_authority(
+                args.identity, request_id=args.request_id
+            )
+        return service.plan_communication(
+            args.identity,
+            json.loads(args.plan_file.read_text()),
+            request_id=args.request_id,
         )
     if args.command == "chat":
         return service.converse(

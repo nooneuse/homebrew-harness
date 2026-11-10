@@ -13,6 +13,7 @@ from .http import JsonTransport
 from .github.repository import GithubRepository, validate_project
 from .github.feedback import GithubFeedback
 from .github.delivery import GithubDelivery
+from .github.communication import GithubCommunication
 
 PROVIDERS = {
     "github": {
@@ -20,6 +21,7 @@ PROVIDERS = {
         "repository_events": GithubRepository,
         "change_request_feedback": GithubFeedback,
         "delivery": GithubDelivery,
+        "communication": GithubCommunication,
     }
 }
 

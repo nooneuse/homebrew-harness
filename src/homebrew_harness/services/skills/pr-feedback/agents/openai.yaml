@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pull request feedback"
+  short_description: "Review fixed code and respond across PR revisions"
+  default_prompt: "Use $pr-feedback to assess the current fixed PR revision and propose review or thread feedback."

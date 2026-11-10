@@ -59,6 +59,7 @@ class ServiceSpec:
     maintenance: dict = field(default_factory=dict)
     delivery: dict = field(default_factory=dict)
     operations: dict = field(default_factory=dict)
+    communication: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if self.profile not in {"manual", "repository_maintenance"}:
@@ -112,6 +113,16 @@ class ServiceSpec:
         object.__setattr__(self, "delivery", validate_delivery(self.delivery))
         if self.delivery and self.profile != "repository_maintenance":
             raise ValueError("Delivery requires a maintenance profile.")
+        from .communication.spec import validate as validate_communication
+
+        object.__setattr__(
+            self,
+            "communication",
+            validate_communication(self.communication, self.sources),
+        )
+        if self.communication and self.profile != "repository_maintenance":
+            raise ValueError("Communication requires a maintenance profile.")
+
         from .operations.spec import validate as validate_operations
 
         object.__setattr__(self, "operations", validate_operations(self.operations))

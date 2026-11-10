@@ -14,6 +14,7 @@ from homebrew_harness.execution.model_gateway import (
 
 _CLEANUP = ContextVar("execution_cleanup", default=None)
 _CONTROL = ContextVar("execution_host_control", default=None)
+_CONTROL_CANCEL = ContextVar("execution_control_cancel", default=())
 
 
 @contextmanager
@@ -26,12 +27,14 @@ def cleanup_scope(seconds=2):
 
 
 @contextmanager
-def control_scope(deadline):
+def control_scope(deadline, *, cancel_events=()):
     token = _CONTROL.set(deadline)
+    cancellation = _CONTROL_CANCEL.set((*_CONTROL_CANCEL.get(), *cancel_events))
     try:
         yield
     finally:
         _CONTROL.reset(token)
+        _CONTROL_CANCEL.reset(cancellation)
 
 
 def operation_deadline(timeout=None):
@@ -47,7 +50,10 @@ def check(deadline=None, cancel_events=(), *, inherit=True, gateway=True):
     scope = current_scope() if inherit and not _CLEANUP.get() else RequestScope()
     if _CONTROL.get():
         scope = RequestScope(deadline=_CONTROL.get(), cancel_events=scope.cancel_events)
-    if any(event.is_set() for event in (*scope.cancel_events, *cancel_events)):
+    if any(
+        event.is_set()
+        for event in (*scope.cancel_events, *cancel_events, *_CONTROL_CANCEL.get())
+    ):
         raise ModelCancelled("Execution cancelled; inspect any action already started.")
     if scope.gateway and gateway:
         scope.gateway.checkpoint()

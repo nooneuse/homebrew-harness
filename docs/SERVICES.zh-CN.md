@@ -265,3 +265,5 @@ python examples/maintenance_demo.py --output /tmp/harness-maintenance-demo
 ## Service 运维（P4）
 
 [Service 运维](SERVICE_OPERATIONS.zh-CN.md) 提供健康事实、原生写入者停靠、跨工作区保留、备份集合/恢复、固定仓库审查及明确的兼容版本接替。CLI、Text UI 和 Python 共用认证控制方法。
+
+可选社区沟通独立于代码交付，支持 Issue 多轮澄清和外部 PR 审查。详见[社区讨论](COMMUNICATION.zh-CN.md)。

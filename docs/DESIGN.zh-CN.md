@@ -191,3 +191,5 @@ Python SDK 通过 `Harness` 和 `AsyncHarness` 提供 Session、Run、Workflow�
 `cli.py` 提供统一命令，`cli_arguments.py` 定义公共选项；`session_cli.py`、`workflow_cli.py`、`runs/cli.py` 和 `admin.py` 执行各自的子命令。测试遵循相同模块布局，`integration/` 检查组件组合，`system/` 验证真实容器执行。
 
 平台适配器将仓库事件和变更请求反馈转换为类型化引用和有界页，Service/Run 控制器持有受理与恢复状态；平台路径和认证留在 platforms/。参见 [代码管理平台](PLATFORMS.zh-CN.md)。
+
+社区沟通保存长期议题、有界轮次和需求草案。固定 PR 快照提供审查输入，独立授权的发言动作复用外部效果状态转换。Skill 指导讨论和审查，运行时控制版本、发布和恢复。

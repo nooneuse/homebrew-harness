@@ -224,6 +224,81 @@ class ServiceControls:
             "decide", {"ref": ref.data(), "decision": decision, **values}, control_id
         )
 
+    def discussions(self, *, cursor=0, limit=20, state=None):
+        return self.query(
+            "communication_page",
+            {"kind": "discussions", "cursor": cursor, "limit": limit, "state": state},
+        )
+
+    def discussion(self, identity):
+        return self.query("communication_get", {"kind": "discussions", "id": identity})
+
+    def discussion_events(self, identity, *, cursor=0, limit=20):
+        return self.query(
+            "communication_events", {"id": identity, "cursor": cursor, "limit": limit}
+        )
+
+    def communication(self, identity):
+        return self.query(
+            "communication_get", {"kind": "communication_actions", "id": identity}
+        )
+
+    def communication_actions(self, *, cursor=0, limit=20, state=None):
+        return self.query(
+            "communication_page",
+            {
+                "kind": "communication_actions",
+                "cursor": cursor,
+                "limit": limit,
+                "state": state,
+            },
+        )
+
+    def communication_record(self, kind, identity, *, offset=0, limit=4000):
+        return self.query(
+            "communication_read",
+            {"kind": kind, "identity": identity, "offset": offset, "limit": limit},
+        )
+
+    def control_discussion(
+        self, identity, operation="assess", *, revision=None, request_id=None
+    ):
+        if operation not in {"assess", "pause", "reopen", "prepare_review"}:
+            raise ValueError("Unknown discussion operation.")
+        revision = (
+            self.discussion(identity)["revision"] if revision is None else revision
+        )
+        return self.command(
+            "discussion_" + operation,
+            {"id": identity, "revision": revision},
+            request_id,
+        )
+
+    def plan_communication(self, identity, plan, *, revision=None, request_id=None):
+        revision = (
+            self.discussion(identity)["revision"] if revision is None else revision
+        )
+        return self.command(
+            "communication_plan",
+            {"id": identity, "revision": revision, "plan": plan},
+            request_id,
+        )
+
+    def request_communication_authority(
+        self, identity, *, revision=None, request_id=None
+    ):
+        revision = (
+            self.communication(identity)["revision"] if revision is None else revision
+        )
+        return self.command(
+            "communication_request_authority",
+            {"id": identity, "revision": revision},
+            request_id,
+        )
+
+    def inspect_communication(self, identity, *, request_id=None):
+        return self.command("communication_inspect", {"id": identity}, request_id)
+
     def delivery(self, identity, *, kind="changesets"):
         return self.query("delivery_status", {"kind": kind, "id": identity})
 

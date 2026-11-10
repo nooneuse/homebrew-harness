@@ -1,0 +1,17 @@
+---
+name: pr-feedback
+description: 审查固定版本的外部 PR/MR，处理作者解释，跨代码更新保留发现并提出总体、行级或线程反馈；适用于首次审查、作者回复、head 变化和复审决定。
+---
+# PR 多轮反馈
+
+读取当前议题、ReviewSnapshot、coverage、变更与旧发现。只审查绑定的代码根；需要时通过 @base/path 读取基础内容。没有快照时可以讨论动机或请求资料，不能声称已经审查代码。
+
+阅读差异及足够的调用方、测试和关联实现，按 code-review 方法指出有依据的缺陷。区分产品方向、兼容性、正确性和测试事实。说明实际覆盖与未完成验证，不宣称未运行的测试通过。
+
+复用稳定 finding ID，注明事件出处、实际代码版本和文件。作者解释可以支持撤回误判，但“已修复”或平台线程已解决不能独自证明缺陷消失；在新的固定版本中重新核查。
+
+只有讨论变化时复用快照分析解释。代码变化时检查 delta、相关上下文和未解决发现，不照搬旧行号，不把旧 CI 当成本版本验证。
+
+通过 service_propose 提交沟通候选：范围与整体原因用普通评论；已观察线程用 reply_thread；固定 diff 的行级意见用 submit_review，并提供 path、line、side。COMMENT、REQUEST_CHANGES、APPROVE 对应 review_feedback、request_changes、approve_review。接受需要真实覆盖和宿主决定，不自动合并或关闭。
+
+以证据和可执行建议表达问题。等待作者时用 wait，方向争议时用 operator。只有确认回执才能记录已发表；意见发表成功后仍可能因旧版本而需要下一轮。

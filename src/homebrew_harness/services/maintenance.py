@@ -27,6 +27,7 @@ class Maintenance:
         self.closed_sources = set()
         self.agent_closed = False
         self.delivery = None
+        self.communication = None
         settings = runtime.core.config.settings
         environment = (
             read_environment(settings.env_file, runtime.store.root)
@@ -41,11 +42,19 @@ class Maintenance:
                     roots=(runtime.store.root, runtime.spec.workspace),
                 )
             self.agent = ServiceAgent(runtime, self.store, self.stop)
+            if runtime.spec.communication:
+                from .communication.runtime import CommunicationRuntime
+
+                self.communication = CommunicationRuntime(
+                    runtime, self.store, environment
+                )
             if runtime.spec.delivery:
                 from .delivery.runtime import Delivery
 
                 self.delivery = Delivery(runtime, self.store, environment)
         except BaseException:
+            if self.communication:
+                self.communication.close()
             if self.delivery:
                 self.delivery.close()
             if self.agent:
@@ -57,6 +66,11 @@ class Maintenance:
     def identity(self):
         return {
             "delivery": self.delivery.identity() if self.delivery else None,
+            **(
+                {"communication": self.communication.identity()}
+                if self.communication
+                else {}
+            ),
             "agent": self.agent.identity(),
             "sources": {name: source.identity for name, source in self.sources.items()},
         }
@@ -114,6 +128,8 @@ class Maintenance:
 
     def close(self):
         self.stop.set()
+        if self.communication:
+            self.communication.close()
         if self.delivery:
             self.delivery.close()
         if not self.started:
@@ -128,7 +144,35 @@ class Maintenance:
             self.agent_closed = True
 
     def command(self, method, payload, request_id):
+        if method.startswith(("discussion_", "communication_")):
+            if self.communication is None:
+                raise ValueError("Communication is not configured.")
+            if method == "communication_inspect":
+                return self.communication.reconcile(payload["id"])
+            if method == "discussion_prepare_review":
+                return self.communication.request_review(
+                    payload["id"], payload["revision"], request_id
+                )
+            return self.communication.store.command(method, payload, request_id)
         if method.startswith(("delivery_", "batch_")):
+            if (
+                method.startswith("batch_")
+                and self.delivery is None
+                and self.communication is not None
+            ):
+                from .delivery.batches import DecisionBatches
+
+                batches = DecisionBatches(self.runtime, self.store)
+                return (
+                    batches.create(payload["refs"], request_id)
+                    if method == "batch_create"
+                    else batches.apply(
+                        payload["id"],
+                        payload["revision"],
+                        payload["decisions"],
+                        request_id,
+                    )
+                )
             if self.delivery is None:
                 raise ValueError("Delivery is not configured for this service.")
             from .delivery.controls import command
@@ -273,6 +317,18 @@ class Maintenance:
         )
 
     def query(self, method, payload):
+        if method.startswith("communication_"):
+            if self.communication is None:
+                raise ValueError("Communication is not configured.")
+            if method == "communication_page":
+                return self.communication.store.page(**payload)
+            if method == "communication_events":
+                return self.communication.store.event_page(
+                    payload["id"], payload.get("cursor", 0), payload.get("limit", 20)
+                )
+            if method == "communication_read":
+                return self.communication.store.read(**payload)
+            return self.communication.store.get(payload["kind"], payload["id"])
         if method == "delivery_status":
             if self.delivery is None:
                 raise ValueError("Delivery is not configured.")
@@ -347,6 +403,45 @@ class Maintenance:
                     )
                 except ValueError:
                     continue
+            if value["kind"] in {
+                "communication_authority",
+                "discussion_information",
+                "discussion_requirements",
+            }:
+                if self.communication is None:
+                    continue
+                discussion = self.communication.store.get(
+                    "discussions", value["discussion_id"]
+                )
+                if value["basis"] != self.communication.store.basis(discussion):
+                    continue
+                result.append(
+                    {
+                        "ref": {
+                            "id": value["id"],
+                            "revision": value["revision"],
+                            "target": {
+                                "kind": "service",
+                                "id": self.store.id,
+                                "owner_id": None,
+                            },
+                            "durable": True,
+                        },
+                        "kind": value["kind"],
+                        "question": value.get("reason", ""),
+                        "state": "expired"
+                        if value["expires_at"] <= time.time()
+                        else "pending",
+                        "tool": None,
+                        "arguments": {
+                            "discussion_id": value["discussion_id"],
+                            "action_id": value.get("action_id"),
+                            "candidate": value["candidate"],
+                        },
+                        "reason": value.get("reason", ""),
+                    }
+                )
+                continue
             work = self.runtime.store.work(value["work_id"], self.store.id)
             if value["requirements_revision"] != work["requirements_revision"]:
                 continue

@@ -9,7 +9,7 @@ from homebrew_harness.security.data_boundary import register_private_values
 from .model_registry import ModelRegistry, load_model_registry
 
 
-def read_environment(path, workspace, *, private=False):
+def read_environment(path, workspace, *, private=False, inherit_environment=True):
     from dotenv import dotenv_values
 
     path = Path(path).expanduser()
@@ -49,7 +49,7 @@ def read_environment(path, workspace, *, private=False):
     finally:
         if fd is not None:
             os.close(fd)
-    return {**values, **os.environ}
+    return {**values, **os.environ} if inherit_environment else dict(values)
 
 
 class _ClientContext:

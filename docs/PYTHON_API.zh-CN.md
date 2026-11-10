@@ -206,3 +206,5 @@ Service 视图增加 `delivery`、`prepare_delivery`、`plan_delivery`、`inspec
 ### Service 运维
 
 Service 提供 health、operations、operation、operation_record、quiesce、resume_operations、audit、diagnose、保留预览/应用、备份/验证/恢复及升级准备/授权/确认。AsyncHarness 提供可等待方法；host.admin.service_upgrade_rollback 是明确的宿主本地操作。详见 [Service 运维](SERVICE_OPERATIONS.zh-CN.md)。
+
+Service 社区沟通方法复用同一 Python/HTTP 控制边界，详见[社区讨论](COMMUNICATION.zh-CN.md#使用)。

@@ -280,3 +280,5 @@ Optional delivery prepares a private Git candidate from reviewed work, rechecks 
 ## Service operations (P4)
 
 [Service operations](SERVICE_OPERATIONS.md) add deterministic health, native writer parking, cross-workspace retention, backup sets/restoration, fixed repository audits and explicit compatible runtime handoff. CLI, Text UI and Python share the authenticated control methods.
+
+Optional community communication preserves multi-round issues and external PR reviews separately from code delivery. See [Community discussion](COMMUNICATION.md).

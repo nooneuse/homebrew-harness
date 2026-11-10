@@ -34,6 +34,7 @@ class MaintenanceStore:
         self.store, self.db, self.header, self.policy = store, store.db, header, policy
         self.id = header["id"]
         self.delivery = None
+        self.communication = None
 
     def get(self, kind, identity, conn=None):
         if kind not in SECTIONS:
@@ -154,6 +155,8 @@ class MaintenanceStore:
         if not isinstance(page, SourcePage):
             raise ValueError("Invalid source page.")
         page.validate(scope)
+        if self.communication is not None and scope in self.communication.scopes:
+            return self.communication.ingest(name, page.events, scope, page=page)
         with self.db.write() as conn:
             self.store.guard(conn, self.header)
             for item in page.events:
@@ -269,6 +272,11 @@ class MaintenanceStore:
             )
 
     def fail_target(self, conn, job):
+        if job["kind"] == "discussion" and self.communication is not None:
+            row = self.communication.get("discussions", job["target"], conn)
+            row.update(state="blocked", error=job.get("error", "model_job_failed"))
+            self.communication.put(conn, "discussions", row)
+            return
         if job["kind"] in {"audit", "incident", "upgrade_assessment"}:
             kind = {
                 "audit": "audits",
@@ -597,6 +605,8 @@ class MaintenanceStore:
                             else:
                                 self.work_request(conn, work, result)
                         self.changed(conn, work["id"])
+                elif job["kind"] == "discussion":
+                    current["state"] = self.communication.finish(conn, job, result)
                 elif job["kind"] == "audit":
                     from .operations.audit import finish
 
@@ -728,6 +738,14 @@ class MaintenanceStore:
             or decision["state"] != "pending"
         ):
             raise ValueError("Decision is stale; refresh requests.")
+        if decision["kind"] in {
+            "communication_authority",
+            "discussion_information",
+            "discussion_requirements",
+        }:
+            if self.communication is None:
+                raise ValueError("Communication is not configured.")
+            return self.communication.decide(conn, decision, payload, request_id)
         if decision["kind"] in {"delivery_authority", "ci_repair"}:
             return self.delivery.store.decide(conn, decision, payload, request_id)
         work = self.store.work(decision["work_id"], self.id)

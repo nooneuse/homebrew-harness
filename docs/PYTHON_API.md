@@ -211,3 +211,5 @@ The Service view adds `delivery`, `prepare_delivery`, `plan_delivery`, `inspect_
 ### Service operations
 
 Service views expose `health`, `operations`, `operation`, `operation_record`, `quiesce`, `resume_operations`, `audit`, `diagnose`, retention preview/apply, backup/verify/restore and upgrade prepare/arm/confirm. These methods are awaitable through AsyncHarness. `host.admin.service_upgrade_rollback` is an explicit host-local operation. See [Service operations](SERVICE_OPERATIONS.md).
+
+Service community methods share the same Python/HTTP control boundary. See [Community discussion](COMMUNICATION.md#python-and-control-interface) for discussion, review preparation, planning and reconciliation.

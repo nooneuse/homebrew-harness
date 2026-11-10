@@ -18,7 +18,7 @@ The model proposes an action, the runtime executes the corresponding tool, and t
 | Interaction | Steering during execution, queued requests, interrupts, and separate tool approvals |
 | Execution | Host Bash; optional container backends for Bash, TestRunner, and local MCP; artifact collection and publication |
 | State | SQLite checkpoints, durable inboxes, recovery inspection, backups, and history maintenance |
-| Services | Persistent work queue, fixed schedules, repository triage, fixed-candidate delivery, CI continuation, grouped approvals and Text UI |
+| Services | Persistent work queue, repository triage, multi-round issue discussion, external PR review, fixed-candidate delivery, CI continuation, grouped approvals and Text UI |
 
 ## Installation
 
@@ -402,3 +402,5 @@ The project uses the [MIT license](LICENSE). Some ideas and code draw on the lea
 Code-platform integration uses explicit adapters. GitHub is currently implemented; common execution and maintenance state can be reused by future providers. See [Code platforms](docs/PLATFORMS.md). Optional [Repository delivery](docs/DELIVERY.md) adds fixed candidates, local quality checks, CI continuation and operator-approved publication.
 
 [Service operations](docs/SERVICE_OPERATIONS.md) cover health, writer parking, retained work evidence, verified backup/restoration, periodic repository audits and explicit compatible runtime upgrades. Run `python examples/service_operations_demo.py --output /tmp/harness-service-operations-demo` for the offline P1-P4 scenario.
+
+Community communication and PR review are optional Service capabilities. See [Community discussion](docs/COMMUNICATION.md) for configuration and control methods.

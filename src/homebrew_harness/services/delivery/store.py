@@ -317,12 +317,9 @@ class DeliveryStore:
                 raise ValueError(
                     "Inspect uncertain external actions before further writes."
                 )
-            current.update(
-                state="started",
-                attempts=current["attempts"] + 1,
-                generation=self.runtime.header["generation"],
-                revision=current["revision"] + 1,
-            )
+            from homebrew_harness.services.action_runtime import start_attempt
+
+            current = start_attempt(current, self.runtime.header["generation"])
             return self.put(conn, "actions", current)
 
     def expire_action(self, action):
@@ -344,14 +341,9 @@ class DeliveryStore:
         with self.db.write() as conn:
             self.runtime.store.guard(conn, self.runtime.header)
             current = self.get("actions", action["id"], conn)
-            if current["state"] not in {"started", "unknown"}:
-                raise ValueError("Delivery action phase changed.")
-            current.update(
-                state=state,
-                result=result,
-                error=error,
-                revision=current["revision"] + 1,
-            )
+            from homebrew_harness.services.action_runtime import finish_attempt
+
+            current = finish_attempt(current, action, state, result, error)
             self.put(conn, "actions", current)
             row = self.get("changesets", action["changeset_id"], conn)
             if state == "confirmed":
@@ -387,6 +379,8 @@ class DeliveryStore:
                     else:
                         row["requirements_superseded"] = True
                 self.put(conn, "changesets", row)
+                if self.ms.communication is not None:
+                    self.ms.communication.link_delivery(conn, current)
             self.ms.changed(conn, row["work_id"])
             return current
 

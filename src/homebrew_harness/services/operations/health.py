@@ -15,6 +15,9 @@ def snapshot(runtime):
             "service_decisions",
             "service_actions",
             "service_jobs_model",
+            "service_communication_actions",
+            "service_discussions",
+            "service_review_operations",
         ):
             counts[section] = {
                 state: n
@@ -45,7 +48,14 @@ def snapshot(runtime):
         issues.append({"code": "storage_space_low", "target": runtime.id})
     phase = meta.get("operations_phase", "active")
     if phase == "active":
-        for name, worker in (("maintenance", maintenance), ("delivery", delivery)):
+        communication = (
+            getattr(maintenance, "communication", None) if maintenance else None
+        )
+        for name, worker in (
+            ("maintenance", maintenance),
+            ("delivery", delivery),
+            ("communication", communication),
+        ):
             if worker and (worker.error or worker.finished.is_set()):
                 issues.append({"code": name + "_stopped", "target": runtime.id})
     for row in sources:
@@ -67,6 +77,14 @@ def snapshot(runtime):
     ].get("started", 0)
     if unknown:
         issues.append({"code": "delivery_inspection_required", "target": runtime.id})
+    communication_unknown = counts["service_communication_actions"].get(
+        "unknown", 0
+    ) + counts["service_communication_actions"].get("started", 0)
+    if communication_unknown:
+        issues.append(
+            {"code": "communication_inspection_required", "target": runtime.id}
+        )
+    unknown += communication_unknown
     if meta.get("error"):
         issues.append({"code": meta["error"], "target": runtime.id})
     live = runtime.leases.held("service") and not runtime.finished.is_set()

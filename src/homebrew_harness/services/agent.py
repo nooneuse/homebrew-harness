@@ -55,6 +55,8 @@ class ServiceAgent:
         for alias in {
             runtime.spec.operations.get("audit_model"),
             (runtime.spec.delivery or {}).get("review_model"),
+            (runtime.spec.communication or {}).get("model_profile"),
+            (runtime.spec.communication or {}).get("review_model"),
         } - {None, self.models.alias}:
             selected = self.models.registry.select(
                 alias,
@@ -85,6 +87,23 @@ class ServiceAgent:
         }
 
     def read(self, kind, identity="", offset=0, limit=4000, workdir=None):
+        if (
+            getattr(self.runtime, "maintenance", None)
+            and self.runtime.maintenance.communication
+        ):
+            communication = self.runtime.maintenance.communication.store
+            from .communication.store import SECTIONS
+
+            if kind in SECTIONS:
+                return json.dumps(
+                    communication.read(kind, identity, offset, limit),
+                    ensure_ascii=False,
+                )
+            if kind == "discussion_events":
+                return json.dumps(
+                    communication.event_page(identity, offset, min(limit, 20)),
+                    ensure_ascii=False,
+                )
         number(offset, "offset", 0, 2**63 - 1, integer=True)
         number(limit, "limit", 1, 16000, integer=True)
         if kind == "health":
@@ -172,6 +191,18 @@ class ServiceAgent:
         )
 
     def code_root(self):
+        if (
+            self.job
+            and self.job["kind"] == "discussion"
+            and self.job["input"].get("review_id")
+        ):
+            snapshot = self.runtime.maintenance.communication.store.get(
+                "review_snapshots", self.job["input"]["review_id"]
+            )
+            from .communication.snapshots import verify
+
+            verify(snapshot, self.runtime.spec.communication)
+            return Path(snapshot["workspace"])
         if self.job and self.job["kind"] == "upgrade_assessment":
             plan = self.store.get("upgrade_plans", self.job["target"])
             return Path(
@@ -216,6 +247,15 @@ class ServiceAgent:
         )
 
         root = self.code_root()
+        if path.startswith("@base/"):
+            if (
+                not self.job
+                or self.job["kind"] != "discussion"
+                or not self.job["input"].get("review_id")
+            ):
+                raise ValueError("Base files require a fixed PR snapshot.")
+            root = root.parent / "base"
+            path = path[6:]
         _, parts = model_parts(root, path)
         if host_managed_parts(parts) or ".worktrees" in parts:
             raise ValueError(
@@ -231,6 +271,21 @@ class ServiceAgent:
         return json.dumps({"candidate_saved": True, "authorized": False})
 
     def run(self, job):
+        if job["kind"] == "discussion":
+            policy = self.runtime.spec.communication
+            alias = (
+                (policy.get("review_model") or policy.get("model_profile"))
+                if job["input"].get("review_id")
+                else policy.get("model_profile")
+            )
+            if alias and alias != self.models.alias:
+                actor = ServiceAgent(
+                    self.runtime, self.store, self.stop, model_profile=alias
+                )
+                try:
+                    return actor.run(job)
+                finally:
+                    actor.close()
         if (
             job["kind"] == "audit"
             and self.runtime.spec.operations["audit_model"]
@@ -263,29 +318,38 @@ class ServiceAgent:
                 actor.close()
         self.job, self.proposal = job, None
         kind = job["kind"]
-        primary = (
-            self.store.get(
-                {
-                    "audit": "audits",
-                    "incident": "incidents",
-                    "upgrade_assessment": "upgrade_plans",
-                }[kind],
-                job["target"],
-            )
-            if kind in {"audit", "incident", "upgrade_assessment"}
-            else (
-                self.store.get("changesets", job["target"])
-                if kind in {"review", "ci_triage"}
+        if kind == "discussion":
+            primary = {k: v for k, v in job["input"].items() if k != "projection"}
+            primary["projection_available"] = True
+            primary["operator_note"] = self.runtime.maintenance.communication.store.get(
+                "discussions", job["target"]
+            ).get("operator_note")
+        else:
+            primary = None
+        if primary is None:
+            primary = (
+                self.store.get(
+                    {
+                        "audit": "audits",
+                        "incident": "incidents",
+                        "upgrade_assessment": "upgrade_plans",
+                    }[kind],
+                    job["target"],
+                )
+                if kind in {"audit", "incident", "upgrade_assessment"}
                 else (
-                    self.store.store.work(job["target"], self.store.id)
-                    if kind == "triage"
-                    else self.store.get(
-                        "messages" if kind == "conversation" else "reports",
-                        job["target"],
+                    self.store.get("changesets", job["target"])
+                    if kind in {"review", "ci_triage"}
+                    else (
+                        self.store.store.work(job["target"], self.store.id)
+                        if kind == "triage"
+                        else self.store.get(
+                            "messages" if kind == "conversation" else "reports",
+                            job["target"],
+                        )
                     )
                 )
             )
-        )
         if kind in {"review", "ci_triage"}:
             self.store.delivery.git.verify(primary["candidate"])
         if kind == "audit":
@@ -331,6 +395,7 @@ class ServiceAgent:
             "For audit use code-review and submit text/findings for the fixed audited workspace. For incident or upgrade_assessment submit text only, cite the recorded facts, and use the operations skills; proposals do not perform maintenance or grant authority. "
             "Acknowledge uncertainty and distinguish delegated review from published changes. Reports must read the complete stored facts via service_read; conversation history is available. "
             "Work verification IDs refer to frozen evidence records: use service_read kind=evidence to inspect actual test receipts and the requirements version they verified. "
+            "For discussion submit next_step (clarify/discuss/operator/develop/defer/decline/wait/settle), reason and alignment. Include full updated facts/questions/findings as [{id,text,sources}], draft={text,scope,acceptance,out_of_scope} when changed, progress and requirements_changed Booleans. Read current discussion and exact event IDs with service_read; cite those IDs. For findings include status (open/needs_explanation/resolved/withdrawn/superseded) and the affected path, severity and evidence. Review code only when review_id is present; base files use @base/path. Optional communication={kind:post_comment/reply_thread/submit_review,intent,body,thread_id,event,comments:[{path,line,side,body}]}. Formal events COMMENT/REQUEST_CHANGES/APPROVE require corresponding intents review_feedback/request_changes/approve_review. Basic intents are acknowledge/clarify/followup; direction decisions use decline_direction or roadmap_commitment. Plans are proposals, never approvals or confirmed publication. Waiting is a valid end of a round; do not invent answered questions or automatically develop. "
             "Full source and user text are queryable by reference; previews may be shortened. Skills:\n"
             + self.skills.catalog()
         )

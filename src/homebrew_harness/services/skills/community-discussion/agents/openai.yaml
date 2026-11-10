@@ -1,0 +1,4 @@
+interface:
+  display_name: "Community discussion"
+  short_description: "Clarify requirements through grounded discussion"
+  default_prompt: "Use $community-discussion to assess the latest issue replies and propose the next grounded discussion round."

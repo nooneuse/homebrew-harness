@@ -191,3 +191,5 @@ The Python SDK exposes `Harness` and `AsyncHarness` with Session, Run, Workflow,
 `cli.py` provides the unified command and `cli_arguments.py` defines shared options. `session_cli.py`, `workflow_cli.py`, `runs/cli.py`, and `admin.py` execute their respective subcommands. Tests follow the same module layout; `integration/` checks composition and `system/` exercises real container execution.
 
 Platform adapters translate repository events and change-request feedback into typed references and bounded pages. Service/Run controllers own acceptance and recovery; platform API paths and authentication stay in platforms/. See [Code platforms](PLATFORMS.md).
+
+Community communication owns persistent discussions, bounded rounds and requirement drafts. Fixed PR snapshots provide review input, while independently authorized message actions use the shared external-effect transitions. Skills guide discussion and review; the runtime controls versions, publication and recovery.

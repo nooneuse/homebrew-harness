@@ -8,6 +8,10 @@ VERSION = 1
 MAX_FRAME = 256 * 1024
 SERVICE_ID = re.compile(r"svc_[0-9a-f]{32}\Z")
 MAINTENANCE_QUERIES = {
+    "communication_get": {"kind", "id"},
+    "communication_page": {"kind", "cursor", "limit", "state"},
+    "communication_read": {"kind", "identity", "offset", "limit"},
+    "communication_events": {"id", "cursor", "limit"},
     "delivery_status": {"kind", "id"},
     "service_page": {"kind", "cursor", "limit", "state"},
     "service_read": {"kind", "identity", "offset", "limit"},
@@ -50,6 +54,13 @@ QUERY_METHODS = {
     "receipt": {"request_id"},
 }
 MAINTENANCE_COMMANDS = {
+    "discussion_assess": {"id", "revision"},
+    "discussion_pause": {"id", "revision"},
+    "discussion_reopen": {"id", "revision"},
+    "discussion_prepare_review": {"id", "revision"},
+    "communication_plan": {"id", "revision", "plan"},
+    "communication_request_authority": {"id", "revision"},
+    "communication_inspect": {"id"},
     "delivery_prepare": {"id", "revision"},
     "delivery_plan": {"id", "revision", "kind", "body", "subject"},
     "delivery_request": {"id"},

@@ -163,6 +163,21 @@ class ServiceRuntime:
     def start_business(self):
         from homebrew_harness.runtime.runtime_control import WorkAccepted
 
+        if (
+            self.maintenance
+            and self.maintenance.communication
+            and not self.maintenance.communication.started
+        ):
+            try:
+                self.workers.start(
+                    self.maintenance.communication.loop,
+                    name="service-communication",
+                    track_operation=False,
+                )
+            except WorkAccepted:
+                pass
+        from homebrew_harness.runtime.runtime_control import WorkAccepted
+
         if self.maintenance is not None and not self.maintenance.started:
             try:
                 self.workers.start(

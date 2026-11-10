@@ -128,6 +128,10 @@ def validate_policy(raw, run_spec):
 
 
 def validate_proposal(raw, kind, policy):
+    if kind == "discussion":
+        from .communication.spec import validate_proposal as validate_discussion
+
+        return validate_discussion(raw, policy)
     if kind in {"incident", "upgrade_assessment"}:
         if not isinstance(raw, dict) or set(raw) != {"text"}:
             raise ValueError("An operations assessment expects text only.")

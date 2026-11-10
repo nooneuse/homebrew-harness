@@ -53,6 +53,7 @@ class PlatformTests(unittest.TestCase):
                     "provider": "github",
                     "capabilities": [
                         "change_request_feedback",
+                        "communication",
                         "delivery",
                         "repository_events",
                     ],
