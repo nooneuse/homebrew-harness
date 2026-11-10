@@ -7,7 +7,7 @@ from tests.runs import test_human_control as support
 from tests.support.run_services import RunServiceFixture
 from homebrew_harness.runs import RunSpec
 from homebrew_harness.runs.services import RunServices
-from homebrew_harness.runs.sources import iso_time
+from homebrew_harness.platforms.github.feedback import stamp as iso_time
 
 
 class SourceTests(support.ManagedRunFixture):
@@ -51,9 +51,11 @@ class SourceTests(support.ManagedRunFixture):
         self.addCleanup(env.stop)
         self.config = {
             "version": 1,
-            "github": {
-                "repository": "fixture/project",
-                "pull_number": 1,
+            "change_request": {
+                "provider": "github",
+                "instance": "primary",
+                "project": "fixture/project",
+                "number": 1,
                 "actor_ids": [7],
                 "app_ids": [11],
                 "api_url_env": "HARNESS_GH_API",
@@ -188,3 +190,34 @@ class SourceTests(support.ManagedRunFixture):
         self.assertEqual(
             len(self.store.runtime.mailbox("inspect", "reference_" + self.run_id)), 1
         )
+
+    def test_empty_review_and_in_progress_check_are_normalized(self):
+        server, services = self.setup_source()
+        server.reviews = [
+            {
+                "id": 20,
+                "user": {"id": 7},
+                "commit_id": self.head,
+                "state": "APPROVED",
+                "body": None,
+                "submitted_at": iso_time(time.time()),
+            }
+        ]
+        server.checks = [
+            {
+                "id": 21,
+                "app": {"id": 11},
+                "head_sha": self.head,
+                "status": "in_progress",
+                "conclusion": None,
+                "completed_at": None,
+                "started_at": iso_time(time.time()),
+                "output": {},
+            }
+        ]
+        services.tick(self.run_id)
+        events = list(self.store.runtime.items("run_events").values())
+        self.assertEqual(len(events), 2)
+        self.assertTrue(all(e["state"] == "queued" for e in events))
+        self.assertEqual(next(e for e in events if e["kind"] == "review")["body"], "")
+        self.assertTrue(all(e["subject"]["kind"] == "change_request" for e in events))

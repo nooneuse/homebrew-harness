@@ -77,6 +77,7 @@ class ToolPool:
         mcp_role="lead",
         models=None,
         run_tools=frozenset(),
+        service_tools=frozenset(),
     ):
         access = intersect_access(allowlist)
         catalog = workflow.registry.catalog() if workflow is not None else []
@@ -88,8 +89,19 @@ class ToolPool:
             raise ValueError(
                 "Only managed host control tools can extend this snapshot."
             )
+        if service_tools:
+            from homebrew_harness.services.agent import SERVICE_TOOLS
+
+            if (
+                not isinstance(service_tools, frozenset)
+                or service_tools - SERVICE_TOOLS
+            ):
+                raise ValueError("Invalid service tool scope.")
         for definition in definitions:
-            if definition["function"]["name"] not in capabilities.tools() | run_tools:
+            if (
+                definition["function"]["name"]
+                not in capabilities.tools() | run_tools | service_tools
+            ):
                 continue
             tool = copy.deepcopy(definition)
             function = tool["function"]

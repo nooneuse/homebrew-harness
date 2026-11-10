@@ -28,6 +28,37 @@ def define_tool(
 NONEMPTY_STRING = {"type": "string", "minLength": 1, "pattern": r"\S"}
 
 
+SERVICE_TOOL_DEFINITIONS = [
+    define_tool(
+        "service_read",
+        "Read service-owned evidence, policy, work or conversation history in bounded chunks.",
+        {
+            "kind": NONEMPTY_STRING,
+            "identity": {"type": "string"},
+            "offset": {"type": "integer", "minimum": 0},
+            "limit": {"type": "integer", "minimum": 1},
+        },
+        ["kind"],
+    ),
+    define_tool(
+        "service_read_code",
+        "Read bounded project source for maintenance reasoning, without execution or writes.",
+        {
+            "path": NONEMPTY_STRING,
+            "offset": {"type": "integer", "minimum": 0},
+            "limit": {"type": "integer", "minimum": 1},
+        },
+        ["path"],
+    ),
+    define_tool(
+        "service_propose",
+        "Save a candidate JSON proposal for host validation; does not authorize or execute work.",
+        {"proposal": NONEMPTY_STRING},
+        ["proposal"],
+    ),
+]
+
+
 TOOLS = [
     define_tool("integrate_stage", "Apply accepted predecessor outputs to the assigned isolated integration stage after stopping their writers.", {"task_id": NONEMPTY_STRING}, ["task_id"]),
     define_tool("publish_stage", "Publish a host-authorized, accepted integration stage to the unchanged base targets using a frozen manifest.", {"task_id": NONEMPTY_STRING}, ["task_id"]),
@@ -333,7 +364,7 @@ SUBMIT_PLAN_TOOL = define_tool(
 
 TOOL_SCHEMAS = {
     tool["function"]["name"]: tool["function"]["parameters"]
-    for tool in [*TOOLS, SUBMIT_PLAN_TOOL]
+    for tool in [*TOOLS, *SERVICE_TOOL_DEFINITIONS, SUBMIT_PLAN_TOOL]
 }
 
 

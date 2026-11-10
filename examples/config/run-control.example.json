@@ -1,8 +1,8 @@
 {
   "version": 1,
-  "github": {
-    "repository": "owner/project",
-    "pull_number": 1,
+  "change_request": {
+    "provider":"github", "instance":"primary", "project": "owner/project",
+    "number": 1,
     "actor_ids": [1],
     "app_ids": [1],
     "api_url_env": "HARNESS_GITHUB_API_URL",

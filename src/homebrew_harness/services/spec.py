@@ -55,10 +55,12 @@ class ServiceSpec:
     shutdown_seconds: float = 5
     queue_limit: int = 1024
     control_port: int = 0
+    sources: tuple = ()
+    maintenance: dict = field(default_factory=dict)
 
     def __post_init__(self):
-        if self.profile != "manual":
-            raise ValueError("P1 supports the manual service profile.")
+        if self.profile not in {"manual", "repository_maintenance"}:
+            raise ValueError("Unsupported service profile.")
         path = Path(self.workspace).expanduser()
         if not path.is_absolute():
             raise ValueError("Service workspace must be an absolute host path.")
@@ -88,6 +90,21 @@ class ServiceSpec:
         seconds(self.shutdown_seconds, "shutdown_seconds", maximum=60)
         if type(self.queue_limit) is not int or not 1 <= self.queue_limit <= 10000:
             raise ValueError("Invalid service queue limit.")
+        from .maintenance_spec import validate_sources, validate_policy
+
+        object.__setattr__(self, "sources", validate_sources(self.sources))
+        if self.profile == "manual" and (self.sources or self.maintenance):
+            raise ValueError(
+                "Maintenance sources/policy require repository_maintenance profile."
+            )
+        if self.profile == "repository_maintenance":
+            object.__setattr__(
+                self,
+                "maintenance",
+                validate_policy(
+                    self.maintenance, self.run_spec("Validate maintenance scope")
+                ),
+            )
         if type(self.control_port) is not int or not 0 <= self.control_port <= 65535:
             raise ValueError("Invalid service control port.")
 

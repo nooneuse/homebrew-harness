@@ -201,3 +201,5 @@ async def execute(config):
 Async views reuse the same execution state. Service and control methods are awaitable; `id` and `ref` are immediate metadata. Cancelling `wait` or `watch` stops observation. Cancelling an accepted API call does not revoke its submission: keep its request ID to query or replay acceptance. The adapter has bounded call slots and keeps accepted resources owned through shutdown.
 
 Run the [application example](../examples/python_api.py) with `--demo` for a deterministic Session, async Session, or registered Workflow without model access.
+
+Maintenance profiles add `converse`, `conversation`, `records`, `record`, `reports`, `report`, `acknowledge_report` and `retry_job` to the same service view. `work.revise` proposes a new inactive work contract; `work.revoke` withdraws its authority. Service work-authority and information requests appear in `requests()` and use the same explicit decision API. See [Services](SERVICES.md#repository-maintenance-p2) for the host policy and workflow.

@@ -14,7 +14,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 from homebrew_harness.runs import RunStore
 from homebrew_harness.runs.requests import HumanRequests
-from homebrew_harness.runs.sources import iso_time
+from homebrew_harness.platforms.github.feedback import stamp as iso_time
 
 PROMPT = "Implement normalize_title: lowercase text, trim and collapse whitespace. Ask how empty input should behave. Run the registered checks and write REPORT.md after verification. Use current pull feedback as reference. Then implement prefix and a dependent suffix using the declared read-only input, integrate, verify and publish their outputs."
 CANCEL_PROMPT = "Prepare a cancellable task, then ask the host before continuing."
@@ -824,9 +824,9 @@ def run_demo(base, *, timeout=360):
         json.dumps(
             {
                 "version": 1,
-                "github": {
-                    "repository": "fixture/project",
-                    "pull_number": 1,
+                "change_request": {
+                    "provider":"github", "instance":"primary", "project": "fixture/project",
+                    "number": 1,
                     "actor_ids": [7],
                     "app_ids": [11],
                     "api_url_env": "HARNESS_GH_API",

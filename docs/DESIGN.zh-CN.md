@@ -171,6 +171,8 @@ Hooks 在用户输入、工具前后和结束前提供扩展点。控制 Hook �
 
 持久 Service 管理工作受理与调度，原生 Run 负责 Agent 执行。控制库保存工作和 Run 引用，通过稳定启动意图与 Run API 的幂等受理关联两份状态。Text UI 与独立程序使用统一认证 HTTP 控制 API，共用 Service／Work 视图将查询和命令映射到已有控制器。轻量客户端依赖契约与观察层，宿主保留执行归属和显式保存状态检查。运行时位于可变目标源码之外。
 
+仓库维护将可靠状态与模型研判分开。Source 适配器返回有界页，服务在同一事务中受理事件、工作引用和游标。已有 Agent Loop 装配窄查询/提议工具与内置 Skill，完成研判、对话和汇报；宿主将版本化工作授权编译为原生 Run 配置。对话消息和报告窗口独立于某次执行持久保存。
+
 Python SDK 通过 `Harness` 和 `AsyncHarness` 提供 Session、Run、Workflow、自动入口、请求和维护服务。执行句柄标识原始工作单位，从现有 inbox、checkpoint、Run 记录和 Workflow journal 投影状态。宿主管理附着执行的资源归属，异步应用通过可等待视图观察同一执行。应用用法见 [Python API](PYTHON_API.zh-CN.md)。
 
 | 目录 | 职责 |
@@ -187,3 +189,5 @@ Python SDK 通过 `Harness` 和 `AsyncHarness` 提供 Session、Run、Workflow�
 | `security/` | 权限策略、文件访问和输出处理 |
 
 `cli.py` 提供统一命令，`cli_arguments.py` 定义公共选项；`session_cli.py`、`workflow_cli.py`、`runs/cli.py` 和 `admin.py` 执行各自的子命令。测试遵循相同模块布局，`integration/` 检查组件组合，`system/` 验证真实容器执行。
+
+平台适配器将仓库事件和变更请求反馈转换为类型化引用和有界页，Service/Run 控制器持有受理与恢复状态；平台路径和认证留在 platforms/。参见 [代码管理平台](PLATFORMS.zh-CN.md)。

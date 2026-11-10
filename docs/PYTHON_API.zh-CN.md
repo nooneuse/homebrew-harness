@@ -196,3 +196,5 @@ async def execute(config):
 异步视图共享同一执行状态。服务和控制方法可等待，`id`、`ref` 是直接可读元数据。取消 `wait` 或 `watch` 只停止观察；取消已受理 API 调用不撤销提交，应保留 request ID 查询或重放受理事实。适配层限制并发调用数量，并在关闭时继续管理已接受资源。
 
 [应用示例](../examples/python_api.py) 的 `--demo` 模式可在不接入模型时运行确定性 Session、异步 Session 或注册 Workflow。
+
+维护 profile 在同一 service 视图提供 `converse`、`conversation`、`records`、`record`、`reports`、`report`、`acknowledge_report` 和 `retry_job`。`work.revise` 修订非活动工作的契约，`work.revoke` 撤销授权。服务级工作授权与信息请求通过 `requests()` 展示并使用明确的决定 API。策略与流程见 [Services](SERVICES.zh-CN.md#仓库维护p2)。

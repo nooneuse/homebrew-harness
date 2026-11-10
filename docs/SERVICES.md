@@ -4,7 +4,7 @@
 
 A service owns a persistent work queue and fixed schedules. Each work item runs through the existing managed Run supervisor. The `manual` profile is the first stage of service support: an operator submits work, watches progress, answers native requests, and pauses or stops execution.
 
-GitHub repository discovery, automatic requirement triage, grouped publication approval, and remote delivery are subsequent stages. Service work currently reaches `review` when its delegated Run completes; that state does not mean the repository change has been published.
+The `repository_maintenance` profile adds GitHub input, requirement triage, scoped work authority, operator discussions and reports. Service work reaches `review` when its delegated Run completes. Grouped publication approval and remote delivery are later stages.
 
 ## Host setup
 
@@ -186,3 +186,89 @@ python examples/service_demo.py --output /tmp/harness-service-demo
 System-level startup and restart belong to systemd, launchd or the existing container host. The service itself records execution ownership and preserves paused/stopping intent. The HTTP control protocol has bounded requests and connections and exposes only registered service methods. The local standard-library server is a restricted control endpoint; public Web deployment and browser session authentication require their own validation.
 
 The control store, work queue and schedules use the current SQLite backend. The runtime, model/tool bindings and native deadlines are preserved. Fees remain provider-managed. Future service stages build on these contracts.
+
+## Repository maintenance (P2)
+
+Repository input is selected by an explicit provider/instance/project declaration. The current adapter implements GitHub; common work and authorization remain platform-independent. See [Code platforms](PLATFORMS.md) for configuration, object identity and extension contracts.
+
+The `repository_maintenance` profile adds repository input, requirement triage, work authority, persistent operator discussions and reports. GitHub writes and publication remain separate delivery features. A model proposal selects a host scope; the runtime validates that scope and records authority before starting a native Run.
+
+Add these fields to an external service specification:
+
+```json
+{
+  "profile": "repository_maintenance",
+  "sources": [{
+    "name": "project",
+    "provider": "github",
+    "instance": "primary",
+    "project": "OWNER/REPOSITORY",
+    "api_url_env": "PROJECT_API_ENDPOINT",
+    "token_env": "PROJECT_READ_TOKEN",
+    "poll_seconds": 43200,
+    "max_pages": 5
+  }],
+  "maintenance": {
+    "objectives": "Maintain documented behavior and compatibility.",
+    "non_goals": "Do not publish or add unsupported platforms.",
+    "scopes": {
+      "code": {
+        "write_paths": ["src", "tests"],
+        "tools": ["read_file", "write_file", "edit_file", "glob", "search_text"],
+        "allow_tests": []
+      }
+    },
+    "auto_categories": ["bug", "documentation"],
+    "authority_seconds": 3600,
+    "report_seconds": 43200
+  }
+}
+```
+
+The usual workspace, version and Run defaults also apply. Fill connection values only in the external host environment. Source credentials are used by the fixed read adapter. Scopes must fit within the host Run defaults for paths, tools and registered tests. Omitting `auto_categories` sends executable proposals to the operator for approval. Automatic categories choose among already authorized scopes; they do not expand permissions. Native tool approvals remain in effect.
+
+Repository polling records issue/PR identities and issue-comment versions, with durable page positions, overlap and deduplication. A poll observes available versions; it cannot reconstruct an edit or deletion that disappeared between polls. Source failures retain their cursor and show retry state. Unchanged polling makes no model calls.
+
+Triage uses three packaged skills: requirement-triage, maintenance-planning and maintenance-reporting. Their bodies load on demand. Service reasoning can read service records and visible project files, and submit candidates; it cannot execute Bash, approve requests or publish changes. Plans and scopes are validated by the host.
+
+```sh
+homebrew-harness service records SERVICE_ID events
+homebrew-harness service records SERVICE_ID sources
+homebrew-harness service records SERVICE_ID jobs
+homebrew-harness service requests SERVICE_ID
+homebrew-harness service approve SERVICE_ID REQUEST_ID REVISION --decision-id decision-1
+homebrew-harness service chat SERVICE_ID "What should we prioritize next?" --request-id discussion-1
+homebrew-harness service message SERVICE_ID MESSAGE_ID
+homebrew-harness service report SERVICE_ID
+homebrew-harness service records SERVICE_ID reports
+homebrew-harness service report SERVICE_ID REPORT_ID
+homebrew-harness service report-ack SERVICE_ID REPORT_ID
+```
+
+The same commands work with an external `--connection` file. `record KIND ID --offset ... --limit ...` reads long service records in chunks. `work revise WORK_ID TEXT` revises an inactive work contract; `work revoke WORK_ID` revokes its authority. Active execution still uses explicit steering, pause, cancellation and recovery. Authority renewal and execution resumption are separate controls.
+
+For this profile, ordinary Text UI input starts or continues an operator discussion. Use `work submit` to request new work and explicit `work steer` to amend an active Run. Focus binds discussion to the selected work; a proposed plan must still match its current requirements when accepted. Model text is never interpreted as an approval.
+
+Python uses the same remote views:
+
+```python
+with RemoteService.from_file(connection_file, control=True) as service:
+    message = service.converse("Discuss the next release", request_id="discussion-1")
+    print(service.conversation(message["id"]))
+    print(service.records("jobs"))
+    print(service.records("reports"))
+```
+
+Messages are durable and their replies can be read after reconnect. Reports reference recorded work and execution facts; acknowledging one updates that reader's position. Reports are available through the control interface. Public GitHub replies, outbound report delivery and grouped publication approvals are not performed by this profile.
+
+`reports` lists unread ready reports for a control context. `job-retry JOB_ID --request-id ...` explicitly authorizes another bounded reasoning attempt cycle; cumulative attempts remain recorded. `work request-authority WORK_ID` refreshes an expired or denied request for the current plan, without rerunning triage or granting execution. Information requests use `answer`, and their replies amend requirements before a new triage pass.
+
+Run the complete deterministic P2 scenario:
+
+```sh
+python examples/maintenance_demo.py --output /tmp/harness-maintenance-demo
+```
+
+The scenario polls a local GitHub fixture, automatically handles a scoped bug, retains a feature decision across a service restart, executes fixed tests, restores a discussion, and creates a report. It uses no paid model access.
+
+Work snapshots expose a verification reference. Read its `evidence` record to inspect the actual native test receipts and the requirements version they belong to. When source requirements change during execution, completion of the earlier Run remains historical evidence; the updated work continues through triage and authority. Structured Goals submitted with work remain in the compiled RunSpec. Expired requests stay expired until an explicit refresh. Repository sweeps reconcile page identities before advancing their watermark; an unstable sweep exposes `rescan_required` and keeps the old position.

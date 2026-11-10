@@ -35,6 +35,9 @@ class WorkHandle(Handle):
             execution_pending=pending,
             details={
                 "run_id": value["run_id"],
+                "authority": value.get("authority"),
+                "verification": value.get("verification"),
+                "triage": value.get("triage_summary"),
                 "native_execution": execution,
                 "pause_requested": value["pause_requested"],
                 "prompt_preview": value.get("prompt_preview", ""),
@@ -83,6 +86,15 @@ class WorkHandle(Handle):
     def steer(self, text, **kw):
         return self._control("steer", text=text, **kw)
 
+    def revise(self, text, **kw):
+        return self._control("work_revise", text=text, **kw)
+
+    def request_authority(self, **kw):
+        return self._control("work_request_authority", **kw)
+
+    def revoke(self, **kw):
+        return self._control("authority_revoke", **kw)
+
     def interrupt(self, text, **kw):
         return self._control("interrupt", text=text, **kw)
 
@@ -122,7 +134,11 @@ class ServiceControls:
                     RequestRef(
                         ref["id"],
                         ref["revision"],
-                        ExecutionRef("run", ref["target"]["id"], self.id),
+                        ExecutionRef(
+                            ref["target"]["kind"],
+                            ref["target"]["id"],
+                            self.id if ref["target"]["kind"] == "run" else None,
+                        ),
                         ref["durable"],
                     ),
                     **value,
@@ -135,9 +151,74 @@ class ServiceControls:
             ref = ref.ref
         decision_id = decision_id or "decision_" + uuid.uuid4().hex
         control_id = "decision_" + request_key("decision", str(ref.data()), decision_id)
+        if ref.target.kind == "service":
+            if ref.target.id != self.id or not ref.durable or set(values) - {"text"}:
+                raise ValueError("Invalid service authority target or decision fields.")
+            return self.command(
+                "service_decide",
+                {
+                    "id": ref.id,
+                    "revision": ref.revision,
+                    "decision": decision,
+                    **values,
+                },
+                control_id,
+            )
         return self.command(
             "decide", {"ref": ref.data(), "decision": decision, **values}, control_id
         )
+
+    def records(self, kind, *, cursor=0, limit=20, state=None):
+        return self.query(
+            "service_page",
+            {"kind": kind, "cursor": cursor, "limit": limit, "state": state},
+        )
+
+    def record(self, kind, identity, *, offset=0, limit=4000):
+        return self.query(
+            "service_read",
+            {"kind": kind, "identity": identity, "offset": offset, "limit": limit},
+        )
+
+    def converse(
+        self, text, *, context="default", work_id=None, revision=None, request_id=None
+    ):
+        return self.command(
+            "conversation_submit",
+            {
+                "text": text,
+                "context": context,
+                "work_id": work_id,
+                "revision": revision,
+            },
+            request_id,
+        )
+
+    def conversation(self, identity):
+        return self.query("conversation_get", {"id": identity})
+
+    def reports(self, *, context="default", cursor=0, limit=20):
+        return self.query(
+            "report_inbox", {"context": context, "cursor": cursor, "limit": limit}
+        )
+
+    def report(self, identity=None, *, request_id=None):
+        return (
+            self.query("report_get", {"id": identity})
+            if identity
+            else self.command("report_create", {}, request_id)
+        )
+
+    def acknowledge_report(self, identity, *, context="default", request_id=None):
+        return self.command(
+            "report_ack", {"id": identity, "context": context}, request_id
+        )
+
+    def retry_job(self, identity, *, request_id=None):
+        return self.command("job_retry", {"id": identity}, request_id)
+
+    def job(self, identity):
+        return self.query("job_get", {"id": identity})
 
     def schedules(self, *, cursor=0, limit=20):
         return self.query("schedules", {"cursor": cursor, "limit": limit})

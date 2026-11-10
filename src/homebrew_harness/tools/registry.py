@@ -303,6 +303,13 @@ def build_tool_pool(client, model, workdir, components: LoopComponents):
             name for name in available if name in handlers
         )
 
+    service_tools = frozenset()
+    if components.service_control is not None and not subagent and team_member is None:
+        from homebrew_harness.services.agent import SERVICE_TOOLS
+
+        handlers.update(components.service_control.handlers())
+        service_tools = SERVICE_TOOLS
+        tools = [*tools, *homebrew_harness.tools.catalog.SERVICE_TOOL_DEFINITIONS]
     return ToolPool.build(
         tools,
         handlers,
@@ -325,4 +332,5 @@ def build_tool_pool(client, model, workdir, components: LoopComponents):
         artifacts=components.artifact_store,
         models=components.model_registry,
         run_tools=run_tools,
+        service_tools=service_tools,
     )

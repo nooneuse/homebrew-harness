@@ -15,10 +15,11 @@ from homebrew_harness.execution.execution_leases import ExecutionLeases
 from homebrew_harness.storage.storage_gate import storage_gate
 from .effects import enqueue
 from .requests import digest
-from .sources import GithubPullSource, JsonTransport, RemoteFailure
+from .sources import ChangeRequestSource
+from homebrew_harness.platforms.http import JsonTransport, RemoteFailure
 from .spec import RunOutcome, TERMINAL
 
-EMPTY_CONTROL_ID = digest({"github": None, "notification": None})
+EMPTY_CONTROL_ID = digest({"change_request": None, "notification": None})
 
 
 def env_value(name, environment=None, *, required=True):
@@ -39,7 +40,7 @@ class RunServices:
         raw = {"version": 1} if config is None else config
         if (
             not isinstance(raw, dict)
-            or set(raw) - {"version", "github", "notification"}
+            or set(raw) - {"version", "change_request", "notification"}
             or type(raw.get("version")) is not int
             or raw["version"] != 1
         ):
@@ -47,35 +48,14 @@ class RunServices:
         with ExitStack() as resources:
             self.leases = ExecutionLeases(store.root)
             resources.callback(self.leases.close)
-            github = raw.get("github")
-            if github is not None:
-                required = {
-                    "repository",
-                    "pull_number",
-                    "actor_ids",
-                    "app_ids",
-                    "api_url_env",
-                    "token_env",
-                }
-                if (
-                    not isinstance(github, dict)
-                    or set(github) - required - {"poll_seconds", "max_pages"}
-                    or required - set(github)
-                ):
-                    raise ValueError("Invalid GitHub subscription fields.")
-                transport = JsonTransport(
-                    env_value(github["api_url_env"], environment), env_value(github["token_env"], environment)
+            feedback = raw.get("change_request")
+            if feedback is not None:
+                self.source = ChangeRequestSource(
+                    feedback,
+                    os.environ if environment is None else environment,
+                    roots=(store.root,),
                 )
-                resources.callback(transport.close)
-                self.source = GithubPullSource(
-                    transport,
-                    github["repository"],
-                    github["pull_number"],
-                    github["actor_ids"],
-                    github["app_ids"],
-                    poll_seconds=github.get("poll_seconds", 30),
-                    max_pages=github.get("max_pages", 10),
-                )
+                resources.callback(self.source.close)
             notification = raw.get("notification")
             if notification is not None:
                 if (
@@ -93,7 +73,7 @@ class RunServices:
                 resources.callback(self.notification.close)
             self.identity = digest(
                 {
-                    "github": self.source.identity if self.source else None,
+                    "change_request": self.source.identity if self.source else None,
                     "notification": self.notification.identity
                     if self.notification
                     else None,
@@ -462,7 +442,7 @@ class RunServices:
     def close(self):
         try:
             if self.source is not None:
-                self.source.transport.close()
+                self.source.close()
         finally:
             try:
                 if self.notification is not None:

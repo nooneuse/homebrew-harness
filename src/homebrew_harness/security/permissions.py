@@ -243,6 +243,8 @@ def check_rules(tool_name: str, arguments: dict, workdir: Path) -> PermissionDec
             "allow",
             "Archive and summarize the current conversation after this tool batch.",
         )
+    if tool_name in {"service_read", "service_read_code", "service_propose"}:
+        return PermissionDecision("allow", "Prepared service queries and non-authorizing proposals only.")
     if tool_name == "load_skill":
         return PermissionDecision(
             "allow", "Read-only access to a registered skill snapshot."

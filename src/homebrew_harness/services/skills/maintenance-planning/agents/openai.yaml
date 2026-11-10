@@ -1,0 +1,4 @@
+interface:
+  display_name: "Maintenance Planning"
+  short_description: "Plan bounded maintenance work and verification"
+  default_prompt: "Use $maintenance-planning to propose scoped work and verification."

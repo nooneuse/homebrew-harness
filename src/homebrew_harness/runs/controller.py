@@ -255,6 +255,7 @@ class RunController:
         )
 
     def apply_references(self, messages):
+        from homebrew_harness.platforms.contracts import REFERENCE_ORIGIN
         from homebrew_harness.storage.durable_runtime import active_writer
 
         recipient = "reference_" + self.id
@@ -271,9 +272,9 @@ class RunController:
             for row in records:
                 event = self.store.runtime.get("run_events", row["id"])
                 if (
-                    row.get("from") != "github_source"
+                    row.get("from") != REFERENCE_ORIGIN
                     or row.get("type") != "run_reference"
-                    or row.get("metadata", {}).get("origin") != "github_source"
+                    or row.get("metadata", {}).get("origin") != REFERENCE_ORIGIN
                     or not event
                     or event["run_id"] != self.id
                     or event["state"] not in {"queued", "applied"}

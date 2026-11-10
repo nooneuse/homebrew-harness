@@ -32,3 +32,5 @@ class LoopComponents:
     steering: object = None
     on_user_submit: object = None
     run_control: object = None
+
+    service_control: object = None

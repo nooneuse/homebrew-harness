@@ -64,6 +64,71 @@ def commands(parser, *, attach=True):
         work = actions.add_parser("work")
         focus = actions.add_parser("focus")
         focus.add_argument("work_id", nargs="?")
+    for name in (
+        "records",
+        "record",
+        "chat",
+        "message",
+        "report",
+        "report-ack",
+        "job",
+        "job-retry",
+        "reports",
+    ):
+        item = actions.add_parser(name)
+        if attach:
+            item.add_argument("service_id")
+        if name == "records":
+            item.add_argument(
+                "kind",
+                choices=(
+                    "events",
+                    "evidence",
+                    "sources",
+                    "jobs",
+                    "decisions",
+                    "messages",
+                    "reports",
+                ),
+            )
+            item.add_argument("--cursor", type=int, default=0)
+            item.add_argument("--limit", type=int, default=20)
+            item.add_argument("--state")
+        elif name == "record":
+            item.add_argument(
+                "kind",
+                choices=(
+                    "work",
+                    "events",
+                    "evidence",
+                    "sources",
+                    "jobs",
+                    "decisions",
+                    "messages",
+                    "reports",
+                ),
+            )
+            item.add_argument("identity")
+            item.add_argument("--offset", type=int, default=0)
+            item.add_argument("--limit", type=int, default=4000)
+        elif name == "chat":
+            item.add_argument("text")
+            item.add_argument("--context", default="default")
+            item.add_argument("--work-id")
+            item.add_argument("--revision", type=int)
+            item.add_argument("--request-id")
+        elif name in {"message", "job", "job-retry", "report-ack"}:
+            item.add_argument("identity")
+            if name == "job-retry":
+                item.add_argument("--request-id")
+            if name == "report-ack":
+                item.add_argument("--context", default="default")
+        elif name == "reports":
+            item.add_argument("--context", default="default")
+            item.add_argument("--cursor", type=int, default=0)
+            item.add_argument("--limit", type=int, default=20)
+        elif name == "report":
+            item.add_argument("identity", nargs="?")
     tasks = work.add_subparsers(dest="work_command", required=True)
     submit = tasks.add_parser("submit")
     submit.add_argument("text")
@@ -73,9 +138,9 @@ def commands(parser, *, attach=True):
     listing.add_argument("--state")
     listing.add_argument("--cursor", type=int, default=0)
     listing.add_argument("--limit", type=int, default=20)
-    for name in ("show", "pause", "resume", "cancel"):
+    for name in ("show", "pause", "resume", "cancel", "revoke", "request-authority"):
         tasks.add_parser(name).add_argument("work_id")
-    for name in ("steer", "interrupt"):
+    for name in ("steer", "interrupt", "revise"):
         item = tasks.add_parser(name)
         item.add_argument("work_id")
         item.add_argument("text")
@@ -148,6 +213,36 @@ def submit(service, text, *, priority=0, request_id=None):
 
 
 def operate(service, args):
+    if args.command == "reports":
+        return service.reports(
+            context=args.context, cursor=args.cursor, limit=args.limit
+        )
+    if args.command == "records":
+        return service.records(
+            args.kind, cursor=args.cursor, limit=args.limit, state=args.state
+        )
+    if args.command == "record":
+        return service.record(
+            args.kind, args.identity, offset=args.offset, limit=args.limit
+        )
+    if args.command == "chat":
+        return service.converse(
+            args.text,
+            context=args.context,
+            work_id=args.work_id,
+            revision=args.revision,
+            request_id=args.request_id,
+        )
+    if args.command == "message":
+        return service.conversation(args.identity)
+    if args.command == "job-retry":
+        return service.retry_job(args.identity, request_id=args.request_id)
+    if args.command == "job":
+        return service.job(args.identity)
+    if args.command == "report":
+        return service.report(args.identity)
+    if args.command == "report-ack":
+        return service.acknowledge_report(args.identity, context=args.context)
     if args.command == "status":
         return service.snapshot()
     if args.command == "schedules":
@@ -174,11 +269,11 @@ def operate(service, args):
         work = service.work.get(args.work_id)
         if args.work_command == "show":
             return work.snapshot()
-        if args.work_command in {"steer", "interrupt"}:
+        if args.work_command in {"steer", "interrupt", "revise"}:
             return getattr(work, args.work_command)(
                 args.text, request_id=args.request_id
             )
-        return getattr(work, args.work_command)()
+        return getattr(work, args.work_command.replace("-", "_"))()
     if args.command in {"approve", "deny", "answer", "renew-tests"}:
         request = next(
             (
@@ -225,31 +320,40 @@ def attach(service, *, input_fn=input, context="default"):
         + service.id
         + ". Use status, work, requests or help. exit disconnects; stop closes the service."
     )
-    render(service.snapshot())
+    snapshot = service.snapshot()
+    maintenance = snapshot.details.get("profile") == "repository_maintenance"
+    render(snapshot)
     focus = service.current_focus(context=context)
     if focus and focus["work_id"]:
         render({"focus": focus})
     while True:
         try:
-            line = input_fn("service> ").strip()
+            line = input_fn("service> ")
         except EOFError:
             break
         except KeyboardInterrupt:
             print("\nInput cancelled.")
             continue
-        if not line:
+        if not line.strip():
             continue
-        if line in {"help", "--help"}:
+        if line.strip() in {"help", "--help"}:
             parser.print_help()
             continue
-        if line == "exit":
+        if line.strip() == "exit":
             break
         try:
-            tokens = shlex.split(line)
-            if not tokens:
-                continue
-            if tokens[0] not in actions.choices:
-                if focus and focus["work_id"]:
+            command = line.split(maxsplit=1)[0]
+            if command not in actions.choices:
+                if maintenance:
+                    render(
+                        service.converse(
+                            line,
+                            context=context,
+                            work_id=focus["work_id"] if focus else None,
+                            revision=focus["requirements_revision"] if focus else None,
+                        )
+                    )
+                elif focus and focus["work_id"]:
                     render(
                         service.work.get(focus["work_id"]).steer(
                             line, revision=focus["revision"]
@@ -259,7 +363,7 @@ def attach(service, *, input_fn=input, context="default"):
                 else:
                     render(submit(service, line))
             else:
-                args = parser.parse_args(tokens)
+                args = parser.parse_args(shlex.split(line))
                 if args.command == "focus":
                     focus = service.focus(args.work_id, context=context)
                     render({"focus": focus})

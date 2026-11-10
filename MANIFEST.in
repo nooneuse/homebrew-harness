@@ -8,3 +8,6 @@ recursive-include examples *.py *.json
 include examples/config/.env.example
 recursive-include skills SKILL*.md
 recursive-include tests *.py
+recursive-include src/homebrew_harness/services/skills *.md *.yaml
+
+include docs/PLATFORMS.md docs/PLATFORMS.zh-CN.md

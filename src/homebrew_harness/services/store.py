@@ -29,8 +29,22 @@ class ServiceStore:
             **{
                 k: v
                 for k, v in value.items()
-                if k not in {"run_spec", "prompt", "amendments"}
+                if k
+                not in {
+                    "run_spec",
+                    "prompt",
+                    "amendments",
+                    "events",
+                    "triage",
+                    "run_history",
+                }
             },
+            "triage_summary": {
+                k: (value.get("triage") or {}).get(k)
+                for k in ("disposition", "category", "scope")
+            },
+            "event_count": len(value.get("events", [])),
+            "run_count": len(value.get("run_history", [])) + bool(value.get("run_id")),
             "prompt_preview": value["prompt"][:800],
             "input_length": len(value["prompt"]),
             "amendment_count": len(value.get("amendments", [])),
@@ -202,6 +216,12 @@ class ServiceStore:
         if section not in {"service_work", "service_jobs"}:
             raise ValueError("Unsupported service list.")
         if state is not None and state not in {
+            "new",
+            "needs_info",
+            "proposed",
+            "deferred",
+            "rejected",
+            "merged",
             "approved",
             "in_progress",
             "review",
@@ -270,7 +290,7 @@ class ServiceStore:
                 raise ValueError("Work request_id already has another payload.")
             return old
         count = conn.execute(
-            "SELECT count(*) FROM records WHERE section='service_work' AND owner=? AND json_extract(value,'$.state') IN ('approved','in_progress')",
+            "SELECT count(*) FROM records WHERE section='service_work' AND owner=? AND json_extract(value,'$.state') IN ('new','needs_info','proposed','approved','in_progress')",
             ("service:" + service_id,),
         ).fetchone()[0]
         if count >= ServiceSpec(**meta["spec"]).queue_limit:
@@ -286,13 +306,15 @@ class ServiceStore:
             ).fetchone()
         return json.loads(row[0]) if row else None
 
-    def update_work(self, header, identity, **changes):
+    def update_work(self, header, identity, *, clear_result=False, **changes):
         with self.db.write() as conn:
             self.guard(conn, header)
             work = self.db._get(conn, "service_work", identity)
             if not work or work["service_id"] != header["id"]:
                 raise ValueError("Work item belongs to another service.")
             value = {**work, **changes}
+            if clear_result:
+                value.pop("result", None)
             if value != work:
                 value["revision"] += 1
                 self.db._put(conn, "service_work", identity, value)
@@ -315,7 +337,13 @@ class ServiceStore:
                     continue
                 if job["last_work"]:
                     old = self.db._get(conn, "service_work", job["last_work"])
-                    if old and old["state"] in {"approved", "in_progress"}:
+                    if old and old["state"] in {
+                        "new",
+                        "needs_info",
+                        "proposed",
+                        "approved",
+                        "in_progress",
+                    }:
                         continue
                 # Accept one coalesced trigger, then move to the next future interval.
                 missed = int((now - job["next_due"]) // job["every_seconds"]) + 1
@@ -332,6 +360,24 @@ class ServiceStore:
                         key + ":" + str(job["sequence"]),
                         job=key,
                     )
+                    if meta["spec"]["profile"] == "repository_maintenance":
+                        from .maintenance_store import MaintenanceStore
+
+                        maintenance = MaintenanceStore(
+                            self, header, meta["spec"]["maintenance"]
+                        )
+                        work.update(
+                            state="new",
+                            events=[],
+                            run_history=[],
+                            triage=None,
+                            authority=None,
+                        )
+                        self.db._put(conn, "service_work", work["id"], work)
+                        maintenance.job(
+                            conn, "triage", work["id"], 0, {}, work["id"] + ":0"
+                        )
+                        maintenance.changed(conn, work["id"])
                     job["last_work"] = work["id"]
                 else:
                     job["last_completed"] = now

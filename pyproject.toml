@@ -20,3 +20,6 @@ where = ["src"]
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}
+
+[tool.setuptools.package-data]
+"homebrew_harness.services" = ["skills/*/*.md", "skills/*/agents/*.yaml"]

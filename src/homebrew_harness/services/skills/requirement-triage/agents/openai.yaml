@@ -1,0 +1,4 @@
+interface:
+  display_name: "Requirement Triage"
+  short_description: "Assess incoming repository requirements"
+  default_prompt: "Use $requirement-triage to assess the incoming project request."

@@ -355,7 +355,7 @@ homebrew-harness admin gc-preview --cwd /tmp/harness-example
 
 ## Python API
 
-Persistent services add a durable work queue, fixed interval schedules, native approvals, and a Text UI over an authenticated HTTP control API. Independent applications connect with `RemoteService`; remote operators can use an external `--connection` file. See [Services](docs/SERVICES.md) for setup and lifecycle controls. The initial manual profile delegates bounded work to managed Runs.
+Persistent services add a durable work queue, fixed interval schedules, native approvals, and a Text UI over an authenticated HTTP control API. Independent applications connect with `RemoteService`; remote operators can use an external `--connection` file. See [Services](docs/SERVICES.md) for setup and lifecycle controls. The manual profile delegates bounded work to managed Runs; repository_maintenance adds platform intake (currently GitHub), scoped requirement decisions, persistent discussions and reports.
 
 ```python
 from pathlib import Path
@@ -388,3 +388,5 @@ python -m unittest discover -s tests -t .
 Tests cover local protocol services, files and databases, recovery flows, and container integration. Linux Docker cases run when their environment is enabled.
 
 The project uses the [MIT license](LICENSE). Some ideas and code draw on the learn-claude-code tutorial; its upstream license is preserved in [licenses](licenses/learn-claude-code-LICENSE). Runtime dependencies retain their own licenses.
+
+Code-platform integration uses explicit adapters. GitHub is currently implemented; common execution and maintenance state can be reused by future providers. See [Code platforms](docs/PLATFORMS.md).

@@ -50,6 +50,7 @@ class ServiceHandle(ServiceControls, Handle):
                 "live_owner": connected,
             },
             details={
+                "profile": meta["spec"]["profile"],
                 "generation": meta["generation"],
                 "active_work": meta.get("active_work"),
                 "active_run": meta.get("active_run"),

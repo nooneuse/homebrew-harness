@@ -7,7 +7,16 @@ import hashlib
 VERSION = 1
 MAX_FRAME = 256 * 1024
 SERVICE_ID = re.compile(r"svc_[0-9a-f]{32}\Z")
+MAINTENANCE_QUERIES = {
+    "service_page": {"kind", "cursor", "limit", "state"},
+    "service_read": {"kind", "identity", "offset", "limit"},
+    "job_get": {"id"},
+    "conversation_get": {"id"},
+    "report_get": {"id"},
+    "report_inbox": {"context", "cursor", "limit"},
+}
 QUERY_METHODS = {
+    **MAINTENANCE_QUERIES,
     "snapshot": set(),
     "focus_get": {"context"},
     "work_get": {"id"},
@@ -17,7 +26,18 @@ QUERY_METHODS = {
     "requests": {"work_id"},
     "receipt": {"request_id"},
 }
+MAINTENANCE_COMMANDS = {
+    "conversation_submit": {"text", "context", "work_id", "revision"},
+    "service_decide": {"id", "revision", "decision", "text"},
+    "report_create": set(),
+    "report_ack": {"id", "context"},
+    "job_retry": {"id"},
+    "work_revise": {"id", "revision", "text"},
+    "work_request_authority": {"id", "revision"},
+    "authority_revoke": {"id", "revision"},
+}
 COMMAND_METHODS = {
+    **MAINTENANCE_COMMANDS,
     "focus": {"context", "id", "revision"},
     "tick": set(),
     "submit": {"text", "goal", "priority"},

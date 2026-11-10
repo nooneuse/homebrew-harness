@@ -171,6 +171,8 @@ Hooks expose extension points at user input, before and after tools, and before 
 
 Persistent services own work acceptance and scheduling while native Runs own agent execution. Their control store records work and Run references; a stable launch intent joins the two stores through the Run API's idempotent acceptance. The Text UI and independent applications use one authenticated HTTP control API. Shared Service and Work views map its queries and commands to the existing controllers. Portable clients depend on contracts and observation; local hosts retain execution ownership and explicit saved-state inspection. Services keep their runtime outside mutable target code.
 
+Repository maintenance separates reliable state from reasoning. Source adapters return bounded pages; the service commits events, work references and cursors together. Prepared Agent Loops use narrow query/proposal tools and packaged skills for triage, discussion and reports. Host policy compiles versioned work authority into native Run settings. Conversation messages and report windows remain service records across execution restarts.
+
 The Python SDK exposes `Harness` and `AsyncHarness` with Session, Run, Workflow, interaction, request, and maintenance services. Execution handles identify the original unit of work and project state from the existing inbox, checkpoints, Run records and Workflow journal. The host manages attached resource ownership; async applications observe the same execution through awaitable views. See [Python API](PYTHON_API.md) for application usage.
 
 | Directory | Responsibility |
@@ -187,3 +189,5 @@ The Python SDK exposes `Harness` and `AsyncHarness` with Session, Run, Workflow,
 | `security/` | Permission policies, file access, and output handling |
 
 `cli.py` provides the unified command and `cli_arguments.py` defines shared options. `session_cli.py`, `workflow_cli.py`, `runs/cli.py`, and `admin.py` execute their respective subcommands. Tests follow the same module layout; `integration/` checks composition and `system/` exercises real container execution.
+
+Platform adapters translate repository events and change-request feedback into typed references and bounded pages. Service/Run controllers own acceptance and recovery; platform API paths and authentication stay in platforms/. See [Code platforms](PLATFORMS.md).

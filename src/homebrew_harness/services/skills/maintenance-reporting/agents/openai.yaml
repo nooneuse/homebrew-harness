@@ -1,0 +1,4 @@
+interface:
+  display_name: "Maintenance Reporting"
+  short_description: "Explain maintenance results and pending decisions"
+  default_prompt: "Use $maintenance-reporting to summarize verified service progress."

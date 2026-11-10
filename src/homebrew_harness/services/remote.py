@@ -66,6 +66,8 @@ class RemoteService(ServiceControls, Handle):
             details={
                 key: value.get(key)
                 for key in (
+                    "profile",
+                    "maintenance",
                     "generation",
                     "active_work",
                     "active_run",

@@ -4,7 +4,7 @@
 
 Service 管理持久工作队列与固定周期计划，每项工作交给已有 Run supervisor。P1 提供 `manual` profile：部署者提交任务、观察进展、处理原生请求，并暂停或停止执行。
 
-GitHub 全仓库发现、自动研判、分组发布审批和远端交付属于后续阶段。当前工作项在委派 Run 完成后进入 `review`，表示本执行阶段有确认结果，不表示改动已经发布。
+`repository_maintenance` profile 增加 GitHub 收件、自动研判、工作授权、长期对话和汇报。工作项在委派 Run 完成后进入 `review`；分组发布审批与远端交付属于后续阶段。
 
 ## 宿主准备
 
@@ -181,3 +181,79 @@ python examples/service_demo.py --output /tmp/harness-service-demo
 演示使用确定性本地服务，不调用付费模型。系统级开机启动／重启由 systemd、launchd 或既有容器宿主负责；服务记录执行归属和暂停／停止意图。
 
 控制入口采用认证 HTTP，消息、连接和方法均有边界，只开放登记操作。标准库服务是受限的本地控制端点，公网 Web 部署与浏览器会话认证需要单独验收。服务队列和调度使用当前 SQLite 后端，保持绑定、期限和真实收尾，费用由提供商管理。
+
+## 仓库维护（P2）
+
+仓库收件通过明确的 provider/instance/project 选择；当前适配器实现 GitHub，通用工作和授权不依赖平台。配置、对象身份和扩展契约见 [代码管理平台](PLATFORMS.zh-CN.md)。
+
+`repository_maintenance` profile 提供仓库收件、需求研判、工作授权、持久对话与报告。GitHub 写入与发布仍由后续交付能力处理。模型提出 scope 和计划，宿主验证并保存授权后才启动原生 Run。
+
+外部 ServiceSpec 可增加以下配置（仍需提供 version、workspace 和 run_defaults）：
+
+```json
+{
+  "profile": "repository_maintenance",
+  "sources": [{
+    "name": "project",
+    "provider": "github",
+    "instance": "primary",
+    "project": "OWNER/REPOSITORY",
+    "api_url_env": "PROJECT_API_ENDPOINT",
+    "token_env": "PROJECT_READ_TOKEN",
+    "poll_seconds": 43200,
+    "max_pages": 5
+  }],
+  "maintenance": {
+    "objectives": "维护已有行为和兼容性。",
+    "non_goals": "不发布、不增加未支持的平台。",
+    "scopes": {
+      "code": {
+        "write_paths": ["src", "tests"],
+        "tools": ["read_file", "write_file", "edit_file", "glob", "search_text"],
+        "allow_tests": []
+      }
+    },
+    "auto_categories": ["bug", "documentation"],
+    "authority_seconds": 3600,
+    "report_seconds": 43200
+  }
+}
+```
+
+连接值只放外部宿主环境。Source 凭据由固定只读适配器使用。scope 的路径、工具、固定测试必须属于 Run 默认范围；未配置 auto_categories 时，可执行提议交给部署者批准。自动类别只选择预授权范围，不扩大权限，也不跳过原生工具审批。
+
+轮询保存 Issue/PR 和评论版本、分页位置与去重记录。轮询只能观察尚可读取的版本，不能恢复两次轮询间消失的编辑或删除。失败保留游标并显示重试状态，无变化时不调用模型。
+
+三份内置 Skill：requirement-triage、maintenance-planning、maintenance-reporting 按需加载正文。服务模型可以读记录和可见代码并提交候选，不能使用 Bash、批准或发布。实际范围与版本由宿主验证。
+
+```sh
+homebrew-harness service records SERVICE_ID events
+homebrew-harness service records SERVICE_ID sources
+homebrew-harness service records SERVICE_ID jobs
+homebrew-harness service requests SERVICE_ID
+homebrew-harness service approve SERVICE_ID REQUEST_ID REVISION --decision-id decision-1
+homebrew-harness service chat SERVICE_ID "讨论下一阶段的优先级" --request-id discussion-1
+homebrew-harness service message SERVICE_ID MESSAGE_ID
+homebrew-harness service report SERVICE_ID
+homebrew-harness service records SERVICE_ID reports
+homebrew-harness service report SERVICE_ID REPORT_ID
+homebrew-harness service report-ack SERVICE_ID REPORT_ID
+```
+
+这些命令可配合外部 `--connection` 文件；`record KIND ID --offset ... --limit ...` 分块读长记录。`work revise WORK_ID TEXT` 修订非活动工作的契约，`work revoke WORK_ID` 撤销工作授权；活动执行继续使用明确的 steering、pause、cancel 和恢复控制。续期授权与恢复执行是两个明确操作。
+
+此 profile 的 Text UI 普通输入进入长期对话；`work submit` 请求新工作，`work steer` 修改活动 Run。焦点用于绑定讨论目标，候选计划受理时仍需匹配需求版本，模型回复不会成为批准。
+
+Python 对应 `service.converse()`、`service.conversation(id)`、`service.records(kind)`、`service.report()` 等方法。消息及回复可在重连后查询，报告引用工作与执行事实；ack 保存当前读者的已读位置。P2 通过控制接口提供报告，不发送公开 GitHub 回复，也不执行分组发布审批。
+
+`reports` 查询当前控制 context 的未读就绪报告。`job-retry JOB_ID --request-id ...` 明确授权另一个有界研判尝试周期，累计尝试数继续保留。`work request-authority WORK_ID` 为当前计划刷新过期或被拒请求，不重新运行研判，也不直接授予执行权限。信息请求通过 `answer` 回答，答复修订需求后再次研判。
+
+完整确定性 P2 演示：
+
+```sh
+python examples/maintenance_demo.py --output /tmp/harness-maintenance-demo
+```
+
+演示轮询本地 GitHub fixture，自动处理范围内的 Bug，跨服务重启保留功能请求的决定，实际执行固定测试，恢复讨论并生成报告，不调用付费模型。
+
+工作快照提供 verification 引用，通过 `evidence` 记录可查原生测试凭证与所属需求版本。执行中来源发生更新时，旧 Run 的完成结果作为历史证据保留，新版工作继续研判和授权；用户提交的结构化 Goal 保留在编译后的 RunSpec。过期请求保持过期直到显式刷新。仓库扫描在推进游标前核对分页对象；列表未稳定时显示 `rescan_required` 并保留旧位置。

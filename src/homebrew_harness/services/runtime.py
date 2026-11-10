@@ -11,7 +11,7 @@ from homebrew_harness.api.types import SDKError, ExecutionRef, RequestRef
 from homebrew_harness.execution.execution_leases import ExecutionLeases
 from homebrew_harness.runtime.runtime_control import Workers, Shutdown
 from .control import ControlServer
-from .protocol import validate_method
+from .protocol import validate_method, MAINTENANCE_COMMANDS, MAINTENANCE_QUERIES
 from .spec import ServiceSpec, runtime_binding, fingerprint, request_key
 
 
@@ -29,7 +29,26 @@ def prepare_binding(core, spec):
         bindings, _head, controls = host.runs.prepare(
             spec.run_spec("Validate service execution scope")
         )
-    return {"runtime": runtime_binding(), "execution": bindings, "controls": controls}
+    result = {"runtime": runtime_binding(), "execution": bindings, "controls": controls}
+    if spec.profile == "repository_maintenance":
+        from types import SimpleNamespace
+        from .maintenance import Maintenance
+
+        probe = Maintenance(
+            SimpleNamespace(
+                core=core,
+                store=__import__(
+                    "homebrew_harness.services.store", fromlist=["ServiceStore"]
+                ).ServiceStore(core.workdir),
+                header={"id": "svc_" + "0" * 32},
+                spec=spec,
+            )
+        )
+        try:
+            result["maintenance"] = probe.identity()
+        finally:
+            probe.close()
+    return result
 
 
 class ServiceRuntime:
@@ -44,6 +63,7 @@ class ServiceRuntime:
         self.closed = False
         self.server = None
         self.child = None
+        self.maintenance = None
         self.current = None
         self.error = None
         self.start_error = None
@@ -65,7 +85,17 @@ class ServiceRuntime:
                 workdir=self.spec.workspace, config=saved_config(meta["config"])
             )
             binding = self._binding()
+            if self.spec.profile == "repository_maintenance":
+                binding["maintenance"] = meta["binding"].get("maintenance")
             self.header = store.claim(identity, binding)
+            if self.spec.profile == "repository_maintenance":
+                from .maintenance import Maintenance
+
+                self.maintenance = Maintenance(self)
+                if self.maintenance.identity() != meta["binding"]["maintenance"]:
+                    raise ValueError(
+                        "Service reasoning, skill or source binding changed."
+                    )
             self.server = ControlServer(
                 store.root,
                 self.dispatch,
@@ -76,6 +106,8 @@ class ServiceRuntime:
             self.started = False
             self.server_started = False
         except BaseException:
+            if self.maintenance is not None:
+                self.maintenance.close()
             if self.server is not None:
                 self.server.server_close()
             if self.child is not None:
@@ -105,6 +137,15 @@ class ServiceRuntime:
             )
         except WorkAccepted:
             pass
+        if self.maintenance is not None:
+            try:
+                self.workers.start(
+                    self.maintenance.loop,
+                    name="service-maintenance",
+                    track_operation=False,
+                )
+            except WorkAccepted:
+                pass
         self.store.update(
             self.header, launch={"token": self.token, "phase": "accepted"}, error=None
         )
@@ -131,6 +172,7 @@ class ServiceRuntime:
             }
         return {
             "id": self.id,
+            "profile": self.spec.profile,
             "state": meta["state"],
             "scope": meta["scope"],
             "revision": meta["revision"],
@@ -140,6 +182,12 @@ class ServiceRuntime:
             "heartbeat_at": meta["heartbeat_at"],
             "error": meta.get("error"),
             "work_counts": counts,
+            "maintenance": {
+                "running": not self.maintenance.finished.is_set(),
+                "error": self.maintenance.error,
+            }
+            if self.maintenance is not None
+            else None,
             "active_work": meta.get("active_work"),
             "active_run": meta.get("active_run"),
             "launch": meta.get("launch"),
@@ -157,6 +205,13 @@ class ServiceRuntime:
                         self.shutdown.request(self._finish_close, 0)
                         self.next_close_retry = time.monotonic() + 2
                     continue
+                if self.maintenance is not None and self.maintenance.finished.is_set():
+                    self.store.update(
+                        self.header,
+                        state="paused",
+                        scope="all",
+                        error="maintenance_restart_required",
+                    )
                 with self.lock:
                     self.recover_commands()
                     if time.time() < meta.get("last_clock", meta["created_at"]) - 1:
@@ -223,6 +278,31 @@ class ServiceRuntime:
             if meta.get("active_work"):
                 self.store.update(self.header, active_work=None, active_run=None)
             return
+        if self.maintenance is not None and not self.maintenance.store.valid_authority(
+            work
+        ):
+            if (
+                work.get("triage")
+                and work.get("triage_revision") == work["requirements_revision"]
+                and work["triage"].get("scope")
+            ):
+                with self.store.db.write() as conn:
+                    self.maintenance.store.work_request(conn, work, work["triage"])
+            if work["run_id"] and work["state"] == "in_progress":
+                work = self.store.update_work(
+                    self.header,
+                    work["id"],
+                    pause_requested=True,
+                    error="authority_required",
+                )
+            else:
+                self.store.update_work(
+                    self.header,
+                    work["id"],
+                    state="proposed",
+                    error="authority_required",
+                )
+                return
         if not work["run_id"]:
             if (
                 meta["state"] != "running"
@@ -237,7 +317,9 @@ class ServiceRuntime:
             self.store.update_work(self.header, work["id"], state="in_progress")
             try:
                 handle = self.child.runs.start(
-                    self.spec.run_spec(work["prompt"], work["goal"]),
+                    __import__(
+                        "homebrew_harness.runs.spec", fromlist=["RunSpec"]
+                    ).RunSpec(**work["run_spec"]),
                     request_id=work["launch_id"],
                 )
             except Exception as error:
@@ -303,16 +385,45 @@ class ServiceRuntime:
             latest = self.child.run_store.get(handle.id)
             if latest["cleanup_complete"] and latest.get("finalized_at"):
                 outcome = latest.get("last_outcome") or {}
+                stale_requirements = self.maintenance is not None and (
+                    work.get("review_required")
+                    or (work.get("authority") or {}).get("requirements_revision")
+                    != work["requirements_revision"]
+                )
+                completed_state = (
+                    "review" if latest["status"] == "completed" else latest["status"]
+                )
+                verification = {}
+                if self.maintenance is not None:
+                    from .evidence import collect
+
+                    verification = {"verification": collect(self, work)}
+                if stale_requirements:
+                    disposition = (
+                        (work.get("triage") or {}).get("disposition")
+                        if work.get("triage_revision") == work["requirements_revision"]
+                        else None
+                    )
+                    completed_state = {
+                        "accept": "proposed",
+                        "decide": "proposed",
+                        "needs_info": "needs_info",
+                        "defer": "deferred",
+                        "reject": "rejected",
+                        "merge": "merged",
+                    }.get(disposition, "new")
                 self.store.update_work(
                     self.header,
                     work["id"],
-                    state="review"
-                    if latest["status"] == "completed"
-                    else latest["status"],
-                    error=outcome.get("reason_code")
+                    state=completed_state,
+                    error="requirements_changed"
+                    if stale_requirements
+                    else outcome.get("reason_code")
                     if latest["status"] != "completed"
                     else None,
                     result=outcome,
+                    clear_result=bool(stale_requirements),
+                    **verification,
                 )
                 if work.get("job"):
                     with self.store.db.write() as conn:
@@ -320,6 +431,9 @@ class ServiceRuntime:
                         job = self.store.db._get(conn, "service_jobs", work["job"])
                         job["last_completed"] = time.time()
                         self.store.db._put(conn, "service_jobs", work["job"], job)
+                if self.maintenance is not None:
+                    with self.store.db.write() as conn:
+                        self.maintenance.store.changed(conn, work["id"])
                 self.current = None
         if snapshot.reason:
             self.store.update(self.header, error=None)
@@ -340,9 +454,10 @@ class ServiceRuntime:
             if work_id
             else self.store.next_work(self.id)
         )
+        pending = self.maintenance.requests(work_id) if self.maintenance else []
         if not work or not work["run_id"]:
-            return []
-        return [
+            return pending
+        return pending + [
             r.data()
             for r in self.child.requests.list(
                 target=ExecutionRef("run", work["run_id"])
@@ -363,6 +478,19 @@ class ServiceRuntime:
                     payload.get("goal"),
                     payload.get("priority", 0),
                 )
+                if self.maintenance is not None:
+                    work.update(
+                        state="new",
+                        events=[],
+                        run_history=[],
+                        triage=None,
+                        authority=None,
+                    )
+                    self.store.db._put(conn, "service_work", work["id"], work)
+                    self.maintenance.store.job(
+                        conn, "triage", work["id"], 0, {}, work["id"] + ":0"
+                    )
+                    self.maintenance.store.changed(conn, work["id"])
                 return {"id": work["id"], "accepted": True, "request_id": request_id}
             if method == "focus":
                 from .spec import NAME
@@ -384,6 +512,9 @@ class ServiceRuntime:
                 focus = {
                     "work_id": work["id"] if work else None,
                     "revision": work["revision"] if work else None,
+                    "requirements_revision": work["requirements_revision"]
+                    if work
+                    else None,
                     "checkpoint": "service:" + self.id,
                 }
                 self.store.db._put(
@@ -398,6 +529,10 @@ class ServiceRuntime:
                     raise ValueError("Pause scope must be all or execution.")
                 meta.update(state="paused", scope=payload["scope"])
             elif method == "resume":
+                if self.maintenance is not None and self.maintenance.finished.is_set():
+                    raise ValueError(
+                        "Maintenance worker stopped; stop and restart the service to recover it."
+                    )
                 if meta["state"] == "stopping":
                     raise ValueError("Service is still closing.")
                 meta.update(
@@ -494,6 +629,13 @@ class ServiceRuntime:
                     handle.pause()
                 changes = {"pause_requested": True}
             elif method == "work_resume":
+                if (
+                    self.maintenance is not None
+                    and not self.maintenance.store.valid_authority(target)
+                ):
+                    raise ValueError(
+                        "Renew current work authority before resuming execution."
+                    )
                 if self.store.get(self.id)["state"] != "running":
                     raise ValueError("Resume the service before resuming a Run.")
                 if state in {"paused", "blocked"}:
@@ -509,6 +651,17 @@ class ServiceRuntime:
                     "amendments": [*target.get("amendments", []), payload["text"]],
                     "requirements_revision": target["requirements_revision"] + 1,
                 }
+                if self.maintenance is not None:
+                    # An authenticated amendment retains the same scope and expiry.
+                    # Community-source updates do not take this control path.
+                    authority = dict(target.get("authority") or {})
+                    if authority:
+                        authority["requirements_revision"] = changes[
+                            "requirements_revision"
+                        ]
+                        changes["authority"] = authority
+                    changes["triage_revision"] = changes["requirements_revision"]
+
             elif method == "decide":
                 ref = payload["ref"]
                 reference = RequestRef(
@@ -562,6 +715,17 @@ class ServiceRuntime:
         if identity != self.id:
             raise ValueError("Control command targets another service.")
         validate_method(method, payload)
+        if method in MAINTENANCE_COMMANDS or method in MAINTENANCE_QUERIES:
+            if self.maintenance is None:
+                raise ValueError("This service has no maintenance profile.")
+            from .protocol import QUERY_METHODS
+
+            with self.lock:
+                return (
+                    self.maintenance.query(method, payload)
+                    if method in QUERY_METHODS
+                    else self.maintenance.command(method, payload, request_id)
+                )
         with self.lock:
             if method == "snapshot":
                 return self.snapshot()
@@ -624,6 +788,8 @@ class ServiceRuntime:
         return self.snapshot()
 
     def _finish_close(self):
+        if self.maintenance is not None:
+            self.maintenance.close()
         with self.lock:
             work = self.store.next_work(self.id)
             if work is not None and work["run_id"]:

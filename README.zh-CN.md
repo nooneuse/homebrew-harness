@@ -354,7 +354,7 @@ homebrew-harness admin gc-preview --cwd /tmp/harness-example
 
 ## Python 接口
 
-持久 Service 提供工作队列、固定周期调度、原生审批，以及通过认证 HTTP 控制 API 连接的 Text UI。独立程序使用 `RemoteService`，远程操作者可通过外部 `--connection` 文件连接。设置与生命周期操作见 [Services](docs/SERVICES.zh-CN.md)。初期 manual profile 将有界工作交给已有 Run。
+持久 Service 提供工作队列、固定周期调度、原生审批，以及通过认证 HTTP 控制 API 连接的 Text UI。独立程序使用 `RemoteService`，远程操作者可通过外部 `--connection` 文件连接。设置与生命周期操作见 [Services](docs/SERVICES.zh-CN.md)。manual profile 将有界工作交给已有 Run；repository_maintenance 增加平台收件（当前为 GitHub）、范围化工作决定、持久对话与报告。
 
 ```python
 from pathlib import Path
@@ -387,3 +387,5 @@ python -m unittest discover -s tests -t .
 测试覆盖本地协议服务、文件和数据库、恢复流程与容器集成；Linux Docker 用例按环境启用。
 
 项目采用 [MIT](LICENSE)。部分思路和代码参考 learn-claude-code 教程，上游许可保存在 [licenses](licenses/learn-claude-code-LICENSE)。运行依赖保留各自许可证。
+
+代码平台接入使用明确适配器，当前实现 GitHub；通用执行和维护状态可供后续平台复用。参见 [代码管理平台](docs/PLATFORMS.zh-CN.md)。

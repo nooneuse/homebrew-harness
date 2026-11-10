@@ -98,6 +98,13 @@ class Requests:
             raise ValueError("Expected RequestRef with target and revision.")
         decision_id = decision_id or "decision_" + uuid.uuid4().hex
         stable_id("decision", ref.id, decision_id)
+        if ref.target.kind == "service":
+            if not ref.durable or runs is not None or seconds is not None:
+                raise ValueError("Service decisions require a durable work request.")
+            values = {"text": answer} if answer is not None else {}
+            return self.core.services.get(ref.target.id, control=True).decide(
+                ref, decision, decision_id=decision_id, **values
+            )
         if ref.target.kind == "run" and ref.target.owner_id:
             service = self.core.services.get(ref.target.owner_id, control=True)
             action = (
