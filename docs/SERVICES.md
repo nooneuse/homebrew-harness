@@ -276,3 +276,7 @@ Work snapshots expose a verification reference. Read its `evidence` record to in
 ## Fixed-candidate delivery (P3)
 
 Optional delivery prepares a private Git candidate from reviewed work, rechecks fixed tests and original Goal conditions, runs an independent review, publishes a review branch/change request, and waits for exact-SHA CI. The operator approves target publication and public comments separately. CI code repair reuses native Runs with the original scope and cumulative limits. Grouped decisions, action receipts and restart recovery use the same HTTP/SDK/Text UI. See [Repository delivery](DELIVERY.md) for configuration and the offline demonstration.
+
+## Service operations (P4)
+
+[Service operations](SERVICE_OPERATIONS.md) add deterministic health, native writer parking, cross-workspace retention, backup sets/restoration, fixed repository audits and explicit compatible runtime handoff. CLI, Text UI and Python share the authenticated control methods.

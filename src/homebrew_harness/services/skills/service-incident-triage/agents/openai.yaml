@@ -1,0 +1,4 @@
+interface:
+  display_name: "Service Incident Triage"
+  short_description: "Diagnose recorded failures and bounded recovery"
+  default_prompt: "Use $service-incident-triage to explain this service incident and propose bounded recovery."

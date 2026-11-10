@@ -389,3 +389,5 @@ python -m unittest discover -s tests -t .
 项目采用 [MIT](LICENSE)。部分思路和代码参考 learn-claude-code 教程，上游许可保存在 [licenses](licenses/learn-claude-code-LICENSE)。运行依赖保留各自许可证。
 
 代码平台接入使用明确适配器，当前实现 GitHub；通用执行和维护状态可供后续平台复用。参见 [代码管理平台](docs/PLATFORMS.zh-CN.md)。
+
+[Service 运维](docs/SERVICE_OPERATIONS.zh-CN.md) 提供健康、写入者停靠、工作证据保留、备份验证/恢复、周期仓库审查及显式兼容版本升级。离线 P1～P4 场景可使用 `python examples/service_operations_demo.py --output /tmp/harness-service-operations-demo`。

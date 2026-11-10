@@ -37,8 +37,8 @@ class ScheduleSpec:
         if not isinstance(self.name, str) or not NAME.fullmatch(self.name):
             raise ValueError("Schedule names must be short identifiers.")
         seconds(self.every_seconds, "every_seconds", minimum=0.1, maximum=31536000)
-        if self.action not in {"record_tick", "submit_work"}:
-            raise ValueError("P1 schedules support record_tick or submit_work.")
+        if self.action not in {"record_tick", "submit_work", "review_repository"}:
+            raise ValueError("Unsupported fixed schedule action.")
         if self.action == "submit_work":
             RunSpec(self.prompt)
         elif self.prompt is not None:
@@ -58,6 +58,7 @@ class ServiceSpec:
     sources: tuple = ()
     maintenance: dict = field(default_factory=dict)
     delivery: dict = field(default_factory=dict)
+    operations: dict = field(default_factory=dict)
 
     def __post_init__(self):
         if self.profile not in {"manual", "repository_maintenance"}:
@@ -111,6 +112,14 @@ class ServiceSpec:
         object.__setattr__(self, "delivery", validate_delivery(self.delivery))
         if self.delivery and self.profile != "repository_maintenance":
             raise ValueError("Delivery requires a maintenance profile.")
+        from .operations.spec import validate as validate_operations
+
+        object.__setattr__(self, "operations", validate_operations(self.operations))
+        if (
+            any(job.action == "review_repository" for job in schedules)
+            and self.profile != "repository_maintenance"
+        ):
+            raise ValueError("Repository reviews require the maintenance profile.")
         if type(self.control_port) is not int or not 0 <= self.control_port <= 65535:
             raise ValueError("Invalid service control port.")
 
@@ -134,6 +143,9 @@ class ServiceSpec:
             raise ValueError(
                 "Service control and execution directories must be separate."
             )
+        from .operations.spec import validate_location
+
+        validate_location(self.operations, (control, workspace))
         import homebrew_harness
 
         installed = Path(homebrew_harness.__file__).resolve().parent

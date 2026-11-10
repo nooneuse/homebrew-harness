@@ -23,7 +23,7 @@ def wait_for(function, seconds=45):
     raise RuntimeError("The demonstration did not reach its expected state.")
 
 
-def run_demo(directory):
+def run_demo(directory, *, operations_demo=False):
     directory = directory.resolve()
     directory.mkdir(parents=True, exist_ok=False)
     workspace, control = directory / "project", directory / "control"
@@ -105,6 +105,11 @@ def run_demo(directory):
             }
         )
     )
+    operation_options = {}
+    if operations_demo:
+        from service_operations_fixture import configure
+
+        operation_options = configure(directory, tests, git)
     spec = ServiceSpec(
         str(workspace),
         profile="repository_maintenance",
@@ -124,6 +129,7 @@ def run_demo(directory):
             "job_seconds": 20,
             "report_seconds": 3600,
         },
+        operations=operation_options,
         delivery={
             "mode": "local",
             "git_executable": git,
@@ -224,8 +230,19 @@ def run_demo(directory):
                     "fixed_tests_passed": len(candidate["quality"]),
                     "paid_model_calls": 0,
                 }
+                if operations_demo:
+                    from service_operations_fixture import exercise
+
+                    result.update(exercise(client, peer, work, directory))
                 client.stop(request_id="finish")
             result["resources_closed"] = bool(service.wait_closed(15))
+            if operations_demo:
+                rollback = host.admin.service_upgrade_rollback(
+                    service.ref,
+                    result["p4_upgrade_plan_id"],
+                    request_id="operations-rollback",
+                )
+                result["p4_upgrade_rollback"] = rollback["state"] == "completed"
             if not all(
                 result[k]
                 for k in (

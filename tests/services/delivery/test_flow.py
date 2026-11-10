@@ -100,7 +100,7 @@ class FlowTests(unittest.TestCase):
             stderr=subprocess.DEVNULL,
         )
 
-    def start(self, **delivery):
+    def start(self, *, operations=None, **delivery):
         spec = ServiceSpec(
             str(self.workspace),
             profile="repository_maintenance",
@@ -123,6 +123,7 @@ class FlowTests(unittest.TestCase):
                 "job_seconds": 20,
                 "report_seconds": 3600,
             },
+            operations=operations or {},
             delivery={
                 "mode": "local",
                 "git_executable": self.git,

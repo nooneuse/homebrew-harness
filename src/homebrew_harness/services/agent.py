@@ -70,7 +70,9 @@ class ServiceAgent:
     def read(self, kind, identity="", offset=0, limit=4000, workdir=None):
         number(offset, "offset", 0, 2**63 - 1, integer=True)
         number(limit, "limit", 1, 16000, integer=True)
-        if kind == "policy":
+        if kind == "health":
+            value = self.runtime.operations.health_snapshot()
+        elif kind == "policy":
             value = self.store.policy
         elif kind == "work":
             value = self.store.store.work(identity, self.store.id)
@@ -93,6 +95,10 @@ class ServiceAgent:
             "changesets",
             "actions",
             "batches",
+            "audits",
+            "incidents",
+            "upgrade_plans",
+            "operations",
         }:
             return json.dumps(
                 self.store.read(kind, identity, offset=offset, limit=limit),
@@ -149,6 +155,15 @@ class ServiceAgent:
         )
 
     def code_root(self):
+        if self.job and self.job["kind"] == "upgrade_assessment":
+            plan = self.store.get("upgrade_plans", self.job["target"])
+            return Path(
+                self.runtime.spec.operations["upgrade_candidates"][plan["alias"]][
+                    "workspace"
+                ]
+            )
+        if self.job and self.job["kind"] == "audit":
+            return Path(self.store.get("audits", self.job["target"])["workspace"])
         if self.job and self.job["kind"] in {"review", "ci_triage"}:
             return Path(
                 self.store.get("changesets", self.job["target"])["candidate"][
@@ -200,6 +215,21 @@ class ServiceAgent:
 
     def run(self, job):
         if (
+            job["kind"] == "audit"
+            and self.runtime.spec.operations["audit_model"]
+            and self.runtime.spec.operations["audit_model"] != self.models.alias
+        ):
+            actor = ServiceAgent(
+                self.runtime,
+                self.store,
+                self.stop,
+                model_profile=self.runtime.spec.operations["audit_model"],
+            )
+            try:
+                return actor.run(job)
+            finally:
+                actor.close()
+        if (
             job["kind"] == "review"
             and self.runtime.spec.delivery.get("review_model")
             and self.runtime.spec.delivery["review_model"] != self.models.alias
@@ -217,26 +247,56 @@ class ServiceAgent:
         self.job, self.proposal = job, None
         kind = job["kind"]
         primary = (
-            self.store.get("changesets", job["target"])
-            if kind in {"review", "ci_triage"}
+            self.store.get(
+                {
+                    "audit": "audits",
+                    "incident": "incidents",
+                    "upgrade_assessment": "upgrade_plans",
+                }[kind],
+                job["target"],
+            )
+            if kind in {"audit", "incident", "upgrade_assessment"}
             else (
-                self.store.store.work(job["target"], self.store.id)
-                if kind == "triage"
-                else self.store.get(
-                    "messages" if kind == "conversation" else "reports", job["target"]
+                self.store.get("changesets", job["target"])
+                if kind in {"review", "ci_triage"}
+                else (
+                    self.store.store.work(job["target"], self.store.id)
+                    if kind == "triage"
+                    else self.store.get(
+                        "messages" if kind == "conversation" else "reports",
+                        job["target"],
+                    )
                 )
             )
         )
         if kind in {"review", "ci_triage"}:
             self.store.delivery.git.verify(primary["candidate"])
+        if kind == "audit":
+            from .operations.audit import verify
+
+            verify(self.runtime, primary)
         preview = {
             k: v
             for k, v in primary.items()
-            if k not in {"run_spec", "result", "facts", "candidate", "baseline"}
+            if k
+            not in {
+                "run_spec",
+                "result",
+                "facts",
+                "candidate",
+                "baseline",
+                "files",
+                "workspace",
+                "plans",
+            }
         }
-        if primary.get("candidate"):
+        if primary.get("candidate") and kind in {"review", "ci_triage"}:
             preview["candidate"] = {
                 k: primary["candidate"][k] for k in ("commit", "tree", "delta")
+            }
+        elif kind == "upgrade_assessment":
+            preview["candidate"] = {
+                k: primary["candidate"][k] for k in ("runtime", "package_hash", "proof")
             }
         directory = (
             self.runtime.store.root / ".harness" / "service_reasoning" / job["id"]
@@ -251,6 +311,7 @@ class ServiceAgent:
             "Read all linked events relevant to the current requirements; the original prompt is only the initial source. Major changes require decide. A merge links local work only. "
             "For conversation/report provide text, optionally work_id and a triage-shaped plan for a work explicitly targeted by this conversation. "
             "For review submit text and findings ([{severity:blocking/warning,path,message}]); read fixed candidate code, and do not judge a different workspace. For ci_triage submit classification (code/baseline/flaky/infrastructure/unknown), reason and a bounded plan. Neither proposal publishes or authorizes work. "
+            "For audit use code-review and submit text/findings for the fixed audited workspace. For incident or upgrade_assessment submit text only, cite the recorded facts, and use the operations skills; proposals do not perform maintenance or grant authority. "
             "Acknowledge uncertainty and distinguish delegated review from published changes. Reports must read the complete stored facts via service_read; conversation history is available. "
             "Work verification IDs refer to frozen evidence records: use service_read kind=evidence to inspect actual test receipts and the requirements version they verified. "
             "Full source and user text are queryable by reference; previews may be shortened. Skills:\n"
@@ -303,6 +364,8 @@ class ServiceAgent:
             raise ValueError("Service reasoning did not submit a structured proposal.")
         if kind in {"review", "ci_triage"}:
             self.store.delivery.git.verify(primary["candidate"])
+        if kind == "audit":
+            verify(self.runtime, primary)
         return self.proposal
 
     def close(self):

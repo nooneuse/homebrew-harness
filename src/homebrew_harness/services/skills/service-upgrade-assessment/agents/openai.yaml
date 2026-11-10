@@ -1,0 +1,4 @@
+interface:
+  display_name: "Service Upgrade Assessment"
+  short_description: "Assess tested upgrades and recorded rollback limits"
+  default_prompt: "Use $service-upgrade-assessment to assess the verified candidate and its handoff conditions."

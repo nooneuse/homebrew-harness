@@ -65,6 +65,7 @@ class ServiceRuntime:
         self.child = None
         self.maintenance = None
         self.current = None
+        self.audit_preparing = False
         self.children = {}
         self.error = None
         self.start_error = None
@@ -88,8 +89,12 @@ class ServiceRuntime:
             self.children[str(self.child.workdir)] = self.child
             binding = self._binding()
             if self.spec.profile == "repository_maintenance":
-                binding["maintenance"] = meta["binding"].get("maintenance")
+                from .operations.upgrade import candidate_binding
+
+                expected = candidate_binding(store, identity, binding["runtime"])
+                binding["maintenance"] = expected.get("maintenance")
             self.header = store.claim(identity, binding)
+            meta = store.get(identity)
             if self.spec.profile == "repository_maintenance":
                 from .maintenance import Maintenance
 
@@ -104,6 +109,9 @@ class ServiceRuntime:
                 service_id=self.id,
                 port=self.spec.control_port,
             )
+            from .operations.runtime import Operations
+
+            self.operations = Operations(self)
             self.token = token
             self.started = False
             self.server_started = False
@@ -139,7 +147,22 @@ class ServiceRuntime:
             )
         except WorkAccepted:
             pass
-        if self.maintenance is not None:
+        try:
+            self.workers.start(
+                self.operations.loop, name="service-operations", track_operation=False
+            )
+        except WorkAccepted:
+            pass
+        if self.store.get(self.id).get("operations_phase", "active") == "active":
+            self.start_business()
+        self.store.update(
+            self.header, launch={"token": self.token, "phase": "accepted"}, error=None
+        )
+
+    def start_business(self):
+        from homebrew_harness.runtime.runtime_control import WorkAccepted
+
+        if self.maintenance is not None and not self.maintenance.started:
             try:
                 self.workers.start(
                     self.maintenance.loop,
@@ -148,7 +171,11 @@ class ServiceRuntime:
                 )
             except WorkAccepted:
                 pass
-        if self.maintenance and self.maintenance.delivery:
+        if (
+            self.maintenance
+            and self.maintenance.delivery
+            and not self.maintenance.delivery.started
+        ):
             try:
                 self.workers.start(
                     self.maintenance.delivery.loop,
@@ -157,9 +184,6 @@ class ServiceRuntime:
                 )
             except WorkAccepted:
                 pass
-        self.store.update(
-            self.header, launch={"token": self.token, "phase": "accepted"}, error=None
-        )
 
     def _binding(self):
         bindings, _head, controls = self.child.runs.prepare(
@@ -222,7 +246,11 @@ class ServiceRuntime:
                         self.shutdown.request(self._finish_close, 0)
                         self.next_close_retry = time.monotonic() + 2
                     continue
-                if self.maintenance is not None and self.maintenance.finished.is_set():
+                if (
+                    meta.get("operations_phase", "active") == "active"
+                    and self.maintenance is not None
+                    and self.maintenance.finished.is_set()
+                ):
                     self.store.update(
                         self.header,
                         state="paused",
@@ -230,7 +258,8 @@ class ServiceRuntime:
                         error="maintenance_restart_required",
                     )
                 if (
-                    self.maintenance
+                    meta.get("operations_phase", "active") == "active"
+                    and self.maintenance
                     and self.maintenance.delivery
                     and self.maintenance.delivery.finished.is_set()
                 ):
@@ -241,7 +270,8 @@ class ServiceRuntime:
                         error="delivery_restart_required",
                     )
                 with self.lock:
-                    self.recover_commands()
+                    if meta.get("operations_phase", "active") == "active":
+                        self.recover_commands()
                     if time.time() < meta.get("last_clock", meta["created_at"]) - 1:
                         self.store.update(
                             self.header,
@@ -250,7 +280,7 @@ class ServiceRuntime:
                             error="clock_changed",
                             revision=meta["revision"] + 1,
                         )
-                    else:
+                    elif meta.get("operations_phase", "active") == "active":
                         self.tick()
                 if time.monotonic() - heartbeat >= 1:
                     self.store.update(self.header, heartbeat_at=time.time())
@@ -350,6 +380,14 @@ class ServiceRuntime:
                 return
         child = self.child_for(work)
         if not work["run_id"]:
+            if self.audit_preparing:
+                return
+            if (
+                self.maintenance
+                and self.maintenance.delivery
+                and self.maintenance.delivery.has_pending_sync()
+            ):
+                return
             if (
                 meta["state"] != "running"
                 or work["pause_requested"]
@@ -387,7 +425,14 @@ class ServiceRuntime:
                 return
             self.current = handle
             work = self.store.update_work(
-                self.header, work["id"], run_id=handle.id, error=None
+                self.header,
+                work["id"],
+                run_id=handle.id,
+                run_locations={
+                    **work.get("run_locations", {}),
+                    handle.id: str(child.workdir),
+                },
+                error=None,
             )
         handle = self._handle(work)
         state = child.run_store.get(handle.id)
@@ -777,6 +822,31 @@ class ServiceRuntime:
         if identity != self.id:
             raise ValueError("Control command targets another service.")
         validate_method(method, payload)
+        from .protocol import QUERY_METHODS
+
+        if method not in QUERY_METHODS and self.operations.restoring:
+            raise ValueError(
+                "Restore commit is in progress; query its operation before retrying controls."
+            )
+        from .protocol import OPERATIONS_QUERIES, OPERATIONS_COMMANDS, QUERY_METHODS
+
+        if method in OPERATIONS_QUERIES or method in OPERATIONS_COMMANDS:
+            from .operations.controls import dispatch
+
+            if method in OPERATIONS_QUERIES:
+                return dispatch(self.operations, method, payload, request_id)
+            with self.lock:
+                if self.operations.restoring:
+                    raise ValueError(
+                        "Restore commit is in progress; retry controls after its receipt."
+                    )
+                return dispatch(self.operations, method, payload, request_id)
+        if (
+            method not in QUERY_METHODS
+            and method not in {"stop"}
+            and self.store.get(self.id).get("operations_phase", "active") != "active"
+        ):
+            raise ValueError("Service is parked or draining; use operations controls.")
         if method in MAINTENANCE_COMMANDS or method in MAINTENANCE_QUERIES:
             if self.maintenance is None:
                 raise ValueError("This service has no maintenance profile.")
@@ -785,12 +855,29 @@ class ServiceRuntime:
             if method in {"delivery_inspect", "batch_decide"}:
                 return self.maintenance.command(method, payload, request_id)
             with self.lock:
+                if (
+                    method not in QUERY_METHODS
+                    and self.store.get(self.id).get("operations_phase", "active")
+                    != "active"
+                ):
+                    raise ValueError(
+                        "Service is parked or draining; use operations controls."
+                    )
                 return (
                     self.maintenance.query(method, payload)
                     if method in QUERY_METHODS
                     else self.maintenance.command(method, payload, request_id)
                 )
         with self.lock:
+            if (
+                method not in QUERY_METHODS
+                and method != "stop"
+                and self.store.get(self.id).get("operations_phase", "active")
+                != "active"
+            ):
+                raise ValueError(
+                    "Service is parked or draining; use operations controls."
+                )
             if method == "snapshot":
                 return self.snapshot()
             if method == "focus_get":
@@ -852,6 +939,7 @@ class ServiceRuntime:
         return self.snapshot()
 
     def _finish_close(self):
+        self.operations.close()
         if self.maintenance is not None:
             self.maintenance.close()
         with self.lock:

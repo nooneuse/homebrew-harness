@@ -390,3 +390,5 @@ Tests cover local protocol services, files and databases, recovery flows, and co
 The project uses the [MIT license](LICENSE). Some ideas and code draw on the learn-claude-code tutorial; its upstream license is preserved in [licenses](licenses/learn-claude-code-LICENSE). Runtime dependencies retain their own licenses.
 
 Code-platform integration uses explicit adapters. GitHub is currently implemented; common execution and maintenance state can be reused by future providers. See [Code platforms](docs/PLATFORMS.md). Optional [Repository delivery](docs/DELIVERY.md) adds fixed candidates, local quality checks, CI continuation and operator-approved publication.
+
+[Service operations](docs/SERVICE_OPERATIONS.md) cover health, writer parking, retained work evidence, verified backup/restoration, periodic repository audits and explicit compatible runtime upgrades. Run `python examples/service_operations_demo.py --output /tmp/harness-service-operations-demo` for the offline P1-P4 scenario.

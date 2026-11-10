@@ -55,7 +55,12 @@ class DeliveryStore:
             "change_request": None,
             "ci": None,
             "error": None,
-            "branch": self.spec["review_prefix"] + work["id"][5:],
+            "branch": self.get("changesets", work["repair_of"], conn)["branch"]
+            if work.get("repair_of")
+            else self.spec["review_prefix"] + work["id"][5:] + "-" + identity[-8:],
+            "write_paths": work["run_spec"]["write_paths"],
+            "source_workspace": work.get("run_workspace")
+            or self.runtime.spec.workspace,
         }
         self.put(conn, "changesets", value)
         work["changeset_id"] = identity
@@ -108,6 +113,10 @@ class DeliveryStore:
             raise ValueError("Unknown delivery action.")
         if not row.get("frozen"):
             raise ValueError("Candidate is not quality-ready.")
+        if row["candidate"].get("artifacts_retired"):
+            raise ValueError(
+                "Candidate artifacts were retired; prepare new reviewed work before delivery."
+            )
         if row["frozen"] != self.freeze(row):
             raise ValueError("Candidate quality evidence changed.")
         if kind == "publish_target" and row["state"] != "merge_ready":
@@ -366,6 +375,14 @@ class DeliveryStore:
                         and work["state"] == "review"
                     ):
                         work.update(state="delivered", revision=work["revision"] + 1)
+                        if (
+                            work.get("run_workspace")
+                            and work["run_workspace"] != self.runtime.spec.workspace
+                        ):
+                            work["workspace_sync"] = {
+                                "state": "pending",
+                                "changeset_id": row["id"],
+                            }
                         self.db._put(conn, "service_work", work["id"], work)
                     else:
                         row["requirements_superseded"] = True

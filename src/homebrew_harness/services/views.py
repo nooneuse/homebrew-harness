@@ -36,6 +36,7 @@ class WorkHandle(Handle):
             details={
                 "run_id": value["run_id"],
                 "changeset_id": value.get("changeset_id"),
+                "workspace_sync": value.get("workspace_sync"),
                 "ci_fix_attempts": value.get("ci_fix_attempts", 0),
                 "authority": value.get("authority"),
                 "verification": value.get("verification"),
@@ -124,6 +125,59 @@ class WorkService:
 
 
 class ServiceControls:
+    def health(self):
+        return self.query("ops_health")
+
+    def operations(self, *, cursor=0, limit=20):
+        return self.query("ops_list", {"cursor": cursor, "limit": limit})
+
+    def operation(self, identity):
+        return self.query("ops_get", {"id": identity})
+
+    def operation_record(self, identity, *, offset=0, limit=4000):
+        return self.query(
+            "ops_read", {"id": identity, "offset": offset, "limit": limit}
+        )
+
+    def quiesce(self, *, request_id=None):
+        return self.command("ops_quiesce", {}, request_id)
+
+    def resume_operations(self, *, request_id=None):
+        return self.command("ops_resume_operations", {}, request_id)
+
+    def backup(self, *, request_id=None):
+        return self.command("ops_backup", {}, request_id)
+
+    def verify_backup(self, identity, *, request_id=None):
+        return self.command("ops_verify_backup", {"id": identity}, request_id)
+
+    def restore_backup(self, identity, *, request_id=None):
+        return self.command("ops_restore_backup", {"id": identity}, request_id)
+
+    def retention_preview(self, *, request_id=None):
+        return self.command("ops_retention_preview", {}, request_id)
+
+    def retention_apply(self, identity, *, request_id=None):
+        return self.command("ops_retention_apply", {"id": identity}, request_id)
+
+    def audit(self, *, force=False, request_id=None):
+        return self.command("ops_audit", {"force": force}, request_id)
+
+    def diagnose(self, identity, *, request_id=None):
+        return self.command("ops_diagnose", {"id": identity}, request_id)
+
+    def retry_operation(self, identity, *, request_id=None):
+        return self.command("ops_retry", {"id": identity}, request_id)
+
+    def prepare_upgrade(self, alias, *, request_id=None):
+        return self.command("ops_upgrade_prepare", {"alias": alias}, request_id)
+
+    def arm_upgrade(self, identity, *, request_id=None):
+        return self.command("ops_upgrade_arm", {"id": identity}, request_id)
+
+    def confirm_upgrade(self, identity, *, request_id=None):
+        return self.command("ops_upgrade_confirm", {"id": identity}, request_id)
+
     def requests(self, work_id=None):
         from homebrew_harness.contracts import HumanRequest, RequestRef
 

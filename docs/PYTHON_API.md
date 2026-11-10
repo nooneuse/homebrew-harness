@@ -207,3 +207,7 @@ Maintenance profiles add `converse`, `conversation`, `records`, `record`, `repor
 ### Service delivery controls
 
 The Service view adds `delivery`, `prepare_delivery`, `plan_delivery`, `inspect_delivery`, `request_delivery`, `refresh_delivery`, `batch` and `decide_batch`. Local and remote views use the same control protocol, and AsyncHarness exposes the corresponding awaitable methods. [Repository delivery](DELIVERY.md) documents fixed candidate identity, per-item decisions and unknown-action inspection.
+
+### Service operations
+
+Service views expose `health`, `operations`, `operation`, `operation_record`, `quiesce`, `resume_operations`, `audit`, `diagnose`, retention preview/apply, backup/verify/restore and upgrade prepare/arm/confirm. These methods are awaitable through AsyncHarness. `host.admin.service_upgrade_rollback` is an explicit host-local operation. See [Service operations](SERVICE_OPERATIONS.md).

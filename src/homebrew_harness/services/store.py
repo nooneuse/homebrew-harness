@@ -37,6 +37,7 @@ class ServiceStore:
                     "events",
                     "triage",
                     "run_history",
+                    "baseline",
                 }
             },
             "triage_summary": {
@@ -136,9 +137,29 @@ class ServiceStore:
         with self.db.write() as conn:
             value = self.db._get(conn, "service_meta", identity)
             if value["binding"] != binding:
-                raise ValueError(
-                    "Service runtime or execution binding changed; restore its original configuration."
+                plan = (
+                    self.db._get(
+                        conn, "service_upgrade_plans", value.get("upgrade_plan")
+                    )
+                    if value.get("upgrade_plan")
+                    else None
                 )
+                if (
+                    plan
+                    and plan["state"] == "armed"
+                    and plan["expires_at"] > time.time()
+                    and plan["generation"] == value["generation"]
+                    and plan["old_binding"] == value["binding"]
+                    and plan["new_binding"] == binding
+                    and value.get("operations_phase") == "parked"
+                ):
+                    plan.update(state="probation", revision=plan["revision"] + 1)
+                    self.db._put(conn, "service_upgrade_plans", plan["id"], plan)
+                    value.update(binding=binding, state="paused", scope="all")
+                else:
+                    raise ValueError(
+                        "Service runtime or execution binding changed; restore its original configuration."
+                    )
             import os
 
             value = {
@@ -152,7 +173,14 @@ class ServiceStore:
             }
             # A deliberate stop starts normally; crash recovery preserves pause/stopping intent.
             if value["state"] == "stopped":
-                value.update(state="running", scope="execution")
+                value.update(
+                    state="paused"
+                    if value.get("operations_phase") in {"parked", "draining"}
+                    else "running",
+                    scope="all"
+                    if value.get("operations_phase") in {"parked", "draining"}
+                    else "execution",
+                )
             self.db._put(conn, "service_meta", identity, value)
             return value
 
@@ -352,7 +380,33 @@ class ServiceStore:
                     last_trigger=now,
                     next_due=job["next_due"] + missed * job["every_seconds"],
                 )
-                if job["action"] == "submit_work":
+                if job["action"] == "review_repository":
+                    op_id = "op_" + request_key(
+                        "scheduled-audit",
+                        header["id"],
+                        key + ":" + str(job["sequence"]),
+                    )
+                    self.db._put(
+                        conn,
+                        "service_operations",
+                        op_id,
+                        {
+                            "id": op_id,
+                            "kind": "audit",
+                            "payload": {"force": False},
+                            "state": "queued",
+                            "revision": 0,
+                            "created_at": now,
+                            "deadline_at": now
+                            + meta["spec"]["operations"]["operation_seconds"],
+                            "result": None,
+                            "error": None,
+                            "schedule": key,
+                            "service_id": header["id"],
+                            "checkpoint": "service:" + header["id"],
+                        },
+                    )
+                elif job["action"] == "submit_work":
                     work = self.enqueue(
                         conn,
                         header["id"],

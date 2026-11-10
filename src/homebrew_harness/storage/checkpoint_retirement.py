@@ -94,6 +94,10 @@ def bundle(state, sid):
 
 def workspace_blockers(state, external, sid):
     reasons = []
+    if sid in external["records"].get(".harness/service-retention.json", {}).get(
+        "sessions", []
+    ):
+        reasons.append("service_retained_execution")
     if any(
         owns(sid, row.get("checkpoint", "")) and row.get("phase") != "closed"
         for row in state.get("mcp_resources", {}).values()

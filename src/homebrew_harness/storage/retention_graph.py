@@ -138,4 +138,20 @@ def external_snapshot(root, *, max_files=10000, max_bytes=64 * 1024 * 1024):
             versions[path] = [*identity[:-1], identity[-1].hex()]
     except FileNotFoundError:
         pass
+    path = ".harness/service-retention.json"
+    try:
+        with SafeFile(root, path) as target:
+            raw, identity, _ = target.snapshot(max_bytes=max_bytes - total)
+        if raw is not None:
+            value = json.loads(raw)
+            if (
+                not isinstance(value, dict)
+                or value.get("format") != 1
+                or not isinstance(value.get("sessions"), list)
+            ):
+                raise ValueError("Invalid service retention roots.")
+            records[path] = value
+            versions[path] = [*identity[:-1], identity[-1].hex()]
+    except FileNotFoundError:
+        pass
     return {"records": records, "versions": versions, "references": references(records)}

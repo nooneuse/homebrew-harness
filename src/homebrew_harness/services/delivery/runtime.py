@@ -91,12 +91,20 @@ class Delivery:
             baseline={"files": files, "head": self.git.head(child.workdir)},
         )
 
-    def rows(self, kind):
+    def rows(self, kind, *, active=False):
         with self.ms.db.connection() as conn:
             return [
                 json.loads(row[0])
                 for row in conn.execute(
-                    "SELECT value FROM records WHERE section=? AND owner=? ORDER BY rowid",
+                    "SELECT value FROM records WHERE section=? AND owner=?"
+                    + (
+                        " AND json_extract(value,'$.state') IN ('queued','preparing','validating','review_branch_ready','ci_waiting','repair_approved')"
+                        if active and kind == "changesets"
+                        else " AND json_extract(value,'$.state') IN ('queued','started')"
+                        if active
+                        else ""
+                    )
+                    + " ORDER BY rowid",
                     ("service_" + kind, "service:" + self.ms.id),
                 )
             ]
@@ -110,7 +118,7 @@ class Delivery:
                     return
                 if meta["state"] != "running":
                     continue
-                for row in self.rows("changesets"):
+                for row in self.rows("changesets", active=True):
                     if self.stop.is_set():
                         break
                     try:
@@ -131,7 +139,7 @@ class Delivery:
                             error=type(error).__name__,
                             error_detail=redact(str(error)),
                         )
-                for action in self.rows("actions"):
+                for action in self.rows("actions", active=True):
                     if self.stop.is_set():
                         break
                     if action["state"] == "queued":
@@ -143,6 +151,7 @@ class Delivery:
                     elif action["state"] == "started":
                         with control_scope(Deadline.after(self.spec["gate_seconds"])):
                             self.reconcile(action)
+                self.sync_pending()
         except Exception as error:
             self.error = type(error).__name__
         finally:
@@ -189,10 +198,24 @@ class Delivery:
                 candidate = self.git.prepare(
                     work, workspace, work["baseline"], directory, previous=previous
                 )
+                expected = (
+                    self.store.get("changesets", row["previous"]).get(
+                        "primary_expected"
+                    )
+                    if row.get("previous")
+                    else candidate["files"]
+                    if row.get("source_workspace", self.runtime.spec.workspace)
+                    == self.runtime.spec.workspace
+                    else work["baseline"]["files"]
+                )
                 with self.runtime.lock:
                     self.store.current(row)
                     self.store.update(
-                        "changesets", row["id"], candidate=candidate, state="validating"
+                        "changesets",
+                        row["id"],
+                        candidate=candidate,
+                        state="validating",
+                        primary_expected=expected,
                     )
             finally:
                 with self.runtime.lock:
@@ -461,7 +484,14 @@ class Delivery:
         if work.get("ci_fix_attempts", 0) >= self.spec["ci_fix_limit"]:
             raise ValueError("CI repair limit exhausted.")
         if not self.ms.valid_authority(work):
-            raise ValueError("Renew original work authority before CI repair.")
+            with self.ms.db.write() as conn:
+                current = self.store.get("changesets", row["id"], conn)
+                current.update(
+                    state="repair_waiting_authority", revision=current["revision"] + 1
+                )
+                self.store.put(conn, "changesets", current)
+                self.ms.work_request(conn, work, work["triage"], renew=True)
+            return
         self.git.verify(row["candidate"])
         count = work.get("ci_fix_attempts", 0) + 1
         directory = (
@@ -549,6 +579,124 @@ class Delivery:
             row.update(state="repairing")
             self.store.put(conn, "changesets", row)
             self.ms.changed(conn, work["id"])
+
+    def has_pending_sync(self):
+        with self.ms.db.connection() as conn:
+            return (
+                conn.execute(
+                    "SELECT 1 FROM records WHERE section='service_work' AND owner=? AND json_extract(value,'$.workspace_sync.state') IN ('pending','conflict') LIMIT 1",
+                    ("service:" + self.ms.id,),
+                ).fetchone()
+                is not None
+            )
+
+    def sync_pending(self):
+        import hashlib
+        from homebrew_harness.security.safe_files import SafeFile
+        from homebrew_harness.execution.execution_leases import (
+            file_update_batch,
+            file_update_lease,
+        )
+        from homebrew_harness.services.maintenance_spec import within
+
+        with self.runtime.lock:
+            active = self.runtime.store.next_work(self.ms.id)
+            if active and active["state"] == "in_progress":
+                return False
+            with self.ms.db.connection() as conn:
+                pending = [
+                    json.loads(r[0])
+                    for r in conn.execute(
+                        "SELECT value FROM records WHERE section='service_work' AND owner=? AND json_extract(value,'$.workspace_sync.state') IN ('pending','conflict')",
+                        ("service:" + self.ms.id,),
+                    )
+                ]
+            if not pending:
+                return True
+            self.preparing = True
+        try:
+            root = Path(self.runtime.spec.workspace)
+            for work in pending:
+                row = self.store.get(
+                    "changesets", work["workspace_sync"]["changeset_id"]
+                )
+                expected = row.get("primary_expected")
+                if expected is None:
+                    raise ValueError(
+                        "Missing original workspace synchronization precondition."
+                    )
+                self.git.verify(row["candidate"])
+                output = row["candidate"]["files"]
+                changed = {
+                    n
+                    for n in set(expected) | set(output)
+                    if (
+                        (expected.get(n) or {}).get("sha256"),
+                        (expected.get(n) or {}).get("executable"),
+                    )
+                    != (
+                        (output.get(n) or {}).get("sha256"),
+                        (output.get(n) or {}).get("executable"),
+                    )
+                }
+                if any(not within(n, row["write_paths"]) for n in changed):
+                    raise ValueError("Synchronization exceeds original work scope.")
+                conflicts = []
+                with file_update_batch(root):
+                    for name in sorted(changed):
+                        with (
+                            file_update_lease(root, name),
+                            SafeFile(root, name, create_parents=True) as target,
+                        ):
+                            raw, version, mode = target.snapshot()
+                            actual = (
+                                hashlib.sha256(raw).hexdigest()
+                                if raw is not None
+                                else None
+                            )
+                            new = output.get(name)
+                            if (actual, bool((mode or 0) & 0o111)) == (
+                                (new or {}).get("sha256"),
+                                bool((new or {}).get("executable")),
+                            ):
+                                continue
+                            if (actual, bool((mode or 0) & 0o111)) != (
+                                (expected.get(name) or {}).get("sha256"),
+                                bool((expected.get(name) or {}).get("executable")),
+                            ):
+                                conflicts.append(name)
+                                continue
+                            if new is None:
+                                target.unlink(version)
+                            else:
+                                with SafeFile(
+                                    Path(row["candidate"]["workspace"]), name
+                                ) as source:
+                                    data = source.snapshot()[0]
+                                if (
+                                    data is None
+                                    or hashlib.sha256(data).hexdigest() != new["sha256"]
+                                ):
+                                    raise ValueError(
+                                        "Synchronization candidate changed."
+                                    )
+                                target.publish(
+                                    data, version, 0o755 if new["executable"] else 0o644
+                                )
+                state = {
+                    "state": "conflict" if conflicts else "synchronized",
+                    "changeset_id": row["id"],
+                    "paths": conflicts,
+                }
+                self.runtime.store.update_work(
+                    self.runtime.header, work["id"], workspace_sync=state
+                )
+                if conflicts:
+                    return False
+        finally:
+            with self.runtime.lock:
+                self.preparing = False
+        return True
 
     def close(self):
         self.stop.set()

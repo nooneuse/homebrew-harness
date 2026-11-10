@@ -128,7 +128,12 @@ def validate_policy(raw, run_spec):
 
 
 def validate_proposal(raw, kind, policy):
-    if kind == "review":
+    if kind in {"incident", "upgrade_assessment"}:
+        if not isinstance(raw, dict) or set(raw) != {"text"}:
+            raise ValueError("An operations assessment expects text only.")
+        text(raw["text"], maximum=16000)
+        return raw
+    if kind in {"review", "audit"}:
         if (
             not isinstance(raw, dict)
             or set(raw) != {"text", "findings"}

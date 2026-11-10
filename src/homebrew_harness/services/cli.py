@@ -92,6 +92,10 @@ def commands(parser, *, attach=True):
                     "changesets",
                     "actions",
                     "batches",
+                    "audits",
+                    "incidents",
+                    "operations",
+                    "upgrade_plans",
                 ),
             )
             item.add_argument("--cursor", type=int, default=0)
@@ -112,6 +116,10 @@ def commands(parser, *, attach=True):
                     "changesets",
                     "actions",
                     "batches",
+                    "audits",
+                    "incidents",
+                    "operations",
+                    "upgrade_plans",
                 ),
             )
             item.add_argument("identity")
@@ -135,6 +143,59 @@ def commands(parser, *, attach=True):
             item.add_argument("--limit", type=int, default=20)
         elif name == "report":
             item.add_argument("identity", nargs="?")
+    ops = actions.add_parser("ops")
+    if attach:
+        ops.add_argument("service_id")
+    op_actions = ops.add_subparsers(dest="ops_command", required=True)
+    for name in (
+        "health",
+        "list",
+        "show",
+        "read",
+        "park",
+        "resume",
+        "backup",
+        "verify-backup",
+        "restore-backup",
+        "retention-preview",
+        "retention-apply",
+        "audit",
+        "diagnose",
+        "retry",
+        "upgrade-prepare",
+        "upgrade-arm",
+        "upgrade-confirm",
+    ):
+        item = op_actions.add_parser(name)
+        if name in {
+            "show",
+            "read",
+            "verify-backup",
+            "restore-backup",
+            "retention-apply",
+            "diagnose",
+            "retry",
+            "upgrade-arm",
+            "upgrade-confirm",
+        }:
+            item.add_argument("identity")
+        if name == "upgrade-prepare":
+            item.add_argument("alias")
+        if name in {"read", "list"}:
+            item.add_argument(
+                "--offset" if name == "read" else "--cursor", type=int, default=0
+            )
+            item.add_argument(
+                "--limit", type=int, default=4000 if name == "read" else 20
+            )
+        if name == "audit":
+            item.add_argument("--force", action="store_true")
+        if name not in {"health", "list", "show", "read"}:
+            item.add_argument("--request-id")
+    if attach:
+        item = op_actions.add_parser("upgrade-rollback")
+        item.add_argument("identity")
+        item.add_argument("--request-id", required=True)
     delivery = actions.add_parser("delivery")
     if attach:
         delivery.add_argument("service_id")
@@ -267,6 +328,44 @@ def submit(service, text, *, priority=0, request_id=None):
 
 
 def operate(service, args):
+    if args.command == "ops":
+        op = args.ops_command
+        if op == "health":
+            return service.health()
+        if op == "list":
+            return service.operations(cursor=args.cursor, limit=args.limit)
+        if op == "show":
+            return service.operation(args.identity)
+        if op == "read":
+            return service.operation_record(
+                args.identity, offset=args.offset, limit=args.limit
+            )
+        methods = {
+            "park": "quiesce",
+            "resume": "resume_operations",
+            "backup": "backup",
+            "verify-backup": "verify_backup",
+            "restore-backup": "restore_backup",
+            "retention-preview": "retention_preview",
+            "retention-apply": "retention_apply",
+            "audit": "audit",
+            "diagnose": "diagnose",
+            "retry": "retry_operation",
+            "upgrade-prepare": "prepare_upgrade",
+            "upgrade-arm": "arm_upgrade",
+            "upgrade-confirm": "confirm_upgrade",
+        }
+        values = {"request_id": args.request_id}
+        if op == "audit":
+            values["force"] = args.force
+        arguments = (
+            (args.alias,)
+            if op == "upgrade-prepare"
+            else (args.identity,)
+            if hasattr(args, "identity")
+            else ()
+        )
+        return getattr(service, methods[op])(*arguments, **values)
     if args.command == "delivery":
         op = args.delivery_command
         if op == "list":
@@ -528,6 +627,23 @@ def execute(args, parser):
                 render(core.services.recover_launch(args.service_id, args.token))
             else:
                 render(core.services.get(args.service_id).snapshot())
+            return 0
+        if args.command == "ops" and args.ops_command == "upgrade-rollback":
+            if connection is not None:
+                raise ValueError(
+                    "Upgrade rollback is an explicit host-local maintenance operation."
+                )
+            from homebrew_harness import Harness
+            from homebrew_harness.contracts import ExecutionRef
+
+            with Harness(workdir=args.cwd.expanduser()) as host:
+                render(
+                    host.admin.service_upgrade_rollback(
+                        ExecutionRef("service", args.service_id),
+                        args.identity,
+                        request_id=args.request_id,
+                    )
+                )
             return 0
         from .remote import RemoteService
 

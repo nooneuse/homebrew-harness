@@ -18,6 +18,10 @@ SECTIONS = {
     "changesets",
     "actions",
     "batches",
+    "audits",
+    "incidents",
+    "upgrade_plans",
+    "operations",
 }
 
 
@@ -239,6 +243,7 @@ class MaintenanceStore:
                     "state": page.state,
                     "attempts": 0,
                     "error": None,
+                    "last_success": time.time(),
                 },
             )
 
@@ -264,7 +269,18 @@ class MaintenanceStore:
             )
 
     def fail_target(self, conn, job):
-        if job["kind"] in {"review", "ci_triage"}:
+        if job["kind"] in {"audit", "incident", "upgrade_assessment"}:
+            kind = {
+                "audit": "audits",
+                "incident": "incidents",
+                "upgrade_assessment": "upgrade_plans",
+            }[job["kind"]]
+            row = self.get(kind, job["target"], conn)
+            row.update(error=job["error"], revision=row["revision"] + 1)
+            if kind == "audits":
+                row["state"] = "failed"
+            self.put(conn, kind, row)
+        elif job["kind"] in {"review", "ci_triage"}:
             row = self.get("changesets", job["target"], conn)
             row.update(
                 state="quality_failed" if job["kind"] == "review" else "blocked",
@@ -380,6 +396,36 @@ class MaintenanceStore:
 
     def grant(self, conn, work, proposal, origin):
         scope = proposal["scope"]
+        candidate = (
+            self.db._get(conn, "service_changesets", work.get("changeset_id"))
+            if work.get("changeset_id")
+            else None
+        )
+        if (
+            candidate
+            and candidate["state"] == "repair_waiting_authority"
+            and work["state"] == "review"
+            and proposal == work.get("triage")
+            and candidate["requirements_revision"] == work["requirements_revision"]
+        ):
+            work.update(
+                authority={
+                    "requirements_revision": work["requirements_revision"],
+                    "policy": fingerprint(self.policy),
+                    "scope": scope,
+                    "expires_at": time.time() + self.policy["authority_seconds"],
+                    "origin": origin,
+                    "revoked": False,
+                },
+                revision=work["revision"] + 1,
+            )
+            candidate.update(
+                state="repair_approved", revision=candidate["revision"] + 1
+            )
+            self.db._put(conn, "service_work", work["id"], work)
+            self.put(conn, "changesets", candidate)
+            self.changed(conn, work["id"])
+            return
         compiled = self.store.get(self.id)["spec"]["run_defaults"]
         from homebrew_harness.runs.spec import RunSpec
 
@@ -446,6 +492,8 @@ class MaintenanceStore:
             authority=authority,
             state="approved",
             run_spec=spec.data(),
+            baseline=None,
+            repair_of=None,
             run_id=None,
             launch_id="service_"
             + request_key(
@@ -549,6 +597,16 @@ class MaintenanceStore:
                             else:
                                 self.work_request(conn, work, result)
                         self.changed(conn, work["id"])
+                elif job["kind"] == "audit":
+                    from .operations.audit import finish
+
+                    current["state"] = finish(self, conn, job, result)
+                elif job["kind"] in {"incident", "upgrade_assessment"}:
+                    kind = "incidents" if job["kind"] == "incident" else "upgrade_plans"
+                    target = self.get(kind, job["target"], conn)
+                    target.update(assessment=result, revision=target["revision"] + 1)
+                    self.put(conn, kind, target)
+                    self.changed(conn, detail={"assessment": job["target"]})
                 elif job["kind"] in {"review", "ci_triage"}:
                     current["state"] = self.delivery.store.finish_model(
                         conn, job, result

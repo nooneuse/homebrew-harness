@@ -174,6 +174,11 @@ class Peer:
                             "plan": "Update src/value.txt and verify unit-tests.",
                             "priority": 10,
                         }
+                    elif kind == "audit":
+                        proposal = {
+                            "text": "Fixed repository reviewed.",
+                            "findings": getattr(outer, "audit_findings", []),
+                        }
                     elif kind == "review":
                         proposal = {"text": "Fixed candidate reviewed.", "findings": []}
                     elif kind == "ci_triage":
@@ -207,7 +212,8 @@ class Peer:
                             tool="write_file",
                             arguments={
                                 "path": "src/value.txt",
-                                "content": "2\n" if repair else "1\n",
+                                "content": getattr(outer, "coding_value", None)
+                                or ("2\n" if repair else "1\n"),
                             },
                         )
                     )

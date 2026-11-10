@@ -10,6 +10,15 @@ class Admin:
         self.core = core
 
     @host_operation
+    def service_upgrade_rollback(self, target, plan_id, *, request_id):
+        target = target.ref if hasattr(target, "ref") else target
+        if not isinstance(target, ExecutionRef) or target.kind != "service":
+            raise ValueError("Upgrade rollback requires a Service reference.")
+        from homebrew_harness.services.operations.host import rollback
+
+        return rollback(self.core.workdir, target.id, plan_id, request_id)
+
+    @host_operation
     def inspect(self, target, operation_id, revision):
         target = target.ref if hasattr(target, "ref") else target
         if not isinstance(target, ExecutionRef):

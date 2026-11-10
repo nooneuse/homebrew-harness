@@ -16,7 +16,29 @@ MAINTENANCE_QUERIES = {
     "report_get": {"id"},
     "report_inbox": {"context", "cursor", "limit"},
 }
+OPERATIONS_QUERIES = {
+    "ops_health": set(),
+    "ops_list": {"cursor", "limit"},
+    "ops_get": {"id"},
+    "ops_read": {"id", "offset", "limit"},
+}
+OPERATIONS_COMMANDS = {
+    "ops_quiesce": set(),
+    "ops_resume_operations": set(),
+    "ops_backup": set(),
+    "ops_verify_backup": {"id"},
+    "ops_restore_backup": {"id"},
+    "ops_retention_preview": set(),
+    "ops_retention_apply": {"id"},
+    "ops_audit": {"force"},
+    "ops_diagnose": {"id"},
+    "ops_upgrade_prepare": {"alias"},
+    "ops_upgrade_arm": {"id"},
+    "ops_upgrade_confirm": {"id"},
+    "ops_retry": {"id"},
+}
 QUERY_METHODS = {
+    **OPERATIONS_QUERIES,
     **MAINTENANCE_QUERIES,
     "snapshot": set(),
     "focus_get": {"context"},
@@ -45,6 +67,7 @@ MAINTENANCE_COMMANDS = {
     "authority_revoke": {"id", "revision"},
 }
 COMMAND_METHODS = {
+    **OPERATIONS_COMMANDS,
     **MAINTENANCE_COMMANDS,
     "focus": {"context", "id", "revision"},
     "tick": set(),

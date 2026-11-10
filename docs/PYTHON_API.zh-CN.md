@@ -202,3 +202,7 @@ async def execute(config):
 ### Service 交付控制
 
 Service 视图增加 `delivery`、`prepare_delivery`、`plan_delivery`、`inspect_delivery`、`request_delivery`、`refresh_delivery`、`batch` 和 `decide_batch`。本地与远程视图共用控制协议，AsyncHarness 提供对应可等待方法。固定候选、逐项决定和未知动作查证见 [仓库交付](DELIVERY.zh-CN.md)。
+
+### Service 运维
+
+Service 提供 health、operations、operation、operation_record、quiesce、resume_operations、audit、diagnose、保留预览/应用、备份/验证/恢复及升级准备/授权/确认。AsyncHarness 提供可等待方法；host.admin.service_upgrade_rollback 是明确的宿主本地操作。详见 [Service 运维](SERVICE_OPERATIONS.zh-CN.md)。
