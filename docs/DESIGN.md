@@ -169,10 +169,13 @@ Hooks expose extension points at user input, before and after tools, and before 
 
 ## Code organization
 
+Persistent services own work acceptance and scheduling while native Runs own agent execution. Their control store records work and Run references; a stable launch intent joins the two stores through the Run API's idempotent acceptance. The Text UI and independent applications use one authenticated HTTP control API. Shared Service and Work views map its queries and commands to the existing controllers. Portable clients depend on contracts and observation; local hosts retain execution ownership and explicit saved-state inspection. Services keep their runtime outside mutable target code.
+
 The Python SDK exposes `Harness` and `AsyncHarness` with Session, Run, Workflow, interaction, request, and maintenance services. Execution handles identify the original unit of work and project state from the existing inbox, checkpoints, Run records and Workflow journal. The host manages attached resource ownership; async applications observe the same execution through awaitable views. See [Python API](PYTHON_API.md) for application usage.
 
 | Directory | Responsibility |
 | --- | --- |
+| `services/` | Persistent service ownership, work queue, schedules, HTTP control and Text UI |
 | `api/` | Application services, execution handles, typed decisions and async views |
 | `runtime/` | Sessions, loops, input, Hooks, preparation, and host control |
 | `runs/` | Persistent Runs, Episodes, outcomes, process supervision, and recovery |

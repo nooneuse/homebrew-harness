@@ -4,10 +4,18 @@ __version__ = "0.1.0"
 
 
 def __getattr__(name):
+    if name in {"RemoteService", "ControlConnection"}:
+        from .services import remote
+
+        return getattr(remote, name)
     if name in {"Harness", "AsyncHarness", "HostConfig", "SessionOptions"}:
         from . import api
 
         return getattr(api, name)
+    if name in {"ServiceSpec", "ScheduleSpec"}:
+        from .services import spec
+
+        return getattr(spec, name)
     if name in {"ModelRegistry", "ModelSpec"}:
         from .execution import model_registry
 
@@ -44,6 +52,10 @@ def __getattr__(name):
 
 
 __all__ = [
+    "RemoteService",
+    "ControlConnection",
+    "ServiceSpec",
+    "ScheduleSpec",
     "Harness",
     "AsyncHarness",
     "HostConfig",

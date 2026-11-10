@@ -78,7 +78,7 @@ class _View:
     def __getattr__(self, name):
         value = getattr(self._target, name)
         if not callable(value):
-            return value
+            return self._root._wrap(value)
 
         async def invoke(*args, **kw):
             result = await self._root._calls.call(value, *args, **kw)
@@ -161,10 +161,13 @@ class AsyncHarness:
             "interactions",
             "requests",
             "admin",
+            "services",
         ):
             setattr(self, name, _View(self, getattr(self._sync, name)))
 
     def _wrap(self, value):
+        if getattr(value, "_api_service", False):
+            return _View(self, value)
         return AsyncHandle(self, value) if isinstance(value, Handle) else value
 
     async def close(self, timeout=None):

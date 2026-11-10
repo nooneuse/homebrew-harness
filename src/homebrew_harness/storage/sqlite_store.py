@@ -282,6 +282,11 @@ class SQLiteDatabase:
                         if connection.in_transaction:
                             connection.execute("ROLLBACK")
                         raise
+                while schema == 0 and not initialize and deadline.remaining() != 0:
+                    # Another process can have published the new file before its
+                    # first schema transaction commits. Readers wait, never initialize.
+                    time.sleep(min(0.02, deadline.remaining()))
+                    schema = connection.execute("PRAGMA user_version").fetchone()[0]
                 if schema != 1:
                     raise RecoveryRequired(
                         "Unsupported runtime schema; no prerelease compatibility or automatic conversion."

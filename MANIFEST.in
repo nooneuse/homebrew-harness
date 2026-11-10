@@ -1,6 +1,7 @@
 include README.md README.zh-CN.md LICENSE requirements.txt
 include docs/DESIGN.md docs/DESIGN.zh-CN.md
 include docs/PYTHON_API.md docs/PYTHON_API.zh-CN.md
+include docs/SERVICES.md docs/SERVICES.zh-CN.md
 recursive-include licenses *
 recursive-include src *.py
 recursive-include examples *.py *.json

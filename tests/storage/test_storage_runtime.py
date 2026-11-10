@@ -7,6 +7,9 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+from unittest.mock import patch
 import unittest
 from contextlib import redirect_stderr
 
@@ -38,6 +41,30 @@ class CurrentStorageTests(unittest.TestCase):
         self.assertEqual(self.store.path.stat().st_mode & 0o777, 0o600)
         self.assertFalse((self.root / ".harness/runtime/backend.json").exists())
         self.assertFalse((self.root / ".harness/runtime/state.json").exists())
+
+    def test_reader_waits_for_the_first_schema_commit_without_initializing(self):
+        entered,release,done=threading.Event(),threading.Event(),threading.Event()
+        original=self.store.backend().schema_statements
+        errors=[];values=[]
+        def schema():
+            entered.set();release.wait(2)
+            return original()
+        def write():
+            try:self.store.put('cron','first',{'state':'executed'})
+            except Exception as error:errors.append(error)
+        def read():
+            try:values.append(self.store.items('cron'))
+            except Exception as error:errors.append(error)
+            finally:done.set()
+        with patch.object(self.store.backend(),'schema_statements',side_effect=schema):
+            writer=threading.Thread(target=write);writer.start()
+            self.assertTrue(entered.wait(1))
+            reader=threading.Thread(target=read);reader.start()
+            time.sleep(0.05);self.assertFalse(done.is_set())
+            release.set();writer.join(3);reader.join(3)
+        self.assertFalse(errors)
+        self.assertTrue(done.is_set())
+        self.assertIn('first',values[0])
 
     def test_database_checks_preserve_live_sqlite_locks_across_process_exit(self):
         from homebrew_harness.runs import RunStore, RunSpec

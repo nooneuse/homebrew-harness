@@ -47,6 +47,9 @@ class Harness:
         self.workflows = Workflows(self)
         self.interactions = Interactions(self)
         self.admin = Admin(self)
+        from .services import Services
+
+        self.services = Services(self)
 
     def check_open(self):
         if self.closed and not getattr(self._admitted, "depth", 0):
@@ -72,6 +75,7 @@ class Harness:
             *self.runs.owned.values(),
             *self.workflows.live.values(),
             *self.interactions.live.values(),
+            *self.services.handles(),
         ]
 
     def close(self, timeout=None):

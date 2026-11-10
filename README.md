@@ -18,6 +18,7 @@ The model proposes an action, the runtime executes the corresponding tool, and t
 | Interaction | Steering during execution, queued requests, interrupts, and separate tool approvals |
 | Execution | Host Bash; optional container backends for Bash, TestRunner, and local MCP; artifact collection and publication |
 | State | SQLite checkpoints, durable inboxes, recovery inspection, backups, and history maintenance |
+| Services | Persistent work queue, fixed schedules, local operator controls and dependency-free Text UI |
 
 ## Installation
 
@@ -31,12 +32,13 @@ source .venv/bin/activate
 python -m pip install -e .
 ```
 
-Installation provides one command with four subcommands:
+Installation provides one command with five subcommands:
 
 ```sh
 homebrew-harness --help
 homebrew-harness session --help
 homebrew-harness run --help
+homebrew-harness service --help
 homebrew-harness workflow --help
 homebrew-harness admin --help
 ```
@@ -352,6 +354,8 @@ homebrew-harness admin gc-preview --cwd /tmp/harness-example
 `homebrew-harness admin` manages backups, history collection, and checkpoint retirement. The default retirement policy keeps the latest 10 sessions and selects older sessions only after they have been closed and fully cleaned up for more than 15 days. See `homebrew-harness admin --help` for parameters.
 
 ## Python API
+
+Persistent services add a durable work queue, fixed interval schedules, native approvals, and a Text UI over an authenticated HTTP control API. Independent applications connect with `RemoteService`; remote operators can use an external `--connection` file. See [Services](docs/SERVICES.md) for setup and lifecycle controls. The initial manual profile delegates bounded work to managed Runs.
 
 ```python
 from pathlib import Path

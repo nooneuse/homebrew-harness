@@ -36,9 +36,24 @@ config = HostConfig.from_components(client=client, model=model_name)
 
 ## 服务与句柄
 
+`harness.services` 创建持久服务与串行工作队列。独立程序通过 `RemoteService` 连接认证 HTTP API，无需本地执行工作区或模型配置：
+
+```python
+from homebrew_harness import RemoteService
+
+with RemoteService.from_file(connection_file, control=True) as service:
+    work = service.work.submit("实现所需修改", request_id="feature-1")
+    print(work.wait(120).data())
+```
+
+`RemoteService` 退出上下文时关闭自己拥有的连接，Service 继续运行。传入的 `ControlClient` 默认借用，`own_client=True` 将关闭责任交给视图。`ControlConnection` 接收显式凭据，`from_file` 读取外部连接文件。客户端导入不加载 POSIX 执行后端；原生 Windows Service 执行另行适配。
+
+ServiceSpec、调度、detached、连接配置与 Text UI 用法见 [Services](SERVICES.zh-CN.md)，AsyncHarness 提供相同的宿主嵌套 work API。
+
 | 服务 | 主要操作 | 执行单位 |
 | --- | --- | --- |
 | `sessions` | `open`、`get`、`resume`、`turn`、`list` | 持续 Session 和单次请求 Turn |
+| `services` | `start`、`get`、`recover_launch` | 持久服务与串行工作项 |
 | `runs` | `start`、`get`、`list` | 跨 Episode 和阶段的托管 Run |
 | `workflows` | `start`、`get`、`resume`、`list` | 已注册的可恢复脚本 |
 | `interactions` | `open`、`get` | 自动需求路由入口及其任务 |

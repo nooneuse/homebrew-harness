@@ -36,9 +36,24 @@ Borrowed clients and registries remain open when the Harness closes. Set `own_cl
 
 ## Services and execution handles
 
+`harness.services` creates persistent services with a serial work queue. Independent applications use `RemoteService` over the authenticated HTTP API, with no local execution workspace or model configuration:
+
+```python
+from homebrew_harness import RemoteService
+
+with RemoteService.from_file(connection_file, control=True) as service:
+    work = service.work.submit("Implement the requested change", request_id="feature-1")
+    print(work.wait(120).data())
+```
+
+`RemoteService` closes its own connection when the context ends; the service keeps running. A supplied `ControlClient` is borrowed by default; `own_client=True` transfers its close responsibility. `ControlConnection` carries explicit credentials, while `from_file` reads an external connection file. Client imports do not load POSIX execution backends. Native Windows service execution is a separate adaptation.
+
+See [Services](SERVICES.md) for ServiceSpec, schedules, detached lifetime, connection configuration and the Text UI. AsyncHarness exposes the same nested host work API.
+
 | Service | Main operations | Execution unit |
 | --- | --- | --- |
 | `sessions` | `open`, `get`, `resume`, `turn`, `list` | Persistent Session and one query Turn |
+| `services` | `start`, `get`, `recover_launch` | Persistent service and serial work items |
 | `runs` | `start`, `get`, `list` | Managed Run across Episodes and stages |
 | `workflows` | `start`, `get`, `resume`, `list` | Registered recoverable script |
 | `interactions` | `open`, `get` | Automatic demand routing and its tasks |

@@ -31,12 +31,13 @@ source .venv/bin/activate
 python -m pip install -e .
 ```
 
-安装后提供一个命令和四个子命令：
+安装后提供一个命令和五个子命令：
 
 ```sh
 homebrew-harness --help
 homebrew-harness session --help
 homebrew-harness run --help
+homebrew-harness service --help
 homebrew-harness workflow --help
 homebrew-harness admin --help
 ```
@@ -352,6 +353,8 @@ homebrew-harness admin gc-preview --cwd /tmp/harness-example
 `homebrew-harness admin` 管理备份、历史回收和 checkpoint 退休。默认保留最近 10 个会话，较旧会话只有在关闭并完成全部收尾超过 15 天后才进入退休候选。参数参见 `homebrew-harness admin --help`。
 
 ## Python 接口
+
+持久 Service 提供工作队列、固定周期调度、原生审批，以及通过认证 HTTP 控制 API 连接的 Text UI。独立程序使用 `RemoteService`，远程操作者可通过外部 `--connection` 文件连接。设置与生命周期操作见 [Services](docs/SERVICES.zh-CN.md)。初期 manual profile 将有界工作交给已有 Run。
 
 ```python
 from pathlib import Path

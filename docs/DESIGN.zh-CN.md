@@ -169,10 +169,13 @@ Hooks 在用户输入、工具前后和结束前提供扩展点。控制 Hook �
 
 ## 代码组织
 
+持久 Service 管理工作受理与调度，原生 Run 负责 Agent 执行。控制库保存工作和 Run 引用，通过稳定启动意图与 Run API 的幂等受理关联两份状态。Text UI 与独立程序使用统一认证 HTTP 控制 API，共用 Service／Work 视图将查询和命令映射到已有控制器。轻量客户端依赖契约与观察层，宿主保留执行归属和显式保存状态检查。运行时位于可变目标源码之外。
+
 Python SDK 通过 `Harness` 和 `AsyncHarness` 提供 Session、Run、Workflow、自动入口、请求和维护服务。执行句柄标识原始工作单位，从现有 inbox、checkpoint、Run 记录和 Workflow journal 投影状态。宿主管理附着执行的资源归属，异步应用通过可等待视图观察同一执行。应用用法见 [Python API](PYTHON_API.zh-CN.md)。
 
 | 目录 | 职责 |
 | --- | --- |
+| `services/` | 持久服务归属、工作队列、调度、HTTP 控制和 Text UI |
 | `api/` | 应用服务、执行句柄、类型化决定和异步视图 |
 | `runtime/` | Session、循环、输入、Hooks、准备和宿主控制 |
 | `runs/` | 持久 Run、Episode、结果、进程监督和恢复 |

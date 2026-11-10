@@ -10,7 +10,7 @@ from .cli_arguments import add_location_arguments, add_session_arguments
 def parser():
     root = argparse.ArgumentParser(
         prog="homebrew-harness",
-        description="Agent sessions, managed runs, workflows and host administration.",
+        description="Agent sessions, managed runs, persistent services, workflows and host administration.",
         epilog="Without a subcommand, route new tasks automatically. Shared --cwd and --env-file options may appear before or after subcommands.",
     )
     add_location_arguments(root, defaults=True)
@@ -37,10 +37,12 @@ def parser():
     from .admin import register as register_admin
     from .runs.cli import register as register_run
     from .workflow_cli import register as register_workflow
+    from .services.cli import register as register_service
 
     register_run(commands)
     register_workflow(commands)
     register_admin(commands)
+    register_service(commands)
     return root
 
 

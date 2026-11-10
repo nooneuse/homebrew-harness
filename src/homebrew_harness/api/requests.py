@@ -31,6 +31,10 @@ class Requests:
             target = target.ref
         if not isinstance(target, ExecutionRef):
             raise ValueError("Expected an execution reference.")
+        if target.kind == "service":
+            return self.core.services.get(target.id).requests()
+        if target.kind == "work":
+            return self.core.services.get(target.owner_id).requests(target.id)
         if target.kind == "interaction":
             task = self.core.store.get("interaction_tasks", target.id)
             if not task or not task.get("target"):
@@ -94,6 +98,23 @@ class Requests:
             raise ValueError("Expected RequestRef with target and revision.")
         decision_id = decision_id or "decision_" + uuid.uuid4().hex
         stable_id("decision", ref.id, decision_id)
+        if ref.target.kind == "run" and ref.target.owner_id:
+            service = self.core.services.get(ref.target.owner_id, control=True)
+            action = (
+                "answer"
+                if decision == "answer"
+                else "renew_tests"
+                if runs is not None or seconds is not None
+                else decision
+            )
+            values = {}
+            if answer is not None:
+                values["text"] = answer
+            if runs is not None:
+                values["runs"] = runs
+            if seconds is not None:
+                values["seconds"] = seconds
+            return service.decide(ref, action, decision_id=decision_id, **values)
         if ref.durable and ref.target.kind != "run":
             raise ValueError("Durable decisions require a Run request reference.")
         if not ref.durable and ref.target.kind not in {"session", "turn"}:

@@ -73,6 +73,16 @@ class RunHandle(Handle):
             if value["status"] == "queued" and self.error
             else value["status"]
         )
+        terminal = value["status"] in {"completed", "failed", "cancelled"}
+        pending = not value.get("cleanup_complete", False)
+        if terminal:
+            pending = (
+                pending
+                or not value.get("finalized_at")
+                or detached_status(self.core.run_store, self.id).get("live", False)
+            )
+            if self.owned:
+                pending = pending or not self.workers.wait(0)
         return ExecutionSnapshot(
             self.ref,
             state,
@@ -89,7 +99,7 @@ class RunHandle(Handle):
             output_available=value["status"] in {"completed", "failed", "cancelled"}
             and bool(value.get("last_outcome")),
             persistence_confirmed=True,
-            execution_pending=not value.get("cleanup_complete", False),
+            execution_pending=pending,
             cleanup={
                 "complete": value.get("cleanup_complete", False),
                 "finalized": bool(value.get("finalized_at")),
@@ -172,6 +182,16 @@ class RunHandle(Handle):
             )
         except WorkAccepted:
             pass
+
+    @host_operation
+    def supervise(self):
+        """Attach the native supervisor without altering saved controls or faults."""
+        self._require_control()
+        self.owned = True
+        self.lifetime = "attached"
+        self.core.runs.owned[self.id] = self
+        self._ensure_started()
+        return self.snapshot()
 
     @host_operation
     def steer(self, text, *, request_id=None, expected_turn_id=None):
@@ -303,42 +323,7 @@ class Runs:
             if prior["payload"] != payload:
                 raise StaleReference("Submission ID has another Run/configuration.")
             return self._replay(prior["id"], lifetime)
-        c = self.core.config.settings
-        settings = replace(
-            c,
-            lead_model=spec.model_profile or c.lead_model,
-            context_chars=spec.context_chars,
-            output_tokens=spec.output_tokens,
-            total_seconds=spec.total_seconds,
-            turn_seconds=spec.episode_seconds,
-            request_seconds=spec.request_seconds,
-            max_turns=spec.episode_model_calls,
-            memory_mode=spec.memory_mode,
-            write_paths=spec.write_paths,
-            allow_tests=spec.allow_tests,
-            mcp_delegation=spec.mcp_delegation,
-        )
-        with output_scope():
-            builder = self.core.config.builder(self.core.workdir, settings=settings)
-            try:
-                builder.run_spec(
-                    TaskRoute(
-                        execution_mode="managed",
-                        capabilities=spec.enabled,
-                        mcp=spec.mcp,
-                        stages=spec.stages,
-                        members=spec.members,
-                    ),
-                    spec.prompt,
-                    goal=spec.goal,
-                )
-                bindings, head, control_binding = (
-                    builder.run_bindings,
-                    builder.run_head,
-                    builder.run_control_binding,
-                )
-            finally:
-                builder.close()
+        bindings, head, control_binding = self.prepare(spec)
 
         def accept(db, conn, value):
             previous = db._get(conn, "api_submissions", key)
@@ -392,6 +377,51 @@ class Runs:
             except Exception as error:
                 handle.error = type(error).__name__
         return handle
+
+    @host_operation
+    def prepare(self, spec):
+        """Validate and bind a Run without accepting or starting execution."""
+        self.core.config.require_reconstructable()
+        if not isinstance(spec, RunSpec):
+            raise ValueError("Expected RunSpec.")
+        c = self.core.config.settings
+        settings = replace(
+            c,
+            lead_model=spec.model_profile or c.lead_model,
+            context_chars=spec.context_chars,
+            output_tokens=spec.output_tokens,
+            total_seconds=spec.total_seconds,
+            turn_seconds=spec.episode_seconds,
+            request_seconds=spec.request_seconds,
+            max_turns=spec.episode_model_calls,
+            memory_mode=spec.memory_mode,
+            write_paths=spec.write_paths,
+            allow_tests=spec.allow_tests,
+            mcp_delegation=spec.mcp_delegation,
+        )
+        with output_scope():
+            builder = self.core.config.builder(self.core.workdir, settings=settings)
+            try:
+                builder.run_spec(
+                    TaskRoute(
+                        execution_mode="managed",
+                        capabilities=spec.enabled,
+                        mcp=spec.mcp,
+                        stages=spec.stages,
+                        members=spec.members,
+                    ),
+                    spec.prompt,
+                    goal=spec.goal,
+                )
+                bindings, head, control_binding = (
+                    builder.run_bindings,
+                    builder.run_head,
+                    builder.run_control_binding,
+                )
+            finally:
+                builder.close()
+
+        return bindings, head, control_binding
 
     def _replay(self, identity, lifetime):
         with self.lock:
