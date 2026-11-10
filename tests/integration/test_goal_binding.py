@@ -1,5 +1,7 @@
 """Goal binding preserves task text and commits before any model work."""
 
+from tests.support.clients import cli_model_factory
+
 import io
 import copy
 import json
@@ -192,7 +194,7 @@ class GoalBindingTests(unittest.TestCase):
                     },
                 ),
                 patch("homebrew_harness.session_cli.load_dotenv"),
-                patch("homebrew_harness.session_cli.OpenAI") as factory,
+                cli_model_factory() as factory,
                 patch(
                     "homebrew_harness.session_cli.load_test_runner",
                     return_value=TestRunner(self.root, []),
@@ -262,7 +264,7 @@ class GoalInputTests(unittest.TestCase):
                     },
                 ),
                 patch("homebrew_harness.session_cli.load_dotenv"),
-                patch("homebrew_harness.session_cli.OpenAI") as factory,
+                cli_model_factory() as factory,
                 redirect_stderr(captured),
             ):
                 self.assertEqual(
@@ -357,7 +359,7 @@ class GoalInputTests(unittest.TestCase):
                         },
                     ),
                     patch("homebrew_harness.session_cli.load_dotenv"),
-                    patch("homebrew_harness.session_cli.OpenAI") as client,
+                    cli_model_factory() as client,
                     patch("homebrew_harness.session_cli.load_test_runner") as tests,
                     redirect_stdout(io.StringIO()),
                     redirect_stderr(io.StringIO()) as error,

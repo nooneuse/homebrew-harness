@@ -15,7 +15,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from openai import APIError
+from homebrew_harness.execution.model_protocol import ProviderError
 
 import homebrew_harness.context.skill_loader
 
@@ -513,15 +513,13 @@ class SubagentTests(unittest.TestCase):
         )
 
     def test_child_api_failure_is_paired_and_private_details_are_not_forwarded(self):
-        error = APIError(
-            "private-test-value", request=Mock(), body={"detail": "private-test-value"}
-        )
+        error = ProviderError("transport")
         result, _, history = self.run_parent(
             [reply(calls=[task_call("outer")]), error, reply("The subtask failed.")]
         )
         self.assertEqual(result, "The subtask failed.")
         self.assertEqual(history[-2]["tool_call_id"], "outer")
-        self.assertIn("APIError", json.loads(history[-2]["content"])["error"])
+        self.assertIn("transport", json.loads(history[-2]["content"])["error"])
         self.assertNotIn(
             "private-test-value", json.dumps(history) + self.stderr.getvalue()
         )

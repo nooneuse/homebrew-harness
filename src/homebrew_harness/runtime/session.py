@@ -170,6 +170,14 @@ class HarnessSession:
             from homebrew_harness.execution.model_registry import ModelRegistry
 
             self.models = model_registry or ModelRegistry()
+            if resume_session:
+                from homebrew_harness.execution.providers.backends import (
+                    session_backend_bindings,
+                )
+
+                self.models.pin_backends(
+                    session_backend_bindings(workdir, resume_session)
+                )
             self.models.claim(self)
             own("models", self.models)
             lead_alias = (

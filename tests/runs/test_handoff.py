@@ -304,6 +304,8 @@ class HandoffTests(unittest.TestCase):
                 lead_model_profile=state["selected_model"],
                 capabilities=Capabilities(control.spec.enabled),
                 run_control=control,
+                context_chars=control.spec.context_chars,
+                worker_output_tokens=control.spec.output_tokens,
                 shutdown_timeout=1,
             )
             return control, harness

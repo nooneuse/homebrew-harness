@@ -1,3 +1,4 @@
+from tests.support.clients import cli_model_factory
 from tests.support.clients import model_binding
 from tests.support.tools import queued_cli_input
 
@@ -423,7 +424,7 @@ with patch.object(GoalController,'accept_candidate',crash):
         with (
             patch.dict(os.environ, config),
             patch("homebrew_harness.session_cli.load_dotenv"),
-            patch("homebrew_harness.session_cli.OpenAI") as factory,
+            cli_model_factory() as factory,
             patch(
                 "builtins.input",
                 side_effect=queued_cli_input(

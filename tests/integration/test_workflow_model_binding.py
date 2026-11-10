@@ -1,5 +1,7 @@
 """Workflow entry points retain model limits and exact inference identities."""
 
+from tests.support.clients import cli_model_factory
+
 import io
 import json
 import os
@@ -166,7 +168,7 @@ class WorkflowModelBindingTests(unittest.TestCase):
                 clear=True,
             ),
             patch("pathlib.Path.home", return_value=self.base),
-            patch("homebrew_harness.session_cli.OpenAI", return_value=client),
+            cli_model_factory( return_value=client),
             patch(
                 "homebrew_harness.orchestration.workflows.default_registry",
                 return_value=registry,

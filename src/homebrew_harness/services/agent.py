@@ -28,12 +28,17 @@ class ServiceAgent:
             if settings.env_file
             else None
         )
-        self.models = HostModels(
-            runtime.store.root,
-            config=settings.models_config,
-            alias=model_profile or store.policy["model_profile"] or settings.lead_model,
-            environment=environment,
-        )
+        from homebrew_harness.execution.providers.backends import backend_scope
+
+        with backend_scope(getattr(runtime, "saved_model_bindings", None)):
+            self.models = HostModels(
+                runtime.store.root,
+                config=settings.models_config,
+                alias=model_profile
+                or store.policy["model_profile"]
+                or settings.lead_model,
+                environment=environment,
+            )
         self.binding = self.models.open(
             context_chars=settings.context_chars, output_tokens=settings.output_tokens
         )
@@ -46,6 +51,17 @@ class ServiceAgent:
         self.skills = SkillLoader(Path(__file__).parent / "skills")
         self.job = None
         self.proposal = None
+        self.override_bindings = {}
+        for alias in {
+            runtime.spec.operations.get("audit_model"),
+            (runtime.spec.delivery or {}).get("review_model"),
+        } - {None, self.models.alias}:
+            selected = self.models.registry.select(
+                alias,
+                context_chars=settings.context_chars,
+                max_output_tokens=settings.output_tokens,
+            )
+            self.override_bindings[alias] = selected.identity()
 
     def identity(self):
         from .protocol import fingerprint
@@ -53,6 +69,7 @@ class ServiceAgent:
         return {
             "model": self.binding.identity(),
             "catalog": self.models.registry.manifest(),
+            "overrides": self.override_bindings,
             "skills": fingerprint(
                 {k: v.content for k, v in self.skills.skills.items()}
             ),

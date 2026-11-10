@@ -34,14 +34,19 @@ class ProtocolService:
                 )
                 outer.headers.append(dict(self.headers))
                 value = outer.responses.popleft()
+                status = 200
+                if isinstance(value, tuple) and isinstance(value[0], int):
+                    status, value = value
                 if isinstance(value, tuple):
                     raw = "".join(
                         "data: " + json.dumps(event) + "\n\n" for event in value[1]
                     ).encode()
                     kind = "text/event-stream"
+                elif isinstance(value, bytes):
+                    raw, kind = value, "text/plain"
                 else:
                     raw, kind = json.dumps(value).encode(), "application/json"
-                self.send_response(200)
+                self.send_response(status)
                 self.send_header("Content-Type", kind)
                 self.send_header("Content-Length", str(len(raw)))
                 self.end_headers()

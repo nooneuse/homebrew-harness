@@ -347,7 +347,15 @@ class Sessions:
                 code="capability_unavailable",
             )
         with output_scope():
-            builder = self.core.config.builder(self.core.workdir, settings=settings)
+            from homebrew_harness.execution.providers.backends import (
+                session_backend_bindings,
+            )
+
+            builder = self.core.config.builder(
+                self.core.workdir,
+                settings=settings,
+                model_bindings=session_backend_bindings(self.core.workdir, resume),
+            )
             try:
                 runtime = builder.session(
                     TaskRoute(

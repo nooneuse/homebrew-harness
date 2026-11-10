@@ -165,6 +165,7 @@ class WorkflowHandle(Handle):
             resume=True,
             model_profile=row.get("model_profile"),
             expected_binding=row.get("binding"),
+            model_bindings=row.get("model_binding"),
         )
 
     def close(self):
@@ -193,7 +194,7 @@ class Workflows:
         self.core, self.live, self.lock = core, {}, threading.RLock()
         self._reader = None
 
-    def _resources(self, model_profile=None):
+    def _resources(self, model_profile=None, model_bindings=None):
         from dataclasses import replace
 
         settings = (
@@ -202,7 +203,9 @@ class Workflows:
             else self.core.config.settings
         )
         with output_scope():
-            builder = self.core.config.builder(self.core.workdir, settings=settings)
+            builder = self.core.config.builder(
+                self.core.workdir, settings=settings, model_bindings=model_bindings
+            )
         models = None
         try:
             models = builder.models()
@@ -282,6 +285,7 @@ class Workflows:
                                 "request_id": request_id,
                                 "model_profile": model_profile,
                                 "binding": runtime.runner.identity,
+                                "model_binding": runtime.runner.binding.identity(),
                                 "state": "accepted",
                             },
                         )
@@ -312,6 +316,7 @@ class Workflows:
         model_profile=None,
         resources=None,
         expected_binding=None,
+        model_bindings=None,
     ):
         self.core.check_open()
         with self.lock:
@@ -322,7 +327,9 @@ class Workflows:
                 raise SDKError(
                     "Workflow already has an active owner.", code="workspace_busy"
                 )
-            runtime, models = resources or self._resources(model_profile)
+            runtime, models = resources or self._resources(
+                model_profile, model_bindings
+            )
             try:
                 if (
                     expected_binding is not None

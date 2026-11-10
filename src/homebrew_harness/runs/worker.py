@@ -45,7 +45,16 @@ def make_session(store, control, args):
         output_tokens=spec.output_tokens,
         max_turns=spec.episode_model_calls,
     )
-    builder = InteractionAssembler(store.root, config)
+    from homebrew_harness.execution.providers.backends import session_backend_bindings
+
+    builder = InteractionAssembler(
+        store.root,
+        config,
+        model_bindings=[
+            control.state.get("expected_binding"),
+            session_backend_bindings(store.root, control.state["session_id"]),
+        ],
+    )
     try:
         session = builder.session(
             TaskRoute(

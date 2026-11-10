@@ -32,6 +32,16 @@ source .venv/bin/activate
 python -m pip install -e .
 ```
 
+The base installation supports all four model protocols over HTTP. Vendor SDKs are optional. Install the backend you prefer:
+
+```sh
+python -m pip install -e ".[openai]"
+python -m pip install -e ".[anthropic]"
+python -m pip install -e ".[dashscope]"
+```
+
+With `transport: "auto"`, a new connection uses an installed, supported SDK when available, otherwise HTTP. Use `"http"` or `"sdk"` to select a backend explicitly. See [model connections](docs/MODELS.md).
+
 Installation provides one command with five subcommands:
 
 ```sh

@@ -28,7 +28,7 @@ from homebrew_harness.orchestration.hard_conditions import (
     ConditionError,
 )
 from homebrew_harness.runtime.session import HarnessSession
-from homebrew_harness.execution.model_gateway import Deadline, ModelGateway
+from homebrew_harness.execution.model_gateway import Deadline, ModelGateway, ModelDeadlineExceeded
 from homebrew_harness.security.permissions import (
     PermissionDecision,
     noninteractive_permissions,
@@ -272,10 +272,17 @@ class RunnerTests(Fixture):
         runner = self.runner("import time; time.sleep(5)", timeout=5)
         client, _ = fake_client([])
         gateway = ModelGateway(client)
+        started = time.monotonic()
         with gateway.scope(deadline=Deadline.after(0.1)):
-            result = runner.run("suite")
-        self.assertEqual(result["status"], "timeout")
-        self.assertLess(result["elapsed_seconds"], 1)
+            try:
+                result = runner.run("suite")
+            except ModelDeadlineExceeded:
+                # The same deadline may stop preparation before process launch.
+                self.assertFalse(runner._processes)
+            else:
+                self.assertEqual(result["status"], "timeout")
+                self.assertLess(result["elapsed_seconds"], 1)
+        self.assertLess(time.monotonic() - started, 1)
 
     def test_close_cancels_running_test_without_unbounded_join(self):
         runner = self.runner("import time; time.sleep(5)")

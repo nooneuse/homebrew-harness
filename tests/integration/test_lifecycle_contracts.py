@@ -2,6 +2,8 @@
 
 from tests.support.clients import model_binding
 
+from tests.support.clients import cli_model_factory
+
 import io
 import asyncio
 import json
@@ -422,7 +424,7 @@ class FollowupTests(unittest.TestCase):
                 },
             ),
             patch("homebrew_harness.session_cli.load_dotenv"),
-            patch("homebrew_harness.session_cli.OpenAI", return_value=sdk),
+            cli_model_factory( return_value=sdk),
             patch(
                 "homebrew_harness.runtime.session.HarnessSession", side_effect=construct
             ),
@@ -683,9 +685,9 @@ class FollowupTests(unittest.TestCase):
         )
 
         response = reply("saved")
-        from openai.types import CompletionUsage
+        from types import SimpleNamespace
 
-        response.usage = CompletionUsage(
+        response.usage = SimpleNamespace(
             total_tokens=23, prompt_tokens=0, completion_tokens=23
         )
         client, _ = fake_client([response])

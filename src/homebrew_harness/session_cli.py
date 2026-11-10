@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from homebrew_harness.execution.model_connections import HostModels
+
 import json
 import math
 import os
@@ -10,7 +12,6 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from dotenv import load_dotenv
-from openai import APIError, OpenAI
 
 import homebrew_harness.configuration
 import homebrew_harness.runtime.assembly
@@ -20,9 +21,7 @@ from homebrew_harness.context.compaction import CompactionError
 from homebrew_harness.context.memory import MemoryError
 from homebrew_harness.execution.background import termination_guard
 from homebrew_harness.execution.bash_policy import HOST_POLICY, load_bash_policy
-from homebrew_harness.execution.model_errors import quota_exhausted
 from homebrew_harness.execution.model_gateway import (
-    ModelDeadlineExceeded,
     ModelGatewayError,
     gateway_limits_from_args,
 )
@@ -36,7 +35,6 @@ from homebrew_harness.orchestration.workflow_runtime import (
 from homebrew_harness.runtime.capabilities import from_args as capabilities_from_args
 from homebrew_harness.runtime.hooks import HookError
 from homebrew_harness.security.data_boundary import redact
-from homebrew_harness.storage.durable_runtime import RecoveryRequired
 from homebrew_harness.tools.mcp.runtime import MCPError, MCPRuntime, load_specs
 
 
@@ -77,16 +75,19 @@ def execute(args, parser) -> int:
     if args.skills_dir is not None and not skills_dir.is_dir():
         parser.error("--skills-dir must be an existing directory")
 
-    from homebrew_harness.execution.model_connections import HostModels
+    from homebrew_harness.execution.providers.backends import (
+        backend_scope,
+        session_backend_bindings,
+    )
 
     try:
-        host_models = HostModels(
-            workdir,
-            config=args.models_config,
-            alias=args.lead_model,
-            environment=os.environ,
-            client_factory=OpenAI,
-        )
+        with backend_scope(session_backend_bindings(workdir, args.resume_session)):
+            host_models = HostModels(
+                workdir,
+                config=args.models_config,
+                alias=args.lead_model,
+                environment=os.environ,
+            )
     except ValueError as error:
         print(redact(str(error)), file=sys.stderr)
         return 1
@@ -301,23 +302,6 @@ def execute(args, parser) -> int:
                                     print(redact(str(error)), file=sys.stderr)
                         finally:
                             broker.close()
-    except APIError as error:
-        # Provider error bodies can contain private endpoints or request details.
-        message = (
-            "Model quota exhausted; restore provider quota or settings before retrying. Files and task progress were retained."
-            if quota_exhausted(error)
-            else f"Model request failed ({type(error).__name__}); check connection settings and access."
-        )
-        print(message, file=sys.stderr)
-        if "session" in locals() and session.goal.pending:
-            print("Goal retained: " + session.goal.state["goal_id"], file=sys.stderr)
-        return 1
-    except ModelDeadlineExceeded as error:
-        print(str(error), file=sys.stderr)
-        return 2
-    except RecoveryRequired as error:
-        print(redact(str(error)), file=sys.stderr)
-        return 2
     except (
         homebrew_harness.runtime.errors.AgentError,
         HookError,
@@ -330,6 +314,12 @@ def execute(args, parser) -> int:
         ValueError,
     ) as error:
         print(redact(str(error)), file=sys.stderr)
+        return 1
+    except Exception as error:
+        print(
+            "Session initialization/request failed (" + type(error).__name__ + ").",
+            file=sys.stderr,
+        )
         return 1
     except KeyboardInterrupt:
         print("\nStopped.", file=sys.stderr)

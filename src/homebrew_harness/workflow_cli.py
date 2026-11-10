@@ -89,12 +89,21 @@ def execute(args, parser):
                 read_environment,
             )
 
-            host_models = HostModels(
-                workdir,
-                config=args.models_config,
-                alias=args.model,
-                environment=read_environment(args.env_file, workdir),
+            from homebrew_harness.execution.providers.backends import backend_scope
+            from homebrew_harness.orchestration.workflow_runtime import WorkflowStore
+
+            saved_binding = (
+                WorkflowStore(workdir).inspect(args.run_id).get("model_binding")
+                if args.command == "resume"
+                else None
             )
+            with backend_scope(saved_binding):
+                host_models = HostModels(
+                    workdir,
+                    config=args.models_config,
+                    alias=args.model,
+                    environment=read_environment(args.env_file, workdir),
+                )
             binding = host_models.open(output_tokens=args.max_output_tokens)
             client = binding.client
             gateway = ModelGateway(

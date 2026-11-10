@@ -406,7 +406,7 @@ class ModelSelectionTests(unittest.TestCase):
                 completions=SimpleNamespace(
                     create=Mock(
                         side_effect=lambda **_kwargs: (
-                            gate.wait(2),
+                            gate.wait(),
                             reply(
                                 calls=[
                                     call(

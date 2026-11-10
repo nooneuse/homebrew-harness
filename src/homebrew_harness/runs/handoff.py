@@ -224,6 +224,7 @@ def switch_model(store, run_id, alias, revision, registry, *, reason, supervisor
                         "used_fallbacks": [*current.get("used_fallbacks", []), alias],
                         "bindings": None,
                         "expected_models": registry.manifest(),
+                        "expected_binding": binding.identity(),
                         "status": "queued",
                         "next_retry_at": None,
                         "last_outcome": None,

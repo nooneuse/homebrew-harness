@@ -4,6 +4,8 @@ from __future__ import annotations
 from tests.support.tools import queued_cli_input
 from homebrew_harness.runtime.capabilities import Capabilities
 
+from tests.support.clients import cli_model_factory
+
 import io
 import json
 import os
@@ -441,7 +443,7 @@ class LifecycleTests(unittest.TestCase):
                 with (
                     patch.dict(os.environ, config),
                     patch("homebrew_harness.session_cli.load_dotenv"),
-                    patch("homebrew_harness.session_cli.OpenAI") as factory,
+                    cli_model_factory() as factory,
                     patch("builtins.input", side_effect=queued_cli_input(answers, lambda: len(seen) == len(expected))),
                     patch(
                         "homebrew_harness.runtime.hooks.create_hooks",

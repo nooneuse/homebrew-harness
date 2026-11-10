@@ -48,6 +48,7 @@ class Peer:
         self.source_failure = 0
         self.hold = None
         self.native_hold = None
+        self.native_started = threading.Event()
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -102,8 +103,9 @@ class Peer:
                     if m["role"] == "system"
                 )
                 if not service:
+                    outer.native_started.set()
                     if outer.native_hold:
-                        outer.native_hold.wait(10)
+                        outer.native_hold.wait()
                     self.send(completion("Local work complete."))
                     return
                 data = next(

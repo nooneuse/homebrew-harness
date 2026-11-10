@@ -21,7 +21,7 @@ import homebrew_harness.context.compaction
 from homebrew_harness.execution.background import BackgroundManager
 from homebrew_harness.runtime.session import HarnessSession
 from homebrew_harness.security.permissions import PermissionDecision
-from openai import PermissionDeniedError
+from homebrew_harness.execution.model_protocol import ProviderError
 from homebrew_harness.orchestration.teams import TeammateRuntime
 from tests.support.clients import call, fake_client, reply
 
@@ -278,11 +278,7 @@ class HarnessTests(unittest.TestCase):
     ):
         session, client, _ = self.session([])
         session.team.bus.send("worker", "lead", "Finding", "result")
-        client.chat.completions.create.side_effect = PermissionDeniedError(
-            "private endpoint",
-            response=Mock(status_code=403),
-            body={"error": {"code": "insufficient_quota"}},
-        )
+        client.chat.completions.create.side_effect = ProviderError("quota", status_code=403)
         self.assertTrue(session.process_once())
         self.assertTrue(session._quota_blocked)
         self.assertFalse(session.process_once())

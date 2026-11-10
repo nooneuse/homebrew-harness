@@ -867,7 +867,7 @@ class WorkflowTests(unittest.TestCase):
     def test_openai_sdk_transport_runs_against_local_service_without_remote_tokens(
         self,
     ):
-        from openai import OpenAI
+        from homebrew_harness.execution.providers.native import NativeAdapter
 
         requests = []
 
@@ -919,12 +919,12 @@ class WorkflowTests(unittest.TestCase):
                 + str(server.server_address[1])
                 + "/v1"
             )
-            with OpenAI(
-                api_key=uuid.uuid4().hex, base_url=address, timeout=3, max_retries=0
+            with NativeAdapter("chat_completions",
+                api_key=uuid.uuid4().hex, base_url=address,
             ) as client:
                 _ = client.default_headers
                 _ = (
-                    client.chat.completions
+                    client.protocol
                 )  # Load SDK resources before the short transport deadline.
 
                 async def script(ctx, args):

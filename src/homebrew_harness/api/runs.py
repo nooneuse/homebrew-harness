@@ -379,7 +379,7 @@ class Runs:
         return handle
 
     @host_operation
-    def prepare(self, spec):
+    def prepare(self, spec, *, model_bindings=None):
         """Validate and bind a Run without accepting or starting execution."""
         self.core.config.require_reconstructable()
         if not isinstance(spec, RunSpec):
@@ -400,7 +400,9 @@ class Runs:
             mcp_delegation=spec.mcp_delegation,
         )
         with output_scope():
-            builder = self.core.config.builder(self.core.workdir, settings=settings)
+            builder = self.core.config.builder(
+                self.core.workdir, settings=settings, model_bindings=model_bindings
+            )
             try:
                 builder.run_spec(
                     TaskRoute(

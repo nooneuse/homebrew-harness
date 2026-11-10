@@ -3,6 +3,8 @@
 from __future__ import annotations
 from tests.support.paths import PROJECT_ROOT
 
+from tests.support.clients import cli_model_factory
+
 import copy
 import io
 import json
@@ -904,7 +906,7 @@ class LeadEventsTests(TeamFixture):
         with (
             patch.dict("os.environ", config),
             patch("homebrew_harness.session_cli.load_dotenv"),
-            patch("homebrew_harness.session_cli.OpenAI") as factory,
+            cli_model_factory() as factory,
             patch(
                 "homebrew_harness.runtime.hooks.create_hooks", return_value=self.hooks
             ),

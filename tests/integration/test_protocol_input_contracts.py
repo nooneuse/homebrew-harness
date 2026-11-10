@@ -373,7 +373,7 @@ class ProtocolInputContracts(unittest.TestCase):
         def fail(request):
             raise httpx.ReadTimeout("synthetic timeout", request=request)
 
-        adapter.client = httpx.Client(
+        adapter.backend.client = httpx.Client(
             base_url=local_endpoint(), transport=httpx.MockTransport(fail)
         )
         gateway = self.gateway(adapter)

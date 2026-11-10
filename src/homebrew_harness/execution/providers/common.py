@@ -30,6 +30,14 @@ RESERVED = {
     "api_key",
     "base_url",
     "headers",
+    "extra_headers",
+    "extra_query",
+    "extra_body",
+    "http_client",
+    "transport",
+    "max_retries",
+    "proxy",
+    "proxies",
     "previous_response_id",
     "conversation",
     "store",
@@ -269,15 +277,12 @@ def response_errors(capture):
         yield
     except BaseException as error:
         import httpx
-        import openai
 
         normalized = error
-        if isinstance(error, (httpx.TimeoutException, openai.APITimeoutError)):
+        if isinstance(error, httpx.TimeoutException):
             normalized = ProviderError("timeout")
-        elif isinstance(error, (httpx.TransportError, openai.APIConnectionError)):
+        elif isinstance(error, httpx.TransportError):
             normalized = ProviderError("transport")
-        elif isinstance(error, openai.APIStatusError):
-            normalized = classify_error(error.status_code, error.body or {})
         elif isinstance(error, (KeyError, TypeError, ValueError)) and not isinstance(
             error, ModelProtocolError
         ):

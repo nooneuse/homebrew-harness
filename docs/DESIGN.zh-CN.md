@@ -44,11 +44,11 @@ flowchart LR
 
 `ModelGateway` 管理并发、期限、取消、连接状态和用量观察。协议适配器准备请求、聚合流并将响应解析为 `ModelResponse` 与 `ToolInvocation`。
 
-支持 Chat Completions、Responses、DashScope Generation 和 Anthropic Messages。协议专用的思考状态保存在所属上下文的附件中，普通历史使用共享消息表示。
+支持 Chat Completions、Responses、DashScope Generation 和 Anthropic Messages。每种协议的 HTTP 与可选 SDK 执行器共用请求和响应转换。连接准备时确定后端，网关继续拥有请求执行和工具调用边界。协议专用的思考状态保存在所属上下文的附件中，普通历史使用共享消息表示。
 
 模型目录将连接与用途配置分开。连接引用外部环境变量，配置声明模型、上下文、输出和能力。Lead、成员和 Subagent 可选不同配置，辅助调用使用相应模型入口。配置身份随 checkpoint 保存，连接值由宿主提供。
 
-宿主模型准备由各入口共用模型目录和绑定，直接 Workflow 与 live benchmark 使用同一协议接入。绑定身份包含配置、API 版本、能力和有效限制。模型型 Workflow 接收完整绑定，通过网关的协议准备路径核查输入与输出限制。
+宿主模型准备由各入口共用模型目录和绑定，直接 Workflow 与 live benchmark 使用同一协议接入。绑定身份包含配置、API 版本、能力、有效限制和实际后端。恢复沿用已保存的后端；原 SDK 不可用时，需要恢复对应环境或创建新执行。模型型 Workflow 接收完整绑定，通过网关的协议准备路径核查输入与输出限制。
 
 上下文准备计入适配器展开后的请求，并复用准备结果。用量记录描述请求成本和执行状态，费用上限由提供商管理。
 

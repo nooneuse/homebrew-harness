@@ -1,3 +1,4 @@
+from tests.support.services import ready_service
 import os
 import signal
 import unittest
@@ -19,7 +20,7 @@ class MaintenanceRecovery(unittest.TestCase):
         request = eventually(lambda: service.requests() and service.requests()[0], 15)
         os.kill(service.store.get(service.id)["pid"], signal.SIGKILL)
         eventually(lambda: not live(self.control), 8)
-        restored = self.host.services.start(identity=service.id, lifetime="detached")
+        restored = ready_service(self.host.services.start(identity=service.id, lifetime="detached"))
         current = eventually(lambda: restored.requests() and restored.requests()[0], 15)
         self.assertEqual(current.ref, request.ref)
         restored.decide(current, "approve", decision_id="continue")
@@ -38,7 +39,7 @@ class MaintenanceRecovery(unittest.TestCase):
         os.kill(service.store.get(service.id)["pid"], signal.SIGKILL)
         eventually(lambda: not live(self.control), 8)
         self.peer.hold.set()
-        restored = self.host.services.start(identity=service.id, lifetime="detached")
+        restored = ready_service(self.host.services.start(identity=service.id, lifetime="detached"))
         eventually(lambda: restored.conversation(receipt["id"]).get("result"), 15)
         self.assertEqual(
             restored.converse(

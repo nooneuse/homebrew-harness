@@ -31,6 +31,16 @@ source .venv/bin/activate
 python -m pip install -e .
 ```
 
+基础安装通过 HTTP 支持全部四种模型协议，供应商 SDK 为可选依赖。按需安装：
+
+```sh
+python -m pip install -e ".[openai]"
+python -m pip install -e ".[anthropic]"
+python -m pip install -e ".[dashscope]"
+```
+
+新连接默认 `transport: "auto"`，优先使用已安装且受支持的 SDK，否则使用 HTTP。也可以显式选择 `"http"` 或 `"sdk"`。详见[模型连接](docs/MODELS.zh-CN.md)。
+
 安装后提供一个命令和五个子命令：
 
 ```sh

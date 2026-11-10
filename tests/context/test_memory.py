@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from tests.support.clients import cli_model_factory
+
 import io
 import json
 import os
@@ -496,7 +498,7 @@ class MemoryTests(unittest.TestCase):
         with (
             patch.dict(os.environ, config),
             patch("homebrew_harness.session_cli.load_dotenv"),
-            patch("homebrew_harness.session_cli.OpenAI") as factory,
+            cli_model_factory() as factory,
             patch("homebrew_harness.context.memory.MemoryRuntime") as runtime,
             redirect_stdout(io.StringIO()),
         ):
@@ -534,7 +536,7 @@ class MemoryTests(unittest.TestCase):
         with (
             patch.dict(os.environ, config),
             patch("homebrew_harness.session_cli.load_dotenv"),
-            patch("homebrew_harness.session_cli.OpenAI") as factory,
+            cli_model_factory() as factory,
             redirect_stdout(io.StringIO()),
         ):
             factory.return_value.__enter__.return_value = client

@@ -3,8 +3,7 @@
 import copy
 import json
 from types import SimpleNamespace
-from unittest.mock import Mock
-from openai.types.chat import ChatCompletion
+from unittest.mock import Mock, MagicMock
 
 
 def reply(content=None, calls=None, finish_reason="stop", reasoning=None):
@@ -13,7 +12,7 @@ def reply(content=None, calls=None, finish_reason="stop", reasoning=None):
         message["tool_calls"] = calls
     if reasoning is not None:
         message["reasoning_content"] = reasoning
-    return ChatCompletion.model_validate(
+    return namespace(
         {
             "id": "test-completion",
             "object": "chat.completion",
@@ -70,3 +69,51 @@ def model_binding(client, model):
     from homebrew_harness.execution.model_registry import ModelRegistry
 
     return ModelRegistry().select(client=client, model=model)
+
+
+def namespace(value):
+    if isinstance(value, dict):
+        return FixtureData(**{k: namespace(v) for k, v in value.items()})
+    if isinstance(value, list):
+        return [namespace(v) for v in value]
+    return value
+
+
+def cli_model_factory(*args, **kwargs):
+    """Patch the host's construction seam without importing any vendor SDK."""
+    from contextlib import contextmanager
+    from unittest.mock import patch
+    from homebrew_harness.execution.model_connections import HostModels
+
+    @contextmanager
+    def factory():
+        with patch("homebrew_harness.session_cli.HostModels") as host:
+            # Provide a factory Mock that retains the explicit injected-client lifecycle.
+            client = MagicMock(*args, **kwargs)
+            host.side_effect = lambda *a, **k: HostModels(
+                *a, **k, client_factory=client
+            )
+            yield client
+
+    return factory()
+
+
+class FixtureData(SimpleNamespace):
+    """Synthetic raw JSON with attribute access, independent of provider types."""
+
+    def model_dump(self, *, exclude_none=False, mode="python"):
+        def data(value):
+            if isinstance(value, SimpleNamespace):
+                return {
+                    k: data(v)
+                    for k, v in vars(value).items()
+                    if not exclude_none or v is not None
+                }
+            if isinstance(value, list):
+                return [data(v) for v in value]
+            return value
+
+        return data(self)
+
+    def model_dump_json(self):
+        return json.dumps(self.model_dump())

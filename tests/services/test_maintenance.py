@@ -75,6 +75,9 @@ class MaintenanceTests(unittest.TestCase):
             },
         )
         service = self.host.services.start(spec, lifetime=lifetime)
+        if lifetime == "detached":
+            from tests.support.services import ready_service
+            ready_service(service)
 
         def stop():
             from homebrew_harness.services.launcher import live

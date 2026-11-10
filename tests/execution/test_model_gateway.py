@@ -37,7 +37,7 @@ from homebrew_harness.execution.model_gateway import (
     ModelCancelled,
     ModelGatewayError,
 )
-from openai import OpenAI
+from homebrew_harness.execution.providers.native import NativeAdapter
 import httpx
 from tests.support.clients import fake_client, reply, call
 from tests.context.test_memory import record
@@ -858,7 +858,7 @@ class IntegrationTests(Fixture):
 
 
 class RealTransportTests(Fixture):
-    def test_real_sdk_slow_chunks_do_not_extend_absolute_deadline(self):
+    def test_real_http_slow_chunks_do_not_extend_absolute_deadline(self):
         requests = []
 
         class Service(BaseHTTPRequestHandler):
@@ -912,16 +912,16 @@ class RealTransportTests(Fixture):
             + "/v1"
         )
         try:
-            with OpenAI(
+            with NativeAdapter("chat_completions",
                 api_key=uuid.uuid4().hex,
                 base_url=address,
-                max_retries=2,
-                timeout=1,
-                http_client=httpx.Client(trust_env=False),
+
+
+
             ) as client:
-                # Warm SDK platform headers so this test isolates slow response chunks.
+                # Prepare the HTTP adapter before the short transport deadline.
                 _ = client.default_headers
-                _ = client.chat.completions
+                _ = client.protocol
                 gateway, _ = self.gateway(client, request_timeout=0.15)
                 started = time.monotonic()
                 with self.assertRaises(ModelDeadlineExceeded) as raised:
@@ -933,7 +933,8 @@ class RealTransportTests(Fixture):
                 self.assertLess(time.monotonic() - started, 0.3)
                 self.assertTrue(gateway.wait_idle(2))
                 self.assertEqual(len(requests), 1)
-                self.assertEqual(gateway.summary()["known_tokens"], 15)
+                self.assertEqual(gateway.summary()["known_tokens"], 0)
+                self.assertEqual(gateway.summary()["unknown_usage_calls"], 1)
                 self.assertNotIn(
                     address, (self.root / gateway.summary()["ledger"]).read_text()
                 )

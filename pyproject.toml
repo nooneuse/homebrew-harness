@@ -12,6 +12,11 @@ license = "MIT"
 license-files = ["LICENSE", "licenses/*"]
 dynamic = ["dependencies"]
 
+[project.optional-dependencies]
+openai = ["openai>=2.54.0,<3"]
+anthropic = ["anthropic>=2.7.0,<3"]
+dashscope = ["dashscope>=2.0.4,<3"]
+
 [project.scripts]
 homebrew-harness = "homebrew_harness.cli:main"
 

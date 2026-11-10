@@ -1,3 +1,4 @@
+from tests.support.clients import cli_model_factory
 from tests.support.tools import fixture_invocation
 """Critical close, complete parsing and explicit component lifetime contracts."""
 
@@ -295,7 +296,7 @@ class SimplificationTests(unittest.TestCase):
         with (
             patch.dict("os.environ", settings),
             patch("homebrew_harness.session_cli.load_test_runner", return_value=runner),
-            patch("homebrew_harness.session_cli.OpenAI") as sdk,
+            cli_model_factory() as sdk,
             patch(
                 "homebrew_harness.runtime.session.HarnessSession",
                 side_effect=ValueError("fixture initialization"),
@@ -327,7 +328,7 @@ class SimplificationTests(unittest.TestCase):
         with (
             patch.dict("os.environ", settings),
             patch("homebrew_harness.session_cli.load_test_runner", return_value=runner),
-            patch("homebrew_harness.session_cli.OpenAI") as sdk,
+            cli_model_factory() as sdk,
         ):
             self.assertEqual(
                 homebrew_harness.cli.main(["session"] +

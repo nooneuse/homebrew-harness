@@ -87,6 +87,15 @@ class ChatCompletionsAdapter:
         self.connection_id = connection_id
 
     @property
+    def transport_identity(self):
+        return {
+            "backend": "custom",
+            "revision": "injected-client-v1",
+            "sdk": None,
+            "sdk_version": None,
+        }
+
+    @property
     def api_key(self):
         return getattr(self.client, "api_key", None)
 
@@ -119,108 +128,133 @@ class ChatCompletionsAdapter:
         self.client.close()
 
     def prepare(self, request):
-        if request.tools and not self.capabilities.tools:
-            raise ModelProtocolError(
-                "This model does not support the required client tools."
-            )
-        options = effective_options(self, request)
-        rows = messages(request, self)
-        for row in rows:
-            replay = row.pop("_replay", None)
-            if replay:
-                row.update(replay)
-        payload = {
-            "model": request.model,
-            "messages": rows,
-            "max_tokens": request.max_output_tokens,
-        }
-        if request.tools:
-            payload["tools"] = copy.deepcopy(list(request.tools))
-        contract = request.output_contract
-        if contract:
-            if contract.get("type") == "json_schema":
-                if not self.capabilities.json_schema:
-                    raise ModelProtocolError(
-                        "This model does not support schema-constrained output."
-                    )
-                payload["response_format"] = {
-                    "type": "json_schema",
-                    "json_schema": {
-                        "name": "harness_result",
-                        "strict": True,
-                        "schema": contract["schema"],
-                    },
-                }
-            else:
-                payload["response_format"] = {"type": "json_object"}
-        if "temperature" in options:
-            payload["temperature"] = options["temperature"]
-        if "top_p" in options:
-            payload["top_p"] = options["top_p"]
-        if options.get("reasoning") is not None:
-            payload["reasoning_effort"] = options["reasoning"]
-        extensions = dict(options.get("extensions", {}))
-        if options.get("thinking") is not None:
-            extensions["enable_thinking"] = options["thinking"]
-        if extensions:
-            payload["extra_body"] = extensions
-        if options.get("stream"):
-            payload.update(stream=True, stream_options={"include_usage": True})
-        return payload
+        body = prepare(
+            request,
+            messages(request, self),
+            effective_options(self, request),
+            self.capabilities,
+        )
+        return body
 
     def execute(self, request, payload, timeout, check):
         capture = UsageCapture(self.protocol)
-        with response_errors(capture):
+        from .backends import injected_sdk_errors
+
+        with response_errors(capture), injected_sdk_errors():
             return self._execute(request, payload, timeout, check, capture)
 
     def _execute(self, request, payload, timeout, check, capture):
         payload = dict(payload, timeout=timeout)
-        raw = self.client.chat.completions.create(**payload)
+        from .backends import sdk_parameters
+
+        raw = self.client.chat.completions.create(
+            **sdk_parameters(self.client.chat.completions.create, payload)
+        )
         if not payload.get("stream"):
             capture.observe(as_data(raw).get("usage"), final=True)
             return validated_result(decode(raw), request.output_contract)
-        collected = {"choices": [{"message": {"content": "", "tool_calls": []}}]}
-        calls, size, finished = {}, 0, False
         try:
-            for chunk in raw:
-                check()
-                data = as_data(chunk)
-                size += len(json.dumps(data, default=str))
-                if size > 8_000_000:
-                    raise ModelProtocolError(
-                        "Model stream exceeded its bounded buffer."
+
+            def events():
+                finished = False
+                for chunk in raw:
+                    check()
+                    data = as_data(chunk)
+                    finished = finished or any(
+                        c.get("finish_reason") for c in data.get("choices") or []
                     )
-                if data.get("usage") is not None:
-                    collected["usage"] = data["usage"]
-                    capture.observe(data["usage"], final=finished)
-                for choice in data.get("choices") or []:
-                    delta = choice.get("delta") or {}
-                    message = collected["choices"][0]["message"]
-                    for name in ("content", "reasoning_content"):
-                        if delta.get(name):
-                            message[name] = message.get(name, "") + delta[name]
-                    for call in delta.get("tool_calls") or []:
-                        index = call.get("index", 0)
-                        target = calls.setdefault(
-                            index, {"id": "", "function": {"name": "", "arguments": ""}}
+                    if data.get("usage") is not None:
+                        capture.observe(
+                            data["usage"],
+                            final=bool(finished),
                         )
-                        if call.get("id"):
-                            target["id"] = call["id"]
-                        function = call.get("function") or {}
-                        for name in ("name", "arguments"):
-                            target["function"][name] += function.get(name) or ""
-                    if choice.get("finish_reason"):
-                        collected["choices"][0]["finish_reason"] = choice[
-                            "finish_reason"
-                        ]
-                        finished = True
-            if not finished:
-                raise ModelProtocolError(
-                    "Model stream ended without a completion proof."
-                )
-            collected["choices"][0]["message"]["tool_calls"] = [
-                calls[k] for k in sorted(calls)
-            ]
-            return validated_result(decode(collected), request.output_contract)
+                    yield data
+
+            return validated_result(streamed(events()), request.output_contract)
         finally:
-            raw.close()
+            if hasattr(raw, "close"):
+                raw.close()
+
+
+def prepare(request, rows, options, capabilities):
+    if request.tools and not capabilities.tools:
+        raise ModelProtocolError(
+            "This model does not support the required client tools."
+        )
+    for row in rows:
+        replay = row.pop("_replay", None)
+        if replay:
+            row.update(replay)
+    payload = {
+        "model": request.model,
+        "messages": rows,
+        "max_tokens": request.max_output_tokens,
+    }
+    if request.tools:
+        payload["tools"] = copy.deepcopy(list(request.tools))
+    contract = request.output_contract
+    if contract:
+        if contract.get("type") == "json_schema":
+            if not capabilities.json_schema:
+                raise ModelProtocolError(
+                    "This model does not support schema-constrained output."
+                )
+            payload["response_format"] = {
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "harness_result",
+                    "strict": True,
+                    "schema": contract["schema"],
+                },
+            }
+        else:
+            payload["response_format"] = {"type": "json_object"}
+    if "temperature" in options:
+        payload["temperature"] = options["temperature"]
+    if "top_p" in options:
+        payload["top_p"] = options["top_p"]
+    if options.get("reasoning") is not None:
+        payload["reasoning_effort"] = options["reasoning"]
+    extensions = dict(options.get("extensions", {}))
+    if options.get("thinking") is not None:
+        extensions["enable_thinking"] = options["thinking"]
+    if extensions:
+        payload.update(extensions)
+    if options.get("stream"):
+        payload.update(stream=True, stream_options={"include_usage": True})
+    return payload
+
+
+def streamed(events):
+    collected = {"choices": [{"message": {"content": "", "tool_calls": []}}]}
+    calls, size, finished = {}, 0, False
+    for chunk in events:
+        data = as_data(chunk)
+        size += len(json.dumps(data, default=str))
+        if size > 8_000_000:
+            raise ModelProtocolError("Model stream exceeded its bounded buffer.")
+        if data.get("usage") is not None:
+            collected["usage"] = data["usage"]
+        for choice in data.get("choices") or []:
+            delta = choice.get("delta") or {}
+            message = collected["choices"][0]["message"]
+            for name in ("content", "reasoning_content"):
+                if delta.get(name):
+                    message[name] = message.get(name, "") + delta[name]
+            for call in delta.get("tool_calls") or []:
+                index = call.get("index", 0)
+                target = calls.setdefault(
+                    index, {"id": "", "function": {"name": "", "arguments": ""}}
+                )
+                if call.get("id"):
+                    target["id"] = call["id"]
+                function = call.get("function") or {}
+                for name in ("name", "arguments"):
+                    target["function"][name] += function.get(name) or ""
+            if choice.get("finish_reason"):
+                collected["choices"][0]["finish_reason"] = choice["finish_reason"]
+                finished = True
+    if not finished:
+        raise ModelProtocolError("Model stream ended without a completion proof.")
+    collected["choices"][0]["message"]["tool_calls"] = [calls[k] for k in sorted(calls)]
+    return decode(collected)

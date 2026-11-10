@@ -3,6 +3,8 @@
 from __future__ import annotations
 from homebrew_harness.runtime.capabilities import Capabilities
 
+from tests.support.clients import cli_model_factory
+
 import copy
 import io
 import json
@@ -14,8 +16,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
-from openai import APIError
-from openai.types.chat import ChatCompletion
+from homebrew_harness.execution.model_protocol import ProviderError
 
 import homebrew_harness.cli
 import homebrew_harness.session_cli
@@ -292,7 +293,7 @@ class ConfigurationTests(unittest.TestCase):
         with (
             patch.dict(os.environ, {}, clear=True),
             patch("homebrew_harness.session_cli.load_dotenv"),
-            patch("homebrew_harness.session_cli.OpenAI") as client,
+            cli_model_factory() as client,
             redirect_stderr(error_output),
         ):
             self.assertEqual(
@@ -306,20 +307,18 @@ class ConfigurationTests(unittest.TestCase):
             name: "private-test-value"
             for name in homebrew_harness.configuration.CONFIG_VARIABLES
         }
-        error = APIError(
-            "private-test-value", request=Mock(), body={"detail": "private-test-value"}
-        )
+        error = ProviderError("transport")
         error_output = io.StringIO()
         with (
             patch.dict(os.environ, config),
             patch("homebrew_harness.session_cli.load_dotenv"),
-            patch("homebrew_harness.session_cli.OpenAI", side_effect=error),
+            cli_model_factory( side_effect=error),
             redirect_stderr(error_output),
         ):
             self.assertEqual(
                 homebrew_harness.cli.main(["session"] + ["--profile", "full"] + ["test task"]), 1
             )
-        self.assertIn("APIError", error_output.getvalue())
+        self.assertIn("transport", error_output.getvalue())
         self.assertNotIn("private-test-value", error_output.getvalue())
 
 

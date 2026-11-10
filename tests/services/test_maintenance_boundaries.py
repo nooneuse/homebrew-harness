@@ -420,17 +420,7 @@ class MaintenanceBoundaries(unittest.TestCase):
         service = self.start()
         work = service.work.submit("Perform the scoped local work.")
         native_id = eventually(lambda: service.store.work(work.id)["run_id"], 15)
-        eventually(
-            lambda: any(
-                not any(
-                    "persistent maintenance service" in str(m.get("content"))
-                    for m in r["messages"]
-                    if m["role"] == "system"
-                )
-                for r in self.peer.model_requests
-            ),
-            5,
-        )
+        self.assertTrue(self.peer.native_started.wait(15))
         original = service.store.work(work.id)["authority"]
         work.steer("Also retain the existing API behavior.", request_id="amendment")
         updated = service.store.work(work.id)["authority"]

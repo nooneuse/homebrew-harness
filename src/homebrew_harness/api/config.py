@@ -160,7 +160,7 @@ class HostConfig:
             or self.components.hooks is not None,
         }
 
-    def builder(self, workdir, *, settings=None):
+    def builder(self, workdir, *, settings=None, model_bindings=None):
         config = settings or self.settings
         components = self.components
         provider = (
@@ -181,6 +181,7 @@ class HostConfig:
             config,
             workflow_registry=components.workflow_registry,
             model_provider=provider,
+            model_bindings=model_bindings,
             environment=environment,
         )
 

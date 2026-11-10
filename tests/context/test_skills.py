@@ -3,6 +3,8 @@
 from __future__ import annotations
 from homebrew_harness.runtime.capabilities import Capabilities
 
+from tests.support.clients import cli_model_factory
+
 import io
 import json
 import os
@@ -451,7 +453,7 @@ class SkillTests(unittest.TestCase):
                 with (
                     patch.dict(os.environ, config),
                     patch("homebrew_harness.session_cli.load_dotenv"),
-                    patch("homebrew_harness.session_cli.OpenAI") as factory,
+                    cli_model_factory() as factory,
                     patch(
                         "homebrew_harness.runtime.assembly.SkillLoader",
                         wraps=SkillLoader,
@@ -479,7 +481,7 @@ class SkillTests(unittest.TestCase):
     def test_invalid_explicit_skill_directory_fails_before_model_startup(self):
         with (
             patch("homebrew_harness.session_cli.load_dotenv"),
-            patch("homebrew_harness.session_cli.OpenAI") as client,
+            cli_model_factory() as client,
             self.assertRaises(SystemExit) as error,
         ):
             homebrew_harness.cli.main(["session"] +

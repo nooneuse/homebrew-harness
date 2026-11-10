@@ -130,7 +130,6 @@ class InteractionMCPTests(unittest.TestCase):
 
     def test_mcp_session_handoff_closes_actor_and_freezes_same_manifest(self):
         model = self.service([reply("Managed continuation complete")])
-        client, _ = fake_client([])
         entered, release = threading.Event(), threading.Event()
         values = iter(
             [
@@ -145,25 +144,25 @@ class InteractionMCPTests(unittest.TestCase):
         )
         count = 0
 
-        def create(**_kwargs):
+        from contextlib import contextmanager
+        from homebrew_harness.execution.providers.adapter import ProtocolAdapter
+
+        @contextmanager
+        def response(*_args):
             nonlocal count
             count += 1
-            result = next(values)
-            if count == 3:
+            result=next(values)
+            if count==3:
                 entered.set()
                 release.wait(10)
-            return result
+            yield result.model_dump(exclude_none=True)
 
-        client.chat.completions.create.side_effect = create
-        # Mirror the connection identity used by the actual target worker.
-        from openai import OpenAI
+        def factory(**_kwargs):
+            client=ProtocolAdapter("chat_completions",api_key="synthetic",base_url=model.url)
+            client.backend.response=response
+            return client
 
-        identity = OpenAI(api_key="synthetic", base_url=model.url)
-        self.addCleanup(identity.close)
-        client.base_url = identity.base_url
-        client.api_key = identity.api_key
-        del client._harness_model_identity
-        host = self.host(model, mode="interactive", factory=lambda **_kw: client)
+        host = self.host(model, mode="interactive", factory=factory)
         self.addCleanup(release.set)
         task = host.submit("Look up documentation and continue as managed")
         self.assertTrue(entered.wait(15), host.status())

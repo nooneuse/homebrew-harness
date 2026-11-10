@@ -76,6 +76,7 @@ class ServiceRuntime:
             self.leases.acquire("service")
             self.workspace_lease.acquire("service-workspace")
             meta = store.get(identity)
+            self.saved_model_bindings = meta.get("binding")
             if token is not None and (
                 (meta.get("launch") or {}).get("token") != token
                 or (meta.get("launch") or {}).get("phase") != "pending"
@@ -187,7 +188,8 @@ class ServiceRuntime:
 
     def _binding(self):
         bindings, _head, controls = self.child.runs.prepare(
-            self.spec.run_spec("Validate service execution scope")
+            self.spec.run_spec("Validate service execution scope"),
+            model_bindings=self.saved_model_bindings,
         )
         return {
             "runtime": runtime_binding(),
@@ -404,12 +406,15 @@ class ServiceRuntime:
                 work = self.maintenance.delivery.baseline(work, child)
             self.store.update_work(self.header, work["id"], state="in_progress")
             try:
-                handle = child.runs.start(
-                    __import__(
-                        "homebrew_harness.runs.spec", fromlist=["RunSpec"]
-                    ).RunSpec(**work["run_spec"]),
-                    request_id=work["launch_id"],
-                )
+                from homebrew_harness.execution.providers.backends import backend_scope
+
+                with backend_scope(meta["binding"]):
+                    handle = child.runs.start(
+                        __import__(
+                            "homebrew_harness.runs.spec", fromlist=["RunSpec"]
+                        ).RunSpec(**work["run_spec"]),
+                        request_id=work["launch_id"],
+                    )
             except Exception as error:
                 # External work may occupy this workspace. Never control or cancel it.
                 with child.store.backend().connection() as conn:

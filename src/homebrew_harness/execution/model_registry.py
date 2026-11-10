@@ -49,9 +49,12 @@ class ModelSpec:
     options_json: str = "{}"
     api_version: str = "2023-06-01"
     capabilities: ModelCapabilities = field(default_factory=ModelCapabilities)
+    transport: str = "auto"
 
     def __post_init__(self):
         _alias(self.name)
+        if self.transport not in {"auto", "http", "sdk"}:
+            raise ValueError("Model transport must be auto, http or sdk.")
         if self.protocol not in PROTOCOLS:
             raise ValueError("Unsupported model protocol.")
         object.__setattr__(
@@ -100,6 +103,7 @@ class ModelSpec:
                 "context_chars": self.context_chars,
                 "max_output_tokens": self.max_output_tokens,
                 "protocol": self.protocol,
+                "transport": self.transport,
                 "options": self.options_json,
                 "api_version": self.api_version,
                 "capabilities": self.capabilities.__dict__,
@@ -115,9 +119,14 @@ class ModelBinding:
     fingerprint: str
     context_chars: int
     max_output_tokens: int
+    transport: dict | None = None
 
     def identity(self):
-        return {"profile": self.profile, "fingerprint": self.fingerprint}
+        return {
+            "profile": self.profile,
+            "fingerprint": self.fingerprint,
+            **({"transport": dict(self.transport)} if self.transport else {}),
+        }
 
 
 class ModelRegistry:
@@ -136,7 +145,13 @@ class ModelRegistry:
         connections = {}
         for spec in values:
             key = spec.connection_id or spec.name
-            identity = (spec.protocol, spec.base_url, spec.api_key, spec.api_version)
+            identity = (
+                spec.protocol,
+                spec.base_url,
+                spec.api_key,
+                spec.api_version,
+                spec.transport,
+            )
             if key in connections and connections[key] != identity:
                 raise ValueError(
                     "One connection cannot have conflicting credentials or protocol settings."
@@ -150,6 +165,9 @@ class ModelRegistry:
         if lead_default is not None:
             self.validate(lead_default)
         self._lead_default, self._teammate_roles = lead_default, MappingProxyType(roles)
+        from homebrew_harness.execution.providers.backends import backend_pins
+
+        self.backend_pins = backend_pins()
         self.client_factory = client_factory
         self._clients = {}
         self._profile_clients = {}
@@ -169,6 +187,35 @@ class ModelRegistry:
     @property
     def teammate_roles(self):
         return self._teammate_roles
+
+    def pin_backends(self, *bindings):
+        from homebrew_harness.execution.providers.backends import (
+            backend_scope,
+            backend_pins,
+        )
+
+        with acquired(self._lock):
+            with backend_scope(*bindings):
+                expected = backend_pins()
+            for key, value in expected.items():
+                client = self._clients.get(key)
+                if (
+                    client is not None
+                    and getattr(client, "transport_identity", None) is not None
+                    and getattr(client, "transport_identity", None)
+                    != {
+                        k: value.get(k)
+                        for k in ("backend", "revision", "sdk", "sdk_version")
+                    }
+                ):
+                    raise ValueError(
+                        "Restore requires the saved model backend; close the changed client first."
+                    )
+                if key in self.backend_pins and self.backend_pins[key] != value:
+                    raise ValueError(
+                        "Model connection already has a different saved binding."
+                    )
+            self.backend_pins.update(expected)
 
     def claim(self, owner):
         with acquired(self._lock):
@@ -216,37 +263,31 @@ class ModelRegistry:
                     from homebrew_harness.execution.providers.chat_completions import (
                         ChatCompletionsAdapter,
                     )
-                    from homebrew_harness.execution.providers.native import (
-                        NativeAdapter,
-                    )
 
-                    if spec.protocol == "chat_completions":
-                        factory = self.client_factory
-                        if factory is None:
-                            from openai import OpenAI
-
-                            factory = OpenAI
-                        try:
-                            raw = factory(
-                                api_key=spec.api_key,
-                                base_url=spec.base_url,
-                                timeout=60.0,
-                                max_retries=0,
-                            )
-                        except Exception as error:
-                            raise ValueError(
-                                "Model client initialization failed ("
-                                + type(error).__name__
-                                + ")."
-                            ) from error
+                    if (
+                        spec.protocol == "chat_completions"
+                        and self.client_factory is not None
+                    ):
+                        raw = self.client_factory(
+                            api_key=spec.api_key,
+                            base_url=spec.base_url,
+                            timeout=60.0,
+                            max_retries=0,
+                        )
                         base = ChatCompletionsAdapter(raw, connection_id=key)
                     else:
-                        base = NativeAdapter(
+                        from homebrew_harness.execution.providers.adapter import (
+                            ProtocolAdapter,
+                        )
+
+                        base = ProtocolAdapter(
                             spec.protocol,
                             api_key=spec.api_key,
                             base_url=spec.base_url,
                             api_version=spec.api_version,
                             connection_id=key,
+                            transport=spec.transport,
+                            expected_transport=self.backend_pins.get(key),
                         )
                     self._clients[key] = base
                 if chosen not in self._profile_clients:
@@ -289,6 +330,7 @@ class ModelRegistry:
                     "protocol": adapter.protocol,
                     "adapter_revision": adapter.revision,
                     "options": adapter.options_json,
+                    "transport": getattr(adapter, "transport_identity", None),
                     **(
                         {"model_spec": self.specs[chosen].identity()}
                         if chosen is not None
@@ -297,7 +339,18 @@ class ModelRegistry:
                 },
             )
             return ModelBinding(
-                client, model, chosen, fingerprint, context_chars, max_output_tokens
+                client,
+                model,
+                chosen,
+                fingerprint,
+                context_chars,
+                max_output_tokens,
+                {
+                    **adapter.transport_identity,
+                    "connection_id": adapter.connection_id or "@inherited",
+                }
+                if getattr(adapter, "transport_identity", None)
+                else None,
             )
 
     def own_client(self, client):
@@ -384,6 +437,7 @@ def load_model_registry(path, workdir, *, client_factory=None, environment=None)
                 "base_url_env",
                 "api_version",
                 "options",
+                "transport",
             }:
                 raise ValueError("Invalid model connection fields.")
             protocol = value.get("protocol")
@@ -395,6 +449,7 @@ def load_model_registry(path, workdir, *, client_factory=None, environment=None)
                 external(value.get("base_url_env")),
                 value.get("api_version", "2023-06-01"),
                 value.get("options", {}),
+                value.get("transport", "auto"),
             )
         specs = []
         for name, value in profiles.items():
@@ -410,7 +465,9 @@ def load_model_registry(path, workdir, *, client_factory=None, environment=None)
                 raise ValueError("Invalid model profile fields.")
             if value.get("connection") not in prepared:
                 raise ValueError("Unknown model connection reference.")
-            protocol, key, endpoint, version, options = prepared[value["connection"]]
+            protocol, key, endpoint, version, options, transport = prepared[
+                value["connection"]
+            ]
             options = {**options, **value.get("options", {})}
             caps = value.get("capabilities", {})
             if (
@@ -433,6 +490,7 @@ def load_model_registry(path, workdir, *, client_factory=None, environment=None)
                     frozen_options(options),
                     version,
                     ModelCapabilities(**caps),
+                    transport,
                 )
             )
         roles = defaults.get("teammate_roles", {})

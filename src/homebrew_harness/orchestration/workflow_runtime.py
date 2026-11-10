@@ -1379,6 +1379,9 @@ class WorkflowRuntime:
             }
             snapshot = {
                 "format": 2,
+                "model_binding": self.runner.binding.identity()
+                if isinstance(self.runner, ModelWorkflowRunner)
+                else None,
                 "run_id": run_id,
                 "name": name,
                 "version": spec.version,

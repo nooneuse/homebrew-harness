@@ -103,21 +103,28 @@ class HostModels:
             return self.binding
         client = model = None
         if self.alias is None:
-            factory = self.factory
-            if factory is None:
-                from openai import OpenAI
-
-                factory = OpenAI
-            raw = factory(
-                api_key=self.environment["OPENAI_API_KEY"],
-                base_url=self.environment["OPENAI_BASE_URL"],
-                timeout=60,
-                max_retries=0,
-            )
-            entered = hasattr(raw, "__enter__")
-            self.registry.own_client(_ClientContext(raw, entered))
-            client = raw.__enter__() if entered else raw
             model = self.environment["OPENAI_MODEL"]
+            if self.factory is None:
+                from homebrew_harness.execution.providers.adapter import ProtocolAdapter
+
+                client = ProtocolAdapter(
+                    "chat_completions",
+                    api_key=self.environment["OPENAI_API_KEY"],
+                    base_url=self.environment["OPENAI_BASE_URL"],
+                    transport=self.environment.get("HARNESS_MODEL_TRANSPORT", "auto"),
+                    expected_transport=self.registry.backend_pins.get("@inherited"),
+                )
+                self.registry.own_client(client)
+            else:
+                raw = self.factory(
+                    api_key=self.environment["OPENAI_API_KEY"],
+                    base_url=self.environment["OPENAI_BASE_URL"],
+                    timeout=60,
+                    max_retries=0,
+                )
+                entered = hasattr(raw, "__enter__")
+                self.registry.own_client(_ClientContext(raw, entered))
+                client = raw.__enter__() if entered else raw
         self.binding = self.registry.select(
             self.alias,
             client=client,

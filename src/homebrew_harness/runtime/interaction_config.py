@@ -160,6 +160,7 @@ class InteractionAssembler:
         workflow_registry=None,
         environment=None,
         model_provider=None,
+        model_bindings=None,
     ):
         from homebrew_harness.orchestration.workflow_runtime import WorkflowRegistry
         from homebrew_harness.orchestration.workflows import default_registry
@@ -172,6 +173,7 @@ class InteractionAssembler:
             if environment is not None
             else read_environment(config.env_file, self.workdir)
         )
+        self.model_bindings = model_bindings
         self.model_provider = model_provider
         self.registry = workflow_registry or (
             default_registry() if config.demo_workflows else WorkflowRegistry()
@@ -283,6 +285,12 @@ class InteractionAssembler:
             )
 
     def models(self):
+        from homebrew_harness.execution.providers.backends import backend_scope
+
+        with backend_scope(self.model_bindings, getattr(self, "binding", None)):
+            return self._models()
+
+    def _models(self):
         if self.model_provider is not None:
             return self.model_provider()
         return HostModels(

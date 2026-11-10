@@ -10,7 +10,6 @@ import time
 from pathlib import Path
 from types import SimpleNamespace
 
-from openai.types.chat import ChatCompletion
 
 from homebrew_harness.execution.model_gateway import (
     Deadline,
@@ -123,26 +122,24 @@ class OfflineClient:
                     }
                 ],
             )
-        return ChatCompletion.model_validate(
-            {
-                "id": "offline",
-                "object": "chat.completion",
-                "created": 0,
-                "model": "offline-fixture",
-                "choices": [
-                    {
-                        "index": 0,
-                        "finish_reason": "tool_calls" if self.calls == 1 else "stop",
-                        "message": message,
-                    }
-                ],
-                "usage": {
-                    "prompt_tokens": 100,
-                    "completion_tokens": 50,
-                    "total_tokens": 150,
-                },
-            }
-        )
+        return {
+            "id": "offline",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "offline-fixture",
+            "choices": [
+                {
+                    "index": 0,
+                    "finish_reason": "tool_calls" if self.calls == 1 else "stop",
+                    "message": message,
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 100,
+                "completion_tokens": 50,
+                "total_tokens": 150,
+            },
+        }
 
 
 def run_benchmark(

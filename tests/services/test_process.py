@@ -1,3 +1,4 @@
+from tests.support.services import ready_service
 import os
 import signal
 import unittest
@@ -25,7 +26,7 @@ class ServiceProcesses(unittest.TestCase):
 
     def test_detached_service_survives_client_exit_and_accepts_reconnected_work(self):
         host, model = self.host([reply("Done")])
-        service = host.services.start(self.spec(), lifetime="detached")
+        service = ready_service(host.services.start(self.spec(), lifetime="detached"))
         self.addCleanup(self.stop, host, service.id)
         self.assertTrue(live(self.control))
         host.close()
@@ -54,7 +55,7 @@ class ServiceProcesses(unittest.TestCase):
                 reply("Recovered"),
             ]
         )
-        service = host.services.start(self.spec(), lifetime="detached")
+        service = ready_service(host.services.start(self.spec(), lifetime="detached"))
         self.addCleanup(self.stop, host, service.id)
         work = service.work.submit("Ask then complete", request_id="one")
         request = eventually(lambda: service.requests() and service.requests()[0], 20)
@@ -62,7 +63,7 @@ class ServiceProcesses(unittest.TestCase):
         pid = service.store.get(service.id)["pid"]
         os.kill(pid, signal.SIGKILL)
         eventually(lambda: not live(self.control), 8)
-        recovered = host.services.start(identity=service.id, lifetime="detached")
+        recovered = ready_service(host.services.start(identity=service.id, lifetime="detached"))
         self.assertEqual(recovered.id, service.id)
         restored = eventually(
             lambda: recovered.requests() and recovered.requests()[0], 20
@@ -77,7 +78,7 @@ class ServiceProcesses(unittest.TestCase):
 
     def test_sigterm_performs_native_resource_shutdown(self):
         host, _ = self.host([])
-        service = host.services.start(self.spec(), lifetime="detached")
+        service = ready_service(host.services.start(self.spec(), lifetime="detached"))
         self.addCleanup(self.stop, host, service.id)
         pid = service.store.get(service.id)["pid"]
         os.kill(pid, signal.SIGTERM)
@@ -108,14 +109,14 @@ class ServiceProcesses(unittest.TestCase):
                 reply("Done"),
             ]
         )
-        service = host.services.start(self.spec(), lifetime="detached")
+        service = ready_service(host.services.start(self.spec(), lifetime="detached"))
         self.addCleanup(self.stop, host, service.id)
         work = service.work.submit("Ask then continue")
         eventually(lambda: service.requests(), 20)
         before = service.store.work(work.id)["run_id"]
         service.stop()
         eventually(lambda: not live(self.control), 15)
-        restarted = host.services.start(identity=service.id, lifetime="detached")
+        restarted = ready_service(host.services.start(identity=service.id, lifetime="detached"))
         request = eventually(
             lambda: restarted.requests() and restarted.requests()[0], 20
         )

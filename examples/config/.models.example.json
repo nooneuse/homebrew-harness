@@ -4,13 +4,15 @@
     "provider_a": {
       "protocol": "openai_responses",
       "api_key_env": "PROVIDER_A_API_KEY",
-      "base_url_env": "PROVIDER_A_BASE_URL"
+      "base_url_env": "PROVIDER_A_BASE_URL",
+      "transport": "auto"
     },
     "provider_b": {
       "protocol": "anthropic_messages",
       "api_key_env": "PROVIDER_B_API_KEY",
       "base_url_env": "PROVIDER_B_BASE_URL",
-      "api_version": "2023-06-01"
+      "api_version": "2023-06-01",
+      "transport": "auto"
     }
   },
   "profiles": {
