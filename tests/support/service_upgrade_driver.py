@@ -74,6 +74,19 @@ def main(config):
         new = None
         try:
             new = host.services.start(identity=service.id, lifetime="detached")
+            from homebrew_harness.services.http_client import ControlClient
+            from homebrew_harness.contracts import SDKError
+
+            def ready():
+                client = ControlClient(base / "control")
+                try:
+                    return client.call(new.id, "snapshot")
+                except SDKError:
+                    return None
+                finally:
+                    client.close()
+
+            wait(ready)
             with RemoteService.from_root(base / "control", control=True) as remote:
                 state = remote.query("snapshot")
                 if (
@@ -106,6 +119,7 @@ def main(config):
                     raise AssertionError(result)
                 pth.write_text(original)
                 restored = host.services.start(identity=service.id, lifetime="detached")
+                wait(ready)
                 with RemoteService.from_root(base / "control", control=True) as remote:
                     if (
                         remote.query("snapshot")["binding"]["runtime"]["version"]

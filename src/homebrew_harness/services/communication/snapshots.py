@@ -46,10 +46,15 @@ def materialize(control, subject, captured, policy):
             policy["review_globs"],
             captured["files"],
             captured.get("base_files", {}),
+            captured["changed"],
+            captured["coverage"],
+            captured.get("modes", {}),
+            policy["required_tests"],
         ]
     )
     root = Path(control) / ".harness" / "communication_reviews" / identity
     manifest = {}
+    modes = {}
     relative = root.relative_to(Path(control)).as_posix()
     for side in ("head", "base"):
         with SafeFile(
@@ -67,6 +72,11 @@ def materialize(control, subject, captured, policy):
         for path, content in files.items():
             data = content.encode()
             key = side + "/" + path
+            mode = (
+                0o500
+                if side == "head" and captured.get("modes", {}).get(path) == "100755"
+                else 0o400
+            )
             with SafeFile(
                 Path(control), relative + "/" + key, create_parents=True
             ) as target:
@@ -74,8 +84,9 @@ def materialize(control, subject, captured, policy):
                 if before is not None and before != data:
                     raise ValueError("Fixed PR snapshot content changed.")
                 if before is None:
-                    target.publish(data, None, 0o400)
+                    target.publish(data, None, mode)
             manifest[key] = hashlib.sha256(data).hexdigest()
+            modes[key] = mode
     return {
         "id": identity,
         "subject": subject,
@@ -85,6 +96,7 @@ def materialize(control, subject, captured, policy):
         "workspace": str(root / "head"),
         "root": str(root),
         "manifest": manifest,
+        "modes": modes,
         "changed": captured["changed"],
         "anchors": anchors(captured["changed"]),
         "coverage": captured["coverage"],
@@ -98,6 +110,8 @@ def verify(snapshot, policy):
     root = Path(snapshot["root"])
     for key, expected in snapshot["manifest"].items():
         with SafeFile(root, key) as file:
-            data, _, _ = file.snapshot(max_bytes=policy["max_file_bytes"])
+            data, _, mode = file.snapshot(max_bytes=policy["max_file_bytes"])
         if data is None or hashlib.sha256(data).hexdigest() != expected:
             raise ValueError("Fixed PR review snapshot changed.")
+        if mode != snapshot["modes"][key]:
+            raise ValueError("Fixed PR review file mode changed.")

@@ -151,3 +151,5 @@ python examples/service_operations_demo.py --output /tmp/harness-service-operati
 ```
 
 Use a new output directory. The scenario extends real local Git/Run/CI delivery with another audited iteration, unchanged-review skipping, discussion, live HTTP parking, retention, verified backup/restoration and upgrade preparation/authorization. Actual new-version probation, native execution and rollback are covered by separate process tests. The synthetic model/platform peer makes no paid model calls.
+
+Queued repository audits retain their intent while writers are active. Their execution deadline begins when claimed, and repeated schedule ticks coalesce into one pending audit. Test cleanup has independent bounded attempts; unfinished resources keep their lease and closing state until a later attempt confirms release.

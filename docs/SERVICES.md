@@ -4,7 +4,7 @@
 
 A service owns a persistent work queue and fixed schedules. Each work item runs through the existing managed Run supervisor. The `manual` profile is the first stage of service support: an operator submits work, watches progress, answers native requests, and pauses or stops execution.
 
-The `repository_maintenance` profile adds GitHub input, requirement triage, scoped work authority, operator discussions and reports. Service work reaches `review` when its delegated Run completes. Grouped publication approval and remote delivery are later stages.
+The `repository_maintenance` profile adds GitHub input, requirement triage, scoped work authority, operator discussions and reports. Service work reaches `review` when its delegated Run completes. Optional delivery adds grouped publication approval, fixed candidate validation and remote delivery; community communication adds multi-round issue and PR review.
 
 ## Host setup
 
@@ -258,6 +258,8 @@ with RemoteService.from_file(connection_file, control=True) as service:
     print(service.records("jobs"))
     print(service.records("reports"))
 ```
+
+Each maintenance job has one input and result contract. Conversations read same-context history through the current message and evidence associated with their explicitly selected Work. General conversations can browse a minimal Work directory. Reports read their frozen activity window and referenced records, distinguishing those historical facts from current details. Candidate submission prepares a result; the runtime validates and applies it with the job completion in one transaction.
 
 Messages are durable and their replies can be read after reconnect. Reports reference recorded work and execution facts; acknowledging one updates that reader's position. Reports are available through the control interface. Public GitHub replies, outbound report delivery and grouped publication approvals are not performed by this profile.
 

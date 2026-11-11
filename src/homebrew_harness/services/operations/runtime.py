@@ -81,7 +81,8 @@ class Operations:
                     "state": "queued",
                     "revision": 0,
                     "created_at": time.time(),
-                    "deadline_at": time.time() + self.spec["operation_seconds"],
+                    "deadline_at": None,
+                    "eligible_at": time.time(),
                     "result": None,
                     "error": None,
                 },
@@ -140,6 +141,35 @@ class Operations:
             "next_cursor": rows[limit - 1][0] if len(rows) > limit else None,
         }
 
+    def claim(self):
+        active = self.store.next_work(self.runtime.id)
+        with self.store.db.write() as conn:
+            meta = self.store.guard(conn, self.runtime.header)
+            busy = bool(
+                active
+                and active["state"] == "in_progress"
+                and meta.get("operations_phase", "active") == "active"
+            )
+            raw = conn.execute(
+                "SELECT value FROM records WHERE section='service_operations' AND owner=? "
+                "AND json_extract(value,'$.state') IN ('queued','running') "
+                "AND coalesce(json_extract(value,'$.eligible_at'),0)<=? "
+                "AND NOT (? AND json_extract(value,'$.kind')='audit') "
+                "ORDER BY CASE json_extract(value,'$.kind') WHEN 'quiesce' THEN 0 ELSE 1 END,rowid LIMIT 1",
+                ("service:" + self.runtime.id, time.time(), busy),
+            ).fetchone()
+            if raw is None:
+                return None
+            row = json.loads(raw[0])
+            if row["state"] == "queued":
+                row["deadline_at"] = time.time() + self.spec["operation_seconds"]
+            row.update(
+                state="running",
+                generation=self.runtime.header["generation"],
+                revision=row["revision"] + 1,
+            )
+            return self.put(conn, row)
+
     def loop(self):
         self.started = True
         next_health = 0
@@ -151,28 +181,9 @@ class Operations:
                 if time.monotonic() >= next_health:
                     self.observe()
                     next_health = time.monotonic() + self.spec["health_seconds"]
-                with self.store.db.connection() as conn:
-                    raw = conn.execute(
-                        "SELECT value FROM records WHERE section='service_operations' AND owner=? AND json_extract(value,'$.state') IN ('queued','running') ORDER BY CASE json_extract(value,'$.kind') WHEN 'quiesce' THEN 0 ELSE 1 END,rowid LIMIT 1",
-                        ("service:" + self.runtime.id,),
-                    ).fetchone()
-                if raw is None:
+                row = self.claim()
+                if row is None:
                     continue
-                row = json.loads(raw[0])
-                if (
-                    row["kind"] == "audit"
-                    and row["deadline_at"] > time.time()
-                    and self.store.get(self.runtime.id).get(
-                        "operations_phase", "active"
-                    )
-                    == "active"
-                ):
-                    active = self.store.next_work(self.runtime.id)
-                    if active and active["state"] == "in_progress":
-                        continue
-                row = self.update(
-                    row, state="running", generation=self.runtime.header["generation"]
-                )
                 try:
                     with (
                         control_scope(

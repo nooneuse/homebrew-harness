@@ -493,6 +493,8 @@ def retire(root, plan, *, now=None):
             ):
                 raise ValueError("Retirement preview is stale; inspect a new preview.")
             selected.append(item["session_id"])
+        if not selected:
+            return {"retired": [], "already_retired": already, "grace_days": GRACE_DAYS}
         store = DurableStore(root)
         state = store.read()
         archives = {}
@@ -501,7 +503,10 @@ def retire(root, plan, *, now=None):
             archives[sid] = _publish_archive(root, bundle(state, sid))
 
         def update(current):
-            if digest(current) != digest(state):
+            if any(
+                digest(bundle(current, sid)) != digest(bundle(state, sid))
+                for sid in selected
+            ):
                 raise ValueError("Runtime changed during retirement preparation.")
             external_now = external_snapshot(root)
             if external_now["versions"] != external_snapshot_before:

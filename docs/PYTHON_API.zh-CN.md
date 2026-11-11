@@ -208,3 +208,5 @@ Service 视图增加 `delivery`、`prepare_delivery`、`plan_delivery`、`inspec
 Service 提供 health、operations、operation、operation_record、quiesce、resume_operations、audit、diagnose、保留预览/应用、备份/验证/恢复及升级准备/授权/确认。AsyncHarness 提供可等待方法；host.admin.service_upgrade_rollback 是明确的宿主本地操作。详见 [Service 运维](SERVICE_OPERATIONS.zh-CN.md)。
 
 Service 社区沟通方法复用同一 Python/HTTP 控制边界，详见[社区讨论](COMMUNICATION.zh-CN.md#使用)。
+
+维护级决定通过 `requests_page(cursor=0, limit=20, expired=False)` 分页，使用相同 HumanRequest DTO 和决定入口；原生 Run 请求仍通过 `requests()` 取得。`models()` 显示按 profile 绑定的故障引用；`recover_model(profile, revision=..., request_id=...)` 确认一个连接故障，不重试 job 或清空用量。沟通查证支持按当前 revision 明确确认未执行，再申请新授权。

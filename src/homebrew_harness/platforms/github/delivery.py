@@ -4,6 +4,7 @@ import re
 from functools import wraps
 from homebrew_harness.platforms.contracts import ObjectRef
 from homebrew_harness.platforms.http import JsonTransport
+from homebrew_harness.platforms.effects import publication, tracks_write
 from homebrew_harness.execution.execution_control import (
     ControlledRLock,
     operation_deadline,
@@ -41,6 +42,7 @@ class GithubDelivery:
     def close(self):
         self.transport.close()
 
+    @tracks_write
     def request(self, method, path, body=None, params=None):
         return self.transport.request(
             method,
@@ -70,6 +72,7 @@ class GithubDelivery:
         return "<!-- harness-delivery:" + key + " -->"
 
     @serialized
+    @publication
     def ensure_change_request(self, plan, *, reconcile=False):
         marker = self.marker(plan["correlation"])
         title, body = plan["title"], plan["body"]
@@ -183,6 +186,7 @@ class GithubDelivery:
         return self.prefix + "/issues/" + str(subject.number) + "/comments"
 
     @serialized
+    @publication
     def post_comment(self, plan, *, reconcile=False):
         path = self.target(plan["subject"])
         marker = self.marker(plan["correlation"])
@@ -267,6 +271,7 @@ class GithubDelivery:
                     "head": event.head,
                     "status": event.status,
                     "body": event.body,
+                    "version": event.version,
                 }
                 for event in batch.events
                 if event.object.kind == "review"

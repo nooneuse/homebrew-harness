@@ -128,6 +128,14 @@ class ServiceControls:
     def health(self):
         return self.query("ops_health")
 
+    def models(self):
+        return self.query("service_models")
+
+    def recover_model(self, profile, *, revision, request_id=None):
+        return self.command(
+            "model_recover", {"profile": profile, "revision": revision}, request_id
+        )
+
     def operations(self, *, cursor=0, limit=20):
         return self.query("ops_list", {"cursor": cursor, "limit": limit})
 
@@ -179,9 +187,19 @@ class ServiceControls:
         return self.command("ops_upgrade_confirm", {"id": identity}, request_id)
 
     def requests(self, work_id=None):
+        values = self.query("requests", {"work_id": work_id} if work_id else {})
+        return self._human_requests(values)
+
+    def requests_page(self, *, work_id=None, cursor=0, limit=20, expired=False):
+        result = self.query(
+            "requests_page",
+            {"work_id": work_id, "cursor": cursor, "limit": limit, "expired": expired},
+        )
+        return {**result, "items": self._human_requests(result["items"])}
+
+    def _human_requests(self, values):
         from homebrew_harness.contracts import HumanRequest, RequestRef
 
-        values = self.query("requests", {"work_id": work_id} if work_id else {})
         result = []
         for value in values:
             ref = value.pop("ref")
@@ -296,8 +314,23 @@ class ServiceControls:
             request_id,
         )
 
-    def inspect_communication(self, identity, *, request_id=None):
-        return self.command("communication_inspect", {"id": identity}, request_id)
+    def inspect_communication(
+        self,
+        identity,
+        *,
+        conclusion="reconcile",
+        confirmed=False,
+        revision=None,
+        request_id=None,
+    ):
+        payload = {"id": identity, "conclusion": conclusion, "confirmed": confirmed}
+        if conclusion != "reconcile":
+            payload["revision"] = (
+                self.communication(identity)["revision"]
+                if revision is None
+                else revision
+            )
+        return self.command("communication_inspect", payload, request_id)
 
     def delivery(self, identity, *, kind="changesets"):
         return self.query("delivery_status", {"kind": kind, "id": identity})

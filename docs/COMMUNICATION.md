@@ -45,6 +45,8 @@ Service backups include discussion records, publication receipts and materialize
 
 Once a draft is clear, the service presents a requirement-acceptance request. Acceptance creates or updates a proposed Work, and its development authority follows the existing Service controller. Active work must settle before accepting replacement requirements. Direction disputes and repeated lack of progress are surfaced to the operator.
 
+Acceptance freezes the complete draft, including acceptance criteria and exclusions, with source references and operator clarification. The Run receives these accepted conditions and read-only source inputs. Direction questions and requirement-acceptance decisions remain valid for their discussion version; publication authority has a separate expiry measured from approval.
+
 Each public plan fixes its subject, text, intent and discussion basis. A new answer or code version can supersede an unstarted message or approval. Confirmed publication and current applicability are separate facts. If a write response is lost, inspect the unknown action to reconcile it; the runtime does not blindly resend it.
 
 ## External PR input and review
@@ -54,6 +56,8 @@ GitHub is the first implemented communication provider. It observes ordinary com
 Coverage records unavailable diffs, unsupported modes, binary/large files and the configured review scope. Approval needs complete recorded coverage and no unresolved findings; `require_tests_for_approval` can additionally require fixed test evidence. Tests, when configured, use the host TestRunner registry. Remote third-party code execution requires its container backend. Static review can operate without Docker and reports that tests were not run.
 
 An author's explanation at the same head reuses the snapshot. New code creates new evidence; existing findings remain queryable across rounds. Resolving a platform thread or claiming a fix does not independently prove a defect was fixed. Inline review positions must belong to the fixed diff.
+
+Coverage accounts for each changed head/base side, including deletions and renames. Unmodified files outside the review scope are optional context. Snapshot files retain read and execute permissions where needed; content and modes are verified before use. Preparation results are applied only to the still-current operation and discussion version, so a late result cannot reopen a paused topic.
 
 ## Python and control interface
 
@@ -86,3 +90,22 @@ homebrew-harness service communication SERVICE_ID inspect ACTION_ID --request-id
 ```
 
 The Text UI accepts the same commands without the command prefix or Service ID. `discussion pause` and `discussion reopen` control the selected topic. Discussion and PR-feedback skills propose candidates; authorization, delivery receipts, snapshots, deadlines and recovery remain runtime responsibilities.
+
+## Recovery and request pages
+
+Definite platform rejection marks the action failed and allows a corrected plan. An uncertain write stays `unknown`: reconciliation can confirm it, while explicitly verified non-execution requires its current revision and creates a new authority request.
+
+```python
+page = service.requests_page(limit=20)
+fault = next(row for row in service.models() if row["blocked"])
+service.recover_model(fault["profile"], revision=fault["revision"], request_id="recover-1")
+```
+
+Model recovery confirms the recorded connection fault; failed jobs are retried separately. Restart the service when connection credentials must be reloaded. Discussion jobs read their frozen topic and associated evidence; internal conversations and reports use their own input contracts.
+
+```sh
+homebrew-harness service requests SERVICE_ID --limit 20
+homebrew-harness service models SERVICE_ID list
+homebrew-harness service models SERVICE_ID recover PROFILE --revision FAULT_REVISION --request-id recover-1
+homebrew-harness service communication SERVICE_ID inspect ACTION_ID --conclusion retry_not_executed --confirm-not-executed --revision ACTION_REVISION --request-id inspect-2
+```

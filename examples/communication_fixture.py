@@ -98,7 +98,7 @@ class Peer:
                     return self.send(outer.inline)
                 if path.endswith("/files"):
                     changed = []
-                    for name in set(outer.files) | set(outer.base_files):
+                    for name in sorted(set(outer.files) | set(outer.base_files)):
                         old, new = (
                             outer.base_files.get(name, ""),
                             outer.files.get(name, ""),

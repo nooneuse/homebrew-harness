@@ -55,6 +55,11 @@ def commands(parser, *, attach=True):
             "exit",
         ):
             actions.add_parser(name)
+    requests = actions.choices["requests"]
+    requests.add_argument("--cursor", type=int, default=0)
+    requests.add_argument("--limit", type=int)
+    requests.add_argument("--expired", action="store_true")
+    if not attach:
         pause = actions.add_parser("pause")
         pause.add_argument(
             "scope", choices=("all", "execution"), nargs="?", default="execution"
@@ -196,6 +201,15 @@ def commands(parser, *, attach=True):
         item = op_actions.add_parser("upgrade-rollback")
         item.add_argument("identity")
         item.add_argument("--request-id", required=True)
+    models = actions.add_parser("models")
+    if attach:
+        models.add_argument("service_id")
+    model_ops = models.add_subparsers(dest="model_command", required=True)
+    model_ops.add_parser("list")
+    recovering = model_ops.add_parser("recover")
+    recovering.add_argument("profile")
+    recovering.add_argument("--revision", required=True)
+    recovering.add_argument("--request-id")
     discussion = actions.add_parser("discussion")
     if attach:
         discussion.add_argument("service_id")
@@ -222,6 +236,14 @@ def commands(parser, *, attach=True):
         item = publication_ops.add_parser(name)
         item.add_argument("identity")
         item.add_argument("--request-id")
+        if name == "inspect":
+            item.add_argument(
+                "--conclusion",
+                choices=("reconcile", "retry_not_executed"),
+                default="reconcile",
+            )
+            item.add_argument("--confirm-not-executed", action="store_true")
+            item.add_argument("--revision", type=int)
     item = publication_ops.add_parser("plan")
     item.add_argument("identity")
     item.add_argument("--plan-file", type=Path, required=True)
@@ -470,6 +492,12 @@ def operate(service, args):
             args.discussion_command.replace("-", "_"),
             request_id=args.request_id,
         )
+    if args.command == "models":
+        if args.model_command == "list":
+            return service.models()
+        return service.recover_model(
+            args.profile, revision=args.revision, request_id=args.request_id
+        )
     if args.command == "communication":
         if args.communication_command == "list":
             return service.communication_actions(
@@ -479,7 +507,11 @@ def operate(service, args):
             return service.communication(args.identity)
         if args.communication_command == "inspect":
             return service.inspect_communication(
-                args.identity, request_id=args.request_id
+                args.identity,
+                request_id=args.request_id,
+                conclusion=args.conclusion,
+                confirmed=args.confirm_not_executed,
+                revision=args.revision,
             )
         if args.communication_command == "request-authority":
             return service.request_communication_authority(
@@ -515,6 +547,11 @@ def operate(service, args):
     if args.command == "tick":
         return service.tick()
     if args.command == "requests":
+        if args.limit is not None or args.cursor or args.expired:
+            page = service.requests_page(
+                cursor=args.cursor, limit=args.limit or 20, expired=args.expired
+            )
+            return {**page, "items": [r.data() for r in page["items"]]}
         return [r.data() for r in service.requests()]
     if args.command == "receipt":
         return service.receipt(args.request_id)
@@ -548,6 +585,25 @@ def operate(service, args):
             ),
             None,
         )
+        if request is None:
+            if service.snapshot().details.get("profile") == "repository_maintenance":
+                cursor = 0
+                while request is None:
+                    page = service.requests_page(
+                        work_id=args.work_id, cursor=cursor, limit=100
+                    )
+                    request = next(
+                        (
+                            r
+                            for r in page["items"]
+                            if r.ref.id == args.request_id
+                            and r.ref.revision == args.revision
+                        ),
+                        None,
+                    )
+                    if page["next_cursor"] is None:
+                        break
+                    cursor = page["next_cursor"]
         if request is None:
             raise ValueError("Request revision is stale; refresh requests.")
         values = {}
@@ -633,7 +689,16 @@ def attach(service, *, input_fn=input, context="default"):
                     focus = service.focus(args.work_id, context=context)
                     render({"focus": focus})
                 elif args.command == "requests" and focus and focus["work_id"]:
-                    render([r.data() for r in service.requests(focus["work_id"])])
+                    if args.limit is not None or args.cursor or args.expired:
+                        page = service.requests_page(
+                            work_id=focus["work_id"],
+                            cursor=args.cursor,
+                            limit=args.limit or 20,
+                            expired=args.expired,
+                        )
+                        render({**page, "items": [r.data() for r in page["items"]]})
+                    else:
+                        render([r.data() for r in service.requests(focus["work_id"])])
                 else:
                     render(operate(service, args))
         except StopIteration:

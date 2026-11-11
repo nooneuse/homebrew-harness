@@ -70,3 +70,5 @@ python examples/delivery_demo.py --output /tmp/harness-delivery-demo
 使用不存在的输出目录。场景利用真实本地 Git 远端和确定性模型/平台服务，验证 CI 修复、复用原 PR、服务重启、分组目标审批、目标发布、公开评论回执及资源收尾，不调用付费模型。
 
 当前写适配器实现 GitHub；其他平台接入相同固定交付操作和反馈合同。Release/tag、Issue 关闭、合并队列和外部报告渠道属于后续能力。
+
+宿主可配置可信 `reviewer_ids` 与 `required_approvals` 数量。有效审查决定必须对应已发布 head：请求修改或批准数量不足时，交付进入 `review_waiting`，目标发布前再次核对。普通评论与不可信审查者的意见保留为讨论证据。默认不额外要求审查者，应按项目的审查流程配置这些字段。

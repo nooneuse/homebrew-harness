@@ -381,6 +381,16 @@ class ServiceStore:
                     next_due=job["next_due"] + missed * job["every_seconds"],
                 )
                 if job["action"] == "review_repository":
+                    old = (
+                        self.db._get(
+                            conn, "service_operations", job.get("last_operation")
+                        )
+                        if job.get("last_operation")
+                        else None
+                    )
+                    if old and old["state"] in {"queued", "running"}:
+                        self.db._put(conn, "service_jobs", key, job)
+                        continue
                     op_id = "op_" + request_key(
                         "scheduled-audit",
                         header["id"],
@@ -397,8 +407,8 @@ class ServiceStore:
                             "state": "queued",
                             "revision": 0,
                             "created_at": now,
-                            "deadline_at": now
-                            + meta["spec"]["operations"]["operation_seconds"],
+                            "deadline_at": None,
+                            "eligible_at": now,
                             "result": None,
                             "error": None,
                             "schedule": key,
@@ -406,6 +416,7 @@ class ServiceStore:
                             "checkpoint": "service:" + header["id"],
                         },
                     )
+                    job["last_operation"] = op_id
                 elif job["action"] == "submit_work":
                     work = self.enqueue(
                         conn,

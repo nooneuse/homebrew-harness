@@ -9,6 +9,7 @@ from homebrew_harness.services.protocol import request_key, fingerprint
 from homebrew_harness.services.maintenance_spec import text
 from homebrew_harness.services.action_runtime import start_attempt, finish_attempt
 from .spec import validate_plan, validate_proposal
+from .transitions import observation_event, mark_input, request_analysis
 
 SECTIONS = {
     "discussions": "service_discussions",
@@ -222,7 +223,7 @@ class CommunicationStore:
             for c in plan.get("comments", [])
         )
 
-    def observed_events(self, subject, observed, *, complete=False):
+    def observed_events(self, subject, observed, *, complete=False, through=None):
         items = [
             SourceEvent(
                 ObjectRef(**item["object"]),
@@ -250,7 +251,9 @@ class CommunicationStore:
             event = json.loads(raw)
             ref = ObjectRef(**event["object"])
             if (
-                ref == ObjectRef(**subject)
+                through is not None
+                and event["sequence"] > through
+                or ref == ObjectRef(**subject)
                 or ref.key() in present
                 or event["content"].get("state") == "deleted"
             ):
@@ -354,7 +357,7 @@ class CommunicationStore:
                 self.put(conn, "discussions", row)
                 self.supersede(conn, row)
 
-    def ingest(self, name, items, scope, *, page=None):
+    def ingest(self, name, items, scope, *, page=None, observed=False):
         if scope not in self.scopes:
             raise ValueError("Discussion crosses host project scope.")
         with self.db.write() as conn:
@@ -362,8 +365,10 @@ class CommunicationStore:
             for item in items:
                 if not isinstance(item, SourceEvent) or item.subject.scope() != scope:
                     raise ValueError("Invalid communication source event.")
-                eid = self.event_identity(item)
-                if self.db._get(conn, "service_events", eid):
+                eid = observation_event(
+                    self, conn, item, self.event_identity(item), observed=observed
+                )
+                if eid is None:
                     continue
                 echo = self.echo(conn, item)
                 did = "discussion_" + request_key(
@@ -431,15 +436,7 @@ class CommunicationStore:
                 }
                 self.ms.put(conn, "events", event)
                 if not echo:
-                    row["input_revision"] += 1
-                    row["revision"] += 1
-                    if row["state"] != "paused":
-                        row["state"] = "ready_to_assess"
-                    row["dirty_since"] = row.get("dirty_since") or time.time()
-                    row["ready_after"] = min(
-                        time.time() + self.policy["debounce_seconds"],
-                        row["dirty_since"] + self.policy["max_debounce_seconds"],
-                    )
+                    mark_input(row, self.policy)
                     if (item.content.get("metadata") or {}).get("review_basis"):
                         observed = item.content["metadata"]["review_basis"]
                         if row.get("observed_basis") != observed:
@@ -538,12 +535,16 @@ class CommunicationStore:
         with self.db.write() as conn:
             self.runtime.store.guard(conn, self.runtime.header)
             row = self.get("discussions", row["id"], conn)
+            force = force or row["analysis_epoch"] > row.get("assessed_epoch", 0)
             if (
                 row["state"] in {"paused", "waiting_operator"}
                 or row.get("assessed_input_revision", 0) >= row["input_revision"]
                 and row["processed_seq"] >= row["seq"]
                 and not force
             ):
+                if row["state"] == "ready_to_assess":
+                    row["state"] = "waiting_participant"
+                    self.put(conn, "discussions", row)
                 return None
             if not force and row.get("ready_after", 0) > time.time():
                 return None
@@ -575,6 +576,8 @@ class CommunicationStore:
                 "projection": copy.deepcopy(row["projection"]),
                 "events": [e["id"] for e in history],
                 "review_id": row["review_id"],
+                "work_id": row["work_id"],
+                "operator_note": row.get("operator_note"),
             }
             key = row["id"] + ":" + basis + ":" + str(through)
             job = self.ms.job(
@@ -654,6 +657,7 @@ class CommunicationStore:
         row.update(
             projection=projection,
             assessed_input_revision=job["input"]["input_revision"],
+            assessed_epoch=job["input"]["epoch"],
             processed_seq=job["input"]["seq"],
             last_round=rid,
             dirty_since=None,
@@ -719,11 +723,13 @@ class CommunicationStore:
                     "reason", "Direction or progress requires an operator decision."
                 ),
                 "candidate": row["projection"],
-                "expires_at": time.time() + self.policy["authorization_seconds"],
+                "expires_at": None,
             },
         )
 
-    def accept_requirements(self, conn, row, draft, category, *, automatic=False):
+    def accept_requirements(
+        self, conn, row, draft, category, *, automatic=False, origin="operator"
+    ):
         work = self.ms.store.work(row["work_id"], self.id) if row["work_id"] else None
         if work and work.get("run_id"):
             from homebrew_harness.storage.durable_runtime import DurableStore
@@ -747,6 +753,11 @@ class CommunicationStore:
             "scope": draft["scope"],
             "priority": 0,
         }
+        from homebrew_harness.services.requirements import accept
+
+        accepted = accept(
+            self, conn, row, draft, "host_policy" if automatic else origin
+        )
         if work is None:
             work = self.ms.store.enqueue(
                 conn,
@@ -768,6 +779,10 @@ class CommunicationStore:
                 cancel_requested=False,
             )
         work.update(
+            requirements_id=accepted["id"],
+            requirements_history=list(
+                dict.fromkeys([*work.get("requirements_history", []), accepted["id"]])
+            ),
             triage=proposal,
             triage_revision=work["requirements_revision"],
             authority=None,
@@ -809,7 +824,7 @@ class CommunicationStore:
                 "state": "pending",
                 "reason": result["reason"],
                 "candidate": draft,
-                "expires_at": time.time() + self.policy["authorization_seconds"],
+                "expires_at": None,
             },
         )
 
@@ -934,7 +949,9 @@ class CommunicationStore:
 
     def decide(self, conn, request, payload, decision_id):
         row = self.get("discussions", request["discussion_id"], conn)
-        if request["expires_at"] <= time.time() or request["basis"] != self.basis(row):
+        if (
+            request["expires_at"] is not None and request["expires_at"] <= time.time()
+        ) or request["basis"] != self.basis(row):
             raise ValueError("Discussion decision has expired or changed.")
         choice = payload["decision"]
         if request["kind"] == "discussion_information":
@@ -972,7 +989,11 @@ class CommunicationStore:
                 raise ValueError("Requirements acceptance requires approve/deny.")
             if choice == "approve":
                 self.accept_requirements(
-                    conn, row, request["candidate"], request.get("category", "feature")
+                    conn,
+                    row,
+                    request["candidate"],
+                    request.get("category", "feature"),
+                    origin="operator:" + decision_id,
                 )
                 request["state"] = "approved"
             else:
@@ -1075,12 +1096,7 @@ class CommunicationStore:
             if row["revision"] != payload["revision"]:
                 raise ValueError("Communication reference revision changed.")
             if method in {"discussion_assess", "discussion_reopen"}:
-                row.update(
-                    state="ready_to_assess",
-                    ready_after=0,
-                    analysis_epoch=row["analysis_epoch"] + 1,
-                    revision=row["revision"] + 1,
-                )
+                request_analysis(row)
             elif method == "discussion_pause":
                 row.update(
                     state="paused",

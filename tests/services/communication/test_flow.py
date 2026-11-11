@@ -453,6 +453,9 @@ class CommunicationFlow(unittest.TestCase):
         self.peer.issue(pr=True)
         service = self.start()
         did = self.discussion(service)
+        eventually(
+            lambda: service.discussion(did)["state"] == "waiting_participant", 20
+        )
         eventually(lambda: service.discussion(did).get("review_id"), 15)
         operation = service.control_discussion(
             did, "prepare_review", request_id="prepare"

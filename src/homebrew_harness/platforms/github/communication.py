@@ -12,6 +12,7 @@ from homebrew_harness.execution.execution_control import (
 )
 from homebrew_harness.platforms.contracts import ObjectRef, SourceEvent, digest
 from .repository import validate_project
+from homebrew_harness.platforms.effects import publication, tracks_write
 
 
 def serialized(function):
@@ -54,6 +55,7 @@ class GithubCommunication:
     def close(self):
         self.transport.close()
 
+    @tracks_write
     def request(self, method, path, body=None, params=None):
         return self.transport.request(
             method, path, operation_deadline(10), body=body, params=params
@@ -229,6 +231,7 @@ class GithubCommunication:
         return "<!-- harness-communication:" + key + " -->"
 
     @serialized
+    @publication
     def publish(self, plan, *, reconcile=False):
         ref = self.target(plan["subject"])
         actor = self.identity()
@@ -369,6 +372,7 @@ class GithubCommunication:
         from homebrew_harness.security.file_visibility import host_managed_parts
 
         files = {}
+        modes = {}
         skipped = []
         size = 0
         seen = set()
@@ -426,6 +430,7 @@ class GithubCommunication:
                 skipped.append({"path": path, "reason": "binary"})
                 continue
             files[path] = content
+            modes[path] = mode
         base_files = {}
         from urllib.parse import quote
         from homebrew_harness.platforms.http import RemoteFailure
@@ -481,6 +486,9 @@ class GithubCommunication:
             except UnicodeError:
                 skipped.append({"path": path, "reason": "base_binary"})
                 continue
+            if "\0" in content:
+                skipped.append({"path": path, "reason": "base_binary"})
+                continue
             base_files[path] = content
         for entry in changed:
             if not isinstance(entry.get("patch"), str):
@@ -490,17 +498,15 @@ class GithubCommunication:
         after = self.current_basis(subject)
         if before != after:
             raise ValueError("PR changed during snapshot capture.")
+        from .review_coverage import coverage
+
         return {
             "basis": before,
             "tree": tree_id,
             "merge_base": merge_base,
             "files": files,
+            "modes": modes,
             "base_files": base_files,
             "changed": changed,
-            "coverage": {
-                "paths": len(files),
-                "bytes": size,
-                "skipped": skipped,
-                "complete": not skipped,
-            },
+            "coverage": coverage(changed, files, base_files, skipped, policy, size),
         }

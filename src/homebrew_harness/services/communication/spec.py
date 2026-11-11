@@ -285,6 +285,8 @@ def validate_proposal(raw, policy):
             raise ValueError("Invalid requirement draft.")
         text(draft.get("text"), "draft", 16000)
         text(draft.get("acceptance"), "acceptance", 8000)
+        if "out_of_scope" in draft:
+            text(draft["out_of_scope"], "out_of_scope", 8000)
         if draft.get("scope") is not None and draft["scope"] not in policy["scopes"]:
             raise ValueError("Draft must choose a host scope.")
     if raw.get("communication") is not None:

@@ -22,7 +22,11 @@ class CommunicationBoundaries(unittest.TestCase):
         did = self.discussion(service)
         eventually(lambda: service.discussion(did)["processed_seq"] > 0, 10)
         service.pause("all")
-        return service, did, service.runtime.maintenance.communication
+        communication = service.runtime.maintenance.communication
+        communication.stop.set()
+        self.assertTrue(communication.finished.wait(5))
+        communication.stop.clear()
+        return service, did, communication
 
     def source(self, store, subject, identity, body, actor=11):
         item = SourceEvent(

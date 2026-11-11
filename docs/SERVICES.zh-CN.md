@@ -4,7 +4,7 @@
 
 Service 管理持久工作队列与固定周期计划，每项工作交给已有 Run supervisor。P1 提供 `manual` profile：部署者提交任务、观察进展、处理原生请求，并暂停或停止执行。
 
-`repository_maintenance` profile 增加 GitHub 收件、自动研判、工作授权、长期对话和汇报。工作项在委派 Run 完成后进入 `review`；分组发布审批与远端交付属于后续阶段。
+`repository_maintenance` profile 增加 GitHub 收件、自动研判、工作授权、长期对话和汇报。工作项在委派 Run 完成后进入 `review`。可选交付能力提供固定候选验证、分组发布审批与远端交付；社区沟通能力提供 Issue 多轮讨论和外部 PR 审查。
 
 ## 宿主准备
 
@@ -243,6 +243,8 @@ homebrew-harness service report-ack SERVICE_ID REPORT_ID
 这些命令可配合外部 `--connection` 文件；`record KIND ID --offset ... --limit ...` 分块读长记录。`work revise WORK_ID TEXT` 修订非活动工作的契约，`work revoke WORK_ID` 撤销工作授权；活动执行继续使用明确的 steering、pause、cancel 和恢复控制。续期授权与恢复执行是两个明确操作。
 
 此 profile 的 Text UI 普通输入进入长期对话；`work submit` 请求新工作，`work steer` 修改活动 Run。焦点用于绑定讨论目标，候选计划受理时仍需匹配需求版本，模型回复不会成为批准。
+
+每类维护任务使用统一的输入和结果契约。对话可读取截至当前消息的同一 context 历史，以及明确选定 Work 的关联证据；通用对话可浏览最小 Work 目录。报告读取冻结活动窗口与引用记录，并区分历史事实和当前详情。模型提交候选后，运行时校验并将业务结果与 job 完成状态放在同一事务中提交。
 
 Python 对应 `service.converse()`、`service.conversation(id)`、`service.records(kind)`、`service.report()` 等方法。消息及回复可在重连后查询，报告引用工作与执行事实；ack 保存当前读者的已读位置。P2 通过控制接口提供报告，不发送公开 GitHub 回复，也不执行分组发布审批。
 

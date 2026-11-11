@@ -48,11 +48,15 @@ def operation_deadline(timeout=None):
 
 def check(deadline=None, cancel_events=(), *, inherit=True, gateway=True):
     scope = current_scope() if inherit and not _CLEANUP.get() else RequestScope()
-    if _CONTROL.get():
+    if _CONTROL.get() and not _CLEANUP.get():
         scope = RequestScope(deadline=_CONTROL.get(), cancel_events=scope.cancel_events)
     if any(
         event.is_set()
-        for event in (*scope.cancel_events, *cancel_events, *_CONTROL_CANCEL.get())
+        for event in (
+            *scope.cancel_events,
+            *cancel_events,
+            *(_CONTROL_CANCEL.get() if not _CLEANUP.get() else ()),
+        )
     ):
         raise ModelCancelled("Execution cancelled; inspect any action already started.")
     if scope.gateway and gateway:

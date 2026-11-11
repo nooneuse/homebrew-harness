@@ -52,7 +52,8 @@ def dispatch(manager, method, payload, request_id):
 
             row.update(
                 state="queued",
-                deadline_at=time.time() + manager.spec["operation_seconds"],
+                deadline_at=None,
+                eligible_at=time.time(),
                 error=None,
                 revision=row["revision"] + 1,
             )

@@ -108,3 +108,5 @@ python examples/delivery_demo.py --output /tmp/harness-delivery-demo
 Use a new output directory. The scenario uses real local Git refs and a deterministic model/platform peer. It verifies CI repair, one reused change request, restart, grouped target approval, target publication, a public-comment receipt and resource closure without paid model access.
 
 GitHub is the implemented write adapter. Other platforms implement the same fixed delivery operations and normalized feedback contract. Release/tag creation, issue closing, merge queues and outbound report channels remain separate future capabilities.
+
+Host policy can select trusted `reviewer_ids` and a `required_approvals` count. Their effective decisions must apply to the published head: requested changes or insufficient approvals keep delivery in `review_waiting`, and target publication rechecks the gate. Ordinary comments and untrusted reviews remain discussion evidence. The default adds no required reviewers; configure this policy to match the project's review process.

@@ -66,7 +66,15 @@ class Delivery:
         self.started = False
         self.error = None
         self.preparing = False
-        self.test_runner = None
+        from homebrew_harness.execution.execution_leases import ExecutionLeases
+        from homebrew_harness.services.resources import TestResources
+
+        self.test_leases = ExecutionLeases(runtime.store.root)
+        self.tests = TestResources(self.test_leases, "delivery-tests")
+
+    @property
+    def test_runner(self):
+        return self.tests.runner
 
     def identity(self):
         return {
@@ -98,7 +106,7 @@ class Delivery:
                 for row in conn.execute(
                     "SELECT value FROM records WHERE section=? AND owner=?"
                     + (
-                        " AND json_extract(value,'$.state') IN ('queued','preparing','validating','review_branch_ready','ci_waiting','repair_approved')"
+                        " AND json_extract(value,'$.state') IN ('queued','preparing','validating','review_branch_ready','ci_waiting','review_waiting','repair_approved')"
                         if active and kind == "changesets"
                         else " AND json_extract(value,'$.state') IN ('queued','started')"
                         if active
@@ -113,6 +121,12 @@ class Delivery:
         self.started = True
         try:
             while not self.stop.wait(0.1):
+                from homebrew_harness.runtime.runtime_control import ClosePending
+
+                try:
+                    self.tests.settle()
+                except ClosePending:
+                    continue
                 meta = self.runtime.store.get(self.ms.id)
                 if meta["state"] == "stopping":
                     return
@@ -164,6 +178,7 @@ class Delivery:
             "validating",
             "review_branch_ready",
             "ci_waiting",
+            "review_waiting",
             "repair_approved",
         }:
             return
@@ -227,7 +242,7 @@ class Delivery:
                 self.runtime.core.config.settings.test_config,
                 Path(row["candidate"]["workspace"]),
             )
-            self.test_runner = runner
+            self.tests.own(runner)
             receipts = []
             try:
                 for name in self.spec["required_tests"]:
@@ -310,9 +325,7 @@ class Delivery:
                         row["frozen"] = self.store.freeze(row)
                         self.store.put(conn, "changesets", row)
             finally:
-                runner.close()
-                runner.wait_closed(None)
-                self.test_runner = None
+                self.tests.settle()
             return
         if row["state"] == "review_branch_ready":
             self.git.verify(row["candidate"])
@@ -320,7 +333,10 @@ class Delivery:
                 self.store.action(conn, row, "publish_branch")
                 self.store.action(conn, row, "ensure_change_request")
             return
-        if row["state"] == "ci_waiting" and row.get("next_ci", 0) <= time.time():
+        if (
+            row["state"] in {"ci_waiting", "review_waiting"}
+            and row.get("next_ci", 0) <= time.time()
+        ):
             self.git.verify(row["candidate"])
             feedback = self.adapter.feedback(row["change_request"])
             if (
@@ -353,13 +369,24 @@ class Delivery:
                 )
                 for name in self.spec["required_checks"]
             )
+            from .review_gate import check as review_check
+
+            review_gate = review_check(feedback, self.spec)
             row = self.store.update(
                 "changesets",
                 row["id"],
                 ci=feedback,
+                review_gate=review_gate,
                 next_ci=time.time() + self.spec["ci_poll_seconds"],
             )
-            if ready:
+            if ready and not review_gate["ready"]:
+                self.store.update(
+                    "changesets",
+                    row["id"],
+                    state="review_waiting",
+                    error="review_authority_required",
+                )
+            elif ready:
                 if (
                     self.git.ref(self.spec["target_branch"])
                     != row["candidate"]["target_base"]
@@ -404,7 +431,12 @@ class Delivery:
                 if self.spec["mode"] == "isolated" and self.spec["required_checks"]:
                     self.adapter.target_guard()
                 observed = self.adapter.feedback(row["change_request"])
-                if fingerprint(observed) != action["plan"].get("ci_hash"):
+                from .review_gate import check as review_check
+
+                if (
+                    fingerprint(observed) != action["plan"].get("ci_hash")
+                    or not review_check(observed, self.spec)["ready"]
+                ):
                     self.store.update(
                         "changesets",
                         row["id"],
@@ -447,7 +479,11 @@ class Delivery:
         except StaleDelivery as error:
             self.store.settle_action(accepted, "superseded", error=type(error).__name__)
         except Exception as error:
-            self.store.settle_action(accepted, "unknown", error=type(error).__name__)
+            from homebrew_harness.services.action_runtime import failed_state
+
+            self.store.settle_action(
+                accepted, failed_state(error), error=type(error).__name__
+            )
 
     def reconcile(self, action):
         row = self.store.get("changesets", action["changeset_id"])
@@ -701,10 +737,11 @@ class Delivery:
     def close(self):
         self.stop.set()
         self.git.stop.set()
-        if self.test_runner:
-            self.test_runner.close()
+        self.tests.request_close()
         if not self.started:
             self.finished.set()
         self.finished.wait()
+        self.tests.settle()
+        self.test_leases.close()
         self.adapter.close()
         self.git.close()

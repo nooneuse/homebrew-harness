@@ -1,6 +1,29 @@
 """Small shared transitions for accepted external effects."""
 
 import time
+from homebrew_harness.platforms.effects import failed_state as failed_state
+
+
+def confirm_unexecuted(action, *, revision, confirmed, decision):
+    if (
+        action["state"] != "unknown"
+        or action["revision"] != revision
+        or confirmed is not True
+    ):
+        raise ValueError("Confirm non-execution of the current unknown attempt.")
+    return {
+        **action,
+        "state": "awaiting_approval",
+        "authorization": None,
+        "error": None,
+        "revision": action["revision"] + 1,
+        "inspection": {
+            "decision": decision,
+            "attempt": action["attempts"],
+            "conclusion": "not_executed",
+            "at": time.time(),
+        },
+    }
 
 
 def start_attempt(action, generation):

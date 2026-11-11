@@ -419,6 +419,10 @@ class ServiceRuntime:
                 if self.maintenance.delivery.preparing:
                     return
                 work = self.maintenance.delivery.baseline(work, child)
+            if self.maintenance:
+                from .requirements import install
+
+                install(self.maintenance.store, work, child.workdir)
             self.store.update_work(self.header, work["id"], state="in_progress")
             try:
                 from homebrew_harness.execution.providers.backends import backend_scope
@@ -872,7 +876,9 @@ class ServiceRuntime:
                 raise ValueError("This service has no maintenance profile.")
             from .protocol import QUERY_METHODS
 
-            if method in {"delivery_inspect", "batch_decide"}:
+            from .slow_controls import METHODS
+
+            if method in METHODS:
                 return self.maintenance.command(method, payload, request_id)
             with self.lock:
                 if (
@@ -946,7 +952,7 @@ class ServiceRuntime:
         if self.finished.is_set():
             return self.snapshot()
         meta = self.store.get(self.id)
-        if meta["state"] != "stopping":
+        if meta["state"] not in {"stopping", "stopped"}:
             self.store.update(
                 self.header,
                 state="stopping",
@@ -959,6 +965,15 @@ class ServiceRuntime:
         return self.snapshot()
 
     def _finish_close(self):
+        meta = self.store.get(self.id)
+        if (
+            meta["state"] == "stopped"
+            and meta["generation"] == self.header["generation"]
+        ):
+            self.workspace_lease.close()
+            self.leases.close()
+            self.finished.set()
+            return
         self.operations.close()
         if self.maintenance is not None:
             self.maintenance.close()

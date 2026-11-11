@@ -26,6 +26,7 @@ class Peer:
         self.proposals = []
         self.hold = None
         self.drop = None
+        self.reject = None
         self.count = 10
         self.head = "1" * 40
         self.base = "2" * 40
@@ -77,7 +78,7 @@ class Peer:
                     return self.send(outer.inline)
                 if path.endswith("/files"):
                     changed = []
-                    for name in set(outer.files) | set(outer.base_files):
+                    for name in sorted(set(outer.files) | set(outer.base_files)):
                         old, new = (
                             outer.base_files.get(name, ""),
                             outer.files.get(name, ""),
@@ -210,6 +211,10 @@ class Peer:
                         ).model_dump(exclude_none=True)
                     )
                 outer.count += 1
+                if outer.reject:
+                    return self.send(
+                        {"message": "Synthetic publication rejection."}, outer.reject
+                    )
                 row = {
                     "id": outer.count,
                     "body": body["body"],

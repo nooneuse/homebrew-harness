@@ -7,6 +7,8 @@ from pathlib import Path
 from homebrew_harness.execution.execution_control import (
     control_scope,
     operation_deadline,
+    cleanup_scope,
+    ControlledRLock,
 )
 from homebrew_harness.execution.execution_leases import ExecutionLeases
 from homebrew_harness.platforms.contracts import ObjectRef, SourceEvent, digest
@@ -15,6 +17,9 @@ from homebrew_harness.services.sources import retry_after
 from .spec import open_projects
 from .store import CommunicationStore, SECTIONS
 from .snapshots import materialize, verify
+from homebrew_harness.runtime.runtime_control import ClosePending
+from homebrew_harness.services.resources import TestResources
+from .transitions import request_analysis, preparation_applies
 
 
 class CommunicationRuntime:
@@ -33,8 +38,11 @@ class CommunicationRuntime:
         self.started = False
         self.error = None
         self.closed = set()
-        self.test_runner = None
         self.leases = ExecutionLeases(runtime.store.root)
+        self.tests = TestResources(self.leases, "communication-review")
+        self.observation_lock = ControlledRLock()
+        self.publication_lock = ControlledRLock()
+        self.cursors = {}
         try:
             for scope, (adapter, _identity) in self.projects.items():
                 if set(self.policy["enabled_actions"]) - set(adapter.capabilities):
@@ -61,6 +69,10 @@ class CommunicationRuntime:
             },
         }
 
+    @property
+    def test_runner(self):
+        return self.tests.runner
+
     def adapter(self, subject):
         ref = ObjectRef(**subject)
         if ref.scope() not in self.projects:
@@ -70,32 +82,41 @@ class CommunicationRuntime:
     def rows(self, kind, limit=100):
         import json
 
+        now = time.time()
         condition = (
-            " AND (json_extract(value,'$.next_poll')<=? OR json_extract(value,'$.state')='ready_to_assess')"
+            " AND coalesce(json_extract(value,'$.retry_after'),0)<=?"
+            " AND (json_extract(value,'$.next_poll')<=? OR"
+            " (json_extract(value,'$.state')='ready_to_assess' AND coalesce(json_extract(value,'$.ready_after'),0)<=?))"
             if kind == "discussions"
-            else " AND json_extract(value,'$.state')='queued'"
+            else " AND json_extract(value,'$.state')='queued' AND coalesce(json_extract(value,'$.next_attempt'),0)<=?"
         )
-        args = (
-            (SECTIONS[kind], "service:" + self.runtime.id, time.time(), limit)
-            if kind == "discussions"
-            else (SECTIONS[kind], "service:" + self.runtime.id, limit)
-        )
+        times = (now, now, now) if kind == "discussions" else (now,)
         with self.ms.db.connection() as conn:
-            return [
-                json.loads(row[0])
-                for row in conn.execute(
-                    "SELECT value FROM records WHERE section=? AND owner=?"
-                    + condition
-                    + " ORDER BY rowid LIMIT ?",
-                    args,
-                ).fetchall()
-            ]
+            rows = conn.execute(
+                "SELECT rowid,value FROM records WHERE section=? AND owner=?"
+                + condition
+                + " ORDER BY CASE WHEN rowid>? THEN 0 ELSE 1 END,rowid LIMIT ?",
+                (
+                    SECTIONS[kind],
+                    "service:" + self.runtime.id,
+                    *times,
+                    self.cursors.get(kind, 0),
+                    limit,
+                ),
+            ).fetchall()
+        if rows:
+            self.cursors[kind] = rows[-1][0]
+        return [json.loads(row[1]) for row in rows]
 
     def loop(self):
         self.started = True
         try:
             self.store.recover()
             while not self.stop.wait(0.05):
+                try:
+                    self.tests.settle()
+                except ClosePending:
+                    continue
                 meta = self.runtime.store.get(self.runtime.id)
                 if meta["state"] == "stopping":
                     return
@@ -116,7 +137,7 @@ class CommunicationRuntime:
                             current["subject"]["kind"] == "change_request"
                             and not current.get("review_id")
                             and current.get("observed_basis", {}).get("state") == "open"
-                            and current["state"] != "paused"
+                            and current["state"] not in {"paused", "blocked"}
                         ):
                             self.prepare_review(current)
                         current = self.store.get("discussions", row["id"])
@@ -125,6 +146,8 @@ class CommunicationRuntime:
                                 current, force=current.get("ready_after") == 0
                             )
                     except Exception as error:
+                        if self.stop.is_set():
+                            return
                         self.fail(row, error)
                 for action in self.rows("communication_actions"):
                     if self.stop.is_set():
@@ -148,37 +171,19 @@ class CommunicationRuntime:
                 next_poll=time.time()
                 + retry_after(error, current.get("poll_attempts", 0) + 1),
                 poll_attempts=current.get("poll_attempts", 0) + 1,
+                retry_after=time.time()
+                + retry_after(error, current.get("poll_attempts", 0) + 1),
             )
             if current.get("poll_attempts", 0) >= 3:
                 current["state"] = "blocked"
             self.store.put(conn, "discussions", current)
 
     def poll(self, row):
-        adapter = self.adapter(row["subject"])
         with control_scope(
             deadline=operation_deadline(self.policy["prepare_seconds"]),
             cancel_events=(self.stop,),
         ):
-            observed = adapter.observe(row["subject"])
-        items = self.store.observed_events(
-            row["subject"], observed["events"], complete=observed.get("complete", False)
-        )
-        if row["subject"]["kind"] == "change_request":
-            items.append(
-                SourceEvent(
-                    ObjectRef(**row["subject"]),
-                    ObjectRef(**row["subject"]),
-                    digest(observed["basis"]),
-                    {
-                        "title": "",
-                        "body": "",
-                        "state": observed["basis"]["state"],
-                        "actor_id": None,
-                        "metadata": {"review_basis": observed["basis"]},
-                    },
-                )
-            )
-        self.store.ingest("communication", items, ObjectRef(**row["subject"]).scope())
+            self.freshness(row)
         with self.ms.db.write() as conn:
             self.runtime.store.guard(conn, self.runtime.header)
             current = self.store.get("discussions", row["id"], conn)
@@ -200,18 +205,19 @@ class CommunicationRuntime:
             operation = "review_prepare_" + request_key(
                 "review-prepare", self.runtime.id, request_id
             )
+            request_analysis(row)
             value = {
                 "id": operation,
                 "discussion_id": identity,
                 "state": "queued",
                 "basis": row.get("observed_basis"),
+                "epoch": row["analysis_epoch"],
                 "created_at": time.time(),
             }
             self.store.put(conn, "review_operations", value)
             row.update(
                 review_operation=operation,
                 review_id=None,
-                revision=row["revision"] + 1,
                 next_poll=0,
             )
             self.store.put(conn, "discussions", row)
@@ -227,10 +233,13 @@ class CommunicationRuntime:
         )
 
     def prepare_review(self, row):
+        self.tests.settle()
         operation = row.get("review_operation") or "review_prepare_" + request_key(
             "review-prepare",
             self.runtime.id,
-            row["id"] + ":" + digest(row.get("observed_basis")),
+            row["id"]
+            + ":"
+            + digest([row.get("observed_basis"), row["analysis_epoch"]]),
         )
         with (
             self.leases.use("communication-review"),
@@ -241,17 +250,27 @@ class CommunicationRuntime:
         ):
             with self.ms.db.write() as conn:
                 self.runtime.store.guard(conn, self.runtime.header)
+                current = self.store.get("discussions", row["id"], conn)
+                if (
+                    current["state"] == "paused"
+                    or current["analysis_epoch"] != row["analysis_epoch"]
+                    or current.get("observed_basis") != row.get("observed_basis")
+                ):
+                    return {"id": operation, "state": "superseded"}
                 record = self.ms.db._get(
                     conn, "service_review_operations", operation
                 ) or {
                     "id": operation,
                     "discussion_id": row["id"],
                     "basis": row.get("observed_basis"),
+                    "epoch": row["analysis_epoch"],
                     "created_at": time.time(),
                 }
                 record.update(
                     state="running", generation=self.runtime.header["generation"]
                 )
+                current["review_operation"] = operation
+                self.store.put(conn, "discussions", current)
                 self.store.put(conn, "review_operations", record)
             try:
                 captured = self.adapter(row["subject"]).snapshot(
@@ -274,7 +293,7 @@ class CommunicationRuntime:
                     self.runtime.store.guard(conn, self.runtime.header)
                     current = self.store.get("discussions", row["id"], conn)
                     self.store.put(conn, "review_snapshots", snapshot)
-                    if current.get("observed_basis") != snapshot["basis"]:
+                    if not preparation_applies(current, record, snapshot):
                         self.store.put(
                             conn, "review_operations", {**record, "state": "superseded"}
                         )
@@ -283,6 +302,7 @@ class CommunicationRuntime:
                         review_id=snapshot["id"],
                         revision=current["revision"] + 1,
                         state="ready_to_assess",
+                        ready_after=0,
                     )
                     self.store.put(conn, "discussions", current)
                     self.store.supersede(conn, current)
@@ -302,7 +322,7 @@ class CommunicationRuntime:
                     "snapshot_id": snapshot["id"],
                 }
             except BaseException as error:
-                with self.ms.db.write() as conn:
+                with cleanup_scope(), self.ms.db.write() as conn:
                     self.runtime.store.guard(conn, self.runtime.header)
                     self.store.put(
                         conn,
@@ -318,7 +338,7 @@ class CommunicationRuntime:
         runner = load_test_runner(
             self.runtime.core.config.settings.test_config, Path(snapshot["workspace"])
         )
-        self.test_runner = runner
+        self.tests.own(runner)
         try:
             receipts = []
             for name in self.policy["required_tests"]:
@@ -339,40 +359,49 @@ class CommunicationRuntime:
                 ),
             )
         finally:
-            runner.close()
-            runner.wait_closed(None)
-            self.test_runner = None
+            self.tests.settle()
 
     def freshness(self, row):
-        observed = self.adapter(row["subject"]).observe(row["subject"])
-        items = self.store.observed_events(
-            row["subject"], observed["events"], complete=observed.get("complete", False)
-        )
-        if row["subject"]["kind"] == "change_request":
-            items.append(
-                SourceEvent(
-                    ObjectRef(**row["subject"]),
-                    ObjectRef(**row["subject"]),
-                    digest(observed["basis"]),
-                    {
-                        "title": "",
-                        "body": "",
-                        "state": observed["basis"]["state"],
-                        "actor_id": None,
-                        "metadata": {"review_basis": observed["basis"]},
-                    },
-                )
+        with self.observation_lock:
+            through = self.store.get("discussions", row["id"])["seq"]
+            observed = self.adapter(row["subject"]).observe(row["subject"])
+            items = self.store.observed_events(
+                row["subject"],
+                observed["events"],
+                complete=observed.get("complete", False),
+                through=through,
             )
-        self.store.ingest("communication", items, ObjectRef(**row["subject"]).scope())
+            if row["subject"]["kind"] == "change_request":
+                items.append(
+                    SourceEvent(
+                        ObjectRef(**row["subject"]),
+                        ObjectRef(**row["subject"]),
+                        digest(observed["basis"]),
+                        {
+                            "title": "",
+                            "body": "",
+                            "state": observed["basis"]["state"],
+                            "actor_id": None,
+                            "metadata": {"review_basis": observed["basis"]},
+                        },
+                    )
+                )
+            self.store.ingest(
+                "communication",
+                items,
+                ObjectRef(**row["subject"]).scope(),
+                observed=True,
+            )
 
     def execute(self, action):
         accepted = None
         with (
-            self.leases.use("communication-publish"),
             control_scope(
                 deadline=operation_deadline(self.policy["request_seconds"]),
                 cancel_events=(self.stop,),
             ),
+            self.publication_lock,
+            self.leases.use("communication-publish"),
         ):
             row = self.store.get("discussions", action["discussion_id"])
             if action["expires_at"] <= time.time():
@@ -398,12 +427,20 @@ class CommunicationRuntime:
                     self.freshness(self.store.get("discussions", row["id"]))
                 except Exception:
                     result["freshness"] = "unverified"
-                self.store.finish_action(accepted, "confirmed", result)
+                with cleanup_scope():
+                    self.store.finish_action(accepted, "confirmed", result)
             except Exception as error:
                 if accepted is not None:
-                    self.store.finish_action(
-                        accepted, "unknown", error=type(error).__name__
-                    )
+                    from homebrew_harness.services.action_runtime import failed_state
+
+                    with cleanup_scope():
+                        self.store.finish_action(
+                            accepted,
+                            failed_state(error),
+                            error=str(error)
+                            if hasattr(error, "outcome")
+                            else type(error).__name__,
+                        )
                 else:
                     with self.ms.db.write() as conn:
                         self.runtime.store.guard(conn, self.runtime.header)
@@ -440,8 +477,9 @@ class CommunicationRuntime:
 
     def reconcile(self, identity):
         with (
-            self.leases.use("communication-publish"),
             control_scope(deadline=operation_deadline(self.policy["request_seconds"])),
+            self.publication_lock,
+            self.leases.use("communication-publish"),
         ):
             action = self.store.get("communication_actions", identity)
             if action["state"] == "confirmed":
@@ -461,13 +499,47 @@ class CommunicationRuntime:
                 return self.store.finish_action(action, "confirmed", result)
             return action
 
+    def inspect(self, payload, request_id):
+        if payload.get("conclusion", "reconcile") == "reconcile":
+            return self.reconcile(payload["id"])
+        if payload.get("conclusion") != "retry_not_executed":
+            raise ValueError("Unknown publication inspection conclusion.")
+        from homebrew_harness.services.action_runtime import confirm_unexecuted
+
+        def apply(conn):
+            self.runtime.store.guard(conn, self.runtime.header)
+            action = self.store.get("communication_actions", payload["id"], conn)
+            row = self.store.get("discussions", action["discussion_id"], conn)
+            value = confirm_unexecuted(
+                action,
+                revision=payload.get("revision"),
+                confirmed=payload.get("confirmed"),
+                decision=request_id,
+            )
+            if action["basis"] != self.store.basis(row):
+                value["state"] = "superseded"
+            self.store.put(conn, "communication_actions", value)
+            if value["state"] == "awaiting_approval":
+                self.store.request_authority(conn, row, value)
+            return value
+
+        with self.publication_lock, self.leases.use("communication-publish"):
+            return self.runtime.store.command(
+                self.runtime.header, "communication_inspect", payload, request_id, apply
+            )
+
     def close(self):
         self.stop.set()
-        if self.test_runner:
-            self.test_runner.close()
+        self.tests.request_close()
         if not self.started:
             self.finished.set()
         self.finished.wait()
+        self.tests.settle()
+        if not self.publication_lock.acquire(blocking=False):
+            raise ClosePending(
+                "A communication control still owns its platform connection."
+            )
+        self.publication_lock.release()
         for scope, (adapter, _identity) in self.projects.items():
             if scope not in self.closed:
                 adapter.close()

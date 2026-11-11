@@ -48,6 +48,12 @@ def snapshot(runtime):
         issues.append({"code": "storage_space_low", "target": runtime.id})
     phase = meta.get("operations_phase", "active")
     if phase == "active":
+        if maintenance and maintenance.agent:
+            for model in maintenance.agent.model_control.view():
+                if model["blocked"]:
+                    issues.append(
+                        {"code": "model_connection_blocked", "target": model["profile"]}
+                    )
         communication = (
             getattr(maintenance, "communication", None) if maintenance else None
         )

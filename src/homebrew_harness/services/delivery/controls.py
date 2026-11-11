@@ -23,18 +23,19 @@ def command(delivery, method, payload, request_id):
                 raise ValueError("Control request_id has another payload.")
             return saved["result"]
         if payload["conclusion"] == "reconcile":
-            action = delivery.store.get("actions", payload["id"])
-            if action["state"] == "confirmed":
-                result = action
-            elif action["state"] == "unknown":
-                result = delivery.reconcile(action)
-            else:
+            from homebrew_harness.services.slow_controls import perform
+
+            def inspect():
+                action = delivery.store.get("actions", payload["id"])
+                if action["state"] == "confirmed":
+                    return action
+                if action["state"] == "unknown":
+                    return delivery.reconcile(action)
                 raise ValueError(
                     "Only an uncertain completed attempt can be inspected."
                 )
-            return runtime.store.command(
-                runtime.header, method, payload, request_id, lambda conn: result
-            )
+
+            return perform(runtime, method, payload, request_id, inspect)
         if (
             payload["conclusion"] != "retry_not_executed"
             or payload.get("confirmed") is not True
@@ -49,11 +50,13 @@ def command(delivery, method, payload, request_id):
                 raise ValueError("Only an uncertain completed attempt can be retried.")
             row = delivery.store.get("changesets", action["changeset_id"], conn)
             delivery.store.current(row, conn)
-            action.update(
-                state="awaiting_approval",
-                authorization=None,
-                error=None,
-                revision=action["revision"] + 1,
+            from homebrew_harness.services.action_runtime import confirm_unexecuted
+
+            action = confirm_unexecuted(
+                action,
+                revision=action["revision"],
+                confirmed=payload["confirmed"],
+                decision=request_id,
             )
             delivery.store.put(conn, "actions", action)
             delivery.store.request(conn, row, action, renew=True)
@@ -101,7 +104,7 @@ def command(delivery, method, payload, request_id):
         if method == "delivery_refresh":
             row = delivery.store.get("changesets", payload["id"], conn)
             delivery.store.current(row)
-            if row["state"] not in {"blocked", "ci_waiting"}:
+            if row["state"] not in {"blocked", "ci_waiting", "review_waiting"}:
                 raise ValueError("Refresh a blocked or waiting CI observation.")
             row.update(
                 state="ci_waiting",

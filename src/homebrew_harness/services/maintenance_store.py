@@ -4,7 +4,7 @@ import json
 import time
 
 from .protocol import request_key, fingerprint
-from .maintenance_spec import text, number, validate_proposal
+from .maintenance_spec import text, number
 
 SECTIONS = {
     "events",
@@ -22,6 +22,7 @@ SECTIONS = {
     "incidents",
     "upgrade_plans",
     "operations",
+    "requirements",
 }
 
 
@@ -130,6 +131,10 @@ class MaintenanceStore:
         )
 
     def job(self, conn, kind, target, revision, payload, key):
+        from .job_contracts import HANDLERS
+
+        if kind not in HANDLERS:
+            raise ValueError("Unknown service job kind.")
         identity = "job_" + request_key("job", self.id, key)
         old = self.db._get(conn, "service_jobs_model", identity)
         if old:
@@ -462,6 +467,13 @@ class MaintenanceStore:
         prompt = (
             work["prompt"]
             + (
+                __import__(
+                    "homebrew_harness.services.requirements", fromlist=["instruction"]
+                ).instruction(self.get("requirements", work["requirements_id"], conn))
+                if work.get("requirements_id")
+                else ""
+            )
+            + (
                 "\n\nCurrent source requirements (external material):\n"
                 + "\n".join(supplemental)
                 if supplemental
@@ -550,107 +562,15 @@ class MaintenanceStore:
                     message.update(state=current["state"], error=current["error"])
                     self.put(conn, "messages", message)
             else:
-                result = validate_proposal(result, job["kind"], self.policy)
-                current.update(
-                    state="completed", result=result, completed_at=time.time()
-                )
-                if job["kind"] == "triage":
-                    work = self.db._get(conn, "service_work", job["target"])
-                    if (
-                        work["requirements_revision"] != job["revision"]
-                        or work["cancel_requested"]
-                    ):
-                        current["state"] = "stale"
-                    else:
-                        work.update(
-                            triage=result,
-                            triage_revision=job["revision"],
-                            revision=work["revision"] + 1,
-                            priority=result.get("priority", 0),
-                        )
-                        disposition = result["disposition"]
-                        active = (
-                            work["run_id"] is not None
-                            and work["state"] == "in_progress"
-                        )
-                        if disposition == "merge":
-                            related = self.store.work(
-                                result.get("related_work"), self.id
-                            )
-                            if related["id"] == work["id"]:
-                                raise ValueError(
-                                    "Cannot merge a work item with itself."
-                                )
-                        if not active:
-                            work["state"] = {
-                                "accept": "proposed",
-                                "decide": "proposed",
-                                "needs_info": "needs_info",
-                                "defer": "deferred",
-                                "reject": "rejected",
-                                "merge": "merged",
-                            }[disposition]
-                        self.db._put(conn, "service_work", work["id"], work)
-                        if disposition in {"accept", "decide", "needs_info"}:
-                            if (
-                                disposition == "accept"
-                                and result["category"] in self.policy["auto_categories"]
-                                and not active
-                                and not work.get("pause_requested")
-                                and not work.get("cancel_requested")
-                                and not work.get("run_history")
-                                and not work["run_id"]
-                            ):
-                                self.grant(conn, work, result, "host_policy")
-                            else:
-                                self.work_request(conn, work, result)
-                        self.changed(conn, work["id"])
-                elif job["kind"] == "discussion":
-                    current["state"] = self.communication.finish(conn, job, result)
-                elif job["kind"] == "audit":
-                    from .operations.audit import finish
+                from .job_contracts import JobContract
 
-                    current["state"] = finish(self, conn, job, result)
-                elif job["kind"] in {"incident", "upgrade_assessment"}:
-                    kind = "incidents" if job["kind"] == "incident" else "upgrade_plans"
-                    target = self.get(kind, job["target"], conn)
-                    target.update(assessment=result, revision=target["revision"] + 1)
-                    self.put(conn, kind, target)
-                    self.changed(conn, detail={"assessment": job["target"]})
-                elif job["kind"] in {"review", "ci_triage"}:
-                    current["state"] = self.delivery.store.finish_model(
-                        conn, job, result
-                    )
-                elif job["kind"] == "conversation":
-                    message = self.get("messages", job["target"], conn)
-                    message.update(state="answered", result=result)
-                    self.put(conn, "messages", message)
-                    if result.get("plan"):
-                        work = self.store.work(result.get("work_id"), self.id)
-                        if (
-                            message.get("work_id") != work["id"]
-                            or message["work_revision"] != work["requirements_revision"]
-                        ):
-                            raise ValueError("Conversation plan target changed.")
-                        self.work_request(conn, work, result["plan"])
-                        self.changed(conn, work["id"])
-                else:
-                    report = self.get("reports", job["target"], conn)
-                    report.update(state="ready", text=result["text"])
-                    self.put(conn, "reports", report)
-                    meta = self.store.guard(conn, self.header)
-                    meta.update(
-                        report_activity=max(
-                            meta.get("report_activity", 0), report["activity"]
-                        ),
-                        report_next=time.time()
-                        + (
-                            0
-                            if report.get("more_activity")
-                            else self.policy["report_seconds"]
-                        ),
-                    )
-                    self.db._put(conn, "service_meta", self.id, meta)
+                contract = JobContract(self, current)
+                result = contract.validate(result, conn)
+                current.update(
+                    state=contract.apply(conn, result),
+                    result=result,
+                    completed_at=time.time(),
+                )
             self.db._put(conn, "service_jobs_model", job["id"], current)
             return current
 

@@ -44,6 +44,8 @@ def validate(raw):
         "required_tests": [],
         "required_checks": [],
         "check_app_ids": [],
+        "reviewer_ids": [],
+        "required_approvals": 0,
         "require_review": True,
         "review_model": None,
         "auto_actions": [],
@@ -99,7 +101,13 @@ def validate(raw):
             continue
         if not isinstance(item, str) or not ENV.fullmatch(item):
             raise ValueError("Delivery values require host environment references.")
-    for key in ("required_tests", "required_checks", "auto_actions", "check_app_ids"):
+    for key in (
+        "required_tests",
+        "required_checks",
+        "auto_actions",
+        "check_app_ids",
+        "reviewer_ids",
+    ):
         if not isinstance(value[key], (tuple, list)) or len(value[key]) > 32:
             raise ValueError("Invalid delivery collection: " + key)
     if not value["required_tests"] or any(
@@ -109,6 +117,15 @@ def validate(raw):
         raise ValueError("Delivery requires named fixed tests.")
     if any(type(n) is not int or n < 1 for n in value["check_app_ids"]):
         raise ValueError("Invalid trusted CI app IDs.")
+    if any(type(n) is not int or n < 1 for n in value["reviewer_ids"]):
+        raise ValueError("Invalid trusted reviewer IDs.")
+    number(
+        value["required_approvals"],
+        "required_approvals",
+        0,
+        len(set(value["reviewer_ids"])),
+        integer=True,
+    )
     if value["required_checks"] and not value["check_app_ids"]:
         raise ValueError("Required checks need trusted app IDs.")
     if any(not isinstance(n, str) for n in value["auto_actions"]) or set(

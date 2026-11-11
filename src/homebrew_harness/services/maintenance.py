@@ -129,6 +129,13 @@ class Maintenance:
     def close(self):
         self.stop.set()
         if self.communication:
+            self.communication.stop.set()
+            self.communication.tests.request_close()
+        if self.delivery:
+            self.delivery.stop.set()
+            self.delivery.git.stop.set()
+            self.delivery.tests.request_close()
+        if self.communication:
             self.communication.close()
         if self.delivery:
             self.delivery.close()
@@ -144,11 +151,25 @@ class Maintenance:
             self.agent_closed = True
 
     def command(self, method, payload, request_id):
+        if method == "model_recover":
+            return self.agent.model_control.recover(
+                payload["profile"], payload["revision"], request_id
+            )
         if method.startswith(("discussion_", "communication_")):
             if self.communication is None:
                 raise ValueError("Communication is not configured.")
             if method == "communication_inspect":
-                return self.communication.reconcile(payload["id"])
+                if payload.get("conclusion", "reconcile") != "reconcile":
+                    return self.communication.inspect(payload, request_id)
+                from .slow_controls import perform
+
+                return perform(
+                    self.runtime,
+                    method,
+                    payload,
+                    request_id,
+                    lambda: self.communication.inspect(payload, request_id),
+                )
             if method == "discussion_prepare_review":
                 return self.communication.request_review(
                     payload["id"], payload["revision"], request_id
@@ -317,6 +338,10 @@ class Maintenance:
         )
 
     def query(self, method, payload):
+        if method == "requests_page":
+            return self.request_page(**payload)
+        if method == "service_models":
+            return self.agent.model_control.view()
         if method.startswith("communication_"):
             if self.communication is None:
                 raise ValueError("Communication is not configured.")
@@ -382,96 +407,14 @@ class Maintenance:
             return self.store.get("reports", payload["id"])
         raise ValueError("Unknown maintenance query.")
 
+    def request_page(self, **arguments):
+        from .request_views import page
+
+        return page(self, **arguments)
+
     def requests(self, work_id=None):
-        with self.store.db.connection() as conn:
-            rows = conn.execute(
-                "SELECT value FROM records WHERE section='service_decisions' AND owner=? AND json_extract(value,'$.state')='pending' ORDER BY rowid LIMIT 100",
-                ("service:" + self.store.id,),
-            ).fetchall()
-        result = []
-        for (raw,) in rows:
-            value = json.loads(raw)
-            if work_id and value["work_id"] != work_id:
-                continue
-            if value["kind"] == "delivery_authority":
-                action = self.store.get("actions", value["action_id"])
-                if action["state"] in {"superseded", "denied", "confirmed"}:
-                    continue
-                try:
-                    self.delivery.store.current(
-                        self.store.get("changesets", value["changeset_id"])
-                    )
-                except ValueError:
-                    continue
-            if value["kind"] in {
-                "communication_authority",
-                "discussion_information",
-                "discussion_requirements",
-            }:
-                if self.communication is None:
-                    continue
-                discussion = self.communication.store.get(
-                    "discussions", value["discussion_id"]
-                )
-                if value["basis"] != self.communication.store.basis(discussion):
-                    continue
-                result.append(
-                    {
-                        "ref": {
-                            "id": value["id"],
-                            "revision": value["revision"],
-                            "target": {
-                                "kind": "service",
-                                "id": self.store.id,
-                                "owner_id": None,
-                            },
-                            "durable": True,
-                        },
-                        "kind": value["kind"],
-                        "question": value.get("reason", ""),
-                        "state": "expired"
-                        if value["expires_at"] <= time.time()
-                        else "pending",
-                        "tool": None,
-                        "arguments": {
-                            "discussion_id": value["discussion_id"],
-                            "action_id": value.get("action_id"),
-                            "candidate": value["candidate"],
-                        },
-                        "reason": value.get("reason", ""),
-                    }
-                )
-                continue
-            work = self.runtime.store.work(value["work_id"], self.store.id)
-            if value["requirements_revision"] != work["requirements_revision"]:
-                continue
-            result.append(
-                {
-                    "ref": {
-                        "id": value["id"],
-                        "revision": value["revision"],
-                        "target": {
-                            "kind": "service",
-                            "id": self.store.id,
-                            "owner_id": None,
-                        },
-                        "durable": True,
-                    },
-                    "kind": value["kind"],
-                    "question": value["candidate"]["plan"]
-                    if value["kind"] == "work_information"
-                    else "",
-                    "state": "expired"
-                    if value["expires_at"] <= time.time()
-                    else "pending",
-                    "tool": None,
-                    "arguments": {
-                        "work_id": value["work_id"],
-                        "scope": value["candidate"].get("scope"),
-                        "plan": value["candidate"]["plan"],
-                    },
-                    "reason": value["candidate"]["reason"],
-                    "expires_at": value["expires_at"],
-                }
-            )
-        return result
+        current = self.request_page(work_id=work_id, limit=100)["items"]
+        return (
+            current
+            or self.request_page(work_id=work_id, limit=100, expired=True)["items"]
+        )
