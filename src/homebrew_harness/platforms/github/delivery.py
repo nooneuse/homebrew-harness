@@ -1,6 +1,5 @@
 """Fixed GitHub delivery operations with correlation-based read reconciliation."""
 
-import re
 from functools import wraps
 from homebrew_harness.platforms.contracts import ObjectRef
 from homebrew_harness.platforms.http import JsonTransport
@@ -10,9 +9,7 @@ from homebrew_harness.execution.execution_control import (
     operation_deadline,
 )
 
-CLOSING = re.compile(
-    r"(?i)\b(?:close[sd]?|fix(?:es|ed)?|resolve[sd]?)\s*:?\s+(?:[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#\d+"
-)
+from homebrew_harness.platforms.merges import CLOSING
 
 
 def serialized(function):
@@ -25,6 +22,15 @@ def serialized(function):
 
 
 class GithubDelivery:
+    closing = CLOSING
+
+    def capabilities(self):
+        return {
+            "merge_observation": True,
+            "merge_methods": ["merge", "squash", "rebase"],
+            "async_merge": False,
+        }
+
     def __init__(self, spec, values):
         self.spec, self.values = spec, values
         self.lock = ControlledRLock()
@@ -217,24 +223,35 @@ class GithubDelivery:
         }
 
     @serialized
-    def target_guard(self):
-        value = self.request(
-            "GET",
-            self.prefix + "/branches/" + self.spec["target_branch"] + "/protection",
+    def metadata(self, subject):
+        from .merge import metadata
+
+        return metadata(self, subject)
+
+    @serialized
+    def merge_gate(self, method):
+        from .merge import rule_evidence
+
+        return rule_evidence(self, method)
+
+    @serialized
+    @publication
+    def merge_change_request(self, plan):
+        from .merge import merge
+
+        return merge(self, plan)
+
+    @serialized
+    def inspect_merge(self, plan):
+        from homebrew_harness.platforms.merges import receipt, validate_plan
+
+        ref = validate_plan(plan, self.spec)
+        observed = self.metadata(ref.data())
+        return (
+            receipt(ref.data(), observed, plan["commit"], method=plan["method"])
+            if observed["merged"]
+            else None
         )
-        required = value.get("required_status_checks") or {}
-        contexts = set(required.get("contexts") or []) | {
-            c["context"] for c in required.get("checks") or []
-        }
-        if (
-            not set(self.spec["required_checks"]) <= contexts
-            or not value.get("enforce_admins", {}).get("enabled")
-            or value.get("allow_force_pushes", {}).get("enabled", False)
-        ):
-            raise ValueError(
-                "Target branch lacks enforced server-side check protection."
-            )
-        return {"confirmed": True, "required_checks": sorted(contexts)}
 
     @serialized
     def feedback(self, subject):
@@ -244,13 +261,11 @@ class GithubDelivery:
         ref = ObjectRef(**subject)
         reader = GithubFeedback({**self.spec, "max_pages": 10}, self.transport)
         batch = reader.fetch(ref, {}, operation_deadline(self.spec["request_seconds"]))
-        details = self.request("GET", self.prefix + "/pulls/" + str(ref.number))
+        details = self.metadata(ref.data())
+        if batch.head != details["head"]:
+            raise ValueError("PR head changed during observation.")
         return {
-            "head": batch.head,
-            "base": details.get("base", {}).get("sha"),
-            "base_branch": details.get("base", {}).get("ref"),
-            "state": details.get("state"),
-            "merged": details.get("merged", False),
+            **details,
             "checks": [
                 {
                     "id": event.object.id,

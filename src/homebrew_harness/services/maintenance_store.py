@@ -84,6 +84,10 @@ class MaintenanceStore:
                 "facts",
                 "history",
                 "candidate",
+                "integration",
+                "integration_quality",
+                "merge_rules",
+                "candidate_history",
             ):
                 if field in value:
                     value[field + "_available"] = True

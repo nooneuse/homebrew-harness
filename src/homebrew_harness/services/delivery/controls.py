@@ -11,6 +11,15 @@ def command(delivery, method, payload, request_id):
         return DecisionBatches(runtime, ms).apply(
             payload["id"], payload["revision"], payload["decisions"], request_id
         )
+    if method == "delivery_refresh":
+        from .merge_flow import refresh
+        from homebrew_harness.services.slow_controls import perform
+
+        def run():
+            result = refresh(delivery, payload["id"])
+            return status(delivery, "changesets", result["id"])
+
+        return perform(runtime, method, payload, request_id, run)
     if method == "delivery_inspect":
         from homebrew_harness.execution.execution_leases import ExecutionLeases
         from homebrew_harness.services.protocol import request_key, fingerprint
@@ -101,18 +110,6 @@ def command(delivery, method, payload, request_id):
             row = delivery.store.get("changesets", action["changeset_id"], conn)
             delivery.store.current(row)
             return delivery.store.request(conn, row, action, renew=True)
-        if method == "delivery_refresh":
-            row = delivery.store.get("changesets", payload["id"], conn)
-            delivery.store.current(row)
-            if row["state"] not in {"blocked", "ci_waiting", "review_waiting"}:
-                raise ValueError("Refresh a blocked or waiting CI observation.")
-            row.update(
-                state="ci_waiting",
-                next_ci=0,
-                ci_started=__import__("time").time(),
-                revision=row["revision"] + 1,
-            )
-            return delivery.store.put(conn, "changesets", row)
         raise ValueError("Unknown delivery control.")
 
     return runtime.store.command(runtime.header, method, payload, request_id, apply)
@@ -138,5 +135,47 @@ def status(delivery, kind, identity):
                 }
                 for receipt in value.get("quality") or []
             ],
+            "integration": {
+                k: v
+                for k, v in (value.get("integration") or {}).items()
+                if k not in {"files", "repo", "workspace", "source_commits"}
+            },
+            "merge_rules": {
+                k: v
+                for k, v in (value.get("merge_rules") or {}).items()
+                if k in {"allowed", "method", "digest"}
+            },
+            "merge_rules_available": value.get("merge_rules") is not None,
+            "candidate_history_available": bool(value.get("candidate_history")),
+            "candidate_history": [
+                {
+                    k: v
+                    for k, v in item.items()
+                    if k in {"commit", "tree", "target_base", "artifacts_retired"}
+                }
+                for item in value.get("candidate_history", [])[-10:]
+            ],
+            "integration_quality": {
+                "ok": (value.get("integration_quality") or {}).get("ok"),
+                "quality": [
+                    {
+                        k: v
+                        for k, v in receipt.items()
+                        if k
+                        in {"recipe", "status", "exit_code", "source_stable", "run_id"}
+                    }
+                    for receipt in (value.get("integration_quality") or {}).get(
+                        "quality", []
+                    )
+                ],
+                "goal_evidence": {
+                    "ok": (
+                        (value.get("integration_quality") or {}).get("goal_evidence")
+                        or {}
+                    ).get("ok")
+                },
+            },
+            "integration_quality_available": value.get("integration_quality")
+            is not None,
         }
     return value

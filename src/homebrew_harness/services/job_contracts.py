@@ -37,7 +37,7 @@ HANDLERS = {
     ),
     "review": JobHandler(
         "changesets",
-        "Read fixed candidate code and verification evidence. Provide text and findings=[{severity:blocking/warning,path,message}]. Review the bound candidate, not another workspace.",
+        "Read fixed candidate code and verification evidence. Provide text and findings=[{severity:blocking/warning,path,message}]. Optional publication={title,body} describes this PR from confirmed changes and tests, without implicit issue-closing keywords. Review the bound candidate, not another workspace.",
         ("code-review", "delivery-planning"),
         job_results.review,
         job_results.apply_delivery,

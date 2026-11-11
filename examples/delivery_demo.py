@@ -23,7 +23,7 @@ def wait_for(function, seconds=45):
     raise RuntimeError("The demonstration did not reach its expected state.")
 
 
-def run_demo(directory, *, operations_demo=False):
+def run_demo(directory, *, operations_demo=False, manual_merge=False):
     directory = directory.resolve()
     directory.mkdir(parents=True, exist_ok=False)
     workspace, control = directory / "project", directory / "control"
@@ -145,6 +145,10 @@ def run_demo(directory, *, operations_demo=False):
             "required_checks": ["CI"],
             "check_app_ids": [11],
             "ci_poll_seconds": 0.1,
+            "merge": {
+                "mode": "manual" if manual_merge else "service_approved",
+                "poll_seconds": 0.1,
+            },
             "auto_actions": ["publish_branch", "ensure_change_request"],
             "auto_ci_fix": True,
         },
@@ -163,31 +167,58 @@ def run_demo(directory, *, operations_demo=False):
                     "Fix the value regression without changing the fixed tests.",
                     request_id="regression",
                 )
-                target = wait_for(
-                    lambda: next(
-                        (
-                            r
-                            for r in client.requests()
-                            if r.kind == "delivery_authority"
-                        ),
-                        None,
+                if manual_merge:
+                    wait_for(
+                        lambda: (
+                            client.delivery(work.snapshot().details["changeset_id"])[
+                                "state"
+                            ]
+                            == "merge_ready"
+                            if work.snapshot().details.get("changeset_id")
+                            else False
+                        )
                     )
-                )
+                    target = None
+                else:
+                    target = wait_for(
+                        lambda: next(
+                            (
+                                r
+                                for r in client.requests()
+                                if r.kind == "delivery_authority"
+                            ),
+                            None,
+                        )
+                    )
                 candidate = client.delivery(work.snapshot().details["changeset_id"])
                 client.stop(request_id="restart")
             if not service.wait_closed(15):
                 raise RuntimeError("Service resources did not close.")
             service = host.services.start(identity=service.id)
             with RemoteService.from_root(control, control=True) as client:
-                restored = next(
-                    r for r in client.requests() if r.ref.id == target.ref.id
-                )
-                batch = client.batch([restored], request_id="publication-batch")
-                receipt = client.decide_batch(
-                    batch["id"],
-                    [{"id": restored.ref.id, "decision": "approve"}],
-                    request_id="publication-decision",
-                )
+                if manual_merge:
+                    restored = None
+                    waiting = client.delivery(candidate["id"])
+                    if (
+                        waiting["candidate"]["commit"]
+                        != candidate["candidate"]["commit"]
+                        or client.requests()
+                    ):
+                        raise RuntimeError(
+                            "Manual merge waiting did not survive restart."
+                        )
+                    peer.merge_pull(1)
+                    receipt = None
+                else:
+                    restored = next(
+                        r for r in client.requests() if r.ref.id == target.ref.id
+                    )
+                    batch = client.batch([restored], request_id="publication-batch")
+                    receipt = client.decide_batch(
+                        batch["id"],
+                        [{"id": restored.ref.id, "decision": "approve"}],
+                        request_id="publication-decision",
+                    )
                 wait_for(
                     lambda: client.work.get(work.id).snapshot().state == "delivered"
                 )
@@ -215,16 +246,19 @@ def run_demo(directory, *, operations_demo=False):
                     "ci_repairs": client.work.get(work.id)
                     .snapshot()
                     .details["ci_fix_attempts"],
-                    "same_target_request_after_restart": restored.ref.id
-                    == target.ref.id,
-                    "group_decision_confirmed": receipt["results"][restored.ref.id][
-                        "state"
-                    ]
-                    == "confirmed",
-                    "target_matches_candidate": command(
+                    "waiting_restored": manual_merge
+                    or restored.ref.id == target.ref.id,
+                    "manual_merge": manual_merge,
+                    "merge_commit": client.delivery(candidate["id"])["integration"][
+                        "commit"
+                    ],
+                    "service_approval_confirmed": None
+                    if manual_merge
+                    else receipt["results"][restored.ref.id]["state"] == "confirmed",
+                    "target_matches_merge_result": command(
                         "--git-dir=" + str(remote_repo), "rev-parse", "main"
                     )
-                    == candidate["candidate"]["commit"],
+                    == client.delivery(candidate["id"])["integration"]["commit"],
                     "one_change_request": len(peer.pulls) == 1,
                     "public_comment_confirmed": len(peer.comments) == 1,
                     "fixed_tests_passed": len(candidate["quality"]),
@@ -243,13 +277,14 @@ def run_demo(directory, *, operations_demo=False):
                     request_id="operations-rollback",
                 )
                 result["p4_upgrade_rollback"] = rollback["state"] == "completed"
+            if not manual_merge and result["service_approval_confirmed"] is not True:
+                raise RuntimeError("The service merge lacks confirmed approval.")
             if not all(
                 result[k]
                 for k in (
                     "delivered",
-                    "same_target_request_after_restart",
-                    "group_decision_confirmed",
-                    "target_matches_candidate",
+                    "waiting_restored",
+                    "target_matches_merge_result",
                     "one_change_request",
                     "public_comment_confirmed",
                     "resources_closed",
@@ -269,4 +304,12 @@ def run_demo(directory, *, operations_demo=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    print(json.dumps(run_demo(parser.parse_args().output), indent=2))
+    parser.add_argument(
+        "--service-merge",
+        action="store_true",
+        help="Demonstrate explicitly approved native service merging.",
+    )
+    args = parser.parse_args()
+    print(
+        json.dumps(run_demo(args.output, manual_merge=not args.service_merge), indent=2)
+    )

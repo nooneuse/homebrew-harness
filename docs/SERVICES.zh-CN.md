@@ -262,7 +262,7 @@ python examples/maintenance_demo.py --output /tmp/harness-maintenance-demo
 
 ## 固定候选交付（P3）
 
-可选 delivery 从已完成开发的工作准备私有 Git 候选，重新验证固定测试和原始 Goal 硬条件，进行独立审查，发布审查分支及变更请求，并等待确切 SHA 的 CI。操作者分别批准目标更新和公开评论。代码修复复用原生 Run，保留范围并累计次数。分组决定、动作回执和重启恢复共用 HTTP/SDK/Text UI。配置及离线演示见 [仓库交付](DELIVERY.zh-CN.md)。
+可选 delivery 从已完成开发的工作准备私有 Git 候选，重新验证固定测试和原始 Goal 硬条件，进行独立审查，发布审查分支及变更请求，并等待确切 SHA 的 CI。默认等待维护者通过平台合并 PR；service_approved 模式在明确授权后执行原生合并，核验实际结果再完成 Work。公开评论另行批准。代码修复复用原生 Run，保留范围并累计次数。分组决定、动作回执和重启恢复共用 HTTP/SDK/Text UI。配置及离线演示见 [仓库交付](DELIVERY.zh-CN.md)。
 
 ## Service 运维（P4）
 

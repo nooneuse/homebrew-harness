@@ -1,8 +1,10 @@
 """GitHub/model peer with real local Git refs and injectable lost acknowledgments."""
 
 import json
+import os
 import subprocess
 import threading
+import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit
 
@@ -33,6 +35,80 @@ def completion(content=None, tool=None, arguments=None):
 
 
 class Peer:
+    def run_git(self, *args, cwd=None, env_extra=None):
+        return subprocess.check_output(
+            [
+                self.git,
+                "-c",
+                "user.name=fixture",
+                "-c",
+                "user.email=fixture@invalid",
+                "-c",
+                "core.hooksPath=/dev/null",
+                "-c",
+                "commit.gpgsign=false",
+                *args,
+            ],
+            cwd=cwd,
+            env={**os.environ, **(env_extra or {})},
+            stderr=subprocess.DEVNULL,
+        )
+
+    def merge_pull(self, number, *, method="merge", actor=17):
+        """Simulate the platform's native operation using real Git history."""
+        row = self.pulls[number - 1]
+        if row.get("merged"):
+            return row["merge_commit_sha"]
+        repo = "--git-dir=" + str(self.remote)
+        head = self.run_git(repo, "rev-parse", row["head"]["ref"]).decode().strip()
+        base = self.run_git(repo, "rev-parse", row["base"]["ref"]).decode().strip()
+        if method == "rebase":
+            with tempfile.TemporaryDirectory() as directory:
+                self.run_git("clone", "--no-checkout", str(self.remote), directory)
+                self.run_git("checkout", "--detach", base, cwd=directory)
+                source = (
+                    self.run_git(repo, "rev-list", "--reverse", base + ".." + head)
+                    .decode()
+                    .split()
+                )
+                for oid in source:
+                    self.run_git(
+                        "cherry-pick",
+                        oid,
+                        cwd=directory,
+                        env_extra={"GIT_COMMITTER_DATE": "2026-01-02T00:00:00Z"},
+                    )
+                result = (
+                    self.run_git("rev-parse", "HEAD", cwd=directory).decode().strip()
+                )
+                self.run_git(repo, "fetch", directory, "HEAD")
+        else:
+            tree = (
+                self.run_git(repo, "merge-tree", "--write-tree", base, head)
+                .decode()
+                .splitlines()[0]
+            )
+            parents = ["-p", base] + (["-p", head] if method == "merge" else [])
+            result = (
+                self.run_git(
+                    repo, "commit-tree", tree, *parents, "-m", "Merge reviewed change"
+                )
+                .decode()
+                .strip()
+            )
+        self.run_git(
+            repo, "update-ref", "refs/heads/" + row["base"]["ref"], result, base
+        )
+        row.update(
+            merged=True,
+            state="closed",
+            merge_commit_sha=result,
+            merged_at="2026-01-01T00:00:00Z",
+            merged_by={"id": actor},
+        )
+        row["head"]["sha"] = head
+        return result
+
     def __init__(self, git, remote, *, ci_failure=False):
         self.git, self.remote = git, remote
         self.pulls = []
@@ -72,18 +148,62 @@ class Peer:
                 )
 
             def pull(self, row):
+                try:
+                    head = self.ref(row["head"]["ref"])
+                except subprocess.CalledProcessError:
+                    head = row["head"]["sha"]
+                row["head"]["sha"] = head
                 row = {
                     **row,
-                    "head": {**row["head"], "sha": self.ref(row["head"]["ref"])},
-                    "base": {**row["base"], "sha": self.ref(row["base"]["ref"])},
+                    "head": {
+                        **row["head"],
+                        "sha": head,
+                        "repo": {"full_name": "example/project"},
+                    },
+                    "base": {
+                        **row["base"],
+                        "sha": self.ref(row["base"]["ref"]),
+                        "repo": {"full_name": "example/project"},
+                    },
+                    "draft": row.get("draft", False),
+                    "mergeable": row.get("mergeable", True),
+                    "mergeable_state": row.get("mergeable_state", "clean"),
                 }
-                row["merged"] = row["head"]["sha"] == row["base"]["sha"]
-                row["state"] = "closed" if row["merged"] else "open"
+                row.setdefault("merged", False)
+                row.setdefault("state", "open")
                 return row
 
             def do_GET(self):
                 uri = urlsplit(self.path)
-                if uri.path.endswith("/pulls"):
+                if uri.path == "/repos/example/project":
+                    self.emit(
+                        {
+                            "allow_merge_commit": True,
+                            "allow_squash_merge": True,
+                            "allow_rebase_merge": True,
+                        }
+                    )
+                elif "/rules/branches/" in uri.path:
+                    self.emit(getattr(outer, "branch_rules", []))
+                elif "/rulesets/" in uri.path:
+                    self.emit(outer.rulesets[int(uri.path.rsplit("/", 1)[-1])])
+                elif uri.path.endswith("/protection"):
+                    self.emit(
+                        getattr(
+                            outer,
+                            "protection",
+                            {
+                                "required_status_checks": {
+                                    "contexts": ["CI"],
+                                    "strict": True,
+                                },
+                                "required_pull_request_reviews": {},
+                                "enforce_admins": {"enabled": True},
+                                "allow_force_pushes": {"enabled": False},
+                            },
+                        )
+                    )
+                elif uri.path.endswith("/pulls"):
                     self.emit([self.pull(row) for row in outer.pulls])
                 elif "/pulls/" in uri.path and uri.path.rsplit("/", 1)[-1].isdigit():
                     self.emit(
@@ -114,7 +234,7 @@ class Peer:
                         }
                     )
                 elif uri.path.endswith("/reviews"):
-                    self.emit([])
+                    self.emit(getattr(outer, "reviews", []))
                 elif uri.path.endswith("/comments"):
                     self.emit(outer.comments)
                 else:
@@ -233,6 +353,43 @@ class Peer:
                     self.emit(self.pull(row))
                 else:
                     self.emit({}, 404)
+
+            def do_PUT(self):
+                raw = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+                if not self.path.endswith("/merge"):
+                    self.emit({}, 404)
+                    return
+                number = int(self.path.split("/pulls/")[1].split("/")[0])
+                row = outer.pulls[number - 1]
+                if getattr(outer, "merge_hold", None):
+                    outer.merge_hold.wait(10)
+                if getattr(outer, "merge_failure", None):
+                    self.emit({}, outer.merge_failure)
+                    return
+                current = self.pull(row)
+                if current["head"]["sha"] != raw.get("sha"):
+                    self.emit({}, 409)
+                    return
+                repo = "--git-dir=" + str(outer.remote)
+                parent = (
+                    outer.run_git(
+                        repo,
+                        "merge-base",
+                        current["base"]["sha"],
+                        current["head"]["sha"],
+                    )
+                    .decode()
+                    .strip()
+                )
+                if parent != current["base"]["sha"]:
+                    self.emit({}, 405)
+                    return
+                result = outer.merge_pull(number, method=raw["merge_method"], actor=12)
+                outer.writes.append(("merge", raw))
+                if outer.drop == "merge":
+                    self.close_connection = True
+                    return
+                self.emit({"merged": True, "sha": result})
 
         self.server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)

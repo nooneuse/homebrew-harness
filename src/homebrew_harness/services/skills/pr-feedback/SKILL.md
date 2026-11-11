@@ -15,3 +15,5 @@ When only discussion changed, reuse the snapshot and reassess the explanation. W
 Propose communication through service_propose. Choose an overall comment for scope or broad reasoning, a thread reply for an observed thread, or submit_review for anchored inline findings. Provide path, line and side from the fixed diff for each inline comment. COMMENT, REQUEST_CHANGES and APPROVE use review_feedback, request_changes and approve_review intents. Approval requires actual coverage and the host's decision; it does not merge or close the change request.
 
 Explain problems with evidence and an actionable next step. Propose wait when author input is needed and operator for disputed direction. Record publication only from a confirmed receipt; an old-version opinion may have been published successfully while already requiring another round.
+
+Review approval is an opinion for the fixed head. It does not authorize a service merge, and a published opinion is separate from actual repository delivery. Continue discussion against new versions where necessary.

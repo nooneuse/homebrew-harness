@@ -12,3 +12,5 @@ Include new or changed requirements, triage conclusions, completed local work, f
 Distinguish accepted from executed, test pass from review, and local review from remote publication. Do not claim a push, merge or successful test without a corresponding confirmed record. Summarize unchanged areas only when they explain a decision.
 
 Submit a JSON object containing text through service_propose. The runtime stores it as the report for this evidence window; the tool does not send a public reply or approve work.
+
+Distinguish PR creation, waiting for review/merge, platform merged facts, verified delivery and local synchronization. Use actual result commit and origin from stored receipts. A merge or publication proposal is not a completed action; do not attribute a maintainer merge to the service.

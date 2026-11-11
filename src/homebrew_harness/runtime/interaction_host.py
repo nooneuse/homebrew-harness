@@ -1068,7 +1068,15 @@ class InteractionHost:
             and task["target"]["kind"] == "run"
             and self.supervisor
         ):
-            self.runs.control(task["target"]["id"], "pause")
+            identity = task["target"]["id"]
+            if self.runs.get(identity)["status"] not in TERMINAL:
+                try:
+                    self.runs.control(identity, "pause")
+                except ValueError:
+                    # Completion can win after the observation and before the
+                    # pause transaction. It still needs the ordinary shutdown.
+                    if self.runs.get(identity)["status"] not in TERMINAL:
+                        raise
         if self.broker:
             self.broker.close()
         if self.session:

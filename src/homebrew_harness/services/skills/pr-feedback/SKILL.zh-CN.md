@@ -15,3 +15,5 @@ description: 审查固定版本的外部 PR/MR，处理作者解释，跨代码�
 通过 service_propose 提交沟通候选：范围与整体原因用普通评论；已观察线程用 reply_thread；固定 diff 的行级意见用 submit_review，并提供 path、line、side。COMMENT、REQUEST_CHANGES、APPROVE 对应 review_feedback、request_changes、approve_review。接受需要真实覆盖和宿主决定，不自动合并或关闭。
 
 以证据和可执行建议表达问题。等待作者时用 wait，方向争议时用 operator。只有确认回执才能记录已发表；意见发表成功后仍可能因旧版本而需要下一轮。
+
+审查批准是针对固定 head 的意见，不授予服务合并权限；已发表意见与仓库实际交付分别记录。新版本出现后按需要继续讨论和复审。

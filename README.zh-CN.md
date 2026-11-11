@@ -364,7 +364,7 @@ homebrew-harness admin gc-preview --cwd /tmp/harness-example
 
 ## Python 接口
 
-持久 Service 提供工作队列、固定周期调度、原生审批，以及通过认证 HTTP 控制 API 连接的 Text UI。独立程序使用 `RemoteService`，远程操作者可通过外部 `--connection` 文件连接。设置与生命周期操作见 [Services](docs/SERVICES.zh-CN.md)。可选的 [仓库交付](docs/DELIVERY.zh-CN.md) 提供固定候选、质量检查、CI 接续和操作者批准的发布。manual profile 将有界工作交给已有 Run；repository_maintenance 增加平台收件（当前为 GitHub）、范围化工作决定、持久对话与报告。
+持久 Service 提供工作队列、固定周期调度、原生审批，以及通过认证 HTTP 控制 API 连接的 Text UI。独立程序使用 `RemoteService`，远程操作者可通过外部 `--connection` 文件连接。设置与生命周期操作见 [Services](docs/SERVICES.zh-CN.md)。可选的 [仓库交付](docs/DELIVERY.zh-CN.md) 提供固定候选、质量检查、CI 接续和 PR 交付。默认由维护者合并，可选服务模式在明确批准后执行原生平台合并，并核验实际结果。manual profile 将有界工作交给已有 Run；repository_maintenance 增加平台收件（当前为 GitHub）、范围化工作决定、持久对话与报告。
 
 ```python
 from pathlib import Path
@@ -403,3 +403,5 @@ python -m unittest discover -s tests -t .
 [Service 运维](docs/SERVICE_OPERATIONS.zh-CN.md) 提供健康、写入者停靠、工作证据保留、备份验证/恢复、周期仓库审查及显式兼容版本升级。离线 P1～P4 场景可使用 `python examples/service_operations_demo.py --output /tmp/harness-service-operations-demo`。
 
 社区多轮沟通和外部 PR 审查是 Service 的可选能力。配置与控制方法见[社区讨论](docs/COMMUNICATION.zh-CN.md)。
+
+日常贡献使用 PR 流程，见[贡献指南](CONTRIBUTING.zh-CN.md)。

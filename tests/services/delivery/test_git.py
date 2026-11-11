@@ -97,23 +97,24 @@ class GitTests(unittest.TestCase):
             (Path(candidate["workspace"]) / "module.py").read_text(), "value=2\n"
         )
         self.assertEqual(self.backend.ref("main"), candidate["target_base"])
-        result = self.backend.publish(candidate, "main", candidate["target_base"])
+        result = self.backend.publish(candidate, "harness/review", None)
         self.assertTrue(result["confirmed"])
-        self.assertEqual(self.backend.ref("main"), candidate["commit"])
+        self.assertEqual(self.backend.ref("harness/review"), candidate["commit"])
+        self.assertEqual(self.backend.ref("main"), candidate["target_base"])
         self.assertEqual(
-            result, self.backend.publish(candidate, "main", candidate["target_base"])
+            result, self.backend.publish(candidate, "harness/review", None)
         )
 
     def test_changed_target_is_not_overwritten(self):
         candidate = self.candidate()
         with self.assertRaises(StaleDelivery):
-            self.backend.publish(candidate, "main", "0" * 40)
+            self.backend.publish(candidate, "harness/review", "0" * 40)
 
     def test_candidate_mutation_invalidates_delivery(self):
         candidate = self.candidate()
         (Path(candidate["workspace"]) / "module.py").write_text("tampered")
         with self.assertRaises(StaleDelivery):
-            self.backend.publish(candidate, "main", candidate["target_base"])
+            self.backend.publish(candidate, "harness/review", None)
 
     def test_delta_does_not_include_preexisting_uncommitted_work(self):
         (self.workspace / "unrelated.txt").write_text("another work")
@@ -137,3 +138,9 @@ class GitTests(unittest.TestCase):
         (self.workspace / ".gitattributes").write_text("*.py filter=danger\n")
         self.candidate()
         self.assertFalse(marker.exists())
+
+    def test_git_publication_always_refuses_the_target_branch(self):
+        candidate = self.candidate()
+        with self.assertRaises(ValueError):
+            self.backend.publish(candidate, "main", candidate["target_base"])
+        self.assertEqual(self.backend.ref("main"), candidate["target_base"])

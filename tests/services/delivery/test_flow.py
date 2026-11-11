@@ -140,6 +140,7 @@ class FlowTests(unittest.TestCase):
                 "check_app_ids": [11],
                 "auto_actions": ["publish_branch", "ensure_change_request"],
                 "ci_poll_seconds": 0.1,
+                "merge": {"mode": "service_approved", "poll_seconds": 0.1},
                 **delivery,
             },
         )
@@ -483,9 +484,14 @@ class FlowTests(unittest.TestCase):
         row = delivery.store.get("changesets", work.snapshot().details["changeset_id"])
         pending = delivery.store.get("decisions", request.ref.id)
         action = delivery.store.update("actions", pending["action_id"], state="started")
-        result = delivery.git.publish(
-            row["candidate"], "main", row["candidate"]["target_base"]
-        )
+        merged = self.peer.merge_pull(1)
+        result = {
+            "subject": row["change_request"],
+            "head": row["candidate"]["commit"],
+            "result_commit": merged,
+            "state": "merged",
+            "method": "merge",
+        }
         with service.store.db.write() as conn:
             current = service.store.work(work.id)
             service.runtime.maintenance.store.grant(
@@ -496,9 +502,10 @@ class FlowTests(unittest.TestCase):
         delivery.store.settle_action(action, "confirmed", result)
         self.assertEqual(work.snapshot().state, "approved")
         self.assertIsNone(work.snapshot().details["run_id"])
-        self.assertTrue(
-            delivery.store.get("changesets", row["id"])["requirements_superseded"]
-        )
+        saved = delivery.store.get("changesets", row["id"])
+        self.assertEqual(saved["state"], "merged_verifying")
+        self.assertEqual(saved["merge"]["result_commit"], merged)
+        self.assertEqual(service.snapshot().state, "paused")
 
     def test_lost_git_push_ack_is_checked_without_repeating_push(self):
         service = self.start()

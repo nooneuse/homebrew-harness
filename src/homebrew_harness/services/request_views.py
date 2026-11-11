@@ -53,6 +53,14 @@ def project(maintenance, value, work_id):
         question = (
             value["candidate"]["plan"] if value["kind"] == "work_information" else ""
         )
+        if value["kind"] == "delivery_authority":
+            arguments.update(
+                action_id=value["action_id"],
+                changeset_id=value["changeset_id"],
+                subject=action["plan"].get("subject"),
+                head=action["plan"]["commit"],
+                method=action["plan"].get("method"),
+            )
     expired = value.get("expires_at") is not None and value["expires_at"] <= time.time()
     return {
         "ref": {

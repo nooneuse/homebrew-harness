@@ -268,7 +268,7 @@ def commands(parser, *, attach=True):
         choices=(
             "publish_branch",
             "ensure_change_request",
-            "publish_target",
+            "merge_change_request",
             "post_comment",
         ),
     )

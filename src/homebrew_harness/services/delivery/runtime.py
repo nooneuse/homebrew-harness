@@ -8,11 +8,7 @@ from pathlib import Path
 from homebrew_harness.execution.source_snapshot import snapshot
 from homebrew_harness.execution.execution_control import control_scope
 from homebrew_harness.execution.model_gateway import Deadline
-from homebrew_harness.orchestration.hard_conditions import HardVerifier
-from homebrew_harness.execution.test_runner import (
-    load_test_runner,
-    test_context,
-)
+from homebrew_harness.execution.test_runner import load_test_runner
 from homebrew_harness.services.protocol import request_key, fingerprint
 from homebrew_harness.security.data_boundary import redact
 from .spec import read_values
@@ -57,6 +53,18 @@ class Delivery:
             self.spec, self.values
         )
         try:
+            capabilities = self.adapter.capabilities()
+            if capabilities.get("merge_observation") is not True:
+                raise ValueError(
+                    "Delivery adapter cannot observe native merge outcomes."
+                )
+            if (
+                self.spec["merge"]["mode"] == "service_approved"
+                and self.spec["merge"]["method"] not in capabilities["merge_methods"]
+            ):
+                raise ValueError(
+                    "Delivery adapter does not support the selected native merge method."
+                )
             self.git = GitBackend(runtime.store.root, self.spec, self.values)
         except BaseException:
             self.adapter.close()
@@ -106,7 +114,7 @@ class Delivery:
                 for row in conn.execute(
                     "SELECT value FROM records WHERE section=? AND owner=?"
                     + (
-                        " AND json_extract(value,'$.state') IN ('queued','preparing','validating','review_branch_ready','ci_waiting','review_waiting','repair_approved')"
+                        " AND coalesce(json_extract(value,'$.observation_terminal'),0)=0 AND json_extract(value,'$.state') IN ('queued','preparing','validating','reviewing','review_branch_ready','ci_waiting','review_waiting','repair_approved','merge_ready','merge_pending','merged_verifying','integration_required','closed_unmerged','verification_blocked','superseded','ci_diagnosing','repairing','repair_waiting','repair_waiting_authority','quality_failed','blocked')"
                         if active and kind == "changesets"
                         else " AND json_extract(value,'$.state') IN ('queued','started')"
                         if active
@@ -172,6 +180,19 @@ class Delivery:
             self.finished.set()
 
     def advance(self, row):
+        from .merge_flow import OBSERVING, PASSIVE, observe, verify_result
+
+        if row["state"] == "merged_verifying":
+            verify_result(self, row)
+            return
+        if row.get("change_request") and row["state"] in OBSERVING | PASSIVE:
+            if observe(self, row):
+                return
+            if row["state"] in OBSERVING and row["state"] not in {
+                "ci_waiting",
+                "review_waiting",
+            }:
+                return
         if row["state"] not in {
             "queued",
             "preparing",
@@ -237,95 +258,44 @@ class Delivery:
                     self.preparing = False
             return
         if row["state"] == "validating":
-            self.git.verify(row["candidate"])
-            runner = load_test_runner(
-                self.runtime.core.config.settings.test_config,
-                Path(row["candidate"]["workspace"]),
-            )
-            self.tests.own(runner)
-            receipts = []
-            try:
-                for name in self.spec["required_tests"]:
-                    if self.stop.is_set():
-                        return
-                    runner.approve(
-                        name,
-                        cwd=Path(row["candidate"]["workspace"]),
-                        role="lead",
-                        max_runs=1,
-                    )
-                    with test_context("lead"):
-                        receipt = runner.run(name)
-                    if (
-                        receipt["status"] != "passed"
-                        or not receipt["source_stable"]
-                        or not runner.verify(name, Path(row["candidate"]["workspace"]))[
-                            "ok"
-                        ]
-                    ):
-                        raise ValueError(
-                            "Candidate test did not produce fresh passing evidence."
-                        )
-                    receipts.append(
-                        {
-                            k: v
-                            for k, v in receipt.items()
-                            if k
-                            not in {
-                                "stdout",
-                                "stderr",
-                                "stdout_preview",
-                                "stderr_preview",
-                                "inputs",
-                            }
-                        }
-                    )
-                goal = work["run_spec"].get("goal")
-                goal_evidence = (
-                    HardVerifier(
-                        row["candidate"]["workspace"], test_runner=runner
-                    ).check(goal)
-                    if goal
-                    else None
-                )
-                if goal_evidence and not goal_evidence["ok"]:
-                    self.store.update(
-                        "changesets",
-                        row["id"],
-                        state="quality_failed",
-                        quality=receipts,
-                        goal_evidence=goal_evidence,
-                        error="candidate_goal_failed",
-                    )
-                    return
-                self.git.verify(row["candidate"])
-                row = self.store.update(
+            from .quality import verify
+
+            checked = verify(self, row["candidate"], work)
+            if not checked["ok"]:
+                self.store.update(
                     "changesets",
                     row["id"],
-                    quality=receipts,
-                    goal_evidence=goal_evidence,
-                    state="reviewing"
-                    if self.spec["require_review"]
-                    else "review_branch_ready",
-                    review=None
-                    if self.spec["require_review"]
-                    else {"text": "Host did not require model review.", "findings": []},
+                    state="quality_failed",
+                    quality=checked["quality"],
+                    goal_evidence=checked["goal_evidence"],
+                    error="candidate_goal_failed",
                 )
-                with self.ms.db.write() as conn:
-                    if self.spec["require_review"]:
-                        self.ms.job(
-                            conn,
-                            "review",
-                            row["id"],
-                            row["revision"],
-                            {},
-                            row["id"] + ":review",
-                        )
-                    else:
-                        row["frozen"] = self.store.freeze(row)
-                        self.store.put(conn, "changesets", row)
-            finally:
-                self.tests.settle()
+                return
+            row = self.store.update(
+                "changesets",
+                row["id"],
+                quality=checked["quality"],
+                goal_evidence=checked["goal_evidence"],
+                state="reviewing"
+                if self.spec["require_review"]
+                else "review_branch_ready",
+                review=None
+                if self.spec["require_review"]
+                else {"text": "Host did not require model review.", "findings": []},
+            )
+            with self.ms.db.write() as conn:
+                if self.spec["require_review"]:
+                    self.ms.job(
+                        conn,
+                        "review",
+                        row["id"],
+                        row["revision"],
+                        {},
+                        row["id"] + ":review:" + row["candidate"]["commit"],
+                    )
+                else:
+                    row["frozen"] = self.store.freeze(row)
+                    self.store.put(conn, "changesets", row)
             return
         if row["state"] == "review_branch_ready":
             self.git.verify(row["candidate"])
@@ -338,7 +308,15 @@ class Delivery:
             and row.get("next_ci", 0) <= time.time()
         ):
             self.git.verify(row["candidate"])
-            feedback = self.adapter.feedback(row["change_request"])
+            try:
+                feedback = self.adapter.feedback(row["change_request"])
+            except Exception as error:
+                from homebrew_harness.execution.execution_control import cleanup_scope
+
+                with cleanup_scope():
+                    self.store.read_failure(row["id"], "feedback", error)
+                return
+            self.store.clear_read_failure(row["id"], "feedback")
             if (
                 feedback["head"] != row["candidate"]["commit"]
                 or feedback["base_branch"] != self.spec["target_branch"]
@@ -348,30 +326,11 @@ class Delivery:
                 raise StaleDelivery(
                     "Change request points to a different candidate or target."
                 )
-            checks = {}
-            for check in feedback["checks"]:
-                if (
-                    check["head"] == feedback["head"]
-                    and check["app_id"] in self.spec["check_app_ids"]
-                    and check["name"] in self.spec["required_checks"]
-                ):
-                    checks.setdefault(check["name"], []).append(check)
-            failed = any(
-                c["status"] == "completed" and c["conclusion"] not in {"success"}
-                for group in checks.values()
-                for c in group
-            )
-            ready = all(
-                name in checks
-                and all(
-                    c["status"] == "completed" and c["conclusion"] == "success"
-                    for c in checks[name]
-                )
-                for name in self.spec["required_checks"]
-            )
-            from .review_gate import check as review_check
+            from .merge_flow import gate
 
-            review_gate = review_check(feedback, self.spec)
+            evaluation = gate(feedback, self.spec)
+            ready, failed = evaluation["ci_ready"], evaluation["failed"]
+            review_gate = evaluation["review_gate"]
             row = self.store.update(
                 "changesets",
                 row["id"],
@@ -388,13 +347,47 @@ class Delivery:
                 )
             elif ready:
                 if (
-                    self.git.ref(self.spec["target_branch"])
-                    != row["candidate"]["target_base"]
+                    feedback["draft"]
+                    or feedback["mergeable"] is not True
+                    or feedback["mergeable_state"]
+                    in {"blocked", "behind", "dirty", "draft", "unknown"}
                 ):
-                    raise StaleDelivery("Delivery target baseline changed during CI.")
-                row = self.store.update("changesets", row["id"], state="merge_ready")
-                with self.ms.db.write() as conn:
-                    self.store.action(conn, row, "publish_target")
+                    self.store.update(
+                        "changesets",
+                        row["id"],
+                        state="review_waiting",
+                        error="platform_merge_waiting",
+                    )
+                    return
+                if feedback["base"] != row["candidate"]["target_base"]:
+                    self.store.update(
+                        "changesets",
+                        row["id"],
+                        state="integration_required",
+                        error="target_base_changed",
+                    )
+                    return
+                if self.spec["merge"]["mode"] == "service_approved":
+                    try:
+                        evidence = self.adapter.merge_gate(self.spec["merge"]["method"])
+                    except Exception as error:
+                        self.store.update(
+                            "changesets",
+                            row["id"],
+                            state="review_waiting",
+                            error="native_merge_policy_unverified",
+                            error_detail=redact(str(error)),
+                        )
+                        return
+                    row = self.store.update(
+                        "changesets", row["id"], merge_rules=evidence
+                    )
+                row = self.store.update(
+                    "changesets", row["id"], state="merge_ready", next_merge=0
+                )
+                if self.spec["merge"]["mode"] == "service_approved":
+                    with self.ms.db.write() as conn:
+                        self.store.action(conn, row, "merge_change_request")
             elif failed:
                 row = self.store.update("changesets", row["id"], state="ci_diagnosing")
                 with self.ms.db.write() as conn:
@@ -418,6 +411,16 @@ class Delivery:
             self.repair(row, work)
 
     def execute(self, action):
+        from .spec import ACTIONS
+
+        if action["kind"] not in ACTIONS:
+            self.store.update(
+                "actions",
+                action["id"],
+                state="superseded",
+                error="unsupported_delivery_action",
+            )
+            return
         try:
             row = self.store.get("changesets", action["changeset_id"])
             self.store.current(row)
@@ -427,15 +430,20 @@ class Delivery:
                 and row.get("review_commit") != row["candidate"]["commit"]
             ):
                 return
-            if action["kind"] == "publish_target":
-                if self.spec["mode"] == "isolated" and self.spec["required_checks"]:
-                    self.adapter.target_guard()
-                observed = self.adapter.feedback(row["change_request"])
-                from .review_gate import check as review_check
+            if action["kind"] == "merge_change_request":
+                from .merge_flow import gate
 
+                observed = self.adapter.feedback(row["change_request"])
+                evaluation = gate(observed, self.spec)
+                if observed["merged"]:
+                    result = self.adapter.inspect_merge(action["plan"])
+                    self.store.record_merge(row["id"], result)
+                    self.store.invalidate_merges(row["id"])
+                    return
                 if (
-                    fingerprint(observed) != action["plan"].get("ci_hash")
-                    or not review_check(observed, self.spec)["ready"]
+                    evaluation["hash"] != action["plan"]["gate_hash"]
+                    or not evaluation["ci_ready"]
+                    or not evaluation["review_gate"]["ready"]
                 ):
                     self.store.update(
                         "changesets",
@@ -444,9 +452,7 @@ class Delivery:
                         state="ci_waiting",
                         next_ci=0,
                     )
-                    self.store.update(
-                        "actions", action["id"], state="superseded", error="ci_changed"
-                    )
+                    self.store.invalidate_merges(row["id"])
                     return
             accepted = self.store.start_action(action)
         except StaleDelivery as error:
@@ -459,23 +465,28 @@ class Delivery:
         plan = {**accepted["plan"], "correlation": accepted["id"]}
         try:
             if action["kind"] == "publish_branch":
-                previous = (
+                previous = row.get("publish_base") or (
                     self.store.get("changesets", row["previous"])["candidate"]["commit"]
                     if row.get("previous")
                     else None
                 )
                 result = self.git.publish(row["candidate"], row["branch"], previous)
-            elif action["kind"] == "publish_target":
-                result = self.git.publish(
-                    row["candidate"],
-                    self.spec["target_branch"],
-                    row["candidate"]["target_base"],
-                )
+            elif action["kind"] == "merge_change_request":
+                result = self.adapter.merge_change_request(plan)
             elif action["kind"] == "ensure_change_request":
                 result = self.adapter.ensure_change_request(plan)
             else:
                 result = self.adapter.post_comment(plan)
-            self.store.settle_action(accepted, "confirmed", result)
+            pending = (
+                action["kind"] == "merge_change_request"
+                and result.get("state") == "pending"
+            )
+            self.store.settle_action(
+                accepted,
+                "unknown" if pending else "confirmed",
+                result,
+                error="external_merge_pending" if pending else None,
+            )
         except StaleDelivery as error:
             self.store.settle_action(accepted, "superseded", error=type(error).__name__)
         except Exception as error:
@@ -486,26 +497,33 @@ class Delivery:
             )
 
     def reconcile(self, action):
+        from .spec import ACTIONS
+
+        if action["kind"] not in ACTIONS:
+            return self.store.settle_action(
+                action, "unknown", error="inspect_with_the_original_runtime"
+            )
         row = self.store.get("changesets", action["changeset_id"])
         plan = {**action["plan"], "correlation": action["id"]}
         try:
-            if action["kind"] in {"publish_branch", "publish_target"}:
-                branch = (
-                    row["branch"]
-                    if action["kind"] == "publish_branch"
-                    else self.spec["target_branch"]
-                )
+            if action["kind"] == "publish_branch":
                 result = (
-                    {"confirmed": True, "ref": branch, "commit": plan["commit"]}
-                    if self.git.ref(branch) == plan["commit"]
+                    {"confirmed": True, "ref": row["branch"], "commit": plan["commit"]}
+                    if self.git.ref(row["branch"]) == plan["commit"]
                     else None
                 )
+            elif action["kind"] == "merge_change_request":
+                result = self.adapter.inspect_merge(plan)
             elif action["kind"] == "ensure_change_request":
                 result = self.adapter.ensure_change_request(plan, reconcile=True)
             else:
                 result = self.adapter.post_comment(plan, reconcile=True)
             return (
-                self.store.settle_action(action, "confirmed", result)
+                self.store.settle_action(
+                    action,
+                    "unknown" if result.get("state") == "pending" else "confirmed",
+                    result,
+                )
                 if result
                 else self.store.settle_action(
                     action, "unknown", error="unconfirmed_external_result"
@@ -661,8 +679,8 @@ class Delivery:
                     raise ValueError(
                         "Missing original workspace synchronization precondition."
                     )
-                self.git.verify(row["candidate"])
-                output = row["candidate"]["files"]
+                self.git.verify(row["integration"])
+                output = row["integration"]["files"]
                 changed = {
                     n
                     for n in set(expected) | set(output)

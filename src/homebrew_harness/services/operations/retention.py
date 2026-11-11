@@ -148,6 +148,18 @@ def refresh(manager):
                 f.get("snapshot", {}).get("id") for f in report.get("facts", [])
             )
     changes = {c["id"]: c for c in records(manager, "changesets")}
+    protected.update(
+        c["work_id"]
+        for c in changes.values()
+        if c["state"]
+        in {
+            "merge_ready",
+            "merge_pending",
+            "merged_verifying",
+            "verification_blocked",
+            "integration_required",
+        }
+    )
     runs = {
         w["run_id"]
         for identity, w in work.items()
@@ -227,38 +239,61 @@ def directory_version(manager, path):
 def candidate_plan(manager, pins):
     result = []
     for row in records(manager, "changesets"):
-        candidate = row.get("candidate")
         if (
-            not candidate
-            or candidate.get("artifacts_retired")
-            or row["work_id"] in pins["work_ids"]
+            row["work_id"] in pins["work_ids"]
             or time.time() - row["created_at"]
             < manager.spec["candidate_retention_days"] * 86400
+            or row["state"]
+            not in {
+                "delivered",
+                "superseded",
+                "failed",
+                "quality_failed",
+                "blocked",
+                "repairing",
+            }
         ):
             continue
-        if row["state"] not in {
-            "delivered",
-            "superseded",
-            "failed",
-            "quality_failed",
-            "blocked",
-            "repairing",
-        }:
-            continue
-        relative = (
-            ".harness/delivery/candidates/" + row["id"] + "/" + str(row["attempts"])
+        artifacts = [
+            ("candidate", None, row.get("candidate")),
+            ("integration", None, row.get("integration")),
+        ]
+        artifacts.extend(
+            ("candidate_history", i, value)
+            for i, value in enumerate(row.get("candidate_history", []))
         )
-        path = manager.store.root / relative
-        if Path(candidate["workspace"]).parent != path:
-            raise ValueError("Candidate ownership path changed.")
-        if path.exists():
-            result.append(
-                {
-                    "id": row["id"],
-                    "path": relative,
-                    "version": directory_version(manager, path),
-                }
-            )
+        for field, index, candidate in artifacts:
+            if not candidate or candidate.get("artifacts_retired"):
+                continue
+            if field == "integration":
+                relative = ".harness/delivery/integrations/" + fingerprint(
+                    [row["id"], row["merge"]["head"], row["merge"]["result_commit"]]
+                )
+            else:
+                attempt = (
+                    row["attempts"] if field == "candidate" else candidate["attempt"]
+                )
+                relative = (
+                    ".harness/delivery/candidates/" + row["id"] + "/" + str(attempt)
+                )
+            path = manager.store.root / relative
+            if Path(candidate["workspace"]).parent != path:
+                raise ValueError("Delivery artifact ownership path changed.")
+            if path.exists():
+                result.append(
+                    {
+                        "id": row["id"]
+                        if field == "candidate"
+                        else field
+                        + "_"
+                        + fingerprint([row["id"], candidate["commit"], index]),
+                        "record_id": row["id"],
+                        "field": field,
+                        "index": index,
+                        "path": relative,
+                        "version": directory_version(manager, path),
+                    }
+                )
     return result
 
 
@@ -297,12 +332,17 @@ def retire_candidate(manager, row, item):
             shutil.rmtree(dst.parts[-1], dir_fd=dst.fds[-1])
     with manager.store.db.write() as conn:
         manager.store.guard(conn, manager.runtime.header)
-        candidate = manager.store.db._get(conn, "service_changesets", item["id"])
-        candidate["candidate"].update(artifacts_retired=True)
-        candidate["candidate"].pop("files", None)
+        candidate = manager.store.db._get(conn, "service_changesets", item["record_id"])
+        artifact = (
+            candidate[item["field"]]
+            if item["index"] is None
+            else candidate[item["field"]][item["index"]]
+        )
+        artifact.update(artifacts_retired=True)
+        artifact.pop("files", None)
         candidate.pop("primary_expected", None)
         candidate["revision"] += 1
-        manager.store.db._put(conn, "service_changesets", item["id"], candidate)
+        manager.store.db._put(conn, "service_changesets", item["record_id"], candidate)
 
 
 def preview(manager):

@@ -157,6 +157,13 @@ class AuditTests(unittest.TestCase):
         request = eventually(lambda: self.pending_target(service), 30)
         service.decide(request, "approve", decision_id="first")
         eventually(lambda: work.snapshot().state == "delivered", 20)
+        eventually(
+            lambda: (
+                (work.snapshot().details.get("workspace_sync") or {}).get("state")
+                == "synchronized"
+            ),
+            20,
+        )
         self.peer.coding_value = "3\n"
         work.revise("Now supply value 3 while retaining the public file and tests.")
         authority = eventually(

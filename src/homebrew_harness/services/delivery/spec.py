@@ -12,7 +12,7 @@ from homebrew_harness.services.maintenance_spec import number
 from homebrew_harness.security.data_boundary import register_private_values
 
 ACTIONS = frozenset(
-    {"publish_branch", "ensure_change_request", "publish_target", "post_comment"}
+    {"publish_branch", "ensure_change_request", "merge_change_request", "post_comment"}
 )
 ENV = re.compile(r"[A-Z][A-Z0-9_]{0,100}\Z")
 REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,199}\Z")
@@ -48,6 +48,7 @@ def validate(raw):
         "required_approvals": 0,
         "require_review": True,
         "review_model": None,
+        "merge": {"mode": "manual", "poll_seconds": 300},
         "auto_actions": [],
         "request_seconds": 10,
         "gate_seconds": 120,
@@ -75,6 +76,25 @@ def validate(raw):
     if not isinstance(raw, dict) or set(raw) - fields:
         raise ValueError("Invalid delivery declaration fields.")
     value = {**defaults, **raw}
+    merge = value["merge"]
+    if not isinstance(merge, dict) or set(merge) - {"mode", "method", "poll_seconds"}:
+        raise ValueError("Invalid merge policy.")
+    merge = {"mode": "manual", "poll_seconds": 300, **merge}
+    if not isinstance(merge["mode"], str) or merge["mode"] not in {
+        "manual",
+        "service_approved",
+    }:
+        raise ValueError("Unknown merge responsibility mode.")
+    if merge["mode"] == "manual" and "method" in merge:
+        raise ValueError("Manual merge does not select the maintainer's method.")
+    if merge["mode"] == "service_approved":
+        from homebrew_harness.platforms.merges import METHODS
+
+        merge.setdefault("method", "merge")
+        if not isinstance(merge["method"], str) or merge["method"] not in METHODS:
+            raise ValueError("Unknown native merge method.")
+    number(merge["poll_seconds"], "merge poll seconds", 0.05, 86400)
+    value["merge"] = merge
     if not isinstance(value["mode"], str) or value["mode"] not in {"isolated", "local"}:
         raise ValueError("Unknown delivery execution mode.")
     if (

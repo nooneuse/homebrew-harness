@@ -3,7 +3,9 @@
 from homebrew_harness.execution.execution_leases import ExecutionLeases
 from .protocol import request_key, fingerprint
 
-METHODS = frozenset({"communication_inspect", "delivery_inspect", "batch_decide"})
+METHODS = frozenset(
+    {"communication_inspect", "delivery_inspect", "delivery_refresh", "batch_decide"}
+)
 
 
 def perform(runtime, method, payload, request_id, action):

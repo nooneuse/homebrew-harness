@@ -68,6 +68,6 @@ Adapters return bounded `SourcePage` or `ChangeFeedback` data. They handle platf
 
 `platforms/contracts.py` defines common data and adapter protocols. `platforms/registry.py` contains the host catalog; `platforms/http.py` provides bounded transport. `platforms/github/` implements GitHub translation. Services and Runs consume normalized output.
 
-A new provider implements repository polling, change-request feedback and/or [delivery](DELIVERY.md), declares those capabilities, and validates its project selector. Delivery uses fixed actions such as publish_branch, ensure_change_request, post_comment and publish_target with the same object references; approval, receipts and uncertain-result recovery belong to the delivery runtime.
+A new provider implements repository polling, change-request feedback and/or [delivery](DELIVERY.md), declares those capabilities, and validates its project selector. Delivery uses fixed actions such as publish_branch, ensure_change_request, post_comment and merge_change_request with the same object references; approval, receipts and uncertain-result recovery belong to the delivery runtime.
 
 Maintenance skills describe requirement assessment and planning. They do not select endpoints, parse platform APIs or authorize writes. GitLab and other adapters are not included in the current implementation.

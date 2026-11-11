@@ -210,3 +210,5 @@ Service 提供 health、operations、operation、operation_record、quiesce、re
 Service 社区沟通方法复用同一 Python/HTTP 控制边界，详见[社区讨论](COMMUNICATION.zh-CN.md#使用)。
 
 维护级决定通过 `requests_page(cursor=0, limit=20, expired=False)` 分页，使用相同 HumanRequest DTO 和决定入口；原生 Run 请求仍通过 `requests()` 取得。`models()` 显示按 profile 绑定的故障引用；`recover_model(profile, revision=..., request_id=...)` 确认一个连接故障，不重试 job 或清空用量。沟通查证支持按当前 revision 明确确认未执行，再申请新授权。
+
+仓库交付使用 PR。service_approved 下，`service.plan_delivery(id, "merge_change_request")` 准备固定计划，批准仍由请求接口单独完成；默认 manual 观察维护者合并。`service.delivery(id)` 显示实际合并核验与同步，`refresh_delivery(id)` 刷新等待观察或有界集成基线，`record("changesets", id)` 分页读取完整证据。

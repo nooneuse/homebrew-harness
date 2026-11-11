@@ -342,13 +342,19 @@ class GitBackend:
             raise StaleDelivery("Frozen candidate changed.")
 
     def publish(self, candidate, branch, expected):
+        if branch == self.spec["target_branch"] or not branch.startswith(
+            self.spec["review_prefix"]
+        ):
+            raise ValueError(
+                "Delivery Git publication is restricted to review branches."
+            )
         self.verify(candidate)
         actual = self.ref(branch)
         if actual == candidate["commit"]:
             return {"confirmed": True, "ref": branch, "commit": actual}
         if actual != expected:
             raise StaleDelivery("Remote target changed before delivery.")
-        if expected:
+        if expected and not candidate.get("review_rewrite"):
             self.run(
                 [
                     "--git-dir=" + candidate["repo"],
@@ -357,6 +363,13 @@ class GitBackend:
                     expected,
                     candidate["commit"],
                 ]
+            )
+        if (
+            candidate.get("review_rewrite")
+            and candidate.get("origin_candidate") != expected
+        ):
+            raise StaleDelivery(
+                "Review rewrite is not bound to its accepted previous head."
             )
         lease = "--force-with-lease=refs/heads/" + branch + ":" + (expected or "")
         self.run(

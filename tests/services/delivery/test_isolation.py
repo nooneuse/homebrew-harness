@@ -73,9 +73,16 @@ class DeliveryIsolationTests(unittest.TestCase):
             credentials_file=str(credentials),
             required_checks=[],
             check_app_ids=[],
+            merge={"mode": "manual", "poll_seconds": 0.1},
         )
         work = service.work.submit("Fix the scoped value.")
-        request = eventually(lambda: self.pending_target(service), 45)
+        eventually(
+            lambda: any(
+                r["state"] == "merge_ready"
+                for r in service.runtime.maintenance.delivery.rows("changesets")
+            ),
+            45,
+        )
         row = service.runtime.maintenance.delivery.store.get(
             "changesets", work.snapshot().details["changeset_id"]
         )
@@ -88,5 +95,5 @@ class DeliveryIsolationTests(unittest.TestCase):
             row["quality"],
         )
         self.assertFalse(any(secret in json.dumps(m) for m in self.peer.model_requests))
-        service.decide(request, "approve", decision_id="isolated-target")
+        self.peer.merge_pull(1)
         eventually(lambda: work.snapshot().state == "delivered", 20)

@@ -54,12 +54,13 @@ class RetentionTests(unittest.TestCase):
             "changesets", row["id"], created_at=time.time() - 2 * 86400
         )
         plan = self.wait_operation(service, service.retention_preview())
-        self.assertEqual(len(plan["result"]["candidates"]), 1)
+        self.assertEqual(len(plan["result"]["candidates"]), 2)
         result = self.wait_operation(service, service.retention_apply(plan["id"]))
         self.assertTrue(result["result"]["candidate:" + row["id"]]["retired"])
         self.assertEqual(work.snapshot().state, "delivered")
         self.assertTrue(service.delivery(row["id"])["candidate"]["artifacts_retired"])
+        self.assertTrue(service.delivery(row["id"])["integration"]["artifacts_retired"])
         from homebrew_harness.contracts import SDKError
 
         with self.assertRaises(SDKError):
-            service.plan_delivery(row["id"], "publish_target")
+            service.plan_delivery(row["id"], "merge_change_request")

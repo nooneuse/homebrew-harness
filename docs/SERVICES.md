@@ -277,7 +277,7 @@ Work snapshots expose a verification reference. Read its `evidence` record to in
 
 ## Fixed-candidate delivery (P3)
 
-Optional delivery prepares a private Git candidate from reviewed work, rechecks fixed tests and original Goal conditions, runs an independent review, publishes a review branch/change request, and waits for exact-SHA CI. The operator approves target publication and public comments separately. CI code repair reuses native Runs with the original scope and cumulative limits. Grouped decisions, action receipts and restart recovery use the same HTTP/SDK/Text UI. See [Repository delivery](DELIVERY.md) for configuration and the offline demonstration.
+Optional delivery prepares a private Git candidate from reviewed work, rechecks fixed tests and original Goal conditions, runs an independent review, publishes a review branch/change request, and waits for exact-SHA CI. The default waits for a maintainer to merge the PR; service_approved mode obtains explicit authority for a native platform merge. The actual result is verified before Work completion, and public comments have separate approval. CI code repair reuses native Runs with the original scope and cumulative limits. Grouped decisions, action receipts and restart recovery use the same HTTP/SDK/Text UI. See [Repository delivery](DELIVERY.md) for configuration and the offline demonstration.
 
 ## Service operations (P4)
 

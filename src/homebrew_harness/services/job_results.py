@@ -44,12 +44,27 @@ def discussion(store, job, raw, conn=None):
 def review(store, job, raw, conn=None):
     if (
         not isinstance(raw, dict)
-        or set(raw) != {"text", "findings"}
+        or not {"text", "findings"} <= set(raw)
+        or set(raw) - {"text", "findings", "publication"}
         or not isinstance(raw["findings"], list)
         or len(raw["findings"]) > 32
     ):
         raise ValueError("Invalid independent review proposal.")
     text(raw["text"], maximum=16000)
+    if "publication" in raw:
+        from homebrew_harness.platforms.merges import CLOSING
+
+        publication = raw["publication"]
+        if (
+            job["kind"] != "review"
+            or not isinstance(publication, dict)
+            or set(publication) != {"title", "body"}
+        ):
+            raise ValueError("Only a delivery review can propose PR publication text.")
+        text(publication["title"], "PR title", 200)
+        text(publication["body"], "PR body", 16000)
+        if CLOSING.search(publication["title"]) or CLOSING.search(publication["body"]):
+            raise ValueError("PR text cannot implicitly close issues.")
     for item in raw["findings"]:
         if (
             not isinstance(item, dict)

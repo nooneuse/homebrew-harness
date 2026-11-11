@@ -306,6 +306,10 @@ class ServiceAgent:
                 "files",
                 "workspace",
                 "plans",
+                "integration",
+                "integration_quality",
+                "merge_rules",
+                "candidate_history",
             }
         }
         if primary.get("candidate") and kind in {"review", "ci_triage"}:
