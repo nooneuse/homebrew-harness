@@ -9,6 +9,8 @@ include examples/config/.env.example
 recursive-include skills SKILL*.md
 recursive-include tests *.py
 recursive-include src/homebrew_harness/services/skills *.md *.yaml
+recursive-include src/homebrew_harness/context/skills *.md *.yaml
+include docs/HOSTING.md docs/HOSTING.zh-CN.md
 
 include docs/PLATFORMS.md docs/PLATFORMS.zh-CN.md
 include docs/DELIVERY.md docs/DELIVERY.zh-CN.md

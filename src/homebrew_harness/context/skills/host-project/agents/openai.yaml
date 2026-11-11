@@ -1,0 +1,4 @@
+interface:
+  display_name: "Host a project"
+  short_description: "Research a repository and review its service setup proposal"
+  default_prompt: "Use $host-project to research this repository and prepare a maintenance setup proposal for my review."

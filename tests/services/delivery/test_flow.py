@@ -100,7 +100,7 @@ class FlowTests(unittest.TestCase):
             stderr=subprocess.DEVNULL,
         )
 
-    def start(self, *, operations=None, **delivery):
+    def start(self, *, operations=None, maintenance=None, **delivery):
         spec = ServiceSpec(
             str(self.workspace),
             profile="repository_maintenance",
@@ -122,6 +122,7 @@ class FlowTests(unittest.TestCase):
                 "auto_categories": ["bug"],
                 "job_seconds": 20,
                 "report_seconds": 3600,
+                **(maintenance or {}),
             },
             operations=operations or {},
             delivery={

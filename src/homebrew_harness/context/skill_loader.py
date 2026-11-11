@@ -29,10 +29,15 @@ class Skill:
 
 
 class SkillLoader:
-    def __init__(self, skills_dir: Path):
+    def __init__(self, skills_dir: Path, *, include_builtin=False):
         if skills_dir.is_symlink():
             raise ValueError("Skills directory must not be a symlink.")
         self.skills_dir = skills_dir.resolve()
+        self._roots = (
+            (Path(__file__).parent / "skills", self.skills_dir)
+            if include_builtin
+            else (self.skills_dir,)
+        )
         self._skills: dict[str, Skill] = {}
         self.scan()
 
@@ -65,9 +70,9 @@ class SkillLoader:
             raise ValueError("YAML frontmatter must be a mapping.")
         return metadata, "".join(lines[end + 1 :])
 
-    def _warn(self, manifest: Path, reason: str) -> None:
+    def _warn(self, manifest: Path, reason: str, root=None) -> None:
         details = {
-            "file": manifest.relative_to(self.skills_dir).as_posix(),
+            "file": manifest.relative_to(root or self.skills_dir).as_posix(),
             "reason": reason,
         }
         print(
@@ -76,10 +81,26 @@ class SkillLoader:
         )
 
     def scan(self) -> None:
-        root = self.skills_dir
+        found, conflicts = {}, set()
+        for root in dict.fromkeys(self._roots):
+            entries, duplicates = self._scan_directory(root)
+            conflicts.update(duplicates)
+            for name in duplicates:
+                found.pop(name, None)
+            for name, skill in entries.items():
+                if name in found or name in conflicts:
+                    found.pop(name, None)
+                    conflicts.add(name)
+                    self._warn(
+                        root / name / "SKILL.md", "Duplicate catalog name: " + name, root
+                    )
+                else:
+                    found[name] = skill
+        self._skills = found
+
+    def _scan_directory(self, root):
         if not root.exists():
-            self._skills = {}
-            return
+            return {}, set()
         if not root.is_dir():
             raise ValueError("The skills path must be a directory.")
 
@@ -95,6 +116,7 @@ class SkillLoader:
                     self._warn(
                         manifest,
                         "Skill file resolves outside the configured directory.",
+                        root,
                     )
                     continue
                 if not resolved.is_file() or resolved in seen_paths:
@@ -136,18 +158,19 @@ class SkillLoader:
                     self._warn(
                         manifest,
                         f"Duplicate skill name: {name}; all conflicting entries are excluded.",
+                        root,
                     )
                     continue
                 found[name] = Skill(name, description, content)
             except UnicodeError:
-                self._warn(manifest, "Skill file must be valid UTF-8.")
+                self._warn(manifest, "Skill file must be valid UTF-8.", root)
             except ValueError as error:
-                self._warn(manifest, str(error))
+                self._warn(manifest, str(error), root)
             except (OSError, RuntimeError) as error:
                 self._warn(
-                    manifest, f"Cannot read skill file ({type(error).__name__})."
+                    manifest, f"Cannot read skill file ({type(error).__name__}).", root
                 )
-        self._skills = found
+        return found, conflicts
 
     def catalog(self) -> str:
         if not self._skills:

@@ -300,7 +300,10 @@ class Peer:
                             "findings": getattr(outer, "audit_findings", []),
                         }
                     elif kind == "review":
-                        proposal = {"text": "Fixed candidate reviewed.", "findings": []}
+                        proposal = {
+                            "text": "Fixed candidate reviewed.", "findings": [],
+                            **getattr(outer, "review_extra", {}),
+                        }
                     elif kind == "ci_triage":
                         proposal = {
                             "classification": "code",

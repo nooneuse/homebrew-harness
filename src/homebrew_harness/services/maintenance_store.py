@@ -496,6 +496,11 @@ class MaintenanceStore:
             + "\n\nExecution plan (original request remains authoritative):\n"
             + proposal["plan"]
         )
+        from .maintenance_spec import instructions_for
+
+        guidance = instructions_for(self.policy, "development")
+        if guidance:
+            prompt += "\n\nConfigured development guidance:\n" + "\n\n".join(guidance.values())
         settings = {**compiled, **self.policy["scopes"][scope]}
         if work.get("goal") is not None:
             settings["goal"] = work["goal"]

@@ -8,6 +8,8 @@ Service 管理持久工作队列与固定周期计划，每项工作交给已有
 
 ## 宿主准备
 
+默认交互中的内置 host-project Skill 可以引导配置，详见[托管仓库](HOSTING.zh-CN.md)。启动前通过 `service validate --spec ... --host-config ... --cwd ...` 进行离线配置检查。
+
 控制状态与执行工作区使用独立目录。控制目录仅允许 owner 访问；运行时安装在目标源码之外，维护 harness 自身时也采用这一布局。
 
 ```sh
@@ -225,6 +227,8 @@ python examples/service_demo.py --output /tmp/harness-service-demo
 轮询保存 Issue/PR 和评论版本、分页位置与去重记录。轮询只能观察尚可读取的版本，不能恢复两次轮询间消失的编辑或删除。失败保留游标并显示重试状态，无变化时不调用模型。
 
 三份内置 Skill：requirement-triage、maintenance-planning、maintenance-reporting 按需加载正文。服务模型可以读记录和可见代码并提交候选，不能使用 Bash、批准或发布。实际范围与版本由宿主验证。
+
+可选 maintenance.instructions 按任务保存有界文字偏好，支持 common、development、triage、discussion、review、ci_triage、audit、conversation、report、incident 和 upgrade_assessment。推理任务只收到 common 与对应条目；编译的开发 Run 收到 common 与 development，并保留原始需求和范围。未知任务名、空／非文本条目、私有连接值、单条超过 8,000 字符或合计超过 16,000 字符会被拒绝。指引影响模型行为，模型选择、路径、测试和授权仍使用结构化合同。详见[定制部署](HOSTING.zh-CN.md#定制部署)。
 
 ```sh
 homebrew-harness service records SERVICE_ID events

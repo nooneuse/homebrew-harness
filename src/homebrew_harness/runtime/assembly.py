@@ -133,7 +133,7 @@ def prepare_context(client, model, workdir, components: LoopComponents):
     skills = (
         components.skill_loader
         if components.skill_loader is not None
-        else SkillLoader(workdir / "skills")
+        else SkillLoader(workdir / "skills", include_builtin=True)
     )
     compactor = components.compactor
     if compactor is None:

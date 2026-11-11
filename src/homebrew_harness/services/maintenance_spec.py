@@ -8,6 +8,10 @@ from pathlib import PurePosixPath
 NAME = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
 CATEGORIES = {"bug", "feature", "documentation", "maintenance", "question"}
 DISPOSITIONS = {"accept", "needs_info", "defer", "reject", "merge", "decide"}
+INSTRUCTION_TARGETS = frozenset({
+    "common", "development", "triage", "discussion", "review", "ci_triage",
+    "audit", "conversation", "report", "incident", "upgrade_assessment",
+})
 
 
 def text(value, label="text", maximum=64000):
@@ -32,6 +36,12 @@ def within(path, prefixes):
         prefix == "." or path.is_relative_to(PurePosixPath(prefix))
         for prefix in prefixes
     )
+
+
+def instructions_for(policy, kind):
+    """Expose only shared and relevant writing/development guidance."""
+    values = policy.get("instructions", {})
+    return {key: values[key] for key in ("common", kind) if key in values}
 
 
 def validate_sources(sources):
@@ -66,6 +76,7 @@ def validate_policy(raw, run_spec):
         "job_turns",
         "job_attempts",
         "model_profile",
+        "instructions",
     }:
         raise ValueError("Invalid maintenance policy fields.")
     policy = {
@@ -79,10 +90,22 @@ def validate_policy(raw, run_spec):
         "job_turns": 8,
         "job_attempts": 3,
         "model_profile": None,
+        "instructions": {},
         **raw,
     }
     text(policy["objectives"], "objectives", 8000)
     text(policy["non_goals"], "non_goals", 8000)
+    instructions = policy["instructions"]
+    if not isinstance(instructions, dict) or set(instructions) - INSTRUCTION_TARGETS:
+        raise ValueError("Instructions must select known service task names.")
+    from homebrew_harness.security.data_boundary import redact
+
+    for value in instructions.values():
+        text(value, "task instructions", 8000)
+        if redact(value) != value:
+            raise ValueError("Task instructions cannot contain private connection values.")
+    if sum(map(len, instructions.values())) > 16000:
+        raise ValueError("Combined task instructions exceed 16000 characters.")
     for key in ("authority_seconds", "report_seconds"):
         number(policy[key], key, 1, 31536000)
     number(policy["job_seconds"], "job_seconds", 1, 3600)

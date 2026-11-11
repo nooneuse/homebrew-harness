@@ -111,7 +111,9 @@ homebrew-harness session --memory-mode recall
 
 `--profile full` enables all optional modules and defaults memory to `recall`. `--memory-mode auto` enables memory maintenance after normal user turns; `off` disables memory calls.
 
-The bundled skill examples cover [Python code review](skills/code-review/SKILL.md) and [text summarization](skills/text-summary/SKILL.md).
+Ask "Help me host this project" to use the installed `host-project` skill. It collects deployment choices, prepares private configuration and guides supervision of a repository-maintenance Service. See [repository hosting](docs/HOSTING.md).
+
+The example skills cover [Python code review](skills/code-review/SKILL.md) and [text summarization](skills/text-summary/SKILL.md).
 
 ## Automatic interaction
 

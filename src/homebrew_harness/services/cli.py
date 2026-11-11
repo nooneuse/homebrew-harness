@@ -13,6 +13,9 @@ from homebrew_harness.cli_arguments import add_location_arguments
 def commands(parser, *, attach=True):
     actions = parser.add_subparsers(dest="command", required=True)
     if attach:
+        validate = actions.add_parser("validate", help="Check external service configuration without starting it")
+        validate.add_argument("--spec", type=Path, required=True)
+        validate.add_argument("--host-config", type=Path, required=True)
         start = actions.add_parser("start")
         start.add_argument("service_id", nargs="?")
         start.add_argument("--spec", type=Path)
@@ -716,6 +719,13 @@ def execute(args, parser):
     remote = None
     try:
         connection = getattr(args, "connection", None)
+        if args.command == "validate":
+            if connection is not None:
+                raise ValueError("Validation requires the local service host.")
+            from .setup_validation import validate_service
+
+            render(validate_service(args.spec, args.host_config, args.cwd))
+            return 0
         if args.command in {"start", "recover-launch", "inspect"}:
             if connection is not None:
                 raise ValueError("This operation requires the local service host.")

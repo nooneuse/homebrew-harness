@@ -100,7 +100,9 @@ def execute(args, parser) -> int:
     skill_loader = None
     if args.skills_dir is not None:
         try:
-            skill_loader = homebrew_harness.runtime.assembly.SkillLoader(skills_dir)
+            skill_loader = homebrew_harness.runtime.assembly.SkillLoader(
+                skills_dir, include_builtin=True
+            )
         except (OSError, ValueError, RuntimeError):
             parser.error("Cannot scan the configured skills directory")
 

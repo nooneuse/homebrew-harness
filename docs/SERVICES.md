@@ -8,6 +8,8 @@ The `repository_maintenance` profile adds GitHub input, requirement triage, scop
 
 ## Host setup
 
+The bundled host-project skill guides setup from the default interaction. See [Host a repository](HOSTING.md). Use `service validate --spec ... --host-config ... --cwd ...` for offline configuration checks before startup.
+
 Use separate directories for private service control state and the mutable execution workspace. The control directory must be owner-only. Install the runtime outside the target workspace; this also applies when maintaining the harness itself.
 
 Create the control directory and an external service specification:
@@ -230,6 +232,8 @@ The usual workspace, version and Run defaults also apply. Fill connection values
 Repository polling records issue/PR identities and issue-comment versions, with durable page positions, overlap and deduplication. A poll observes available versions; it cannot reconstruct an edit or deletion that disappeared between polls. Source failures retain their cursor and show retry state. Unchanged polling makes no model calls.
 
 Triage uses three packaged skills: requirement-triage, maintenance-planning and maintenance-reporting. Their bodies load on demand. Service reasoning can read service records and visible project files, and submit candidates; it cannot execute Bash, approve requests or publish changes. Plans and scopes are validated by the host.
+
+Optional `maintenance.instructions` stores bounded text preferences by task: common, development, triage, discussion, review, ci_triage, audit, conversation, report, incident and upgrade_assessment. Each reasoning job receives common plus its own entry; compiled development Runs receive common plus development, preserving the original requirements and scope. Unknown names, empty/non-text entries, private connection values, entries over 8,000 characters or a combined total over 16,000 characters are rejected. Instructions guide model behavior; model selection, paths, tests and authority retain their structured contracts. See [hosting customization](HOSTING.md#customize-the-deployment).
 
 ```sh
 homebrew-harness service records SERVICE_ID events
