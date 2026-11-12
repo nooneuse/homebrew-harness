@@ -169,6 +169,8 @@ class ProtocolAdapter:
                                 not in {None, "null"}
                             )
                             capture.observe(value.get("usage"), final=finished)
+                        if value.get("type") == "response.failed" and (value.get("response") or {}).get("error"):
+                            raise classify_error(400, value["response"])
                         yield value
 
                 response = (

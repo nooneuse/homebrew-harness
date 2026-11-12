@@ -116,7 +116,7 @@ def injected_sdk_errors():
             if isinstance(error, getattr(module, "APIConnectionError", ())):
                 raise ProviderError("transport") from error
             if isinstance(error, getattr(module, "APIStatusError", ())):
-                raise classify_error(error.status_code, error.body or {}) from error
+                raise classify_error(error.status_code, error.body or {"message": getattr(error, "message", str(error))}) from error
         raise
 
 
@@ -146,11 +146,11 @@ def json_body(response, check, *, error_body=False):
         value = json.loads(b"".join(chunks))
     except ValueError as error:
         if error_body:
-            return {}
+            return {"message": b"".join(chunks).decode("utf-8", errors="replace")}
         raise ModelProtocolError("Provider returned invalid JSON.") from error
     if not isinstance(value, dict):
         if error_body:
-            return {}
+            return {"message": value if isinstance(value, str) else json.dumps(value)}
         raise ModelProtocolError("Provider response must be an object.")
     return value
 
@@ -338,7 +338,7 @@ class SDKBackend:
             if isinstance(error, self.module.APIConnectionError):
                 raise ProviderError("transport") from error
             if isinstance(error, self.module.APIStatusError):
-                raise classify_error(error.status_code, error.body or {}) from error
+                raise classify_error(error.status_code, error.body or {"message": getattr(error, "message", str(error))}) from error
             raise
         finally:
             _CHECK.reset(token)
@@ -402,7 +402,7 @@ class GenerationSDKBackend:
             if isinstance(error, errors.APIConnectionError):
                 raise ProviderError("transport") from error
             if isinstance(error, errors.DashScopeError):
-                raise classify_error(getattr(error, "status_code", 400), {}) from error
+                raise classify_error(getattr(error, "status_code", 400), getattr(error, "body", None) or {"message": str(error), "code": getattr(error, "code", None)}) from error
             raise
         finally:
             _CHECK.reset(token)

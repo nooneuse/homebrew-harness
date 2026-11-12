@@ -391,7 +391,16 @@ class FlowTests(unittest.TestCase):
         self.run_git(
             "--git-dir=" + str(self.remote), "update-ref", "refs/heads/main", other
         )
-        service.decide(request, "approve", decision_id="target")
+        from homebrew_harness.contracts import InvalidInput
+
+        try:
+            service.decide(request, "approve", decision_id="target")
+        except InvalidInput:
+            # Observation can invalidate this exact request before approval;
+            # the accepted-action path must also preserve the changed target.
+            saved = service.runtime.maintenance.store.get("decisions", request.id)
+            self.assertEqual(saved["state"], "superseded")
+            self.assertGreater(saved["revision"], request.revision)
         eventually(
             lambda: any(
                 a["state"] == "superseded" for a in service.records("actions")["items"]

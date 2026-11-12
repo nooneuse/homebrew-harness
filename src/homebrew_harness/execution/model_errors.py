@@ -5,7 +5,7 @@ def quota_exhausted(error: BaseException) -> bool:
     seen = set()
     while error is not None and id(error) not in seen:
         seen.add(id(error))
-        if getattr(error, "status_code", None) == 402:
+        if getattr(error, "kind", None) == "quota" or getattr(error, "status_code", None) == 402:
             return True
         body = getattr(error, "body", None)
         if isinstance(body, dict):

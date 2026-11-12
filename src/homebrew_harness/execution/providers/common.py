@@ -224,6 +224,9 @@ def usage(data, *, protocol):
 
 
 def classify_error(status, body):
+    status = status if type(status) is int else 400
+    if isinstance(body, str):
+        body = {"message": body}
     text = json.dumps(body, default=str).lower()
     detail = body.get("error", body) if isinstance(body, dict) else {}
     code = (
@@ -253,7 +256,12 @@ def classify_error(status, body):
         or code in {"overloaded_error", "api_error", "server_error", "internal_error"}
         else "invalid_request"
     )
-    return ProviderError(kind, status_code=status)
+    detail = detail if isinstance(detail, dict) else {}
+    message = detail.get("message") or (body.get("message") if isinstance(body, dict) else None)
+    if not message and isinstance(body, dict) and isinstance(body.get("error"), str):
+        message = body["error"]
+    return ProviderError(kind, status_code=status, code=detail.get("code") or (body.get("code") if isinstance(body, dict) else None),
+        error_type=detail.get("type"), message=message)
 
 
 class UsageCapture:

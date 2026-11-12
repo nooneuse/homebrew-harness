@@ -16,6 +16,7 @@ from .common import (
     effective_options,
     UsageCapture,
     response_errors,
+    classify_error,
 )
 
 
@@ -151,7 +152,10 @@ class ChatCompletionsAdapter:
             **sdk_parameters(self.client.chat.completions.create, payload)
         )
         if not payload.get("stream"):
-            capture.observe(as_data(raw).get("usage"), final=True)
+            data = as_data(raw)
+            if data.get("error"):
+                raise classify_error(400, data)
+            capture.observe(data.get("usage"), final=True)
             return validated_result(decode(raw), request.output_contract)
         try:
 
@@ -160,6 +164,8 @@ class ChatCompletionsAdapter:
                 for chunk in raw:
                     check()
                     data = as_data(chunk)
+                    if data.get("error"):
+                        raise classify_error(400, data)
                     finished = finished or any(
                         c.get("finish_reason") for c in data.get("choices") or []
                     )

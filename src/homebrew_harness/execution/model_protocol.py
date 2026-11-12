@@ -17,19 +17,28 @@ class ModelProtocolError(AgentError):
 
 
 class ProviderError(ModelProtocolError):
-    def __init__(self, kind, *, status_code=None):
-        super().__init__("Model provider failed (" + kind + ").")
+    def __init__(self, kind, *, status_code=None, code=None, error_type=None, message=None):
+        from homebrew_harness.security.data_boundary import redact
+        import re
+
+        def safe(value, limit):
+            if not isinstance(value, (str, int, float)):
+                return None
+            return re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", redact(str(value)))[:limit]
+
         self.kind, self.status_code = kind, status_code
+        self.code, self.error_type = safe(code, 256), safe(error_type, 256)
+        self.message = safe(message, 4096)
         self.transient = kind in {"transport", "timeout", "rate_limit", "server_error"}
-        self.body = {
-            "error": {
-                "code": "insufficient_quota"
-                if kind == "quota"
-                else "context_length_exceeded"
-                if kind == "context_overflow"
-                else kind
-            }
-        }
+        label = kind + (f"; HTTP {status_code}" if status_code is not None else "")
+        if self.code or self.error_type:
+            label += "; " + (self.code or self.error_type)
+        super().__init__("Model provider failed (" + label + ")." + (" " + self.message if self.message else ""))
+        self.body = {"error": {
+            "code": self.code or ("insufficient_quota" if kind == "quota" else "context_length_exceeded" if kind == "context_overflow" else kind),
+            **({"type": self.error_type} if self.error_type else {}),
+            **({"message": self.message} if self.message else {}),
+        }}
 
 
 @dataclass(frozen=True)
