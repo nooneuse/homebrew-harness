@@ -39,6 +39,14 @@ class InteractionHost:
         self.workdir = assembler.workdir
         self.state, self.runs = InteractionState(self.workdir), RunStore(self.workdir)
         self.trusted, self.announce = trusted, announce or (lambda value: None)
+        self._control_only = False
+        preference = self.state.runtime.get("interaction_preferences", "workspace", {})
+        models = getattr(assembler, "planning_models", None)
+        if preference and models and self.config.model_selection is None:
+            if preference.get("base_binding") != models._choice_source_binding.identity() or preference.get("models") != models.registry.manifest():
+                raise ValueError("Saved interactive model choice requires its original host configuration.")
+            assembler.set_model_selection(preference["choice"])
+            self.config = assembler.config
         self.router = router or TaskRouter(
             assembler.binding,
             assembler.gateway,
@@ -113,6 +121,7 @@ class InteractionHost:
         with self.lock:
             if self.closed:
                 raise ValueError("Interaction host is closing.")
+            self._sync_model_preference()
             active = self.state.active()
             if active and (active.get("target") or {}).get("kind") == "run":
                 self.status(active["id"])
@@ -165,6 +174,211 @@ class InteractionHost:
                 "state": "accepted",
             }
 
+    def _model_registry(self):
+        from homebrew_harness.execution.model_registry import ModelRegistry
+        models = getattr(self.assembler, "planning_models", None)
+        return models.registry if models is not None else self.session.models if self.session else ModelRegistry()
+
+    def _set_model_preference(self, choice, *, persist=True):
+        from homebrew_harness.runtime.model_selection import validate_choice
+        choice = validate_choice(choice)
+        setter = getattr(self.assembler, "set_model_selection", None)
+        if setter is None:
+            raise ValueError("This custom host does not provide model selection.")
+        previous = (self.config, self.assembler.config, self.assembler.binding, self.assembler.gateway,
+            self.assembler.prepared_identity["model"], self.router.binding, self.router.gateway)
+        try:
+            binding = setter(choice)
+            self.config = self.assembler.config
+            self.router.binding, self.router.gateway = binding, self.assembler.gateway
+            if persist:
+                models = self.assembler.planning_models
+                self.state.runtime.put("interaction_preferences", "workspace", {
+                    "base_binding": models._choice_source_binding.identity(),
+                    "models": models.registry.manifest(), "choice": choice})
+        except Exception:
+            saved = self.state.runtime.get("interaction_preferences", "workspace", {})
+            if saved.get("choice") == choice:
+                raise ValueError("Model preference was saved, but confirmation failed; inspect /model.") from None
+            self.config, self.assembler.config, self.assembler.binding, self.assembler.gateway, identity, self.router.binding, self.router.gateway = previous
+            self.assembler.prepared_identity["model"] = identity
+            raise
+        return binding
+
+    def _sync_model_preference(self, session=None):
+        session = session or self.session
+        if session is None or not getattr(session, "_committed_model_revision", 0):
+            return
+        marker = (session.session_id, session._committed_model_revision)
+        if marker == getattr(self, "_seen_model_revision", None):
+            return
+        with self.lock:
+            choice = session._committed_model_selection
+            if choice != self.config.model_selection:
+                self._set_model_preference(choice)
+            task = self.state.active()
+            if task and (task.get("target") or {}).get("id") == session.session_id and task.get("config") != self.configuration():
+                self.state.update(task["id"], config=self.configuration())
+            self._seen_model_revision = marker
+
+    def _command_session(self, *, history=False):
+        from dataclasses import replace
+        from homebrew_harness.runtime.task_routing import TaskRoute
+        task = None
+        if history:
+            last = self.state.runtime.get("interaction_hosts", "workspace", {}).get("last")
+            task = self.state.get(last) if last else None
+            if not task or (task.get("target") or {}).get("kind") != "session":
+                return None
+        if task:
+            # Restore with the original configuration before applying the frontend choice.
+            config = replace(self.config, model_selection=None)
+            from homebrew_harness.runtime.interaction_config import InteractionAssembler
+            builder = InteractionAssembler(self.workdir, config,
+                environment=getattr(self.assembler, "environment", None),
+                client_factory=getattr(self.assembler, "factory", None),
+                model_provider=getattr(self.assembler, "model_provider", None),
+                workflow_registry=self.assembler.registry)
+            try:
+                session = builder.session(TaskRoute(**task["route"]), resume=task["target"]["id"])
+            finally:
+                builder.close()
+        else:
+            session = self.assembler.session(TaskRoute())
+        try:
+            session._ensure_runtime()
+            if self.config.model_selection and session.model_selection != self.config.model_selection:
+                from homebrew_harness.runtime.session_commands import select
+                with session.lock:
+                    select(session, self.config.model_selection)
+        except BaseException:
+            session.close()
+            session.wait_closed(self.config.shutdown_seconds)
+            raise
+        self.session = session
+        self.broker = ApprovalBroker(trusted=self.trusted, owner=session, announce=self._announce)
+        self._control_only = True
+        self._control_ids = []
+        return session
+
+    def _watch_controls(self, session, broker):
+        try:
+            deadline = time.monotonic() + self.config.turn_seconds
+            while not self.closed and not session._closed:
+                self._sync_model_preference(session)
+                with self.lock:
+                    receipts = [session.runtime_store.get("input_receipts", identity, {}) for identity in self._control_ids]
+                    settled = receipts and all(row.get("state") in {"applied", "failed", "blocked", "cancelled"} for row in receipts)
+                    if settled and not session._user_waiting.is_set() and not session._pending_user and session.inputs.active_id is None:
+                        broker.close()
+                        session.close()
+                        break
+                if time.monotonic() >= deadline:
+                    self._announce({"error": "Interactive command reached its deadline."})
+                    break
+                self.wake.wait(0.05)
+                self.wake.clear()
+            self._sync_model_preference(session)
+            broker.close()
+            session.close()
+            # Retain the owner until cooperative cleanup actually ends.
+            while not session.wait_closed(self.config.shutdown_seconds):
+                if self.closed:
+                    return
+            with self.lock:
+                if self.session is session:
+                    self.session = self.broker = None
+                    self._control_only = False
+        finally:
+            with self.lock:
+                self._busy = False
+                if not self.closed:
+                    self._kick()
+
+    def _extended_command(self, command):
+        import json
+        from homebrew_harness.runtime.model_selection import model_status, validate_choice
+        from homebrew_harness.runtime.session_commands import HELP, run
+        from homebrew_harness.context.skill_loader import SkillLoader
+        if command.name == "help":
+            return {"result": HELP}
+        if command.name == "new":
+            active = self.state.active()
+            if active:
+                session = self.session
+                if not session or self._control_only or session.inputs.pending() or session.inputs.active_id or session._user_waiting.is_set() or session.pending_work() or session.goal.pending or self.state.pending(active["id"]):
+                    raise ValueError("Finish or cancel current work before /new.")
+                self._sync_model_preference(session)
+                self.broker.close()
+                session.close()
+                if not session.wait_closed(self.config.shutdown_seconds) or not session.shutdown_status()["persistence_ok"]:
+                    raise ValueError("Previous Session cleanup is still pending.")
+                self.session = self.broker = None
+                self.state.finish(active["id"], result=session.last_goal_result, cleanup_complete=True)
+            elif self._control_only or self.session:
+                raise ValueError("Finish current context operations before /new.")
+            value = self.state.runtime.get("interaction_hosts", "workspace", {})
+            self.state.runtime.put("interaction_hosts", "workspace", {**value, "last": None})
+            return {"result": "New blank chat; current model choice retained."}
+        if command.name in {"model", "reasoning"}:
+            if command.action == "status":
+                active = self.state.active()
+                if active and (active.get("target") or {}).get("kind") == "run":
+                    value = self.runs.get(active["target"]["id"])
+                    return {"result": json.dumps({"run_id": value["id"], "profile": value.get("selected_model"),
+                        "binding": value.get("expected_binding"), "fixed_binding": True,
+                        "models": self._model_registry().catalog()}, ensure_ascii=False, indent=2)}
+                binding = self.session.lead_binding if self.session else self.assembler.binding
+                return {"result": json.dumps(model_status(self._model_registry(), binding), ensure_ascii=False, indent=2)}
+            active = self.state.active()
+            if active and (active.get("target") or {}).get("kind") == "run":
+                raise ValueError("This Run has a fixed model binding; use its declared model handoff.")
+            if not self.session and active:
+                raise ValueError("Wait for task preparation before changing its model.")
+            if not self.session:
+                choice = dict(self.config.model_selection or {"profile": self.assembler.binding.profile,
+                    "model": self.assembler.binding.model if self.assembler.binding.profile is None else None})
+                if command.name == "model":
+                    choice = {"profile": command.argument if self._model_registry().specs else None,
+                        "model": None if self._model_registry().specs else command.argument, "reasoning": None}
+                else:
+                    choice["reasoning"] = None if command.argument == "default" else command.argument
+                binding = self._set_model_preference(choice)
+                return {"result": json.dumps(model_status(self._model_registry(), binding), ensure_ascii=False, indent=2)}
+        if command.name == "skills" and (command.action in {"list", "show", "use"}):
+            loader = self.session.skills if self.session else SkillLoader(self.workdir / "skills", include_builtin=True)
+            if command.action == "list":
+                return {"result": loader.catalog()}
+            content = loader.load(command.argument)
+            if command.action == "show":
+                return {"result": json.dumps(redact({"name": command.argument, "content": content}), ensure_ascii=False, indent=2)}
+            receipt = self.submit(command.values[0], mode="queue")
+            self.state.update(receipt["task_id"], selected_skill=command.argument)
+            return receipt
+        if command.mode == "read":
+            if self.session:
+                return {"result": run(self.session, command)}
+            if command.name == "diff":
+                from homebrew_harness.tools.queries import diff_snapshot
+                base, paths = command.values
+                return {"result": json.dumps(diff_snapshot(workdir=self.workdir, base=base, paths=list(paths) or None), ensure_ascii=False, indent=2)}
+        session = self.session
+        if session is None:
+            if self.state.active():
+                raise ValueError("This operation needs an interactive Session; the current Run remains unchanged.")
+            session = self._command_session(history=command.name == "compact")
+            if session is None:
+                return {"result": "No interactive conversation to compact."}
+        with approval_scope(self.broker):
+            receipt = session.submit_user_input(command.query, mode="queued")
+        if self._control_only:
+            self._control_ids.append(receipt["input_id"])
+        if self._control_only and not self._busy:
+            self._busy = True
+            self.workers.start(lambda: self._watch_controls(session, self.broker), name="interactive-controls", track_operation=False)
+        return {"result": "Command accepted; it will run after the current turn.", "command_id": receipt["input_id"]}
+
+
     def _command(self, text):
         plain = text.strip().casefold()
         if plain in {"/status", "状态"}:
@@ -174,6 +388,10 @@ class InteractionHost:
         if plain in {"/resume", "继续", "continue", "resume"} and self.state.active():
             return self.resume()
         if plain in {"/cancel", "取消任务"}:
+            if self._control_only and self.session:
+                self.broker.close()
+                self.session.close()
+                return {"result": "Interactive command cancellation requested."}
             return self.cancel()
         if plain in {"/upgrade", "转为持续推进", "continue as managed"}:
             return self.upgrade()
@@ -239,6 +457,8 @@ class InteractionHost:
             self.wake.set()
             return receipt
         command = HostCommand.parse(text)
+        if command.extended:
+            return self._extended_command(command)
         if command.name:
             if not self.session:
                 raise ValueError(
@@ -450,6 +670,10 @@ class InteractionHost:
                     session,
                     load_task_reference(self.state.runtime, task.get("previous_task")),
                 )
+                if task.get("selected_skill"):
+                    from homebrew_harness.context.tracked_history import set_context
+                    set_context(session.messages, "selected_skill", {"role": "user", "name": "selected_skill",
+                        "content": "User-selected skill guidance, not additional permission:\n" + session.skills.load(task["selected_skill"])})
                 if route.goal_candidate:
                     session._bind_task_goal(
                         task["intent"]["original"], route.goal_candidate
@@ -517,6 +741,7 @@ class InteractionHost:
             )
         session = self.session
         while not self.closed:
+            self._sync_model_preference(session)
             current_active = self.state.active()
             if not current_active or current_active["id"] != task["id"]:
                 return
@@ -587,10 +812,14 @@ class InteractionHost:
                 and not (session.cron and session.cron.list())
             ):
                 with self.lock:
+                    current_task = self.state.active()
+                    if not current_task or current_task["id"] != task["id"] or self.session is not session:
+                        return
                     if self.state.pending(task["id"]) or self.state.get(task["id"]).get(
                         "upgrade_requested"
                     ):
                         continue
+                    self._sync_model_preference(session)
                     self.broker.close()
                     session.close()
                     if (

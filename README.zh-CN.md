@@ -114,6 +114,29 @@ homebrew-harness session --memory-mode recall
 
 项目附带 [Python 代码审查](skills/code-review/SKILL.zh-CN.md) 和 [文本摘要](skills/text-summary/SKILL.zh-CN.md) 两个技能示例。
 
+## 交互 slash commands
+
+默认交互入口与 `homebrew-harness session` 支持以下命令。宿主直接处理命令，未知命令明确报错；Python API 的文本仍是任务材料，不作为 CLI 控制语法。
+
+| 命令 | 行为 |
+| --- | --- |
+| `/help` | 查看命令语法。 |
+| `/model` | 查看当前模型、协议及已登记别名。 |
+| `/model NAME` | 从已加载目录选择模型别名；没有目录时，在现有连接上选择模型名称。 |
+| `/reasoning` | 查看当前 reasoning／thinking 设置。 |
+| `/reasoning LEVEL` | Chat／Responses 使用 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`；有映射的协议可用 `on`／`off` 设置 thinking，`default` 恢复配置值。 |
+| `/compact` | 压缩已完成的历史，保留原始要求、当前计划及完整归档。 |
+| `/new` | 已接受工作结束后开始空白上下文，保留模型选择，旧历史仍保存。 |
+| `/diff [--base REF] [PATH ...]` | 查看固定 Git 基准与工作区的变更，包含未跟踪文本；带空格路径需加引号。 |
+| `/review [--base REF] [PATH ...]` | 使用只读文件／搜索／Git 工具审查有界快照；后续代码变化会将结果标记为旧快照。 |
+| `/skills` | 列出可用 Skill。 |
+| `/skills show NAME` | 查看 Skill 正文。 |
+| `/skills use NAME TASK` | 为明确的任务加载所选 Skill 作为指导。 |
+
+Lead 忙碌时，模型和推理设置进入队列，在当前轮次结束后生效。切换保留可读历史和用户要求，归档旧协议的私有 replay，并记录到 Session checkpoint。默认入口也保留交互选择，供后续任务及重新打开时使用；恢复仍要求原配置来源一致。已启动成员和独立绑定的 Workflow 保持各自模型。受管理 Run 维持已声明模型合同，切换使用其原生 handoff。
+
+查询命令不调用模型或任务规划器。`/compact`、`/review` 沿用现有模型请求 deadline；审查快照截断时需缩小路径范围。`/new` 要求已接受工作和 Goal 已完成或取消，旧历史可显式恢复，旧审批不会作为新对话的授权。这些命令不配置凭据，也不改全局模型文件。
+
 ## 自动交互
 
 在项目目录运行 `homebrew-harness` 并输入需求。宿主为新任务规划执行方式、核验能力目录，再准备选中的 Session 或受管理 Run。每项任务保留原始需求、能力、模型和执行策略；执行期间的普通输入修订当前任务，`/queue TEXT` 创建独立后续任务。 已完成问答作为下一任务的参考，完整内容按需读取归档；原生推理和 replay 状态留在源上下文。

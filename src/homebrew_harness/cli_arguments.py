@@ -30,6 +30,7 @@ def add_environment_argument(parser, *, defaults=False):
 
 
 def add_host_config_arguments(parser):
+    parser.add_argument("--model-selection", type=__import__("json").loads, help=argparse.SUPPRESS)
     parser.add_argument(
         "--models-config",
         type=Path,

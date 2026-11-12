@@ -115,6 +115,29 @@ Ask "Help me host this project" to use the installed `host-project` skill. It co
 
 The example skills cover [Python code review](skills/code-review/SKILL.md) and [text summarization](skills/text-summary/SKILL.md).
 
+## Interactive slash commands
+
+The default interactive entry and `homebrew-harness session` support these commands. Host commands are handled directly; unknown commands report an error. Python API text remains task material rather than CLI control syntax.
+
+| Command | Behavior |
+| --- | --- |
+| `/help` | Show available command syntax. |
+| `/model` | Show the current model, protocol and registered aliases. |
+| `/model NAME` | Select an alias from the loaded model catalog; without a catalog, select a model name on the existing connection. |
+| `/reasoning` | Show the current reasoning/thinking options. |
+| `/reasoning LEVEL` | Set `none`, `minimal`, `low`, `medium`, `high` or `xhigh` for Chat/Responses; `on`/`off` selects thinking where mapped. `default` restores configured options. |
+| `/compact` | Compact completed history, preserving the original requirements, current plan and full archives. |
+| `/new` | Start blank context after accepted work ends, retaining model choice. Old history remains saved. |
+| `/diff [--base REF] [PATH ...]` | Inspect a fixed Git base against the working tree, including untracked text. Quote paths containing spaces. |
+| `/review [--base REF] [PATH ...]` | Review a bounded snapshot using only reading/search/Git tools. Findings refer to the recorded snapshot; later changes mark the result stale. |
+| `/skills` | List available skills. |
+| `/skills show NAME` | Read a skill's instructions. |
+| `/skills use NAME TASK` | Load the chosen skill as guidance for an explicit task. |
+
+Model and reasoning changes are queued when the Lead is busy and apply after its current turn. They retain readable history and user requirements, archive private protocol replay, and persist in the Session checkpoint. The default entry also retains its interactive choice for later tasks and reopening. Configuration sources must still match for recovery. Existing members and independently bound Workflows retain their own model. A managed Run keeps its declared model contract; use its native model handoff for changes.
+
+Query commands do not call a model or the task router. `/compact` and `/review` use the existing model request deadlines. Truncated review snapshots require narrower paths. `/new` requires accepted work and goals to be finished or cancelled; it keeps history available for explicit recovery and does not carry previous approvals into the new conversation. These commands do not configure credentials or change global model files.
+
 ## Automatic interaction
 
 Start `homebrew-harness` in the project directory and enter a task. The host plans new tasks, checks its capability catalog, and prepares the selected Session or managed Run. Each task keeps its original requirements, chosen capabilities, model and execution policy. Ordinary input during execution steers that task; `/queue TEXT` creates an independent follow-up. Completed discussions become reference for the next task, with complete archived content available on demand. Native reasoning and replay stay in their source context.

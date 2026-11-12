@@ -22,6 +22,7 @@ class InteractionConfig:
     mcp_config: Path = Path.home() / ".config/homebrew-harness/mcp.json"
     control_config: Path | None = None
     lead_model: str | None = None
+    model_selection: dict | None = None
     allowed: tuple = ("subagents", "background", "tasks", "teams", "worktrees")
     allow_tests: tuple = ()
     write_paths: tuple = (".",)
@@ -41,6 +42,9 @@ class InteractionConfig:
     max_turns: int = 20
 
     def __post_init__(self):
+        if self.model_selection is not None:
+            from homebrew_harness.runtime.model_selection import validate_choice
+            validate_choice(self.model_selection)
         if (
             not isinstance(self.allowed, (list, tuple))
             or any(not isinstance(v, str) for v in self.allowed)
@@ -143,11 +147,16 @@ class InteractionConfig:
                         "Execution configuration must remain outside the workspace."
                     )
                 args.extend(("--" + name.replace("_", "-"), str(path)))
+        if self.model_selection is not None:
+            args.extend(("--model-selection", json.dumps(self.model_selection)))
         return tuple(args)
 
     def identity(self):
         # Paths are private host references; never copy connection values.
-        return json.loads(json.dumps(asdict(self), default=str))
+        value = asdict(self)
+        if value.get("model_selection") is None:
+            value.pop("model_selection", None)
+        return json.loads(json.dumps(value, default=str))
 
 
 class InteractionAssembler:
@@ -275,6 +284,19 @@ class InteractionAssembler:
             "total_seconds": tests.total_seconds,
         }
 
+    def set_model_selection(self, choice):
+        from homebrew_harness.runtime.model_selection import choose_binding, validate_choice
+        choice = validate_choice(choice)
+        source = self.planning_models._choice_source_binding
+        binding = choose_binding(self.planning_models.registry, source.client, source.model, choice,
+            context_chars=self.config.context_chars, output_tokens=self.config.output_tokens)
+        from dataclasses import replace
+        self.config = replace(self.config, model_selection=choice)
+        self.binding = binding
+        self.gateway = self.gateway.bind(binding.client)
+        self.prepared_identity["model"] = binding.identity()
+        return binding
+
     def check_models(self, models, binding):
         if (
             binding.identity() != self.binding.identity()
@@ -288,7 +310,19 @@ class InteractionAssembler:
         from homebrew_harness.execution.providers.backends import backend_scope
 
         with backend_scope(self.model_bindings, getattr(self, "binding", None)):
-            return self._models()
+            models = self._models()
+            try:
+                base = models.open(context_chars=self.config.context_chars, output_tokens=self.config.output_tokens)
+                models._choice_source_binding, models._choice_source_alias = base, models.alias
+                if self.config.model_selection is not None:
+                    from homebrew_harness.runtime.model_selection import choose_binding
+                    models.binding = choose_binding(models.registry, base.client, base.model, self.config.model_selection,
+                        context_chars=self.config.context_chars, output_tokens=self.config.output_tokens)
+                    models.alias = models.binding.profile
+                return models
+            except BaseException:
+                models.close_when_idle(self.config.shutdown_seconds)
+                raise
 
     def _models(self):
         if self.model_provider is not None:
@@ -375,14 +409,15 @@ class InteractionAssembler:
             if workflow:
                 resources.callback(workflow.close)
             session = HarnessSession(
-                binding.client,
-                binding.model,
+                models._choice_source_binding.client,
+                models._choice_source_binding.model,
                 self.workdir,
                 hooks=hooks,
                 mode=mode,
                 run_control=run_control,
                 model_registry=models.registry,
-                lead_model_profile=models.alias,
+                lead_model_profile=models._choice_source_alias,
+                model_selection=c.model_selection,
                 test_runner=tests,
                 bash_policy=bash,
                 mcp_runtime=mcp,

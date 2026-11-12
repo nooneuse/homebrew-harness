@@ -8,6 +8,8 @@ import json
 import math
 import os
 import sys
+import copy
+from dataclasses import dataclass
 from contextlib import ExitStack
 from pathlib import Path
 
@@ -48,7 +50,22 @@ def host_exit_status(session, status=0):
     return status
 
 
+@dataclass
+class NewChat:
+    selection: dict
+
+
 def execute(args, parser) -> int:
+    while True:
+        result = _execute_session(args, parser)
+        if not isinstance(result, NewChat):
+            return result
+        args = copy.copy(args)
+        args.resume_session = None
+        args.model_selection = result.selection
+
+
+def _execute_session(args, parser):
     from homebrew_harness.runtime.session import HarnessSession
 
     load_dotenv(args.env_file.expanduser(), override=False)
@@ -159,6 +176,10 @@ def execute(args, parser) -> int:
                 output_tokens=args.worker_output_tokens or 4096,
             )
             client, effective_model = binding.client, binding.model
+            if getattr(args, "model_selection", None) is not None:
+                from homebrew_harness.runtime.model_selection import choose_binding
+                binding = choose_binding(models, client, effective_model, args.model_selection,
+                    context_chars=args.context_chars, output_tokens=args.worker_output_tokens or 4096)
             with termination_guard():
                 mcp_runtime = (
                     MCPRuntime(
@@ -194,8 +215,7 @@ def execute(args, parser) -> int:
                     context_chars=args.context_chars,
                     stop_block_cap=args.stop_block_cap,
                     goal_evaluator_model=args.goal_evaluator_model
-                    or os.getenv("GOAL_EVALUATOR_MODEL")
-                    or effective_model,
+                    or os.getenv("GOAL_EVALUATOR_MODEL"),
                     goal_check_tokens=args.goal_check_tokens,
                     goal_input_chars=args.goal_input_chars,
                     mode="one_shot" if prompt is not None else "interactive",
@@ -210,6 +230,7 @@ def execute(args, parser) -> int:
                     bash_policy=bash_policy,
                     model_registry=models,
                     lead_model_profile=lead_alias,
+                    model_selection=getattr(args, "model_selection", None),
                 ) as session:
                     if prompt is not None:
                         print(
@@ -253,6 +274,21 @@ def execute(args, parser) -> int:
                                 if not query:
                                     continue
                                 try:
+                                    from homebrew_harness.runtime.host_commands import HostCommand
+                                    command = HostCommand.parse(query) if not query.startswith(("/approve ", "/queue ", "/steer ", "/interrupt ", "/steer-to ")) else None
+                                    if command and command.name == "new":
+                                        if session.pending_work() or session.inputs.active_id or session.inputs.pending() or session._user_waiting.is_set() or session.goal.pending:
+                                            raise ValueError("Finish or cancel accepted work before /new.")
+                                        selection = dict(session.model_selection)
+                                        broker.close()
+                                        session.close()
+                                        if not session.wait_closed(args.shutdown_timeout) or not session.shutdown_status()["persistence_ok"]:
+                                            raise ValueError("Previous Session cleanup is still pending.")
+                                        return NewChat(selection)
+                                    if command and command.extended and command.mode == "read":
+                                        from homebrew_harness.runtime.session_commands import run
+                                        print(run(session, command))
+                                        continue
                                     if query.startswith("/approve "):
                                         parts = query.split()
                                         if len(parts) != 3 or parts[2] not in {

@@ -2,6 +2,7 @@
 
 import json
 import re
+import shlex
 from dataclasses import dataclass
 
 from homebrew_harness.context.memory import NAME_PATTERN
@@ -23,9 +24,14 @@ class HostCommand:
         return self.mode != "execute"
 
     @property
+    def extended(self):
+        return self.name in {"model", "reasoning", "compact", "new", "diff", "review", "skills", "help"}
+
+    @property
     def allowed_during_recovery(self):
         return (
-            self.name in {"usage", "storage", "recovery", "mcp", "inputs"}
+            self.name in {"usage", "storage", "recovery", "mcp", "inputs", "help", "diff"}
+            or self.name in {"model", "reasoning", "skills"} and self.mode == "read"
             or self.name == "goal"
             and self.local
         )
@@ -45,10 +51,47 @@ class HostCommand:
             "goal",
             "task",
             "mcp",
+            "model", "reasoning", "compact", "new", "diff", "review", "skills", "help",
         }:
+            if query.lstrip().startswith("/"):
+                raise ValueError("Unknown host command; use /help.")
             return cls(query)
         name, raw = matched[1], matched[2] or ""
         argument = raw.strip()
+        if name in {"help", "new", "compact"}:
+            if argument:
+                raise ValueError("/" + name + " accepts no arguments.")
+            return cls(query, name, "run", mode="context" if name == "compact" else "manage" if name == "new" else "read")
+        if name in {"model", "reasoning"}:
+            if not argument:
+                return cls(query, name, "status", mode="read")
+            parts = shlex.split(argument)
+            if len(parts) != 1:
+                raise ValueError("Use /" + name + " VALUE.")
+            return cls(query, name, "select", parts[0], mode="manage")
+        if name in {"diff", "review"}:
+            parts = shlex.split(argument)
+            base, paths = None, []
+            if parts[:1] == ["--base"]:
+                if len(parts) < 2:
+                    raise ValueError("--base requires a Git revision.")
+                base, parts = parts[1], parts[2:]
+            if parts[:1] == ["--"]:
+                parts = parts[1:]
+            if any(path.startswith("--") for path in parts):
+                raise ValueError("Use /" + name + " [--base REF] [PATH ...].")
+            paths = tuple(parts)
+            return cls(query, name, "run", mode="read" if name == "diff" else "context", values=(base, paths))
+        if name == "skills":
+            parts = shlex.split(argument)
+            if not parts:
+                return cls(query, name, "list", mode="read")
+            if len(parts) == 2 and parts[0] == "show":
+                return cls(query, name, "show", parts[1], mode="read")
+            match = re.fullmatch(r"use\s+(\S+)\s+(.+)", argument, re.DOTALL)
+            if match:
+                return cls(query, name, "use", match[1], mode="context", values=(match[2],))
+            raise ValueError("Use /skills, /skills show NAME or /skills use NAME TASK.")
         if name == "inputs":
             if not argument:
                 return cls(query, name, "status", mode="read")

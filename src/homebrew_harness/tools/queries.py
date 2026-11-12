@@ -268,3 +268,62 @@ def git_diff(*, workdir, paths=None):
         ),
         ensure_ascii=False,
     )
+
+
+def diff_snapshot(*, workdir, base=None, paths=None):
+    """A bounded review snapshot; never accepts executable Git options."""
+    import hashlib
+    from homebrew_harness.security.file_visibility import host_managed_parts
+
+    def project_visible(path):
+        return _visible(git.workdir, path) and not host_managed_parts(Path(path).parts) and ".worktrees" not in Path(path).parts
+
+    git = _git(workdir)
+    if base is not None and (not isinstance(base, str) or not base or len(base) > 200 or base.startswith("-") or any(ord(c) < 32 for c in base)):
+        raise ValueError("Base must be a short Git revision.")
+    if paths is not None and (not 1 <= len(paths) <= 32 or any(not project_visible(p) for p in paths)):
+        raise ValueError("Diff paths must be 1-32 visible workspace paths.")
+    revision = git._git(["rev-parse", "--verify", "--end-of-options", (base or "HEAD") + "^{commit}"]).stdout.strip()
+    head = git._git(["rev-parse", "HEAD"]).stdout.strip()
+    names = git._git(["diff", "--name-only", "-z", "--no-renames", "--no-ext-diff", "--no-textconv", revision]).stdout.split("\0")
+    requested = set(paths) if paths else None
+    changed = sorted({p for p in names if p and project_visible(p) and (requested is None or p in requested)})
+    raw_untracked = git._git(["ls-files", "--others", "--exclude-standard", "-z"]).stdout.split("\0")
+    if len(raw_untracked) > GIT_METADATA_LIMIT:
+        raise ValueError("Git untracked metadata limit reached.")
+    untracked = sorted(p for p in raw_untracked if p and project_visible(p) and (requested is None or p in requested))
+    limited = len(untracked) > 200
+    untracked = untracked[:200]
+    truncated = limited or len(set(changed) | set(untracked)) > 32
+    selected = sorted(set(changed) | set(untracked))[:32]
+    patch = git._git(["diff", "--no-renames", "--no-ext-diff", "--no-textconv", "--no-color", revision, "--",
+        *(":(literal)" + p for p in selected)]).stdout if selected else ""
+    fingerprint = hashlib.sha256((revision + head + patch).encode())
+    binary = []
+    for path in selected:
+        check()
+        try:
+            with SafeFile(git.workdir, path) as source, source.open_read() as stream:
+                raw = stream.read(1_000_001)
+                source.verify_binding()
+        except FileNotFoundError:
+            raw = b""
+        fingerprint.update(path.encode() + hashlib.sha256(raw).digest())
+        if len(raw) > 1_000_000:
+            truncated = True
+        if b"\0" in raw and path not in binary:
+            binary.append(path)
+        if path in untracked:
+            try:
+                text = raw.decode("utf-8")
+                if "\0" in text:
+                    raise UnicodeError()
+            except UnicodeError:
+                if path not in binary:
+                    binary.append(path)
+            else:
+                patch += "\n--- /dev/null\n+++ " + path + "\n" + "".join("+" + line + "\n" for line in text.splitlines())
+    truncated |= len(patch) > 12000
+    return redact({"workspace": str(git.workdir), "base": revision, "head": head, "paths": selected, "diff": patch[:12000],
+        "untracked": untracked[:32], "binary": binary, "truncated": truncated,
+        "fingerprint": fingerprint.hexdigest()})

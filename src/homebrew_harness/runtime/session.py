@@ -116,6 +116,7 @@ class HarnessSession:
         bash_policy=None,
         model_registry=None,
         lead_model_profile=None,
+        model_selection=None,
         run_control=None,
     ):
         created, bindings = [], []
@@ -179,6 +180,10 @@ class HarnessSession:
                     session_backend_bindings(workdir, resume_session)
                 )
             self.models.claim(self)
+            self._model_source_client, self._model_source_name = client, model
+            self._model_defaults = (context_chars, worker_output_tokens or 4096)
+            self._memory_tracks_model = memory_runtime is None
+            self._goal_tracks_model = goal_controller is None and goal_evaluator_model is None
             own("models", self.models)
             lead_alias = (
                 lead_model_profile
@@ -192,6 +197,10 @@ class HarnessSession:
                 context_chars=context_chars,
                 max_output_tokens=worker_output_tokens or 4096,
             )
+            from homebrew_harness.runtime.model_selection import choose_binding, validate_choice
+            self.model_selection = validate_choice(model_selection or {"profile": lead_alias, "model": model if lead_alias is None else None})
+            initial = choose_binding(self.models, self._model_source_client, self._model_source_name, self.model_selection,
+                context_chars=context_chars, output_tokens=worker_output_tokens or 4096)
             client, model = initial.client, initial.model
             self.gateway = gateway or (
                 client
@@ -208,13 +217,15 @@ class HarnessSession:
             )
             if worker_output_tokens is not None:
                 self.gateway.configure_worker_output(worker_output_tokens)
-            self.lead_binding = self.models.select(
-                lead_alias,
-                client=client,
-                model=model,
-                context_chars=context_chars,
-                max_output_tokens=self.gateway.worker_output_tokens,
-            )
+            self._model_defaults = (context_chars, self.gateway.worker_output_tokens)
+            self._selection_base_identity = self.models.select(lead_alias, client=self._model_source_client,
+                model=self._model_source_name, context_chars=context_chars,
+                max_output_tokens=self.gateway.worker_output_tokens).identity()
+            self.lead_binding = choose_binding(self.models, self._model_source_client, self._model_source_name,
+                self.model_selection, context_chars=context_chars, output_tokens=self.gateway.worker_output_tokens)
+            self._committed_model_selection = dict(self.model_selection)
+            self._committed_model_revision = self.model_revision = 0
+            client, model = self.lead_binding.client, self.lead_binding.model
             context_chars = self.lead_binding.context_chars
             client = self.gateway.bind(client)
             self.client, self.model = client, model
@@ -618,6 +629,7 @@ class HarnessSession:
             ),
             "bash_policy": self.bash_policy.identity(),
             "model_binding": self.lead_binding.identity(),
+            "model_selection": {"base_binding": self._selection_base_identity, "choice": self.model_selection, "revision": self.model_revision},
             "model_registry": self.models.manifest(),
             **(
                 {
@@ -756,6 +768,19 @@ class HarnessSession:
                 raise RecoveryRequired(
                     "Resume requires the saved Bash execution policy; a sandbox cannot silently become host execution."
                 )
+            selection = saved.get("model_selection")
+            if selection:
+                if saved.get("model_registry") != self.models.manifest():
+                    raise RecoveryRequired("Resume requires the original model catalog.")
+                if saved.get("model_binding") != self.lead_binding.identity():
+                    if selection.get("base_binding") != self._selection_base_identity:
+                        raise RecoveryRequired("Saved model choice belongs to a different original binding.")
+                    from homebrew_harness.runtime.session_commands import select
+                    select(self, selection["choice"], restore=True)
+                self._selection_base_identity = selection["base_binding"]
+                self.model_selection = selection["choice"]
+                self._committed_model_selection = dict(self.model_selection)
+                self._committed_model_revision = self.model_revision = selection.get("revision", 0)
             if (
                 saved.get("model_binding") != self.lead_binding.identity()
                 or saved.get("model_registry") != self.models.manifest()
@@ -1575,7 +1600,9 @@ class HarnessSession:
                 )
                 return json.dumps(result, ensure_ascii=False)
         deadline = (
-            Deadline.after(2)
+            operation_deadline(self.turn_timeout)
+            if command.mode == "context"
+            else Deadline.after(2)
             if command.local
             else operation_deadline(self.turn_timeout)
         )
@@ -1674,6 +1701,12 @@ class HarnessSession:
                     raise RecoveryRequired(
                         "Recovery requires host inspection. Use /recovery for pending outcomes, then /recovery continue after checking them."
                     )
+                if command.extended:
+                    from homebrew_harness.runtime.session_commands import run
+                    result = run(self, command)
+                    if result is not None:
+                        return result
+                    query = command.values[0]
                 if command.name == "mcp":
                     if self.mcp is None:
                         return json.dumps({"connections": [], "enabled": False})

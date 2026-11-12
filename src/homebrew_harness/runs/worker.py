@@ -24,9 +24,13 @@ def make_session(store, control, args):
     from homebrew_harness.runtime.task_routing import TaskRoute
 
     spec = control.spec
+    selection = getattr(args, "model_selection", None)
+    if selection and control.state.get("selected_model") and control.state["selected_model"] != selection.get("profile"):
+        selection = None
     config = InteractionConfig(
         env_file=args.env_file,
         models_config=args.models_config,
+        model_selection=selection,
         test_config=args.test_config,
         bash_config=args.bash_config,
         mcp_config=args.mcp_config,
