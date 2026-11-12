@@ -49,6 +49,9 @@ class Peer:
         self.hold = None
         self.native_hold = None
         self.native_started = threading.Event()
+        self.review_verdict = None
+        self.review_started = threading.Event()
+        self.review_hold = None
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -94,6 +97,12 @@ class Peer:
                 if outer.hold:
                     outer.hold.wait(10)
                 messages = body["messages"]
+                if any("host's independent approval reviewer" in str(m.get("content")) for m in messages if m["role"] == "system"):
+                    outer.review_started.set()
+                    if outer.review_hold:
+                        outer.review_hold.wait(10)
+                    self.send(completion(json.dumps(outer.review_verdict)))
+                    return
                 if messages[-1]["role"] == "tool":
                     self.send(completion("Candidate recorded."))
                     return
@@ -138,6 +147,8 @@ class Peer:
         self.url = "http://127.0.0.1:" + str(self.server.server_port)
 
     def close(self):
+        if self.review_hold:
+            self.review_hold.set()
         if self.hold:
             self.hold.set()
         if self.native_hold:

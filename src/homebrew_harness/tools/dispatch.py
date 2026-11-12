@@ -147,7 +147,10 @@ def execute_tool(
             mcp_bindings = mcp_runtime.snapshot()[1] if mcp_runtime else {}
     from homebrew_harness.security.file_visibility import file_access_scope
 
+    from homebrew_harness.security.review_context import permission_scope
+    assigned = team_member.assignment if team_member else team_manager.lead_assignment if team_manager else None
     with (
+        permission_scope(execution_context("teammate" if team_member else current_scope().role, assigned), team_member.store.intent if team_member else None),
         file_access_scope(archive_store, restrict_archives=restrict_archives),
         test_approval_scope(),
         spawn_approval_scope(),
@@ -494,6 +497,12 @@ def _execute_tool(
                     }
                 )
             )
+        # Reject a superseded review before creating temporary native grants.
+        from homebrew_harness.security.review_context import verify_guard
+        try:
+            verify_guard(call.id)
+        except ValueError as error:
+            return finish(json.dumps({"error": str(error), "executed": False}))
         if call.name == "run_tests" and consume_test_approval(arguments, workdir):
             if test_runner is None:
                 raise TestRunnerError("Test execution requires its host runner.")
@@ -535,6 +544,11 @@ def _execute_tool(
                 }
             )
         )
+    try:
+        from homebrew_harness.security.review_context import verify_guard
+        verify_guard(call.id)
+    except ValueError as error:
+        return finish(json.dumps({"error": str(error), "executed": False}))
     if before_start is not None and before_start():
         return finish(
             json.dumps(

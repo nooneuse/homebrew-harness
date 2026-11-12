@@ -222,6 +222,28 @@ class HumanRequests:
         independent_work="",
         grant_context=None,
     ):
+        request = self._create(control, kind, tool=tool, arguments=arguments, call_id=call_id, question=question,
+            reason=reason, impact=impact, independent_work=independent_work, grant_context=grant_context)
+        try:
+            from homebrew_harness.security.native_review import review_run
+            return review_run(control, request)
+        except Exception:
+            return self.get(control.id, request["id"])
+
+    def _create(
+        self,
+        control,
+        kind,
+        *,
+        tool=None,
+        arguments=None,
+        call_id=None,
+        question=None,
+        reason="",
+        impact="",
+        independent_work="",
+        grant_context=None,
+    ):
         if kind not in {"tool", "attention", "test_grant"}:
             raise ValueError("Unknown human request kind.")
         mcp_tool = (

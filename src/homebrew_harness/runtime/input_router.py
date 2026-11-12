@@ -35,11 +35,14 @@ class ApprovalBroker:
         self.requests = {}
         self.closed = False
         self.owner = owner
+        self.review_cancels = {}
 
     def request(self, tool_name, arguments, workdir, reason):
         from homebrew_harness.security.permissions import PermissionDecision
 
-        if not self.trusted:
+        reviewer = getattr(self.owner, "approval_reviewer", None)
+        automatic = reviewer is not None and reviewer.config.mode == "auto_review" and "tool" in reviewer.config.kinds
+        if not self.trusted and not automatic:
             return PermissionDecision(
                 "deny", "No authenticated interactive approval input is available."
             )
@@ -48,6 +51,7 @@ class ApprovalBroker:
         with self.lock:
             if self.closed:
                 return PermissionDecision("deny", "Host input is closing.")
+            self.review_cancels[identity] = threading.Event()
             self.pending[identity] = (
                 future,
                 copy.deepcopy(arguments),
@@ -62,6 +66,37 @@ class ApprovalBroker:
                 "directory": str(workdir),
                 "turn_id": self.owner.inputs.active_id if self.owner else None,
             }
+        review_context = None
+        if automatic:
+            from homebrew_harness.security.approval_review import requester_binding
+            from homebrew_harness.security.review_context import session_context
+            requester = requester_binding()
+            try:
+                review_context = session_context(self.owner, tool_name, arguments, workdir, requester=requester)
+                request = {"id": identity, "revision": 0, "kind": "tool", "tool": tool_name, "arguments": copy.deepcopy(arguments), "reason": reason, "checkpoint": self.owner.checkpoint_key}
+                def current():
+                    with self.lock:
+                        valid = identity in self.pending and not self.pending[identity][0].done() and not self.closed
+                    return session_context(self.owner, tool_name, arguments, workdir, requester=requester) if valid else None
+                def publish(decision, review_id):
+                    with self.lock:
+                        value = self.pending.get(identity)
+                        if value is None or value[0].done() or self.closed or session_context(self.owner, tool_name, arguments, workdir, requester=requester) != review_context:
+                            raise ValueError("Auto-review request changed before publication.")
+                        value[0].set_result(PermissionDecision("allow" if decision == "approve" else "deny", "Independent approval review " + review_id, "auto_review"))
+                        return {"decision": decision}
+                reviewer.review(request, review_context, current, publish, requester=requester, cancel_event=self.review_cancels[identity])
+            except Exception:
+                pass
+        if future.done():
+            result = future.result()
+            if result.action == "allow" and result.code == "auto_review" and review_context is not None:
+                from homebrew_harness.security.review_context import bind_guard
+                from homebrew_harness.security.permissions import _APPROVAL_CALL
+                bind_guard(_APPROVAL_CALL.get(), lambda: session_context(self.owner, tool_name, arguments, workdir, requester=requester) == review_context)
+            with self.lock:
+                self.pending.pop(identity, None); self.requests.pop(identity, None); self.review_cancels.pop(identity, None)
+            return result
         self.announce(
             "[permission] "
             + redact(
@@ -84,6 +119,7 @@ class ApprovalBroker:
             with self.lock:
                 self.pending.pop(identity, None)
                 self.requests.pop(identity, None)
+                self.review_cancels.pop(identity, None)
 
     def records(self):
         with self.lock:
@@ -108,6 +144,8 @@ class ApprovalBroker:
                 raise ValueError("Approval revision changed.")
             if before is not None:
                 before()
+            if identity in self.review_cancels:
+                self.review_cancels[identity].set()
             value[0].set_result(
                 PermissionDecision(
                     "allow" if approved else "deny",
@@ -120,6 +158,8 @@ class ApprovalBroker:
 
         with self.lock:
             self.closed = True
+            for cancel in self.review_cancels.values():
+                cancel.set()
             for future, *_ in self.pending.values():
                 if not future.done():
                     future.set_result(PermissionDecision("deny", "Host input closed."))
@@ -128,8 +168,9 @@ class ApprovalBroker:
         from homebrew_harness.security.permissions import PermissionDecision
 
         with self.lock:
-            for future, _, target in self.pending.values():
+            for identity, (future, _, target) in self.pending.items():
                 if target == turn_id and not future.done():
+                    self.review_cancels[identity].set()
                     future.set_result(
                         PermissionDecision(
                             "deny", "User steering superseded this pending approval."

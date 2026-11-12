@@ -35,6 +35,7 @@ from homebrew_harness.runtime.hooks import HookError, HookRegistry
 from homebrew_harness.runtime.loop_components import LoopComponents
 from homebrew_harness.runtime.observability import child_scope
 from homebrew_harness.security.permissions import noninteractive_permissions
+from homebrew_harness.security.approval_review import requester_scope
 from homebrew_harness.storage.durable_runtime import (
     CheckpointWriter,
     DurableStore,
@@ -203,6 +204,7 @@ def run_subagent(
             client.scope(cancel_event=activity_cancel),
             checkpoint_scope(writer),
             client.scope(role="subagent", context_id=identity),
+            requester_scope(binding),
             child_scope("subagent", identity),
         ):
             result = homebrew_harness.runtime.loop.agent_loop(

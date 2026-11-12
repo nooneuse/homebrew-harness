@@ -364,7 +364,7 @@ class TodoTests(unittest.TestCase):
             ]
         )
         config = {
-            name: "test-value"
+            name: "fixture-model" if name == "OPENAI_MODEL" else "test-value"
             for name in homebrew_harness.configuration.CONFIG_VARIABLES
         }
         with (

@@ -66,6 +66,8 @@ class ServiceRuntime:
         self.maintenance = None
         self.current = None
         self.audit_preparing = False
+        from .approval_review import ServiceApprovalReview
+        self.approval_review = ServiceApprovalReview(self)
         self.children = {}
         self.error = None
         self.start_error = None
@@ -362,6 +364,7 @@ class ServiceRuntime:
         return self.current
 
     def tick(self):
+        self.approval_review.tick()
         meta = self.store.get(self.id)
         if meta["state"] == "running":
             self.store.poll_schedules(self.header)
@@ -960,6 +963,7 @@ class ServiceRuntime:
                 revision=meta["revision"] + 1,
             )
         self.closed = True
+        self.approval_review.request_close()
         self.next_close_retry = 0
         self.shutdown.request(self._finish_close, timeout)
         return self.snapshot()
@@ -975,6 +979,10 @@ class ServiceRuntime:
             self.finished.set()
             return
         self.operations.close()
+        if self.approval_review.running:
+            from homebrew_harness.runtime.runtime_control import ClosePending
+            raise ClosePending("Approval review is still finishing.")
+        self.approval_review.close()
         if self.maintenance is not None:
             self.maintenance.close()
         with self.lock:

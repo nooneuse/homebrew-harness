@@ -322,6 +322,8 @@ python examples/managed_run_demo.py --output /tmp/harness-ae-demo
 
 宿主 Bash 默认按调用审批。显式 Session 使用精确审批 ID，自动交互还适配唯一已展示的焦点；单次任务的终端提示接受 `y`／`yes`，回车表示拒绝。
 
+可选 `auto_review` 使用当前 Lead、实际请求者或专用模型目录别名进行独立审批审核。不确定的请求使用原人工入口，默认仍为手动审批。配置和示例参见[自动审批审核](docs/APPROVALS.zh-CN.md)。
+
 ## Goal 与测试
 
 `/goal CONDITION` 设置完成目标，`/goal` 查看状态，`/goal resume` 接续，`/goal clear` 清除。

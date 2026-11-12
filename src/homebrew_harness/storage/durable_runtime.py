@@ -135,7 +135,7 @@ class DurableStore:
             return self._store.checkpoint(key, value)
         checkpoint = (
             value.get("checkpoint")
-            if section == "operations" and isinstance(value, dict)
+            if section in {"operations", "approval_reviews"} and isinstance(value, dict)
             else None
         )
         if checkpoint is not None:

@@ -17,7 +17,7 @@ from tests.support.clients import fake_client, call, reply
 class TestGrantTests(unittest.TestCase):
     setUp = fixture.ManagedTeamTests.setUp
 
-    def setup_run(self, *, locked=(), one=False, slow=False):
+    def setup_run(self, *, locked=(), one=False, slow=False, approval_review=None):
         if one:
             from tests.runs.test_p1_members import one_member
 
@@ -69,6 +69,7 @@ class TestGrantTests(unittest.TestCase):
             run_control=c,
             test_runner=runner,
             shutdown_timeout=2,
+            approval_review=approval_review,
         )
         self.addCleanup(c.close_heartbeat)
         self.addCleanup(lambda: self.assertTrue(s.wait_closed(5)))

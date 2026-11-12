@@ -438,7 +438,7 @@ class SkillTests(unittest.TestCase):
     def test_cli_scans_once_and_uses_default_or_explicit_skill_source(self):
         self.write_skill()
         config = {
-            name: "test-value"
+            name: "fixture-model" if name == "OPENAI_MODEL" else "test-value"
             for name in homebrew_harness.configuration.CONFIG_VARIABLES
         }
         default_dir = self.workdir / "skills"

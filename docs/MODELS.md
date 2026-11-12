@@ -60,4 +60,6 @@ Bindings save the resolved backend and its revision, along with SDK name and ver
 
 Session, Run, Workflow, Service, benchmark, teams and subagents use the shared model selection path. Each connection can use its own backend. Programmatic injected clients retain their host-defined lifecycle and binding.
 
+Optional [Approval review](APPROVALS.md) uses the same model bindings and gateway. Select the current Lead, actual requester or a dedicated profile; every review starts an independent conversation.
+
 For direct inspection, `ProtocolAdapter.transport_description` reports the selected backend, declared policy, selection reason, and SDK version. `ModelBinding.identity()` exposes the persistent identity without connection secrets.

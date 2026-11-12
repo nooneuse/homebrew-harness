@@ -32,6 +32,7 @@ RECORD_SECTIONS = (
     "run_controls",
     "run_heartbeats",
     "run_requests",
+    "approval_reviews",
     "run_decisions",
     "run_progress",
     "run_sources",

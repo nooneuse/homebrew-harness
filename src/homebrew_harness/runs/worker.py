@@ -31,6 +31,7 @@ def make_session(store, control, args):
         env_file=args.env_file,
         models_config=args.models_config,
         model_selection=selection,
+        approval_review=getattr(args, "approval_review", None),
         test_config=args.test_config,
         bash_config=args.bash_config,
         mcp_config=args.mcp_config,

@@ -95,6 +95,8 @@ Steering remains attached to the original query, including while that query is q
 
 ## Host decisions and structured Goals
 
+`HostConfig.from_files(approval_review={"mode": "auto_review"})` enables independent model review for delegated approval kinds. `RunSpec.approval_review` can override that host policy. Remaining requests use the exact decision methods below. See [Approval review](APPROVALS.md) for model selection and Service delegation.
+
 ```python
 pending = turn.requests()
 # Present each request to the application's authorized user.

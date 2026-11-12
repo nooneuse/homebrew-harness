@@ -421,6 +421,9 @@ def execute(args, parser):
                 settings.extend(
                     ("--" + name.replace("_", "-"), str(path.expanduser().resolve()))
                 )
+        if args.approval_review is not None:
+            from homebrew_harness.security.approval_review import ReviewConfig
+            settings.extend(("--approval-review", json.dumps(ReviewConfig.parse(args.approval_review).data())))
         supervisor = RunSupervisor(
             store,
             host_arguments=settings,

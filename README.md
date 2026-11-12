@@ -323,6 +323,8 @@ The original task and amendment order are saved. Completed tool results remain e
 
 Host Bash requests approval per call by default. Explicit Session mode uses exact approval IDs; automatic interaction also adapts a unique displayed focus. A one-shot terminal prompt accepts `y`/`yes`; pressing Enter declines.
 
+Optional `auto_review` adds an independent model approval responder using the current Lead, actual requester or a dedicated catalog profile. Uncertain requests use the existing human interface; the default remains manual. See [Approval review](docs/APPROVALS.md) for configuration and examples.
+
 ## Goals and tests
 
 `/goal CONDITION` sets a completion goal, `/goal` shows its state, `/goal resume` continues it, and `/goal clear` removes it.

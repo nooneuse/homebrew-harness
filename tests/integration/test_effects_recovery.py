@@ -417,7 +417,7 @@ with patch.object(GoalController,'accept_candidate',crash):
     def test_interactive_cli_retains_session_after_recovery_error(self):
         c, _ = fake_client([])
         config = {
-            key: "fixture-config"
+            key: "fixture-model" if key == "OPENAI_MODEL" else "fixture-config"
             for key in homebrew_harness.configuration.CONFIG_VARIABLES
         }
         (self.root / "mcp.json").write_text('{"servers":{}}')

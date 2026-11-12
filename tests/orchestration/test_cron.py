@@ -807,7 +807,7 @@ class CronSessionTests(unittest.TestCase):
             return "quit"
 
         config = {
-            key: "test-config"
+            key: "fixture-model" if key == "OPENAI_MODEL" else "test-config"
             for key in homebrew_harness.configuration.CONFIG_VARIABLES
         }
         with (

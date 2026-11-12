@@ -248,6 +248,7 @@ def _execute_session(args, parser):
                     model_registry=models,
                     lead_model_profile=lead_alias,
                     model_selection=getattr(args, "model_selection", None),
+                    approval_review=getattr(args, "approval_review", None),
                     conversation_mode=getattr(args, "conversation_mode", None),
                     fork_seed=getattr(args, "fork_seed", None),
                 ) as session:

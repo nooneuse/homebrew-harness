@@ -350,7 +350,7 @@ def check_rules(tool_name: str, arguments: dict, workdir: Path) -> PermissionDec
 def ask_user(
     tool_name: str, arguments: dict, workdir: Path, reason: str
 ) -> PermissionDecision:
-    """Only a terminal response can approve this exact invocation."""
+    """Route this exact ask request to native approvals or the host responder."""
     from homebrew_harness.runs.controller import current_run
     from homebrew_harness.execution.model_gateway import current_scope
     from homebrew_harness.runs.requests import current_approval
@@ -400,6 +400,24 @@ def ask_user(
     broker = current_broker()
     if broker is not None and _INTERACTIVE_APPROVAL.get():
         return broker.request(tool_name, arguments, workdir, reason)
+    from homebrew_harness.security.review_context import owner, session_context, bind_guard
+    from homebrew_harness.security.approval_review import requester_binding
+    session = owner()
+    if session is not None and session.approval_reviewer.config.mode == "auto_review":
+        import uuid
+        requester = requester_binding()
+        request = {"id": "approval_" + uuid.uuid4().hex, "revision": 0, "kind": "tool", "tool": tool_name, "arguments": dict(arguments), "reason": reason, "checkpoint": session.checkpoint_key}
+        try:
+            snapshot = session_context(session, tool_name, arguments, workdir, requester=requester)
+            def current():
+                return session_context(session, tool_name, arguments, workdir, requester=requester)
+            result = session.approval_reviewer.review(request, snapshot, current, lambda decision, review_id: PermissionDecision("allow" if decision == "approve" else "deny", "Independent approval review " + review_id, "auto_review"), requester=requester)
+            if result is not None:
+                if result.action == "allow":
+                    bind_guard(_APPROVAL_CALL.get(), lambda: current() == snapshot)
+                return result
+        except Exception:
+            pass
     if (
         not _INTERACTIVE_APPROVAL.get()
         or threading.current_thread() is not threading.main_thread()

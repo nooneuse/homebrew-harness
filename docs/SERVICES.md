@@ -82,6 +82,8 @@ Submission output confirms acceptance with the work ID and request_id. Use statu
 
 `approve`/`deny` handle tool requests; `answer` handles requirements; `renew-tests` renews fixed-test grants with `--runs` and `--seconds`. Requests retain their original target, revision, parameters and expiry. Refresh after a stale-reference error. There is no grouped approval in P1.
 
+External host settings can enable [Approval review](APPROVALS.md). Native Runs review their delegated tool requests; explicit business kinds enable independent review of Service work, delivery or communication requests. Uncertain requests continue through these same human controls.
+
 `exit` or EOF disconnects the UI and leaves a detached service running. Ctrl-C cancels the current input/observation. `stop` explicitly requests service shutdown. Output is plain JSON/text; external terminal control characters are escaped. No terminal UI library is required. Text UI and individual control commands use the same authenticated HTTP API.
 
 ## HTTP connections and remote clients

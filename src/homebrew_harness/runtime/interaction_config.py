@@ -23,6 +23,7 @@ class InteractionConfig:
     control_config: Path | None = None
     lead_model: str | None = None
     model_selection: dict | None = None
+    approval_review: dict | None = None
     allowed: tuple = ("subagents", "background", "tasks", "teams", "worktrees")
     allow_tests: tuple = ()
     write_paths: tuple = (".",)
@@ -42,6 +43,9 @@ class InteractionConfig:
     max_turns: int = 20
 
     def __post_init__(self):
+        if self.approval_review is not None:
+            from homebrew_harness.security.approval_review import ReviewConfig
+            ReviewConfig.parse(self.approval_review)
         if self.model_selection is not None:
             from homebrew_harness.runtime.model_selection import validate_choice
             validate_choice(self.model_selection)
@@ -149,6 +153,8 @@ class InteractionConfig:
                 args.extend(("--" + name.replace("_", "-"), str(path)))
         if self.model_selection is not None:
             args.extend(("--model-selection", json.dumps(self.model_selection)))
+        if self.approval_review is not None:
+            args.extend(("--approval-review", json.dumps(self.approval_review)))
         return tuple(args)
 
     def identity(self):
@@ -156,6 +162,8 @@ class InteractionConfig:
         value = asdict(self)
         if value.get("model_selection") is None:
             value.pop("model_selection", None)
+        if value.get("approval_review") is None:
+            value.pop("approval_review", None)
         return json.loads(json.dumps(value, default=str))
 
 
@@ -420,6 +428,7 @@ class InteractionAssembler:
                 model_registry=models.registry,
                 lead_model_profile=models._choice_source_alias,
                 model_selection=c.model_selection,
+                approval_review=c.approval_review,
                 conversation_mode=conversation_mode,
                 fork_seed=fork_seed,
                 test_runner=tests,
@@ -482,6 +491,7 @@ class InteractionAssembler:
                 write_paths=c.write_paths,
                 allow_tests=c.allow_tests,
                 model_profile=binding.profile,
+                approval_review=c.approval_review,
                 context_chars=binding.context_chars,
                 output_tokens=binding.max_output_tokens,
                 total_seconds=remaining if remaining is not None else c.total_seconds,

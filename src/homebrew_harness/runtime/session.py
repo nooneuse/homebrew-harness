@@ -73,6 +73,8 @@ from homebrew_harness.storage.durable_runtime import (
     repair_history,
 )
 from homebrew_harness.tools.tool_outcome import needs_inspection
+from homebrew_harness.security.approval_review import requester_scope
+from homebrew_harness.security.review_context import owner_scope
 
 
 class HarnessSession:
@@ -117,6 +119,7 @@ class HarnessSession:
         model_registry=None,
         lead_model_profile=None,
         model_selection=None,
+        approval_review=None,
         conversation_mode=None,
         fork_seed=None,
         run_control=None,
@@ -562,6 +565,11 @@ class HarnessSession:
             from homebrew_harness.runtime.user_input import UserInputController
 
             self.inputs = UserInputController(self)
+            from homebrew_harness.security.approval_review import ApprovalReviewer
+            effective_review = run_control.spec.approval_review if run_control is not None and run_control.spec.approval_review is not None else approval_review
+            self.approval_reviewer = ApprovalReviewer(effective_review, self.runtime_store, self.models, self.gateway, lambda: self.lead_binding)
+            if self.approval_reviewer.config.mode == "auto_review" and self.approval_reviewer.config.model_source == "profile":
+                self.models.validate(self.approval_reviewer.config.model_profile)
             self.run_control = run_control
             if run_control is not None:
                 run_control.bind(self)
@@ -600,6 +608,7 @@ class HarnessSession:
             "session_id": self.session_id,
             "contract_version": 4,
             "conversation": copy.deepcopy(self.conversation),
+            "approval_review": self.approval_reviewer.config.data(),
             "fork_source": self.fork_source,
             **(
                 {
@@ -797,6 +806,9 @@ class HarnessSession:
                 raise RecoveryRequired(
                     "Resume requires the saved Bash execution policy; a sandbox cannot silently become host execution."
                 )
+            from homebrew_harness.security.approval_review import ReviewConfig
+            if ReviewConfig.parse(saved.get("approval_review")).data() != self.approval_reviewer.config.data():
+                raise RecoveryRequired("Resume requires the saved approval reviewer policy.")
             selection = saved.get("model_selection")
             if selection:
                 if saved.get("model_registry") != self.models.manifest():
@@ -1736,6 +1748,8 @@ class HarnessSession:
                 checkpoint_scope(self._checkpoint_writer),
                 self.trace.scope("user", "lead"),
                 activity_scope(self.activities),
+                requester_scope(self.lead_binding),
+                owner_scope(self),
             ):
                 if command.name == "recovery" and command.action == "status":
                     return json.dumps(
@@ -2455,6 +2469,7 @@ class HarnessSession:
         self._drain_changed.set()
         remaining = lambda: max(0, deadline - time.monotonic())
         actions = [
+            ("approval_reviewer", self.approval_reviewer.close),
             ("tests", lambda: self.tests.close(timeout=remaining())),
             ("shell", lambda: self.shell.close(timeout=remaining())),
         ]

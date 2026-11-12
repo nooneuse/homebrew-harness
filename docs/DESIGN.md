@@ -58,6 +58,8 @@ The tool catalog defines descriptions and parameter schemas; handlers implement 
 
 Dispatch performs parameter validation, pre-tool Hooks, permission checks, action acceptance, handler execution, and post-tool observation. Results enter history. Files, Bash, tests, and MCP use their own executors with shared deadlines, cancellation, and operation records.
 
+Approval requests can use the default human responder or an independent model reviewer. The reviewer selects a host model binding and reads task-specific evidence; Session, Run and Service publish its decision through their native approval controllers. Version checks and original execution permissions remain part of action acceptance. See [Approval review](APPROVALS.md).
+
 File tools support reading, matching, and versioned writes. Bash runs on the host or in a container. TestRunner executes registered recipes and produces receipts linked to code snapshots. MCP discovers and calls external tools over real transports; local stdio services can use a container backend.
 
 Container outputs are collected into bundles using host-registered rules, then published separately to a task workspace. Manifests, content, and publication results provide evidence for subsequent checks.

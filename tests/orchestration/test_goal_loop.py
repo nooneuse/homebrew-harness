@@ -146,7 +146,11 @@ class GoalTests(unittest.TestCase):
         self.assertEqual(json.loads(session.run_user("/goal"))["status"], "achieved")
         self.assertEqual(session.run_user("/goal off"), "Goal cleared.")
         self.assertEqual(client.chat.completions.create.call_count, count)
-        self.assertEqual(session.run_user("/goals is ordinary text"), "prefix answer")
+        with self.assertRaisesRegex(ValueError, "Unknown host command"):
+            session.run_user("/goals is ordinary text")
+        self.assertEqual(
+            session.run_user("/goals is ordinary text", literal=True), "prefix answer"
+        )
         self.assertEqual(len(evaluator.calls), 1)
 
     def test_invalid_condition_preserves_current_goal(self):

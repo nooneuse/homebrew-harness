@@ -78,6 +78,8 @@ service> exit
 
 `approve/deny` 处理工具请求，`answer` 回答需求问题，`renew-tests` 使用 `--runs/--seconds` 续期固定测试授权。请求保留原 target、revision、参数和 expiry，遇过期引用应刷新。P1 尚无分组审批。
 
+外部宿主配置可启用[自动审批审核](APPROVALS.zh-CN.md)。原生 Run 审核已委托的工具请求；明确配置业务种类后，还可独立审核 Service 工作、交付或沟通请求。不确定的请求继续使用同一人工控制入口。
+
 `exit` 或 EOF 断开界面，detached 服务继续运行；Ctrl-C 取消当前输入／观察；`stop` 才请求停止服务。界面采用普通 JSON／文本，外部终端控制字符转义，不依赖 UI 库。Text UI 和单项控制命令使用同一套认证 HTTP API。
 
 ## HTTP 连接与远程客户端

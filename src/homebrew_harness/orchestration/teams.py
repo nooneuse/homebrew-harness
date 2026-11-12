@@ -486,6 +486,12 @@ class TeammateRuntime:
             self.status = "idle"
 
     def run(self) -> None:
+        from homebrew_harness.security.approval_review import requester_scope
+        from homebrew_harness.security.review_context import owner_scope
+        with requester_scope(self.model_binding), owner_scope(self.manager.session_owner):
+            return self._run()
+
+    def _run(self) -> None:
         try:
             while not self.stop_event.is_set():
                 if self.status == "waiting_input" and getattr(

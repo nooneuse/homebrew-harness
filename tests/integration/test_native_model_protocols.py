@@ -34,6 +34,8 @@ class ProtocolService:
                 )
                 outer.headers.append(dict(self.headers))
                 value = outer.responses.popleft()
+                if callable(value):
+                    value = value(outer.requests[-1])
                 status = 200
                 if isinstance(value, tuple) and isinstance(value[0], int):
                     status, value = value

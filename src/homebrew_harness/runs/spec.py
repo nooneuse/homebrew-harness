@@ -51,6 +51,7 @@ class RunSpec:
     allow_tests: tuple = ()
     write_paths: tuple = (".",)
     approval_seconds: float = 300
+    approval_review: dict | None = None
     repeat_limit: int = 3
     replan_limit: int = 1
     model_profile: str | None = None
@@ -80,6 +81,9 @@ class RunSpec:
     )
 
     def __post_init__(self):
+        if self.approval_review is not None:
+            from homebrew_harness.security.approval_review import ReviewConfig
+            ReviewConfig.parse(self.approval_review)
         from homebrew_harness.tools.mcp.selection import validate_selection
 
         if (

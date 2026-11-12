@@ -288,7 +288,9 @@ class UserSteeringTests(unittest.TestCase):
         broker = ApprovalBroker(trusted=True, owner=s)
         future = __import__("concurrent.futures").futures.Future()
         broker.pending["approval-fixed"] = (future, {"command": "false"}, "turn-fixed")
+        broker.review_cancels["approval-fixed"] = threading.Event()
         broker.supersede_turn("turn-fixed")
+        self.assertTrue(broker.review_cancels["approval-fixed"].is_set())
         self.assertEqual(future.result().action, "deny")
         with self.assertRaises(ValueError):
             broker.respond("approval-fixed", True)

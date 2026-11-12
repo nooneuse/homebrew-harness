@@ -60,4 +60,6 @@ SDK 适用性检查包版本和执行器合同。损坏的安装或客户端初�
 
 Session、Run、Workflow、Service、benchmark、团队和 Subagent 共用模型选择入口。不同连接可以使用不同后端，程序注入的客户端保留由宿主定义的生命周期和绑定。
 
+可选的[自动审批审核](APPROVALS.zh-CN.md)复用同一模型绑定与网关。可选择当前 Lead、实际请求者或专用 profile，每次审核使用独立上下文。
+
 直接检查时，`ProtocolAdapter.transport_description` 提供实际后端、声明策略、选择理由和 SDK 版本。`ModelBinding.identity()` 提供持久身份，内容不包含连接秘密。

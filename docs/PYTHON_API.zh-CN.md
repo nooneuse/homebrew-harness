@@ -95,6 +95,8 @@ Steering 绑定原始请求，包括仍在队列中的请求。旧模型轮次�
 
 ## 宿主决定与结构化 Goal
 
+`HostConfig.from_files(approval_review={"mode": "auto_review"})` 为委托的审批类型启用独立模型审核。`RunSpec.approval_review` 可覆盖宿主政策；剩余请求仍使用下列精确决定接口。模型选择与 Service 委托参见[自动审批审核](APPROVALS.zh-CN.md)。
+
 ```python
 pending = turn.requests()
 # 应用将请求展示给有权限的用户。

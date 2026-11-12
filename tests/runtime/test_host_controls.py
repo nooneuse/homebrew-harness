@@ -155,7 +155,8 @@ class HostControlTests(unittest.TestCase):
             session.run_user("/goal")
         parse.assert_called_once_with("/goal")
         self.assertEqual(seen[0], seen[1])
-        self.assertEqual(HostCommand.parse("/testsx").name, "")
+        with self.assertRaises(ValueError):
+            HostCommand.parse("/testsx")
         self.assertFalse(HostCommand.parse("/goal clear more").local)
         client.chat.completions.create.assert_not_called()
 

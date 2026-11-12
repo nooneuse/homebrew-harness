@@ -31,6 +31,7 @@ def add_environment_argument(parser, *, defaults=False):
 
 
 def add_host_config_arguments(parser):
+    parser.add_argument("--approval-review", type=json.loads, help="Host approval review policy as JSON; default manual.")
     parser.add_argument("--conversation-mode", choices=("normal", "plan"), help=argparse.SUPPRESS)
     parser.add_argument("--fork-seed", type=json.loads, help=argparse.SUPPRESS)
     parser.add_argument("--model-selection", type=__import__("json").loads, help=argparse.SUPPRESS)
