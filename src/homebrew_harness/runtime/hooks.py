@@ -56,6 +56,7 @@ class ToolEvent:
 
 class HookRegistry:
     def __init__(self):
+        self._failures = []
         self._callbacks: dict[str, list[Callable]] = {event: [] for event in EVENTS}
 
     def register_hook(self, event: str, callback: Callable) -> None:
@@ -65,6 +66,14 @@ class HookRegistry:
             raise TypeError("A hook callback must be callable.")
         self._callbacks[event].append(callback)
 
+    def snapshot(self, event=None):
+        if event is not None and event not in EVENTS:
+            raise ValueError("Unknown hook event.")
+        return {"events": [{"event": name, "kind": "control" if name in CONTROL_EVENTS else "observer",
+            "callbacks": [getattr(callback, "__name__", type(callback).__name__) for callback in tuple(self._callbacks[name])]}
+            for name in EVENTS if event is None or name == event],
+            "failures": [dict(row) for row in tuple(self._failures) if event is None or row["event"] == event]}
+
     def trigger_hooks(self, event: str, *args) -> str | None:
         if event not in self._callbacks:
             raise ValueError(f"Unknown hook event: {event}")
@@ -73,6 +82,8 @@ class HookRegistry:
             try:
                 result = callback(*args)
             except Exception as error:
+                self._failures.append({"event": event, "callback": getattr(callback, "__name__", type(callback).__name__), "error_type": type(error).__name__})
+                self._failures[:] = self._failures[-20:]
                 failure = HookError(f"{event} hook failed ({type(error).__name__}).")
                 if event in CONTROL_EVENTS:
                     raise failure from error

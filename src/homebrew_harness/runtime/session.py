@@ -512,7 +512,12 @@ class HarnessSession:
             self.retry_delay = retry_delay
             self.lock = threading.Lock()
             self._user_waiting = threading.Event()
+            self._input_dispatching = threading.Event()
             self.stop_event = threading.Event()
+            self._execution_paused = False
+            self._execution_cancel = threading.Event()
+            from homebrew_harness.runtime.activities import Activities
+            self.activities = Activities()
             self._poller = Poller(self.stop_event)
             self._threads = self._poller.workers.threads
             self._observing = False
@@ -798,6 +803,7 @@ class HarnessSession:
                     saved, operations, restored, uncertain
                 )
             self.messages[:] = restored
+            homebrew_harness.runtime.turns.set_memory_context(self.messages, "")
             if self.run_control is None and saved.get("test_handoff"):
                 self.tests.restore_handoff_state(saved["test_handoff"])
             if saved.get("archives"):
@@ -881,6 +887,9 @@ class HarnessSession:
         self._recovery_blocked.extend(
             x for x in unknown if x not in self._recovery_blocked
         )
+        self._execution_paused = bool(self.runtime_store.get("session_meta", self.session_id, {}).get("execution_paused"))
+        if self._execution_paused:
+            self._execution_cancel.set()
         self._runtime_started = True
         self.runtime_store.set_meta("latest_session", self.session_id)
         self._save_checkpoint()
@@ -1183,9 +1192,11 @@ class HarnessSession:
                 self.lock.release()
             self._goal_changed.wait(remaining)
 
-    def pending_work(self, deadline=None, *, for_goal=False):
+    def pending_work(self, deadline=None, *, for_goal=False, include_dispatch=True):
         pending = ["recovery"] if self._recovery_blocked else []
         if (
+            include_dispatch and not for_goal and (self._input_dispatching.is_set() or self._pending_user or self._user_waiting.is_set())
+        ) or (
             self.inputs.pending(active_only=True)
             if for_goal
             else self.runtime_store.mailbox("peek", self.inputs.recipient)
@@ -1364,6 +1375,14 @@ class HarnessSession:
         self._pending_user = []
 
     def _consume_user_input(self):
+        self._input_dispatching.set()
+        try:
+            return self._dispatch_user_input()
+        finally:
+            self._input_dispatching.clear()
+            self._drain_changed.set()
+
+    def _dispatch_user_input(self):
         if getattr(self, "_api_pending_turn_id", None):
             if self._api_pending_work():
                 return False
@@ -1374,17 +1393,22 @@ class HarnessSession:
             or not self.inputs.pending()
         ):
             return False
+        if self._execution_paused and not any(
+            not row.get("metadata", {}).get("literal") and HostCommand.parse(row["content"]).local
+            for row in self.inputs.pending()
+        ):
+            return False
         values = self.runtime_store.mailbox(
             "claim", self.inputs.recipient, owner=self.inputs.consumer
         )
         if not values:
             return False
-        if self._recovery_blocked:
+        if self._recovery_blocked or self._execution_paused:
             controls = [
                 r
                 for r in values
                 if not r.get("metadata", {}).get("literal")
-                and HostCommand.parse(r["content"]).allowed_during_recovery
+                and (HostCommand.parse(r["content"]).allowed_during_recovery if self._recovery_blocked else HostCommand.parse(r["content"]).local)
             ]
             if not controls:
                 self.inputs.release(values)
@@ -1584,6 +1608,11 @@ class HarnessSession:
             if goal_spec is not None or literal
             else HostCommand.parse(query)
         )
+        direct = self._independent_control(command)
+        if direct is not None:
+            return direct
+        if self._execution_paused and not command.local:
+            raise ValueError("Execution is paused; queue your changes and use /resume.")
         if self.run_control is not None and not command.local:
             raise ValueError(
                 "Managed task input uses submit_user_input; execution uses run_episode."
@@ -1608,6 +1637,7 @@ class HarnessSession:
         )
         with (
             control_scope(deadline) if command.local else nullcontext(),
+            self.gateway.scope(cancel_event=None if command.local else self._execution_cancel),
             acquired(self._runtime_init_lock, deadline, inherit=not command.local),
         ):
             return (
@@ -1616,10 +1646,32 @@ class HarnessSession:
                 else self._run_user(command, deadline, goal_spec=goal_spec)
             )
 
+    def _independent_control(self, command):
+        if command.name == "quit":
+            self.close()
+            return json.dumps(self.shutdown_status())
+        if command.name == "stop":
+            return json.dumps(self.request_stop(command.argument or None))
+        if command.name == "resume" and command.action != "list":
+            if command.argument:
+                raise ValueError("Historical /resume ID belongs to the terminal entry; use /resume list.")
+            if self._execution_paused or self.goal.pending and not self.goal.enabled:
+                return json.dumps(self.resume_execution())
+        from homebrew_harness.runtime.local_commands import QUERY_NAMES, run as local_run
+        if command.mode == "read" and command.name in QUERY_NAMES:
+            with control_scope(Deadline.after(2)):
+                if not self._runtime_started:
+                    self._ensure_runtime()
+                return local_run(self, command)
+        return None
+
     def control(self, command):
         """Execute a typed local host control without interpreting task text."""
         if not isinstance(command, HostCommand) or not command.local:
             raise ValueError("Host control requires a local HostCommand.")
+        direct = self._independent_control(command)
+        if direct is not None:
+            return direct
         deadline = Deadline.after(2)
         with (
             control_scope(deadline),
@@ -1632,6 +1684,7 @@ class HarnessSession:
     ) -> str:
         if self._closed:
             raise ValueError("Harness session is closed.")
+        from homebrew_harness.runtime.activities import activity_scope
         query = command.query
         with self.gateway.scope(cancel_event=self.stop_event, deadline=turn_deadline):
             self._ensure_runtime(turn_deadline)
@@ -1649,6 +1702,7 @@ class HarnessSession:
                 acquired(self.lock, turn_deadline, inherit=not command.local),
                 checkpoint_scope(self._checkpoint_writer),
                 self.trace.scope("user", "lead"),
+                activity_scope(self.activities),
             ):
                 if command.name == "recovery" and command.action == "status":
                     return json.dumps(
@@ -1701,6 +1755,9 @@ class HarnessSession:
                     raise RecoveryRequired(
                         "Recovery requires host inspection. Use /recovery for pending outcomes, then /recovery continue after checking them."
                     )
+                if command.name in {"pwd", "ps", "hooks", "agents", "worktree", "memory", "resume"}:
+                    from homebrew_harness.runtime.local_commands import run as local_run
+                    return local_run(self, command)
                 if command.extended:
                     from homebrew_harness.runtime.session_commands import run
                     result = run(self, command)
@@ -1743,16 +1800,6 @@ class HarnessSession:
                         ensure_ascii=False,
                         indent=2,
                     )
-                if command.name == "memory":
-                    if self.memory is None:
-                        raise ValueError("Memory is disabled for this session.")
-                    if command.action == "list":
-                        return self.memory.list_records()
-                    if command.action == "show":
-                        return self.memory.show(command.argument)
-                    if command.action == "delete":
-                        return self.memory.delete(command.argument)
-                    return self.memory.correct(command.argument, command.values[0])
                 if command.name == "tests":
                     if command.action == "status":
                         return json.dumps(
@@ -1783,7 +1830,7 @@ class HarnessSession:
                 if command.name == "task":
                     query = command.argument
                     if (
-                        self.pending_work()
+                        self.pending_work(include_dispatch=False)
                         or (
                             self.workspace.store.owned()
                             if self.workspace.store
@@ -1977,7 +2024,8 @@ class HarnessSession:
                 )
 
     def process_once(self) -> bool:
-        with capability_scope(self.capabilities):
+        from homebrew_harness.runtime.activities import activity_scope
+        with activity_scope(self.activities), self.gateway.scope(cancel_event=None if self._execution_paused else self._execution_cancel), capability_scope(self.capabilities):
             return self._process_once()
 
     def _process_once(self) -> bool:
@@ -1987,7 +2035,7 @@ class HarnessSession:
         if self._consume_user_input():
             return True
         self._refresh_recovery()
-        if self._recovery_blocked:
+        if self._execution_paused or self._recovery_blocked:
             return False
         if (
             self.stop_event.is_set()
@@ -2229,6 +2277,94 @@ class HarnessSession:
                 self.lock.release()
                 self._drain_changed.set()
 
+    def wait_user_boundary(self, timeout=2):
+        """Allow a visible final reply to finish its critical input commit."""
+        if self.gateway.inflight or self.tests.active.is_set() or self.goal.pending or any(row["stoppable"] for row in self.activities.snapshot()):
+            return False
+        expires = time.monotonic() + timeout
+        while self._input_dispatching.is_set() or self._user_waiting.is_set() or self.inputs.active_id:
+            if self.gateway.inflight or self.tests.active.is_set() or self.goal.pending or any(row["stoppable"] for row in self.activities.snapshot()):
+                return False
+            remaining = expires - time.monotonic()
+            if remaining <= 0:
+                return False
+            self._drain_changed.wait(min(.05, remaining))
+            self._drain_changed.clear()
+        return True
+
+    def _publish_pause(self, paused):
+        db = self.runtime_store.backend()
+        candidate = None
+        try:
+            with cleanup_scope(), db.write() as conn:
+                meta = db._get(conn, "session_meta", self.session_id)
+                if not meta or meta.get("instance") != self.workspace.leases.instance:
+                    raise ValueError("Session pause belongs to its live owner.")
+                candidate = {**meta, "execution_paused": paused, "revision": meta["revision"] + 1}
+                db._put(conn, "session_meta", self.session_id, candidate)
+        except Exception:
+            saved = self.runtime_store.get("session_meta", self.session_id, {})
+            if not candidate or saved.get("instance") != candidate["instance"] or saved.get("execution_paused") is not paused or saved.get("revision", 0) < candidate["revision"]:
+                raise
+            self._emit_trace("control_confirmation_lost", paused=paused)
+
+    def request_stop(self, identity=None):
+        if self._closed:
+            return self.shutdown_status()
+        with control_scope(Deadline.after(2)):
+            if not self._runtime_started:
+                self._ensure_runtime()
+            if self.run_control:
+                if identity is not None:
+                    raise ValueError("Managed resources use their native Run controls.")
+                return self.run_control.store.control(self.run_control.id, "pause")
+            if identity and identity != "agent:lead":
+                from homebrew_harness.runtime.local_commands import stop_target
+                return stop_target(self, identity)
+            with self.inputs.lock:
+                self._publish_pause(True)
+                self._execution_paused = True
+                self._execution_cancel.set()
+                self.inputs.cancel.set()
+            for row in self.gateway.active_requests():
+                try:
+                    self.gateway.stop_request(row["id"])
+                except ValueError:
+                    pass
+            for row in self.activities.snapshot():
+                if row["stoppable"]:
+                    try:
+                        self.activities.stop(row["id"])
+                    except ValueError:
+                        pass
+            self._goal_changed.set()
+            return {"state": "stop_requested", "session_id": self.session_id}
+
+    def resume_execution(self):
+        if self._closed:
+            raise ValueError("Restore the closed Session by ID before continuing.")
+        with control_scope(Deadline.after(2)):
+            if not self._runtime_started:
+                self._ensure_runtime()
+            if self.run_control:
+                return self.run_control.store.control(self.run_control.id, "run")
+            if self.inputs.active_id or self._user_waiting.is_set() or self.gateway.inflight or self.tests.active.is_set() or self.workflow and self.workflow.pending() or any(r["stoppable"] for r in self.activities.snapshot()):
+                raise ValueError("Stopped work still needs cleanup; inspect /ps before /resume.")
+            self._refresh_recovery()
+            if self._recovery_blocked or self.recovery_operations():
+                raise ValueError("Inspect /recovery before continuing the stopped task.")
+            self._publish_pause(False)
+            self._execution_paused = False
+            self._execution_cancel = threading.Event()
+            self._automatic_failed = False
+            pending = self.inputs.pending()
+            if self.goal.pending and not any(row["content"].strip() == "/goal resume" for row in pending):
+                self.submit_user_input("/goal resume", mode="queued")
+            elif not pending and self.intent.original:
+                self.submit_user_input("Continue the interrupted task using saved requirements and results; inspect current state before repeating work.", mode="queued")
+            self._goal_changed.set()
+            return {"state": "accepted", "session_id": self.session_id}
+
     def close(self):
         self._closed = True
         self.stop_event.set()
@@ -2278,6 +2414,7 @@ class HarnessSession:
         held = self.workspace.leases.held("session")
         complete = self._close_finished.is_set() and not held
         return {
+            "execution_paused": self._execution_paused,
             "state": "open"
             if not self._closed
             else "pending"

@@ -51,6 +51,11 @@ def host_exit_status(session, status=0):
 
 
 @dataclass
+class ResumeChat:
+    identity: str
+
+
+@dataclass
 class NewChat:
     selection: dict
 
@@ -58,11 +63,11 @@ class NewChat:
 def execute(args, parser) -> int:
     while True:
         result = _execute_session(args, parser)
-        if not isinstance(result, NewChat):
+        if not isinstance(result, (NewChat, ResumeChat)):
             return result
         args = copy.copy(args)
-        args.resume_session = None
-        args.model_selection = result.selection
+        args.resume_session = result.identity if isinstance(result, ResumeChat) else None
+        args.model_selection = None if isinstance(result, ResumeChat) else result.selection
 
 
 def _execute_session(args, parser):
@@ -269,15 +274,37 @@ def _execute_session(args, parser):
                                     query = input("agent> ").strip()
                                 except EOFError:
                                     return host_exit_status(session)
-                                if query.lower() in {"q", "quit", "exit"}:
+                                from homebrew_harness.runtime.host_commands import exit_command
+                                if exit_command(query):
                                     return host_exit_status(session)
                                 if not query:
                                     continue
                                 try:
                                     from homebrew_harness.runtime.host_commands import HostCommand
                                     command = HostCommand.parse(query) if not query.startswith(("/approve ", "/queue ", "/steer ", "/interrupt ", "/steer-to ")) else None
+                                    if command and command.name == "stop":
+                                        print(json.dumps(session.request_stop(command.argument or None)))
+                                        continue
+                                    if command and command.name == "resume":
+                                        if command.action == "target":
+                                            from homebrew_harness.runtime.local_commands import resolve_session
+                                            sid = session.session_id if command.argument in {session.session_id, "session:" + session.session_id} else resolve_session(session.runtime_store, command.argument)
+                                            if sid == session.session_id:
+                                                print(session.run_user("/resume"))
+                                                continue
+                                            if session.inputs.active_id or session._user_waiting.is_set() or session.gateway.inflight or any(r["stoppable"] for r in session.activities.snapshot()):
+                                                raise ValueError("Stop current execution and finish cleanup before restoring another Session.")
+                                            from homebrew_harness.runtime.local_commands import validate_restore
+                                            validate_restore(session, sid)
+                                            broker.close()
+                                            session.close()
+                                            if not session.wait_closed(args.shutdown_timeout) or not session.shutdown_status()["persistence_ok"]:
+                                                raise ValueError("Previous Session cleanup is still pending.")
+                                            return ResumeChat(sid)
+                                        print(session.run_user(query))
+                                        continue
                                     if command and command.name == "new":
-                                        if session.pending_work() or session.inputs.active_id or session.inputs.pending() or session._user_waiting.is_set() or session.goal.pending:
+                                        if not session.wait_user_boundary() or session.pending_work() or session.inputs.active_id or session.inputs.pending() or session._user_waiting.is_set() or session.goal.pending:
                                             raise ValueError("Finish or cancel accepted work before /new.")
                                         selection = dict(session.model_selection)
                                         broker.close()
@@ -287,7 +314,8 @@ def _execute_session(args, parser):
                                         return NewChat(selection)
                                     if command and command.extended and command.mode == "read":
                                         from homebrew_harness.runtime.session_commands import run
-                                        print(run(session, command))
+                                        from homebrew_harness.runtime.local_commands import QUERY_NAMES
+                                        print(session.run_user(query) if command.name in QUERY_NAMES else run(session, command))
                                         continue
                                     if query.startswith("/approve "):
                                         parts = query.split()

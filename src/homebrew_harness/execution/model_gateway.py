@@ -277,6 +277,7 @@ class Receipt:
     started: float
     deadline: Deadline
     cancel_events: tuple
+    cancel: threading.Event = field(default_factory=threading.Event)
     done: threading.Event = field(default_factory=threading.Event)
     response: object = None
     usage: object = None
@@ -350,6 +351,7 @@ class GatewayState:
                         deadline,
                         cancel_events,
                     )
+                    receipt.cancel_events = (*receipt.cancel_events, receipt.cancel)
                     self.inflight[receipt.id] = receipt
                     return receipt
                 if not wait:
@@ -625,6 +627,23 @@ class ModelGateway:
     def inflight(self):
         with self._state.condition:
             return len(self._state.inflight)
+
+    def active_requests(self):
+        """Public operation metadata only, with no request payload or connection values."""
+        with self._state.condition:
+            return [{"id": "model_" + r.id, "kind": "model", "state": "cleanup_pending" if r.abandoned else "stopping" if r.cancel.is_set() else "running",
+                "elapsed": max(0, time.monotonic() - r.started), "stoppable": not r.abandoned,
+                **{key: r.metadata.get(key) for key in ("role", "purpose", "context_id", "task_id", "model")}}
+                for r in self._state.inflight.values()]
+
+    def stop_request(self, identity):
+        with self._state.condition:
+            receipt = self._state.inflight.get(identity.removeprefix("model_"))
+            if receipt is None or not identity.startswith("model_"):
+                raise ValueError("Model request is no longer active.")
+            receipt.cancel.set()
+            self._state.condition.notify_all()
+            return {"id": identity, "state": "stop_requested"}
 
     def inflight_cancel(self, cancel_event):
         """Observe requests belonging to a particular live cancellation scope."""
@@ -1105,10 +1124,12 @@ class ModelGateway:
         if self._state.closed or any(event.is_set() for event in receipt.cancel_events):
             raise ModelCancelled("Model response discarded after cancellation.")
         if receipt.deadline.remaining() == 0:
+            timeout = isinstance(receipt.error, (TimeoutError, httpx.TimeoutException, ModelDeadlineExceeded)) or getattr(receipt.error, "kind", None) == "timeout"
+            phase = (getattr(receipt.error, "phase", None) or "transport") if timeout else "response"
             raise ModelDeadlineExceeded(
-                "Model response arrived after its deadline; it was discarded.",
+                "Model execution exceeded its deadline; late output was discarded.",
                 source=receipt.deadline.source,
-                phase="response",
+                phase=phase,
             )
         if receipt.error is not None:
             raise receipt.error
@@ -1167,7 +1188,7 @@ class ModelGateway:
                 with self._state.condition:
                     if receipt.done.is_set():
                         break
-                    self._state.check(expires, cancels, self._connection_key())
+                    self._state.check(expires, receipt.cancel_events, self._connection_key())
                 receipt.done.wait(min(0.05, expires.remaining()))
             return self._response(receipt)
         except (ModelCancelled, ModelDeadlineExceeded) as error:
@@ -1216,7 +1237,7 @@ class ModelGateway:
             self._launch_request(receipt, params)
             while not receipt.done.is_set():
                 with self._state.condition:
-                    self._state.check(expires, cancels, self._connection_key())
+                    self._state.check(expires, receipt.cancel_events, self._connection_key())
                 await asyncio.sleep(min(0.01, expires.remaining()))
             return self._response(receipt)
         except (asyncio.CancelledError, ModelCancelled, ModelDeadlineExceeded) as error:

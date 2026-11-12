@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from homebrew_harness.runtime.activities import activity
+
 from homebrew_harness.runtime.output import print
 
 import json
@@ -582,6 +584,8 @@ def _agent_loop(
             else:
                 with (
                     pool.scope(),
+                    activity("tool", name=call.name, workdir=workdir) as activity_cancel,
+                    client.scope(cancel_event=activity_cancel),
                     client.scope(cancel_event=steering.cancel if steering else None),
                 ):
                     if steering is not None:

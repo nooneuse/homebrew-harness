@@ -359,7 +359,9 @@ class SimplificationTests(unittest.TestCase):
     def test_plain_and_task_text_keep_original_body(self):
         plain = "  Explain this\n    exactly.\n"
         self.assertEqual(HostCommand.parse(plain).query, plain)
-        self.assertEqual(HostCommand.parse("/unknown " + plain).name, "")
+        with self.assertRaises(ValueError):
+            HostCommand.parse("/unknown " + plain)
+        self.assertEqual(HostCommand("/unknown " + plain).query, "/unknown " + plain)
         self.assertEqual(HostCommand.parse("/task " + plain).argument, plain.lstrip())
 
     def test_goal_spec_is_parsed_into_validated_structure(self):
@@ -442,7 +444,7 @@ class SimplificationTests(unittest.TestCase):
         self.assertEqual(
             session.run_user("/memory delete fixture"), "Memory updated by the host."
         )
-        self.assertEqual(json.loads(session.run_user("/memory")), [])
+        self.assertEqual(json.loads(session.run_user("/memory"))["records"], [])
         worker.chat.completions.create.assert_not_called()
         client.chat.completions.create.assert_not_called()
 

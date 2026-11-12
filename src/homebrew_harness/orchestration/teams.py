@@ -1021,6 +1021,14 @@ class TeamManager(WorkspaceRuntime):
             self.bus.send(sender, to, content)
         return json.dumps({"sent": True, "from": sender, "to": to})
 
+    def stop_member(self, name):
+        with self.lock:
+            member = self._member(name)
+            if not member.thread or not member.thread.is_alive():
+                raise ValueError("Teammate is no longer running.")
+            member.stop_event.set()
+            return {"id": "agent:" + name, "state": "stop_requested"}
+
     def request_shutdown(self, teammate: str) -> dict:
         with self.lock:
             self._member(teammate)

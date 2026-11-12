@@ -17,7 +17,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from homebrew_harness.execution.model_gateway import (
@@ -308,6 +308,8 @@ class TestRunner:
         self.closed = threading.Event()
         self.active = threading.Event()
         self.active_test = None
+        self._run_cancel = None
+        self._active_run_id = None
         self.max_runs, self.total_seconds = max_runs, total_seconds
         if (
             type(max_runs) is not int
@@ -673,6 +675,8 @@ class TestRunner:
             raise TestRunnerError(
                 "A registered test is already running; wait for its result."
             )
+        self._run_cancel = threading.Event()
+        scope = replace(scope, cancel_events=(*scope.cancel_events, self._run_cancel))
         self.active.set()
         process = None
         started = time.monotonic()
@@ -717,6 +721,7 @@ class TestRunner:
                 self.active_test = (name, str(cwd), context.task_id)
                 self.runs += 1
             run_id = "test_" + uuid.uuid4().hex
+            self._active_run_id = run_id
             prefix = ".harness/tests/" + self.session_id + "/" + run_id
             with SafeFile(
                 self.workdir, prefix + "/home/.keep", create_parents=True
@@ -956,6 +961,8 @@ class TestRunner:
                 for kind in ("stdout", "stderr"):
                     getattr(process, kind).close()
             self.active_test = None
+            self._active_run_id = None
+            self._run_cancel = None
             self.active.clear()
             self.lock.release()
 
@@ -1055,6 +1062,20 @@ class TestRunner:
         else:
             raise TestRunnerError("Unknown TestRunner tool.")
         return encoded(result)
+
+    def activity(self):
+        item = self.active_test
+        if not self.active.is_set() or not item or not self._active_run_id:
+            return None
+        return {"id": self._active_run_id, "kind": "test", "name": item[0], "cwd": item[1],
+            "task_id": item[2], "state": "stopping" if self._run_cancel and self._run_cancel.is_set() else "running", "stoppable": True}
+
+    def stop(self, identity):
+        event = self._run_cancel
+        if identity != self._active_run_id or event is None:
+            raise TestRunnerError("Test is no longer active in this Session.")
+        event.set()
+        return {"id": identity, "state": "stop_requested"}
 
     def close(self, timeout=0.5):
         deadline = time.monotonic() + max(0, timeout)

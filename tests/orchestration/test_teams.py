@@ -900,7 +900,7 @@ class LeadEventsTests(TeamFixture):
             return "quit"
 
         config = {
-            name: "test-config"
+            name: "fixture-model" if name == "OPENAI_MODEL" else "test-config"
             for name in homebrew_harness.configuration.CONFIG_VARIABLES
         }
         with (

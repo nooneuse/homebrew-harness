@@ -1262,6 +1262,20 @@ class WorkflowRuntime:
             owner.request_stop("Workflow runtime closed.")
         return self.wait_closed(max(0, end - time.monotonic()))
 
+    def activities(self):
+        with self._guard:
+            owners = list(self._owners.values())
+        return [{"id": owner.run_id, "kind": "workflow", "state": "stopping" if owner.stop.is_set() else "running",
+            "name": owner.name, "stoppable": True} for owner in owners]
+
+    def stop_run(self, identity):
+        with self._guard:
+            owner = self._owners.get(identity)
+        if owner is None:
+            raise WorkflowError("Workflow is no longer owned by this runtime.")
+        owner.request_stop("Workflow stopped by its host user.")
+        return {"id": identity, "state": "stop_requested"}
+
     def pending(self):
         with self._guard:
             return bool(self._owners)

@@ -311,6 +311,28 @@ class MemoryStore:
             self._atomic_write(self._path(name), content)
 
 
+    def update_record(self, name, statement):
+        snapshot = self.snapshot()
+        records = {record.name: record for record in snapshot.records}
+        if name not in records:
+            raise MemoryError("Unknown memory record.")
+        if statement is None:
+            records.pop(name)
+        else:
+            old = records[name]
+            records[name] = MemoryRecord.validate(
+                {
+                    **old.__dict__,
+                    "body": statement,
+                    "evidence": statement,
+                    "description": " ".join(statement.split())[:300],
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+        self.replace(list(records.values()), snapshot.version, backup=True)
+        return "Memory updated by the host."
+
+
 class MemoryRuntime:
     def __init__(self, client, model: str, workdir: Path, *, mode="recall"):
         if mode not in {"recall", "auto"}:
@@ -715,25 +737,7 @@ class MemoryRuntime:
         return self._update_record(name, statement)
 
     def _update_record(self, name, statement):
-        snapshot = self.store.snapshot()
-        records = {record.name: record for record in snapshot.records}
-        if name not in records:
-            raise MemoryError("Unknown memory record.")
-        if statement is None:
-            records.pop(name)
-        else:
-            old = records[name]
-            records[name] = MemoryRecord.validate(
-                {
-                    **old.__dict__,
-                    "body": statement,
-                    "evidence": statement,
-                    "description": " ".join(statement.split())[:300],
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                }
-            )
-        self.store.replace(list(records.values()), snapshot.version, backup=True)
-        return "Memory updated by the host."
+        return self.store.update_record(name, statement)
 
     @staticmethod
     def has_knowledge_signal(request):

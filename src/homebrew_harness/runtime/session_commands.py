@@ -16,16 +16,24 @@ HELP = """/model [ALIAS or same-connection MODEL]  Show or choose the Lead model
 /diff [--base REF] [PATH ...]  Inspect working changes and untracked text
 /review [--base REF] [PATH ...]  Review a fixed snapshot with read-only tools
 /skills  List skills; /skills show NAME; /skills use NAME TASK
+/worktree [list|show NAME|create NAME --task TASK_ID|remove NAME]  Task worktrees
+/memory [status|list|show NAME|correct NAME TEXT|delete NAME]  Cross-session knowledge
+/resume [list|ID]  Continue current work or restore retained context
+/pwd  Show the actual execution directory
+/ps [show ID]  Inspect owned work and resources
+/stop [ID]  Request cancellation, retaining unfinished work
+/hooks [show EVENT]  Inspect registered lifecycle callbacks
+/agents [show NAME_OR_ID]  Inspect Lead, teammates and subagents
+/quit; /exit  Save and close the interface
 /help  Show commands
 /goal [CONDITION|clear|resume|spec JSON]  Manage the current Goal
 /inputs  Inspect accepted input; /recovery  Inspect interrupted operations
 /usage  Inspect model usage; /storage  Inspect storage
 /tests [approve|revoke NAME]  Manage fixed test grants
-/memory [list|show NAME|delete NAME|correct NAME TEXT]  Manage enabled memory
 /mcp [close CONNECTION_ID]  Inspect MCP connections
 /queue TEXT; /steer TEXT; /interrupt TEXT; /steer-to MEMBER TEXT
 /approve ID [REVISION] yes/no  Decide an exact request
-Default entry also supports /status, /pause, /resume, /cancel, /upgrade, /detach
+Default entry also supports /status, /pause, /cancel, /upgrade, /detach
 q, quit, exit  Close the interface"""
 
 

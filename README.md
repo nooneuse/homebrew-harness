@@ -133,10 +133,28 @@ The default interactive entry and `homebrew-harness session` support these comma
 | `/skills` | List available skills. |
 | `/skills show NAME` | Read a skill's instructions. |
 | `/skills use NAME TASK` | Load the chosen skill as guidance for an explicit task. |
+| `/worktree [list]` / `/worktree show NAME` | Inspect Git worktrees and task ownership. |
+| `/worktree create NAME --task TASK_ID` | Bind a clean HEAD worktree to a pending task; requires tasks/worktrees. |
+| `/worktree remove NAME` | Remove an unused, unchanged managed worktree after its task completes; retain its branch. |
+| `/memory` / `/memory list` / `/memory show NAME` | Inspect stored cross-session knowledge and the configured memory mode. |
+| `/memory correct NAME TEXT` / `/memory delete NAME` | Atomically correct or remove a record, including when automatic memory is off. |
+| `/resume` / `/resume list` / `/resume ID` | Continue paused work, list retained contexts, or restore a selected context. |
+| `/pwd` | Show the base workspace and actual Lead directory, branch and task/worktree ownership. |
+| `/ps` / `/ps show ID` | Inspect owned operations, resources and pending cleanup. |
+| `/stop` / `/stop ID` | Pause current execution or request cancellation of an owned operation. |
+| `/hooks` / `/hooks show EVENT` | Show callback order and recent failures. |
+| `/agents` / `/agents show NAME_OR_ID` | Inspect the Lead, teammates and subagents, including their model and task. |
+| `/quit` / `/exit` | Save state and close the interface, using the same path as `q`, `quit` and `exit`. |
 
 Model and reasoning changes are queued when the Lead is busy and apply after its current turn. They retain readable history and user requirements, archive private protocol replay, and persist in the Session checkpoint. The default entry also retains its interactive choice for later tasks and reopening. Configuration sources must still match for recovery. Existing members and independently bound Workflows retain their own model. A managed Run keeps its declared model contract; use its native model handoff for changes.
 
 Query commands do not call a model or the task router. `/compact` and `/review` use the existing model request deadlines. Truncated review snapshots require narrower paths. `/new` requires accepted work and goals to be finished or cancelled; it keeps history available for explicit recovery and does not carry previous approvals into the new conversation. These commands do not configure credentials or change global model files.
+
+`/stop` is accepted without waiting for a model reply. Cancellation and actual resource release are separate states shown by `/ps`; inspect `/recovery` when an operation's effects are uncertain. Ordinary inputs remain queued while a Session is paused, including after reopening; `/resume` continues after cleanup and inspection. Specific operation IDs come from `/ps`, rather than system process IDs. A managed Run uses its native pause control; foreign worker observations are labelled as checkpoint snapshots.
+
+`/resume list` shows workspace-local contexts. `session:ID` restores readable history and waits for the next request; interaction and Run IDs continue their original task. The saved configuration and model sources must match. Finish the default entry's current context before choosing another; an explicit Session can switch after its execution ends and cleanup completes. Retired history remains under the existing admin recovery policy.
+
+Memory queries and manual edits do not enable automatic extraction or invoke a model. Hooks are read-only; agent creation and steering continue through existing tools and `/steer-to`. Worktree creation follows task binding: claiming the task selects its directory. `/quit` and `/exit` pause an attached Run; a previously requested detached Run follows its registered background lifetime.
 
 ## Automatic interaction
 

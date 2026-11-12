@@ -101,7 +101,8 @@ def execute(args, parser):
                 text = input("agent> ")
             except EOFError:
                 break
-            if text.strip().casefold() in {"q", "quit", "exit"}:
+            from homebrew_harness.runtime.host_commands import exit_command
+            if exit_command(text):
                 break
             if not text.strip():
                 continue

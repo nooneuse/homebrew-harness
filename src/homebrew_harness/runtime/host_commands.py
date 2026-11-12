@@ -25,13 +25,15 @@ class HostCommand:
 
     @property
     def extended(self):
-        return self.name in {"model", "reasoning", "compact", "new", "diff", "review", "skills", "help"}
+        return self.name in {"model", "reasoning", "compact", "new", "diff", "review", "skills", "help",
+            "worktree", "pwd", "ps", "stop", "hooks", "agents", "resume", "quit", "exit", "memory", "worktree", "pwd", "ps", "hooks", "agents", "resume", "stop", "quit"}
 
     @property
     def allowed_during_recovery(self):
         return (
-            self.name in {"usage", "storage", "recovery", "mcp", "inputs", "help", "diff"}
+            self.name in {"usage", "storage", "recovery", "mcp", "inputs", "help", "diff", "pwd", "ps", "hooks", "agents", "resume", "stop", "quit"}
             or self.name in {"model", "reasoning", "skills"} and self.mode == "read"
+            or self.name in {"memory", "worktree"} and self.mode == "read"
             or self.name == "goal"
             and self.local
         )
@@ -52,16 +54,37 @@ class HostCommand:
             "task",
             "mcp",
             "model", "reasoning", "compact", "new", "diff", "review", "skills", "help",
+            "worktree", "pwd", "ps", "stop", "hooks", "agents", "resume", "quit", "exit",
         }:
             if query.lstrip().startswith("/"):
                 raise ValueError("Unknown host command; use /help.")
             return cls(query)
         name, raw = matched[1], matched[2] or ""
+        if name == "exit":
+            name = "quit"
         argument = raw.strip()
-        if name in {"help", "new", "compact"}:
+        if name in {"help", "new", "compact", "pwd", "quit"}:
             if argument:
                 raise ValueError("/" + name + " accepts no arguments.")
-            return cls(query, name, "run", mode="context" if name == "compact" else "manage" if name == "new" else "read")
+            return cls(query, name, "run", mode="context" if name == "compact" else "manage" if name == "new" else "lifecycle" if name == "quit" else "read")
+        if name in {"ps", "hooks", "agents", "resume", "stop", "worktree"}:
+            parts = shlex.split(argument)
+            if not parts or parts == ["list"] and name in {"resume", "worktree"}:
+                action = "list" if parts else "status"
+                return cls(query, name, action, mode="lifecycle" if name in {"resume", "stop"} and not parts else "read")
+            if len(parts) == 2 and parts[0] == "show" and name in {"ps", "hooks", "agents", "worktree"}:
+                return cls(query, name, "show", parts[1], mode="read")
+            if len(parts) == 1 and name in {"resume", "stop"} and len(parts[0]) <= 200:
+                return cls(query, name, "target", parts[0], mode="lifecycle")
+            if name == "worktree":
+                if len(parts) == 4 and parts[0] == "create" and parts[2] == "--task":
+                    return cls(query, name, "create", parts[1], mode="manage", values=(parts[3],))
+                if len(parts) == 2 and parts[0] == "remove":
+                    return cls(query, name, "remove", parts[1], mode="manage")
+            syntax = {"worktree": "[list|show NAME|create NAME --task TASK_ID|remove NAME]",
+                "resume": "[list|ID]", "stop": "[ID]", "ps": "[show ID]",
+                "hooks": "[show EVENT]", "agents": "[show NAME_OR_ID]"}
+            raise ValueError("Use /" + name + " " + syntax[name] + ".")
         if name in {"model", "reasoning"}:
             if not argument:
                 return cls(query, name, "status", mode="read")
@@ -151,11 +174,11 @@ class HostCommand:
             return cls(query, name, parts[0], parts[1], mode="manage")
         if name == "memory":
             if not argument:
-                return cls(query, name, "list", mode="read")
+                return cls(query, name, "status", mode="read")
             parts = raw.lstrip().split(None, 1)
             action = parts[0]
             rest = parts[1] if len(parts) == 2 else ""
-            if action == "list" and not rest.strip():
+            if action in {"list", "status"} and not rest.strip():
                 return cls(query, name, action, mode="read")
             if action in {"show", "delete"} and NAME_PATTERN.fullmatch(rest.strip()):
                 return cls(
@@ -205,3 +228,8 @@ class HostCommand:
         if not argument:
             raise ValueError("Use /task TASK DESCRIPTION.")
         return cls(query, name, "new", raw)
+
+
+def exit_command(query):
+    """Terminal aliases share one close path; task APIs never call this helper."""
+    return isinstance(query, str) and query.strip().casefold() in {"q", "quit", "exit", "/quit", "/exit"}

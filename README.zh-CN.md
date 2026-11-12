@@ -132,10 +132,28 @@ homebrew-harness session --memory-mode recall
 | `/skills` | 列出可用 Skill。 |
 | `/skills show NAME` | 查看 Skill 正文。 |
 | `/skills use NAME TASK` | 为明确的任务加载所选 Skill 作为指导。 |
+| `/worktree [list]` / `/worktree show NAME` | 查看 Git 工作树及任务归属。 |
+| `/worktree create NAME --task TASK_ID` | 将干净 HEAD 工作树绑定到待执行任务；需启用 tasks/worktrees。 |
+| `/worktree remove NAME` | 任务完成后删除无执行占用、无改动的受管理工作树，保留分支。 |
+| `/memory` / `/memory list` / `/memory show NAME` | 查看跨会话知识及当前 Memory 模式。 |
+| `/memory correct NAME TEXT` / `/memory delete NAME` | 原子修正或删除知识条目；自动记忆关闭时也可使用。 |
+| `/resume` / `/resume list` / `/resume ID` | 继续暂停任务、列出保留上下文或恢复指定上下文。 |
+| `/pwd` | 查看基础工作区、实际 Lead 目录、分支和任务工作树归属。 |
+| `/ps` / `/ps show ID` | 查看运行操作、资源和待收尾状态。 |
+| `/stop` / `/stop ID` | 暂停当前执行，或请求取消指定的本上下文操作。 |
+| `/hooks` / `/hooks show EVENT` | 查看回调顺序和最近失败。 |
+| `/agents` / `/agents show NAME_OR_ID` | 查看 Lead、团队成员和子 agent 的模型及任务状态。 |
+| `/quit` / `/exit` | 保存并关闭界面，与 `q`、`quit`、`exit` 共用退出流程。 |
 
 Lead 忙碌时，模型和推理设置进入队列，在当前轮次结束后生效。切换保留可读历史和用户要求，归档旧协议的私有 replay，并记录到 Session checkpoint。默认入口也保留交互选择，供后续任务及重新打开时使用；恢复仍要求原配置来源一致。已启动成员和独立绑定的 Workflow 保持各自模型。受管理 Run 维持已声明模型合同，切换使用其原生 handoff。
 
 查询命令不调用模型或任务规划器。`/compact`、`/review` 沿用现有模型请求 deadline；审查快照截断时需缩小路径范围。`/new` 要求已接受工作和 Goal 已完成或取消，旧历史可显式恢复，旧审批不会作为新对话的授权。这些命令不配置凭据，也不改全局模型文件。
+
+`/stop` 无需等待模型回复即可受理。取消请求和资源实际释放是不同状态，可用 `/ps` 查看；效果不明确的操作仍需通过 `/recovery` 核查。Session 暂停后，普通输入继续保存在队列中，重新打开后也保持暂停；完成收尾与核查后使用 `/resume`。指定停止目标使用 `/ps` 的操作 ID。受管理 Run 通过原生控制暂停；独立 worker 的观察会标为 checkpoint 快照。
+
+`/resume list` 列出本工作区的上下文。`session:ID` 加载历史后等待下一条要求；交互任务和 Run ID 则继续原任务。恢复需要原来的配置和模型来源。默认入口先结束当前上下文再选择其他上下文；显式 Session 在执行结束并完成收尾后可切换。退休历史继续使用现有 admin 恢复流程。
+
+Memory 查询和人工维护不会打开自动提取，也不调用模型。Hooks 只提供查看；agent 创建和 steering 继续使用现有工具及 `/steer-to`。工作树按任务绑定，认领任务后自动使用对应目录。`/quit` 与 `/exit` 暂停仍附着的 Run；此前明确请求 detached 的 Run 按已登记的后台生命周期执行。
 
 ## 自动交互
 

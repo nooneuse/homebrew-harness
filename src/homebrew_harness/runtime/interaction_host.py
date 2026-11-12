@@ -160,6 +160,8 @@ class InteractionHost:
                 )
             ):
                 raise ValueError("Target must belong to the current interactive team.")
+            if task and task.get("history_only"):
+                self.state.update(task["id"], history_only=False)
             record = self.state.accept_input(
                 text, mode, target, input_id, literal=literal
             )
@@ -269,7 +271,7 @@ class InteractionHost:
                 with self.lock:
                     receipts = [session.runtime_store.get("input_receipts", identity, {}) for identity in self._control_ids]
                     settled = receipts and all(row.get("state") in {"applied", "failed", "blocked", "cancelled"} for row in receipts)
-                    if settled and not session._user_waiting.is_set() and not session._pending_user and session.inputs.active_id is None:
+                    if settled and not session._input_dispatching.is_set() and not session._user_waiting.is_set() and not session._pending_user and session.inputs.active_id is None:
                         broker.close()
                         session.close()
                         break
@@ -306,6 +308,8 @@ class InteractionHost:
             active = self.state.active()
             if active:
                 session = self.session
+                if session and not session.wait_user_boundary():
+                    raise ValueError("Finish or cancel current work before /new.")
                 if not session or self._control_only or session.inputs.pending() or session.inputs.active_id or session._user_waiting.is_set() or session.pending_work() or session.goal.pending or self.state.pending(active["id"]):
                     raise ValueError("Finish or cancel current work before /new.")
                 self._sync_model_preference(session)
@@ -385,7 +389,7 @@ class InteractionHost:
             return self.status()
         if plain in {"/pause", "暂停"}:
             return self.pause()
-        if plain in {"/resume", "继续", "continue", "resume"} and self.state.active():
+        if plain in {"继续", "continue", "resume"} and self.state.active():
             return self.resume()
         if plain in {"/cancel", "取消任务"}:
             if self._control_only and self.session:
@@ -457,6 +461,8 @@ class InteractionHost:
             self.wake.set()
             return receipt
         command = HostCommand.parse(text)
+        if command.name in {"worktree", "memory", "resume", "pwd", "ps", "stop", "hooks", "agents", "quit"}:
+            return self._workspace_command(command)
         if command.extended:
             return self._extended_command(command)
         if command.name:
@@ -472,6 +478,140 @@ class InteractionHost:
         if text.startswith("/"):
             raise ValueError("Unknown host command.")
         return None
+
+    def _workspace_command(self, command):
+        from homebrew_harness.runtime import local_commands as local
+        from homebrew_harness.execution.execution_control import control_scope
+        task = self.state.active()
+        if command.name == "quit":
+            return self.close()
+        if command.name == "stop":
+            if task and (task.get("target") or {}).get("kind") == "run":
+                if command.argument and command.argument not in {task["id"], task["target"]["id"]}:
+                    raise ValueError("Managed resources are stopped through their native Run controls.")
+                return self.runs.control(task["target"]["id"], "pause")
+            if self.session:
+                result = self.session.request_stop(command.argument or None)
+                if not command.argument and task:
+                    self.state.update(task["id"], state="paused")
+                self.wake.set()
+                return {"result": local.output(result)}
+            if task:
+                requests = self.assembler.gateway.active_requests()
+                if command.argument and command.argument != task["id"] and command.argument not in {r["id"] for r in requests}:
+                    raise ValueError("Unknown stoppable preparation; use /ps.")
+                self.state.update(task["id"], state="paused")
+                for row in requests:
+                    if not command.argument or command.argument in {row["id"], task["id"]}:
+                        try:
+                            self.assembler.gateway.stop_request(row["id"])
+                        except ValueError:
+                            pass
+                self.wake.set()
+                return {"result": local.output({"state": "stop_requested", "task_id": task["id"], "phase": "preparation"})}
+            raise ValueError("No active execution to stop.")
+        if command.name == "resume":
+            if command.action == "target":
+                return self._resume_target(command.argument)
+            if command.action != "list" and task and task["state"] not in {"finished", "cancelled"} and not (task.get("history_only") and self.session and not self.session._execution_paused and not self.session.goal.pending):
+                return self.resume()
+            rows = local.sessions(self.state.runtime, current=self.session.session_id if self.session else None)
+            rows += [{"id": row["id"], "kind": "interaction", "summary": row.get("intent", {}).get("original", "")[:300], "state": row["state"]}
+                for row in self.state.runtime.items("interaction_tasks").values() if row["state"] in {"paused", "blocked", "accepted"}]
+            rows += [{"id": row["id"], "kind": "run", "summary": row["spec"]["prompt"][:300], "state": row["status"]}
+                for row in self.runs.runtime.items("runs").values() if row["status"] not in TERMINAL]
+            return {"result": local.output({"contexts": rows[:40], "truncated": len(rows) > 40})}
+        if self.session:
+            if command.mode == "read":
+                return {"result": self.session.run_user(command.query)}
+            return self._extended_command(command)
+        with control_scope(Deadline.after(2)):
+            if command.name == "pwd":
+                value = local.pwd(self.workdir)
+                if task and (task.get("target") or {}).get("kind") == "run":
+                    value = local.managed_pwd(self.workdir, self.state.runtime, self.runs.get(task["target"]["id"]))
+            elif command.name == "worktree" and command.mode == "read":
+                value = local.worktrees(self.workdir, self.state.runtime, name=command.argument or None)
+            elif command.name == "memory":
+                if command.mode != "read" and task:
+                    raise ValueError("Memory changes require the owning Session to reach a complete boundary.")
+                value = local.memory(self.workdir, command)
+            elif command.name == "hooks":
+                from homebrew_harness.runtime.hooks import create_hooks
+                value = {"scope": "default registrations for the next Session", **create_hooks().snapshot(command.argument or None)}
+            elif command.name in {"ps", "agents"}:
+                rows = self.assembler.gateway.active_requests() if command.name == "ps" else []
+                if task and command.name == "ps" and not task.get("target"):
+                    rows.insert(0, {"id": task["id"], "kind": "preparation", "state": task["state"], "stoppable": True})
+                if task and (task.get("target") or {}).get("kind") == "run":
+                    run = self.runs.get(task["target"]["id"])
+                    rows = local.managed_view(self.state.runtime, run, agent_only=command.name == "agents", worker=getattr(self.supervisor, "process", None))
+                if command.action == "show":
+                    rows = [r for r in rows if command.argument in {r["id"], r.get("name")}]
+                    if not rows:
+                        raise ValueError("Unknown operation or agent.")
+                value = {command.name: rows}
+            else:
+                raise ValueError("Enable tasks/worktrees in an interactive Session before managing a worktree.")
+            return {"result": local.output(value)}
+
+    def _resume_target(self, identity):
+        from homebrew_harness.runtime.local_commands import resolve_session
+        from homebrew_harness.runtime.task_routing import TaskRoute
+        current = self.state.active()
+        if current and identity in {current["id"], (current.get("target") or {}).get("id"), "session:" + str((current.get("target") or {}).get("id"))}:
+            return self.resume()
+        if current or self._control_only:
+            raise ValueError("Finish the current context before restoring another; inspect /status.")
+        if identity.startswith("interaction_"):
+            task = self.state.get(identity)
+            if task.get("config") != self.configuration():
+                raise ValueError("Restore the original host configuration before resuming this task.")
+            if task["state"] in {"finished", "cancelled"}:
+                identity = "session:" + task["target"]["id"] if task.get("target", {}).get("kind") == "session" else identity
+            else:
+                self.state.runtime.put("interaction_hosts", "workspace", {**self.state.runtime.get("interaction_hosts", "workspace", {}), "active": task["id"]})
+                return self.resume(task["id"])
+        if identity.startswith("run_"):
+            run = self.runs.get(identity)
+            if run["status"] in TERMINAL:
+                raise ValueError("This Run is terminal; its history remains inspectable.")
+            self.state.adopt_run(run, self.configuration())
+            return self.resume()
+        sid = resolve_session(self.state.runtime, identity)
+        saved = self.state.runtime.get("checkpoints", "lead:" + sid)
+        from dataclasses import replace
+        from homebrew_harness.runtime.interaction_config import InteractionAssembler
+        builder = InteractionAssembler(self.workdir, replace(self.config, model_selection=None))
+        route = TaskRoute(capabilities=tuple(saved["capabilities"]["enabled"]))
+        session = None
+        try:
+            session = builder.session(route, resume=sid)
+            session._ensure_runtime()
+            import uuid
+            tid = "interaction_" + uuid.uuid4().hex
+            task = {"id": tid, "state": "accepted", "revision": 0, "intent": saved["intent"], "created_at": time.time(),
+                "input_id": None, "target": {"kind": "session", "id": sid}, "route": route.data(),
+                "config": self.configuration(), "lifetime": "attached", "history_only": True}
+            db = self.state.runtime.backend()
+            with db.write() as conn:
+                host = db._get(conn, "interaction_hosts", "workspace", {})
+                if host.get("active"):
+                    raise ValueError("Another context became active while restoring.")
+                db._put(conn, "interaction_tasks", tid, task)
+                db._put(conn, "interaction_hosts", "workspace", {**host, "active": tid})
+            self.session = session
+            self.broker = ApprovalBroker(trusted=self.trusted, owner=session, announce=self._announce)
+            session.start(include_clock=True)
+            self._kick()
+            return {"result": "Session restored; enter the next request or /resume to continue paused work.", "session_id": sid}
+        except BaseException:
+            if session:
+                session.close()
+                session.wait_closed(self.config.shutdown_seconds)
+            raise
+        finally:
+            builder.close()
 
     def _kick(self):
         with self.lock:
@@ -493,7 +633,7 @@ class InteractionHost:
                     task = self.state.active()
                 if not task:
                     return
-                if task["state"] == "blocked":
+                if task["state"] in {"blocked", "paused"}:
                     return
                 if task["state"] == "handoff_pending":
                     self._handoff(task)
@@ -543,7 +683,7 @@ class InteractionHost:
                             task["id"],
                             self.assembler.gateway.summary(),
                         )
-                        if self.closed:
+                        if self.closed or self.state.get(task["id"])["state"] == "paused":
                             return
                         if route.missing_requirements:
                             self.state.update(
@@ -614,6 +754,8 @@ class InteractionHost:
                             "revision"
                         ] and not self.state.get(task["id"]).get("target"):
                             continue
+                        if self.state.get(task["id"])["state"] == "paused":
+                            return
                         self.state.update(
                             task["id"], state="blocked", error=redact(str(error))
                         )
@@ -631,7 +773,7 @@ class InteractionHost:
                     return
         except Exception as error:
             task = self.state.active()
-            if task:
+            if task and task["state"] != "paused":
                 self.state.update(task["id"], state="blocked", error=redact(str(error)))
             self._announce({"error": redact(str(error))})
         finally:
@@ -689,6 +831,8 @@ class InteractionHost:
             with self.lock:
                 self.session, self.broker = session, broker
             with approval_scope(broker):
+                if self.state.get(task["id"])["state"] == "paused":
+                    session.request_stop()
                 if task.get("input_id") and not session.runtime_store.get(
                     "input_submissions", task["input_id"]
                 ):
@@ -699,6 +843,14 @@ class InteractionHost:
                         literal=task.get("literal", False),
                     )
                 self._deliver_pending()
+                if self.state.get(task["id"]).get("resume_requested"):
+                    if session._execution_paused:
+                        session.resume_execution()
+                    elif session._recovery_blocked or session._automatic_failed:
+                        raise ValueError("Inspect Session recovery using /recovery before continuing.")
+                    elif session.goal.pending and not session.goal.enabled:
+                        session.submit_user_input("/goal resume", mode="queued")
+                    self.state.update(task["id"], state="accepted", resume_requested=False)
                 session.start(include_clock=True)
         except BaseException:
             broker.close()
@@ -746,6 +898,13 @@ class InteractionHost:
             if not current_active or current_active["id"] != task["id"]:
                 return
             self._deliver_pending()
+            if session._execution_paused:
+                self.state.update(task["id"], state="paused")
+                return
+            if self.state.get(task["id"]).get("history_only"):
+                self.wake.wait(.05)
+                self.wake.clear()
+                continue
             if time.time() >= task["created_at"] + self.config.total_seconds:
                 self.state.update(
                     task["id"],
@@ -815,7 +974,7 @@ class InteractionHost:
                     current_task = self.state.active()
                     if not current_task or current_task["id"] != task["id"] or self.session is not session:
                         return
-                    if self.state.pending(task["id"]) or self.state.get(task["id"]).get(
+                    if session._input_dispatching.is_set() or session._user_waiting.is_set() or session._pending_user or self.state.pending(task["id"]) or self.state.get(task["id"]).get(
                         "upgrade_requested"
                     ):
                         continue
@@ -1136,8 +1295,19 @@ class InteractionHost:
                 and self.session.shutdown_status()["persistence_ok"]
             ):
                 self.session = self.broker = None
+            if not task.get("target") and self.session is None and (self._busy or self.assembler.gateway.inflight):
+                raise ValueError("Preparation still needs cleanup; inspect /ps before /resume.")
+            if task.get("target") and task["target"]["kind"] == "session" and self.session is None:
+                if task.get("config") != self.configuration():
+                    raise ValueError("Restore the original host configuration before resuming this task.")
+                self.state.update(task["id"], state="queued", resume_requested=True, error=None)
+                self.wake.set()
+                self._kick()
+                return {"task_id": task["id"], "state": "accepted"}
             if task.get("target") and task["target"]["kind"] == "run":
                 self.runs.control(task["target"]["id"], "run")
+            elif self.session and self.session._execution_paused:
+                self.session.resume_execution()
             elif self.session and (
                 self.session._recovery_blocked or self.session._automatic_failed
             ):
@@ -1148,6 +1318,7 @@ class InteractionHost:
                 self.session
                 and self.session.goal.pending
                 and not self.session.goal.enabled
+                and not self.session.inputs.pending()
             ):
                 self.session.submit_user_input("/goal resume", mode="queued")
             self.state.update(

@@ -492,7 +492,7 @@ class MemoryTests(unittest.TestCase):
     def test_no_memory_cli_does_not_construct_or_use_the_runtime(self):
         client, requests = fake_client([reply("Done.")])
         config = {
-            name: "test-value"
+            name: "fixture-model" if name == "OPENAI_MODEL" else "test-value"
             for name in homebrew_harness.configuration.CONFIG_VARIABLES
         }
         with (
@@ -530,7 +530,7 @@ class MemoryTests(unittest.TestCase):
             ]
         )
         config = {
-            name: "test-value"
+            name: "fixture-model" if name == "OPENAI_MODEL" else "test-value"
             for name in homebrew_harness.configuration.CONFIG_VARIABLES
         }
         with (

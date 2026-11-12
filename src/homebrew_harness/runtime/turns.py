@@ -196,8 +196,11 @@ def run_subagent(
             )
         return output
 
+    from homebrew_harness.runtime.activities import activity
     try:
         with (
+            activity("subagent", identity=identity, workdir=workdir, model=model) as activity_cancel,
+            client.scope(cancel_event=activity_cancel),
             checkpoint_scope(writer),
             client.scope(role="subagent", context_id=identity),
             child_scope("subagent", identity),

@@ -45,6 +45,9 @@ class UserInputController:
     @contextmanager
     def turn(self):
         with self.lock:
+            if getattr(self.session, "_execution_paused", False):
+                from homebrew_harness.execution.model_gateway import ModelCancelled
+                raise ModelCancelled("Execution paused before starting another turn.")
             self.active_id = "turn_" + uuid.uuid4().hex
             self.cancel = threading.Event()
             self.phase = "starting"

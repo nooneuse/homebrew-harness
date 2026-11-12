@@ -437,7 +437,7 @@ class LifecycleTests(unittest.TestCase):
                 )
                 client, _ = fake_client([reply("Done.") for _ in expected])
                 config = {
-                    name: "test-value"
+                    name: "fixture-model" if name == "OPENAI_MODEL" else "test-value"
                     for name in homebrew_harness.configuration.CONFIG_VARIABLES
                 }
                 with (

@@ -296,6 +296,7 @@ class BackgroundManager:
         self.runner = make_shell_runner(bash_policy, artifact_store)
         self._lock = threading.Lock()
         self._tasks: dict[str, dict] = {}
+        self._cancels = {}
         self._ready: list[str] = []
         self._workers = Workers()
         self._closed = False
@@ -359,6 +360,7 @@ class BackgroundManager:
             if self.leases is not None:
                 self.leases.acquire("workspace:" + str(cwd))
             self._tasks[task_id] = task
+            self._cancels[task_id] = threading.Event()
             try:
                 self._persist(task_id, ready=False)
                 self._workers.start(
@@ -374,6 +376,7 @@ class BackgroundManager:
                 }
             except BaseException:
                 self._tasks.pop(task_id, None)
+                self._cancels.pop(task_id, None)
                 if self.leases is not None:
                     self.leases.release("workspace:" + str(cwd))
                 # A publication may have succeeded before an fsync failed. Do
@@ -404,7 +407,9 @@ class BackgroundManager:
                 if task.get("artifact_profile")
                 else {}
             )
-            with artifact_context((task.get("assignment") or {}).get("task_id")):
+            from homebrew_harness.execution.execution_control import control_scope, operation_deadline
+            with (artifact_context((task.get("assignment") or {}).get("task_id")),
+                control_scope(operation_deadline(), cancel_events=(self._cancels[task_id],))):
                 output = self.run_command(
                     command, workdir=cwd, runner=self.runner, **options
                 )
@@ -430,6 +435,8 @@ class BackgroundManager:
             task = self._tasks[task_id]
             if task["status"] == "cancelled":
                 return
+            if self._cancels.pop(task_id, threading.Event()).is_set():
+                status = "cancelled"
             task.update(status=status, result=result)
             self._ready.append(task_id)
             try:
@@ -553,6 +560,18 @@ class BackgroundManager:
                 and (task["assignment"] or {}).get("task_id") == task_id
                 for task in self._tasks.values()
             )
+
+    def stop(self, task_id):
+        with self._lock:
+            task = self._tasks.get(task_id)
+            event = self._cancels.get(task_id)
+            if task is None or event is None or task["status"] != "running":
+                raise ValueError("Background task is no longer active in this Session.")
+            task["stop_requested"] = True
+            with cleanup_scope():
+                self._persist(task_id, ready=False)
+            event.set()
+            return {"id": task_id, "state": "stop_requested"}
 
     def snapshot(self):
         with self._lock:
