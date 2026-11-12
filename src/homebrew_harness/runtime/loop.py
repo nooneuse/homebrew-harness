@@ -291,6 +291,11 @@ def _agent_loop(
                 )
         return True, decision
 
+    from homebrew_harness.context.project_guidance import ProjectGuidance
+    guidance = components.project_guidance or ProjectGuidance(workdir)
+    def guidance_cwd():
+        return team_member.cwd() if team_member and team_member.assignment is not None else team_manager.lead_cwd() if team_manager else workdir
+
     while True:
         if components.run_control is not None:
             components.run_control.safe_point(turns)
@@ -340,6 +345,7 @@ def _agent_loop(
             steering.apply(messages, todo_manager, compactor)
         if components.run_control is not None:
             components.run_control.before_model(messages, components)
+        guidance.refresh(messages, guidance_cwd())
         plan = todo_manager.render() if todo_manager is not None else ""
         messages[:] = compactor.prepare(messages, active_request, plan, tools)
         if stop_event is not None and stop_event.is_set():
@@ -459,6 +465,8 @@ def _agent_loop(
             if steering is not None:
                 steering.apply(messages, todo_manager, compactor)
             continue
+        if not calls and guidance.refresh(messages, guidance_cwd()):
+            continue
         if not calls:
             if steering is not None and steering.apply(
                 messages, todo_manager, compactor
@@ -539,7 +547,12 @@ def _agent_loop(
 
         revision_before = todo_manager.revision if todo_manager is not None else None
         batch_unknown = False
+        guidance_stale = guidance.refresh(messages, guidance_cwd())
         for call in calls:
+            from homebrew_harness.runtime.conversation_commands import active_evidence
+            if active_evidence() is not None:
+                active_evidence().before(call, guidance_cwd())
+            guidance_stale = guidance_stale or guidance.refresh(messages, guidance_cwd())
             try:
                 client.checkpoint()
                 control_error = None
@@ -570,6 +583,8 @@ def _agent_loop(
                         "executed": False,
                     }
                 )
+            elif guidance_stale:
+                output = json.dumps({"error": "Project guidance changed; this proposal was not executed. Reconsider with the current conventions.", "executed": False})
             elif control_error is not None:
                 output = json.dumps(
                     {
@@ -608,6 +623,10 @@ def _agent_loop(
                         artifact_store=components.artifact_store,
                         before_start=proposal,
                     )
+            from homebrew_harness.runtime.conversation_commands import active_evidence
+            observer = components.plan_observer or (active_evidence().observe if active_evidence() else None)
+            if observer is not None:
+                observer(call, guidance_cwd(), output)
             tool_message = {
                 "role": "tool",
                 "tool_call_id": call.id,

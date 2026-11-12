@@ -34,3 +34,6 @@ class LoopComponents:
     run_control: object = None
 
     service_control: object = None
+    project_guidance: object = None
+    plan_observer: object = None
+    planning: bool = False

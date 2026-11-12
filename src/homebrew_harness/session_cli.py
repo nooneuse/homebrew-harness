@@ -51,6 +51,14 @@ def host_exit_status(session, status=0):
 
 
 @dataclass
+class ForkChat:
+    seed: dict
+    selection: dict
+    mode: str
+    prompt: str = ""
+
+
+@dataclass
 class ResumeChat:
     identity: str
 
@@ -63,11 +71,15 @@ class NewChat:
 def execute(args, parser) -> int:
     while True:
         result = _execute_session(args, parser)
-        if not isinstance(result, (NewChat, ResumeChat)):
+        if not isinstance(result, (NewChat, ResumeChat, ForkChat)):
             return result
         args = copy.copy(args)
         args.resume_session = result.identity if isinstance(result, ResumeChat) else None
         args.model_selection = None if isinstance(result, ResumeChat) else result.selection
+        args.conversation_mode = result.mode if isinstance(result, ForkChat) else None
+        args.fork_seed = result.seed if isinstance(result, ForkChat) else None
+        args.prompt = None
+        args.initial_input = result.prompt if isinstance(result, ForkChat) else ""
 
 
 def _execute_session(args, parser):
@@ -236,6 +248,8 @@ def _execute_session(args, parser):
                     model_registry=models,
                     lead_model_profile=lead_alias,
                     model_selection=getattr(args, "model_selection", None),
+                    conversation_mode=getattr(args, "conversation_mode", None),
+                    fork_seed=getattr(args, "fork_seed", None),
                 ) as session:
                     if prompt is not None:
                         print(
@@ -268,6 +282,8 @@ def _execute_session(args, parser):
                     broker = ApprovalBroker(trusted=sys.stdin.isatty(), owner=session)
                     with approval_scope(broker):
                         session.start()
+                        if getattr(args, "initial_input", ""):
+                            session.submit_user_input(args.initial_input, mode="queued", literal=True)
                         try:
                             while True:
                                 try:
@@ -282,6 +298,19 @@ def _execute_session(args, parser):
                                 try:
                                     from homebrew_harness.runtime.host_commands import HostCommand
                                     command = HostCommand.parse(query) if not query.startswith(("/approve ", "/queue ", "/steer ", "/interrupt ", "/steer-to ")) else None
+                                    if command and command.name == "fork":
+                                        from homebrew_harness.runtime.conversation_commands import fork_check
+                                        if not session.wait_user_boundary():
+                                            raise ValueError("Finish current work before /fork.")
+                                        seed = fork_check(session)
+                                        choice = dict(session.model_selection)
+                                        mode = session.conversation["mode"]
+                                        broker.close();session.close()
+                                        if not session.wait_closed(args.shutdown_timeout) or not session.shutdown_status()["persistence_ok"]:
+                                            raise ValueError("Parent Session cleanup remains pending.")
+                                        return ForkChat(seed, choice, mode, command.argument)
+                                    if command and command.name in {"plan", "init"} and command.mode == "read":
+                                        print(session.run_user(query));continue
                                     if command and command.name == "stop":
                                         print(json.dumps(session.request_stop(command.argument or None)))
                                         continue

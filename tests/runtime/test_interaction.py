@@ -40,13 +40,15 @@ class LocalAssembler:
         self.gateway = ModelGateway(client)
         self.client = client
 
-    def session(self, route, *, resume=None):
+    def session(self, route, *, resume=None, conversation_mode=None, fork_seed=None):
         return HarnessSession(
             self.client,
             "test-model",
             self.workdir,
             capabilities=Capabilities(route.capabilities),
             resume_session=resume,
+            conversation_mode=conversation_mode,
+            fork_seed=fork_seed,
             shutdown_timeout=2,
             dispatch_interval=0.01,
         )

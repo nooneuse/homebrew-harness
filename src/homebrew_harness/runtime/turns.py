@@ -340,7 +340,7 @@ def run_user_turn(
             goal_controller=goal_controller,
             stop_block_cap=stop_block_cap,
         )
-    if memory_runtime is not None and (
+    if memory_runtime is not None and not components.planning and (
         not checking_goal or goal_controller.state["status"] == "achieved"
     ):
         # The original user input survives any in-loop compaction; generated

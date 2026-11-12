@@ -344,6 +344,8 @@ class InteractionAssembler:
         hooks=None,
         mode="interactive",
         gateway_limits=None,
+        conversation_mode=None,
+        fork_seed=None,
     ):
         from homebrew_harness.orchestration.workflow_runtime import (
             ModelWorkflowRunner,
@@ -418,6 +420,8 @@ class InteractionAssembler:
                 model_registry=models.registry,
                 lead_model_profile=models._choice_source_alias,
                 model_selection=c.model_selection,
+                conversation_mode=conversation_mode,
+                fork_seed=fork_seed,
                 test_runner=tests,
                 bash_policy=bash,
                 mcp_runtime=mcp,

@@ -40,6 +40,7 @@ class InteractionHost:
         self.state, self.runs = InteractionState(self.workdir), RunStore(self.workdir)
         self.trusted, self.announce = trusted, announce or (lambda value: None)
         self._control_only = False
+        self.conversation_mode = self.state.runtime.get("interaction_controls", "workspace", {}).get("mode", "normal")
         preference = self.state.runtime.get("interaction_preferences", "workspace", {})
         models = getattr(assembler, "planning_models", None)
         if preference and models and self.config.model_selection is None:
@@ -121,6 +122,9 @@ class InteractionHost:
         with self.lock:
             if self.closed:
                 raise ValueError("Interaction host is closing.")
+            if self._control_only and self.session and self.session._closed and self.session.wait_closed(0) and self.session.shutdown_status()["persistence_ok"]:
+                self.session = self.broker = None
+                self._control_only = False
             self._sync_model_preference()
             active = self.state.active()
             if active and (active.get("target") or {}).get("kind") == "run":
@@ -208,7 +212,11 @@ class InteractionHost:
         return binding
 
     def _sync_model_preference(self, session=None):
+        if session is not None and session is not self.session:
+            return
         session = session or self.session
+        if session is not None:
+            self._sync_conversation(session)
         if session is None or not getattr(session, "_committed_model_revision", 0):
             return
         marker = (session.session_id, session._committed_model_revision)
@@ -223,7 +231,7 @@ class InteractionHost:
                 self.state.update(task["id"], config=self.configuration())
             self._seen_model_revision = marker
 
-    def _command_session(self, *, history=False):
+    def _command_session(self, *, history=False, apply_preference=True):
         from dataclasses import replace
         from homebrew_harness.runtime.task_routing import TaskRoute
         task = None
@@ -246,10 +254,10 @@ class InteractionHost:
             finally:
                 builder.close()
         else:
-            session = self.assembler.session(TaskRoute())
+            session = self.assembler.session(TaskRoute(), conversation_mode=self.conversation_mode)
         try:
             session._ensure_runtime()
-            if self.config.model_selection and session.model_selection != self.config.model_selection:
+            if apply_preference and self.config.model_selection and session.model_selection != self.config.model_selection:
                 from homebrew_harness.runtime.session_commands import select
                 with session.lock:
                     select(session, self.config.model_selection)
@@ -257,6 +265,11 @@ class InteractionHost:
             session.close()
             session.wait_closed(self.config.shutdown_seconds)
             raise
+        if not history:
+            controls = self.state.runtime.get("interaction_controls", "workspace", {})
+            if controls.get("init"):
+                session.conversation["init"] = controls["init"]
+                session.conversation["revision"] = max(session.conversation["revision"], controls["init"]["revision"])
         self.session = session
         self.broker = ApprovalBroker(trusted=self.trusted, owner=session, announce=self._announce)
         self._control_only = True
@@ -323,6 +336,7 @@ class InteractionHost:
                 raise ValueError("Finish current context operations before /new.")
             value = self.state.runtime.get("interaction_hosts", "workspace", {})
             self.state.runtime.put("interaction_hosts", "workspace", {**value, "last": None})
+            self._set_conversation_mode("normal")
             return {"result": "New blank chat; current model choice retained."}
         if command.name in {"model", "reasoning"}:
             if command.action == "status":
@@ -461,6 +475,8 @@ class InteractionHost:
             self.wake.set()
             return receipt
         command = HostCommand.parse(text)
+        if command.name in {"plan", "init", "fork"}:
+            return self._conversation_command(command)
         if command.name in {"worktree", "memory", "resume", "pwd", "ps", "stop", "hooks", "agents", "quit"}:
             return self._workspace_command(command)
         if command.extended:
@@ -478,6 +494,122 @@ class InteractionHost:
         if text.startswith("/"):
             raise ValueError("Unknown host command.")
         return None
+
+    def _set_conversation_mode(self, mode):
+        previous = self.state.runtime.get("interaction_controls", "workspace", {})
+        self.state.runtime.put("interaction_controls", "workspace", {**previous, "mode": mode})
+        self.conversation_mode = mode
+
+    def _sync_conversation(self, session):
+        value = self.state.runtime.get("interaction_controls", "workspace", {})
+        wanted = {"mode": session.conversation["mode"], "init": session.conversation.get("init") or value.get("init")}
+        if wanted != value:
+            self.state.runtime.put("interaction_controls", "workspace", wanted)
+        self.conversation_mode = wanted["mode"]
+
+    def _conversation_command(self, command):
+        import json
+        from homebrew_harness.runtime import conversation_commands as conversation
+        active = self.state.active()
+        if active and (active.get("target") or {}).get("kind") == "run":
+            if command.action != "status":
+                raise ValueError("This managed Run keeps its fixed execution contract.")
+        if command.action == "status":
+            if self.session:
+                return {"result": self.session.run_user(command.query)}
+            from homebrew_harness.context.project_guidance import ProjectGuidance
+            controls = self.state.runtime.get("interaction_controls", "workspace", {})
+            value = {"mode": self.conversation_mode} if command.name == "plan" else {"file": ProjectGuidance(self.workdir).snapshot(), "draft": controls.get("init")}
+            return {"result": json.dumps(value, ensure_ascii=False, indent=2)}
+        if command.name == "fork":
+            return self._fork_conversation(command.argument)
+        if command.name == "plan" and not self.session:
+            if active:
+                raise ValueError("Wait for task preparation before changing its planning mode.")
+            if command.action in {"on", "off", "discuss"}:
+                self._set_conversation_mode("normal" if command.action == "off" else "plan")
+                return self.submit(command.argument, mode="queue") if command.action == "discuss" else {"result": "Conversation mode: " + self.conversation_mode}
+            if command.action == "apply":
+                self._command_session(history=True)
+                if self.session is None:
+                    raise ValueError("No retained planning conversation.")
+        if command.name == "plan" and command.action == "apply" and self.session and not self.session.goal.pending:
+            session = self.session
+            with session.lock:
+                text = conversation.accept_plan(session, command.values[0])
+            self._sync_conversation(session)
+            payload = session.intent.original + "\n\nAccepted user amendments:\n" + "\n\n".join(session.intent.amendments)
+            if len(payload) > 64000 or redact(payload) != payload:
+                raise ValueError("Accepted plan input exceeds the task input boundary.")
+            import hashlib
+            identity = "usr_" + hashlib.sha256((session.session_id + ":plan:" + str(command.values[0])).encode()).hexdigest()[:32]
+            receipt = self.state.accept_input(payload, "queue", "lead", identity)
+            self.broker.close(); session.close()
+            if not session.wait_closed(self.config.shutdown_seconds) or not session.shutdown_status()["persistence_ok"]:
+                return {"result": "Plan accepted; execution remains queued until parent cleanup finishes."}
+            self.session = self.broker = None
+            self._control_only = False
+            if active:
+                self.state.finish(active["id"], result=session.last_goal_result, cleanup_complete=True)
+            self._kick()
+            return {"result": "Plan accepted; execution queued.", "task_id": receipt["task_id"]}
+        session = self.session or self._command_session()
+        with approval_scope(self.broker):
+            receipt = session.submit_user_input(command.query, mode="queued")
+        if self._control_only:
+            self._control_ids.append(receipt["input_id"])
+        if self._control_only and not self._busy:
+            self._busy = True
+            self.workers.start(lambda: self._watch_controls(session, self.broker), name="conversation-controls", track_operation=False)
+        return {"result": "Command accepted; it runs after the current turn.", "command_id": receipt["input_id"]}
+
+    def _fork_conversation(self, text):
+        from homebrew_harness.runtime.conversation_commands import fork_check
+        from homebrew_harness.runtime.task_routing import TaskRoute
+        active = self.state.active()
+        parent = self.session or self._command_session(history=True, apply_preference=False)
+        if parent is None:
+            raise ValueError("No retained conversation to fork.")
+        if not parent.wait_user_boundary():
+            raise ValueError("Finish current work before /fork.")
+        source = fork_check(parent)
+        route = TaskRoute(capabilities=tuple(parent.capabilities.enabled))
+        from dataclasses import replace
+        from homebrew_harness.runtime.interaction_config import InteractionAssembler
+        if hasattr(self.assembler, "planning_models"):
+            builder = InteractionAssembler(self.workdir, replace(self.config, model_selection=parent.model_selection))
+        else:
+            builder = self.assembler
+        child = builder.session(route, conversation_mode=parent.conversation["mode"], fork_seed=source)
+        try:
+            self.broker.close(); parent.close()
+            if not parent.wait_closed(self.config.shutdown_seconds) or not parent.shutdown_status()["persistence_ok"]:
+                raise ValueError("Parent Session cleanup remains pending.")
+            child._ensure_runtime()
+            if active:
+                self.state.finish(active["id"], result=parent.last_goal_result, cleanup_complete=True)
+            import uuid
+            identity = "interaction_" + uuid.uuid4().hex
+            task = {"id": identity, "state": "accepted", "revision": 0, "intent": child.intent.to_dict(), "created_at": time.time(),
+                "input_id": None, "target": {"kind": "session", "id": child.session_id}, "route": route.data(),
+                "config": self.configuration(), "lifetime": "attached", "history_only": not bool(text), "fork_source": source}
+            self.state.runtime.put("interaction_tasks", identity, task)
+            self.state.runtime.put("interaction_hosts", "workspace", {"active": identity, "last": active["id"] if active else self.state.runtime.get("interaction_hosts", "workspace", {}).get("last")})
+            self.session = child
+            self.broker = ApprovalBroker(trusted=self.trusted, owner=child, announce=self._announce)
+            self._control_only = False
+            self._sync_conversation(child)
+            child.start()
+            if text:
+                child.submit_user_input(text, mode="queued", literal=True)
+            self._kick()
+            return {"result": "Forked Session " + child.session_id + "; parent " + parent.session_id + " remains resumable.", "session_id": child.session_id}
+        except BaseException:
+            child.close();child.wait_closed(self.config.shutdown_seconds)
+            raise
+        finally:
+            if builder is not self.assembler:
+                builder.close()
 
     def _workspace_command(self, command):
         from homebrew_harness.runtime import local_commands as local
@@ -663,7 +795,7 @@ class InteractionHost:
                                     "answer": reference["answer"],
                                     "state": reference["state"],
                                 }
-                            route = self.router.propose(
+                            route = TaskRoute(capabilities=("subagents",) if "subagents" in self.assembler.allowed else ()) if self.conversation_mode == "plan" else self.router.propose(
                                 routing_intent,
                                 execution_mode=task.get("requested_mode"),
                                 detach_allowed=self.config.detached,
@@ -789,7 +921,7 @@ class InteractionHost:
                     self._kick()
 
     def _prepare_session(self, task, route, *, resume=None):
-        session = self.assembler.session(route, resume=resume)
+        session = self.assembler.session(route, resume=resume, conversation_mode=self.conversation_mode if resume is None else None)
         broker = ApprovalBroker(
             trusted=self.trusted, announce=self._announce, owner=session
         )
@@ -901,7 +1033,7 @@ class InteractionHost:
             if session._execution_paused:
                 self.state.update(task["id"], state="paused")
                 return
-            if self.state.get(task["id"]).get("history_only"):
+            if self.state.get(task["id"]).get("history_only") or session.conversation["mode"] == "plan":
                 self.wake.wait(.05)
                 self.wake.clear()
                 continue

@@ -117,10 +117,29 @@ class HarnessSession:
         model_registry=None,
         lead_model_profile=None,
         model_selection=None,
+        conversation_mode=None,
+        fork_seed=None,
         run_control=None,
     ):
         created, bindings = [], []
         self.run_control = run_control
+        from homebrew_harness.runtime.conversation_commands import initial_state, validate_state
+        from homebrew_harness.context.project_guidance import ProjectGuidance
+        self.conversation = initial_state()
+        if conversation_mode is not None:
+            if conversation_mode not in {"normal", "plan"}:
+                raise ValueError("Unknown conversation mode.")
+            self.conversation["mode"] = conversation_mode
+        if resume_session and conversation_mode is None:
+            from homebrew_harness.storage.durable_runtime import DurableStore
+            state_store = DurableStore(workdir)
+            identity = state_store.get_meta("latest_session") if resume_session == "latest" else resume_session
+            prior = state_store.get("checkpoints", "lead:" + str(identity), {})
+            self.conversation = validate_state(prior.get("conversation", initial_state()))
+        self.project_guidance = ProjectGuidance(workdir)
+        self.fork_seed = fork_seed
+        self.fork_source = None
+        self._plan_evidence = None
         missing = object()
 
         def own(label, value):
@@ -580,6 +599,8 @@ class HarnessSession:
         return {
             "session_id": self.session_id,
             "contract_version": 4,
+            "conversation": copy.deepcopy(self.conversation),
+            "fork_source": self.fork_source,
             **(
                 {
                     "managed_run": {
@@ -650,6 +671,7 @@ class HarnessSession:
         }
 
     def loop_components(self):
+        from homebrew_harness.runtime.conversation_commands import PLAN_TOOLS
         return LoopComponents(
             hooks=self.hooks,
             todo_manager=self.todo,
@@ -674,9 +696,11 @@ class HarnessSession:
             if getattr(self, "_pending_user", None)
             else None,
             run_control=self.run_control,
-            tool_allowlist=self.run_control.spec.effective_tools()
-            if self.run_control
-            else None,
+            tool_allowlist=self.run_control.spec.effective_tools() if self.run_control else
+                PLAN_TOOLS if self.conversation["mode"] == "plan" else None,
+            project_guidance=self.project_guidance,
+            planning=self.conversation["mode"] == "plan",
+            plan_observer=self._plan_evidence.observe if self._plan_evidence else None,
         )
 
     def tool_pool(self):
@@ -802,6 +826,9 @@ class HarnessSession:
                 uncertain = self.run_control.recovered(
                     saved, operations, restored, uncertain
                 )
+            from homebrew_harness.runtime.conversation_commands import validate_state, initial_state
+            self.conversation = validate_state(saved.get("conversation", initial_state()))
+            self.fork_source = saved.get("fork_source")
             self.messages[:] = restored
             homebrew_harness.runtime.turns.set_memory_context(self.messages, "")
             if self.run_control is None and saved.get("test_handoff"):
@@ -863,6 +890,10 @@ class HarnessSession:
             if saved.get("phase") == "running":
                 self.gateway.mark_observation_incomplete()
             self.runtime_store.start_session(sid, self.workspace.leases.instance)
+        if not self.resume_session and self.fork_seed:
+            from homebrew_harness.runtime.conversation_commands import seed_fork
+            seed_fork(self, self.fork_seed)
+        self.project_guidance.refresh(self.messages, self.workspace.lead_cwd())
         if not self.resume_session:
             self.runtime_store.start_session(
                 self.session_id, self.workspace.leases.instance
@@ -1131,7 +1162,7 @@ class HarnessSession:
         if include_clock and self.cron:
             jobs.append(
                 (
-                    lambda: self.cron.poll_due(self.clock()),
+                    lambda: self.cron.poll_due(self.clock()) if self.conversation["mode"] != "plan" else None,
                     self.poll_interval,
                     "harness-clock",
                 )
@@ -1657,6 +1688,8 @@ class HarnessSession:
                 raise ValueError("Historical /resume ID belongs to the terminal entry; use /resume list.")
             if self._execution_paused or self.goal.pending and not self.goal.enabled:
                 return json.dumps(self.resume_execution())
+        if command.mode == "read" and command.name in {"plan", "init"}:
+            return json.dumps(self.conversation if command.name == "plan" else {"file": self.project_guidance.snapshot(), "draft": self.conversation["init"]}, ensure_ascii=False, indent=2)
         from homebrew_harness.runtime.local_commands import QUERY_NAMES, run as local_run
         if command.mode == "read" and command.name in QUERY_NAMES:
             with control_scope(Deadline.after(2)):
@@ -1755,15 +1788,43 @@ class HarnessSession:
                     raise RecoveryRequired(
                         "Recovery requires host inspection. Use /recovery for pending outcomes, then /recovery continue after checking them."
                     )
+                if self.conversation["mode"] == "plan" and command.name in {"goal", "task"} and not command.local:
+                    raise ValueError("Leave planning mode or apply its plan before activating executable Goal/task work.")
+                if command.name in {"plan", "init"}:
+                    from homebrew_harness.runtime import conversation_commands as conversation
+                    if command.action == "status":
+                        return json.dumps(self.conversation if command.name == "plan" else {"file": self.project_guidance.snapshot(), "draft": self.conversation["init"]}, ensure_ascii=False, indent=2)
+                    if command.name == "init":
+                        value = conversation.publish_init(self, command.values[0]) if command.action == "apply" else conversation.init_draft(self, preview=command.action == "preview")
+                        return json.dumps(value, ensure_ascii=False, indent=2)
+                    if command.action in {"on", "off"}:
+                        return json.dumps(conversation.set_mode(self, "plan" if command.action == "on" else "normal"), ensure_ascii=False)
+                    if command.action == "discuss":
+                        conversation.set_mode(self, "plan")
+                        query = command.argument
+                    elif command.action == "apply":
+                        query = conversation.accept_plan(self, command.values[0])
+                        command = HostCommand("/goal resume", "goal", "resume") if self.goal.pending else HostCommand(query)
+                if self.conversation["mode"] == "plan" and (not command.name or command.name == "plan" and command.action == "discuss"):
+                    from homebrew_harness.runtime.conversation_commands import plan_turn
+                    if goal_spec is not None:
+                        self._bind_task_goal(query, goal_spec)
+                        self.goal.suspend("suspended", "Goal awaits accepted planning execution.")
+                    work_started = True
+                    return plan_turn(self, query)
                 if command.name in {"pwd", "ps", "hooks", "agents", "worktree", "memory", "resume"}:
                     from homebrew_harness.runtime.local_commands import run as local_run
                     return local_run(self, command)
-                if command.extended:
+                if command.extended and command.name not in {"plan", "init"}:
                     from homebrew_harness.runtime.session_commands import run
                     result = run(self, command)
                     if result is not None:
                         return result
                     query = command.values[0]
+                    if self.conversation["mode"] == "plan":
+                        from homebrew_harness.runtime.conversation_commands import plan_turn
+                        work_started = True
+                        return plan_turn(self, query)
                 if command.name == "mcp":
                     if self.mcp is None:
                         return json.dumps({"connections": [], "enabled": False})
@@ -2035,7 +2096,7 @@ class HarnessSession:
         if self._consume_user_input():
             return True
         self._refresh_recovery()
-        if self._execution_paused or self._recovery_blocked:
+        if self._execution_paused or self._recovery_blocked or self.conversation["mode"] == "plan":
             return False
         if (
             self.stop_event.is_set()
@@ -2358,7 +2419,10 @@ class HarnessSession:
             self._execution_cancel = threading.Event()
             self._automatic_failed = False
             pending = self.inputs.pending()
-            if self.goal.pending and not any(row["content"].strip() == "/goal resume" for row in pending):
+            if self.conversation["mode"] == "plan":
+                if not pending and self.intent.original:
+                    self.submit_user_input("Continue the planning discussion without executing the project.", mode="queued")
+            elif self.goal.pending and not any(row["content"].strip() == "/goal resume" for row in pending):
                 self.submit_user_input("/goal resume", mode="queued")
             elif not pending and self.intent.original:
                 self.submit_user_input("Continue the interrupted task using saved requirements and results; inspect current state before repeating work.", mode="queued")

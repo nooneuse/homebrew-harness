@@ -26,7 +26,7 @@ class HostCommand:
     @property
     def extended(self):
         return self.name in {"model", "reasoning", "compact", "new", "diff", "review", "skills", "help",
-            "worktree", "pwd", "ps", "stop", "hooks", "agents", "resume", "quit", "exit", "memory", "worktree", "pwd", "ps", "hooks", "agents", "resume", "stop", "quit"}
+            "memory", "worktree", "pwd", "ps", "hooks", "agents", "resume", "stop", "quit", "plan", "fork", "init"}
 
     @property
     def allowed_during_recovery(self):
@@ -34,6 +34,7 @@ class HostCommand:
             self.name in {"usage", "storage", "recovery", "mcp", "inputs", "help", "diff", "pwd", "ps", "hooks", "agents", "resume", "stop", "quit"}
             or self.name in {"model", "reasoning", "skills"} and self.mode == "read"
             or self.name in {"memory", "worktree"} and self.mode == "read"
+            or self.name in {"plan", "init"} and self.mode == "read"
             or self.name == "goal"
             and self.local
         )
@@ -54,7 +55,7 @@ class HostCommand:
             "task",
             "mcp",
             "model", "reasoning", "compact", "new", "diff", "review", "skills", "help",
-            "worktree", "pwd", "ps", "stop", "hooks", "agents", "resume", "quit", "exit",
+            "worktree", "pwd", "ps", "stop", "hooks", "agents", "resume", "quit", "exit", "plan", "fork", "init",
         }:
             if query.lstrip().startswith("/"):
                 raise ValueError("Unknown host command; use /help.")
@@ -63,6 +64,23 @@ class HostCommand:
         if name == "exit":
             name = "quit"
         argument = raw.strip()
+        if name == "fork":
+            return cls(query, name, "create", raw, mode="lifecycle")
+        if name in {"plan", "init"}:
+            if argument == "status":
+                return cls(query, name, "status", mode="read")
+            if not argument:
+                return cls(query, name, "on" if name == "plan" else "generate", mode="manage" if name == "plan" else "context")
+            if name == "plan" and argument in {"on", "off"}:
+                return cls(query, name, argument, mode="manage")
+            if name == "init" and argument == "preview":
+                return cls(query, name, "preview", mode="context")
+            applied = re.fullmatch(r"apply\s+([1-9][0-9]*)", argument)
+            if applied:
+                return cls(query, name, "apply", mode="execute" if name == "plan" else "manage", values=(int(applied[1]),))
+            if name == "plan" and not argument.startswith("apply"):
+                return cls(query, name, "discuss", raw, mode="context")
+            raise ValueError("Use /" + name + " status or /" + name + " apply REVISION.")
         if name in {"help", "new", "compact", "pwd", "quit"}:
             if argument:
                 raise ValueError("/" + name + " accepts no arguments.")

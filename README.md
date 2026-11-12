@@ -145,6 +145,12 @@ The default interactive entry and `homebrew-harness session` support these comma
 | `/hooks` / `/hooks show EVENT` | Show callback order and recent failures. |
 | `/agents` / `/agents show NAME_OR_ID` | Inspect the Lead, teammates and subagents, including their model and task. |
 | `/quit` / `/exit` | Save state and close the interface, using the same path as `q`, `quit` and `exit`. |
+| `/plan` / `/plan TEXT` | Enter persistent read-only planning, optionally with a request. |
+| `/plan status` / `/plan off` | Inspect the draft or return to normal mode without executing it. |
+| `/plan apply REVISION` | Accept a current plan and start execution with the original requirements. |
+| `/fork [TEXT]` | Branch a settled conversation into a new Session, optionally with a new question. |
+| `/init` / `/init preview` | Generate root `AGENTS.md`; preview existing-file updates or any planning-mode draft. |
+| `/init status` / `/init apply REVISION` | Inspect or publish the exact preview after checking its file version. |
 
 Model and reasoning changes are queued when the Lead is busy and apply after its current turn. They retain readable history and user requirements, archive private protocol replay, and persist in the Session checkpoint. The default entry also retains its interactive choice for later tasks and reopening. Configuration sources must still match for recovery. Existing members and independently bound Workflows retain their own model. A managed Run keeps its declared model contract; use its native model handoff for changes.
 
@@ -155,6 +161,12 @@ Query commands do not call a model or the task router. `/compact` and `/review` 
 `/resume list` shows workspace-local contexts. `session:ID` restores readable history and waits for the next request; interaction and Run IDs continue their original task. The saved configuration and model sources must match. Finish the default entry's current context before choosing another; an explicit Session can switch after its execution ends and cleanup completes. Retired history remains under the existing admin recovery policy.
 
 Memory queries and manual edits do not enable automatic extraction or invoke a model. Hooks are read-only; agent creation and steering continue through existing tools and `/steer-to`. Worktree creation follows task binding: claiming the task selects its directory. `/quit` and `/exit` pause an attached Run; a previously requested detached Run follows its registered background lifetime.
+
+Planning limits the model to file/search/Git reads, skills, Todo, compaction and optional read-only subagents. Automatic Memory maintenance and automatic Goal advancement wait while planning is active. Drafts retain their requirement and observed-file versions; accepting a stale draft requires an updated plan. Acceptance does not grant tool permission. The default entry routes accepted plans through its normal execution selection; existing Goals retain their native contract.
+
+Fork creates independent readable history, model/reasoning choice and planning mode. Files remain shared; use worktrees for isolated code. The parent stays resumable, and only one execution owner is active. Fork does not copy active Tasks/Goals/Runs, pending input, one-time approvals or private protocol replay. Archives remain available through bounded inherited references.
+
+The runtime loads root `AGENTS.md` from the actual workspace or assigned worktree. Conventions are refreshed at model boundaries and retained through compaction; they cannot expand permissions. `/init` creates a missing file; updates to an existing file require the displayed revision. In planning mode it only previews. Root guidance is bounded and must remain a regular file; nested directory guidance is a future extension. `/new` resets planning mode while retaining the chosen model.
 
 ## Automatic interaction
 

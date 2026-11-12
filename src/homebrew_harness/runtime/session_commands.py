@@ -25,6 +25,9 @@ HELP = """/model [ALIAS or same-connection MODEL]  Show or choose the Lead model
 /hooks [show EVENT]  Inspect registered lifecycle callbacks
 /agents [show NAME_OR_ID]  Inspect Lead, teammates and subagents
 /quit; /exit  Save and close the interface
+/plan [TEXT|status|off|apply REVISION]  Read-only planning and explicit plan acceptance
+/fork [TEXT]  Branch a settled conversation with independent context
+/init [preview|status|apply REVISION]  Generate and load root AGENTS.md guidance
 /help  Show commands
 /goal [CONDITION|clear|resume|spec JSON]  Manage the current Goal
 /inputs  Inspect accepted input; /recovery  Inspect interrupted operations
