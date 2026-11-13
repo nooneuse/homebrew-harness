@@ -70,8 +70,9 @@ Reasoning intensity remains an option of the selected model profile. A dedicated
 
 ## Discussion rounds
 
-The frozen job includes `no_progress`, the count of rounds reporting no progress. This informs the model; the runtime preserves its chosen next step rather than forcing an operator handoff after a fixed count.
+A validated standalone `service_propose` completes its reasoning phase without an additional model acknowledgement. Prepared phase outputs retain input, prompt, model, Lead projection and evidence bindings so restart can reuse them. Ordinary source changes are returned as observations for reassessment; a change outside the actual knowledge basis does not discard the job. Fixed PR and Git candidate checks continue to bind their original versions.
 
+The frozen job includes `no_progress`, the count of rounds reporting no progress. This informs the model; the runtime preserves its chosen next step rather than forcing an operator handoff after a fixed count.
 
 The default discovery interval is twelve hours. A completed source scan or tracked-PR observation marks relevant discussions ready for assessment. No new material means no model calls; waiting for an author does not keep a model request or development Run active. Authorized messages enter the sending queue without waiting for another discovery interval.
 
@@ -79,7 +80,7 @@ The discussion preserves source events, unresolved questions, facts, drafts, fin
 
 Service backups include discussion records, publication receipts and materialized PR snapshots. Existing retention operations keep this communication history; they do not retire review snapshots or discussion records.
 
-Once a draft is clear, the service presents a requirement-acceptance request. Acceptance creates or updates a proposed Work, and its development authority follows the existing Service controller. Active work must settle before accepting replacement requirements. Direction disputes and repeated lack of progress are surfaced to the operator.
+Once a draft is clear, the service presents a requirement-acceptance request. Acceptance creates or updates a proposed Work, and its development authority follows the existing Service controller. Active work must settle before accepting replacement requirements. The model can surface direction disputes and repeated lack of progress to the operator.
 
 Acceptance freezes the complete draft, including acceptance criteria and exclusions, with source references and operator clarification. The Run receives these accepted conditions and read-only source inputs. Direction questions and requirement-acceptance decisions remain valid for their discussion version; publication authority has a separate expiry measured from approval.
 

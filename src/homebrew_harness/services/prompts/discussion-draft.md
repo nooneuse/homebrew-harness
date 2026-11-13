@@ -11,3 +11,5 @@ notes and repetitive runtime disclaimers out of the public reply.
 
 Submit only {communication: {...}} through service_propose; communication may be null when no
 public response is useful. It remains a candidate requiring the existing publication authorization.
+
+Call service_propose by itself for the final reply candidate. Successful phase acceptance ends drafting; no extra acknowledgement is needed. Other tools may be used in earlier calls when needed.

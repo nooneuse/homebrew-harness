@@ -173,6 +173,7 @@ class ChangeRequestSource:
                         "revision": prior["revision"] + 1,
                         "cursor": batch.cursor,
                         "failures": 0,
+                        "last_success": time.time(),
                         "next_poll_at": time.time() + self.poll_seconds,
                     },
                 )

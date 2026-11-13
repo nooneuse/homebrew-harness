@@ -156,9 +156,8 @@ class UsageLifecycleTests(Fixture):
         )
         self.addCleanup(lambda: session.wait_closed(5))
         self.addCleanup(session.close)
-        with patch.object(
-            homebrew_harness.runtime.loop,
-            "model_request",
+        with patch(
+            "homebrew_harness.execution.model_retry.request",
             side_effect=ModelDeadlineExceeded("fixture deadline"),
         ):
             session.run_user("/goal Provide an answer")

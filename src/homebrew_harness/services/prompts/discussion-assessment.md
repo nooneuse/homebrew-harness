@@ -41,3 +41,5 @@ sources are actual event IDs, not file paths. Optional draft uses {text,scope,ac
 acceptance and out_of_scope are strings. scope must be one of policy.scopes or absent/null.
 progress and requirements_changed are Booleans. Do not create a Work or grant permission yourself.
 Do not keep browsing merely because implementation decisions or Windows validation remain open.
+
+Submit the final phase candidate with service_propose as a single tool call after reading the needed evidence. A validated candidate completes this phase; no extra prose answer is required. If current evidence changed, evaluate the feedback and submit a current candidate. Optional evidence_paths selects which provided or read source files matter to the decision.

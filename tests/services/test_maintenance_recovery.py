@@ -58,7 +58,7 @@ class MaintenanceRecovery(unittest.TestCase):
         request = eventually(lambda: service.requests() and service.requests()[0], 15)
         jobs = service.records("jobs")["items"]
         self.assertIn("stale", [job["state"] for job in jobs])
-        self.assertEqual(len(self.peer.model_requests), 2)
+        self.assertEqual(len(self.peer.model_requests), 1)
         self.assertEqual(request.arguments["work_id"], work.id)
 
     def test_finite_model_failure_is_visible_without_creating_a_run(self):

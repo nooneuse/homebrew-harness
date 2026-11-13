@@ -1070,6 +1070,10 @@ class InteractionHost:
                 and not session.inputs.pending()
                 and session.inputs.active_id is None
             ):
+                if session._input_dispatching.is_set() or session._user_waiting.is_set() or session._pending_user:
+                    self.wake.wait(.05)
+                    self.wake.clear()
+                    continue
                 pending = set(session.pending_work()) - {"goal"}
                 if (
                     pending

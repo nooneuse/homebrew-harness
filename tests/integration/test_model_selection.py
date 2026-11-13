@@ -570,10 +570,13 @@ class ModelSelectionTests(unittest.TestCase):
                 reply("Report failure"),
             ]
         )
-        # Empty worker response queue produces one genuine SDK server error.
+        # Empty worker responses fail all bounded transport attempts. The Lead's
+        # delegation is executed once, without switching to another model.
         session = self.session(registry)
         self.assertEqual(session.run_user("Delegate once"), "Report failure")
-        self.assertEqual(len(worker.requests), 1)
+        self.assertEqual(len(worker.requests), 3)
+        self.assertEqual({r["model"] for r in worker.requests},
+                         {registry.select("coder").model})
         self.assertEqual(len(lead.requests), 2)
 
     def test_registry_client_close_failure_preserves_session_lease_and_retries(self):

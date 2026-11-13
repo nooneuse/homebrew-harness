@@ -283,6 +283,7 @@ def build_tool_pool(client, model, workdir, components: LoopComponents):
     if managed is not None:
         handlers.update(
             request_attention=managed.request_attention,
+            wait_for_source=managed.wait_for_source,
             execute_approved=lambda **_kwargs: None,
             read_run_event=managed.read_event,
         )

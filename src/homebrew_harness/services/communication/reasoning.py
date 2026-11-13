@@ -4,7 +4,7 @@ import copy
 import re
 
 from homebrew_harness.services.protocol import fingerprint
-from homebrew_harness.services.project_context import file_version
+from homebrew_harness.services.phase_output import overview_signature, versions
 from .spec import validate_proposal, validate_plan, open_questions
 
 
@@ -54,20 +54,15 @@ def public(plan):
 
 
 def signature(job, project, binding):
-    return {"input": fingerprint(job["input"]), "project": project.get("version"),
+    return {"input": fingerprint(job["input"]), "project": overview_signature(project),
             "model": binding.identity(), "policy": job["input"]["policy_hash"],
             "prompts": job.get("discussion_prompts", {}).get("signature")}
 
 
 def valid(record, project, binding, root):
-    if not record or not project.get("version"):
-        return False
-    if record["signature"]["project"] != project["version"] or record["signature"]["model"] != binding.identity():
-        return False
-    try:
-        return all(digest and file_version(root, path) == digest for path, digest in record.get("evidence", {}).items())
-    except (OSError, ValueError):
-        return False
+    return bool(record and record["signature"]["project"] == overview_signature(project)
+                and record["signature"]["model"] == binding.identity()
+                and record.get("evidence", {}) == versions(root, record.get("evidence", {})))
 
 
 def acknowledgement(store, job):
@@ -136,6 +131,8 @@ def run(agent, job, project, deadline):
                 return result
         if lead[0].identity() == agent.binding.identity():
             result = agent._execute(job, project=project, deadline=deadline)
+            project = agent.project_context
+            sig = signature(job, project, lead[0])
             raw = copy.deepcopy({k: v for k, v in result.items() if k != "communication"})
             for question in raw.get("questions", []):
                 question.setdefault("recipient", "requester")
@@ -145,9 +142,13 @@ def run(agent, job, project, deadline):
             store.prepare_job(job, discussion_assessment=record)
             return result
         plan = agent._execute(job, project=project, stage="assessment", deadline=deadline, selected=lead)
+        project = agent.project_context
+        sig = signature(job, project, lead[0])
         record = {"signature": sig, "plan": plan, "evidence": agent.code_evidence,
                   "epoch": job["input"]["epoch"]}
         store.prepare_job(job, discussion_assessment=record)
     if not plan["reply_required"]:
         return plan["proposal"]
+    if lead[0].identity() == draft[0].identity():
+        return agent._execute(job, project=project, deadline=deadline, selected=draft)
     return agent._execute(job, project=project, stage="reply", deadline=deadline, plan=plan, selected=draft)

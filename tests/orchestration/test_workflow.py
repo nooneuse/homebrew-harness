@@ -150,6 +150,30 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn("tokens", resumed["task"]["progress"])
         self.assertEqual(cli("status", run_id)["task"]["status"], "completed")
 
+    def test_transport_retry_counts_model_attempts_without_repeating_script_steps(self):
+        from homebrew_harness.execution.model_protocol import ProviderError
+        effects=[]
+        client,_=fake_client([])
+        responses=iter([ProviderError('server_error',status_code=503),reply('Answer')])
+        def model(**kwargs):
+            response=next(responses)
+            if isinstance(response,Exception):
+                raise response
+            return response
+        client.chat.completions.create.side_effect=model
+        async def script(ctx,args):
+            effects.append('before')
+            value=await ctx.agent('Answer this question',label='one')
+            effects.append('after')
+            return value
+        runner=ModelWorkflowRunner(model_binding(client,'test-model'))
+        workflow=self.runtime(script,runner=runner)
+        self.addCleanup(workflow.close)
+        result=workflow.run('test-flow',{})
+        self.assertEqual(result['task']['status'],'completed')
+        self.assertEqual(result['task']['progress']['calls'],2)
+        self.assertEqual(effects,['before','after'])
+
     def test_metadata_and_model_arguments_fail_before_launch(self):
         async def script(ctx, args):
             self.fail("Invalid workflow launched")

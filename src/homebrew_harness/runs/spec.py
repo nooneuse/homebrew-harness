@@ -13,7 +13,7 @@ from homebrew_harness.execution.model_gateway import ModelGatewayError
 
 TERMINAL = {"completed", "failed", "cancelled"}
 RUN_CONTROL_TOOLS = frozenset(
-    {"request_attention", "execute_approved", "read_run_event"}
+    {"request_attention", "execute_approved", "read_run_event", "wait_for_source"}
 )
 RUN_STAGE_TOOLS = frozenset({"get_handoff", "integrate_stage", "publish_stage"})
 RUN_TOOLS = RUN_CONTROL_TOOLS | RUN_STAGE_TOOLS

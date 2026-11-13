@@ -212,10 +212,8 @@ class ApprovalReviewer:
                                         "detail": getattr(error, "message", None), "settled": getattr(error, "settled", True)})
                     if failures >= 3 or deadline.remaining() == 0:
                         raise
-                    if getattr(error, "settled", True) is False and not gateway.wait_idle(deadline.remaining()):
-                        raise
-                    gateway.checkpoint()
-                    time.sleep(min(0.1 * 2 ** (failures - 1), deadline.remaining()))
+                    from homebrew_harness.execution.model_retry import wait_retry
+                    wait_retry(gateway, error, failures - 1, deadline)
                     continue
                 failures = 0
                 assistant = {"role": "assistant", "content": response.text}

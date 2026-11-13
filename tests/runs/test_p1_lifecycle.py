@@ -129,7 +129,8 @@ class LifecycleTests(unittest.TestCase):
         self.assertEqual(fresh.execute().status, "blocked")
         self.assertEqual(next_client.chat.completions.create.call_count, 1)
         self.assertIsNone(self.store.get(c.id)["resume_request"])
-        self.assertTrue(next_session.gateway.blocked)
+        self.assertGreater(next_session.gateway.summary()["consecutive_failures"], 0)
+        self.assertEqual(next_session.gateway.blocked, "")
 
     def test_terminal_finalization_preserves_unapplied_input_and_foreign_mail(self):
         from homebrew_harness.storage.message_bus import MessageBus
@@ -198,4 +199,5 @@ class LifecycleTests(unittest.TestCase):
             outcome = fresh.execute()
         self.assertEqual(outcome.status, "paused")
         self.assertEqual(next_client.chat.completions.create.call_count, 0)
-        self.assertTrue(next_session.gateway.blocked)
+        self.assertGreater(next_session.gateway.summary()["consecutive_failures"], 0)
+        self.assertEqual(next_session.gateway.blocked, "")

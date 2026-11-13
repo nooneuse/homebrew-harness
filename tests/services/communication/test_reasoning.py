@@ -9,6 +9,7 @@ from pathlib import Path
 
 from homebrew_harness.services.project_context import build
 from homebrew_harness.services.communication.spec import validate_proposal
+from homebrew_harness.runtime.errors import AgentError
 from homebrew_harness.platforms.contracts import ObjectRef, SourceEvent
 from tests.services.communication import test_flow as fixture
 from tests.runtime.test_interaction import eventually
@@ -83,16 +84,17 @@ class DiscussionReasoning(unittest.TestCase):
         self.host.config = replace(self.host.config, settings=replace(self.host.config.settings, models_config=catalog, lead_model='lead'))
 
     def active(self, service, body='Please support the existing session workflow.', identity=1, kind='issue'):
-        ref = ObjectRef('github', 'primary', 'example/project', 'issue', '1', 1)
-        obj = ref if kind == 'issue' else ObjectRef('github', 'primary', 'example/project', 'comment', str(identity))
-        item = SourceEvent(obj, ref, str(identity), {'title': 'Feature', 'body': body, 'actor_id': 11, 'state': 'open'})
-        store = service.runtime.maintenance.communication.store
-        store.ingest('project', [item], ref.scope())
-        row = store.get('discussions', service.discussions()['items'][0]['id'])
-        job = store.queue_round(row, force=True)
-        self.assertIsNotNone(job)
-        job = store.ms.claim_job()
-        return store, job
+        with service.runtime.lock:
+            ref = ObjectRef('github', 'primary', 'example/project', 'issue', '1', 1)
+            obj = ref if kind == 'issue' else ObjectRef('github', 'primary', 'example/project', 'comment', str(identity))
+            item = SourceEvent(obj, ref, str(identity), {'title': 'Feature', 'body': body, 'actor_id': 11, 'state': 'open'})
+            store = service.runtime.maintenance.communication.store
+            store.ingest('project', [item], ref.scope())
+            row = store.get('discussions', service.discussions()['items'][0]['id'])
+            job = store.queue_round(row, force=True)
+            self.assertIsNotNone(job)
+            job = store.ms.claim_job()
+            return store, job
 
     def plan(self, internal=False, reply=True):
         return {'next_step': 'operator' if internal else 'wait', 'reason': 'The requested behavior is clear.',
@@ -161,7 +163,7 @@ class DiscussionReasoning(unittest.TestCase):
         service.pause('all')
         store, job = self.active(service)
         result = service.runtime.maintenance.agent.run(job)
-        self.assertEqual([request['model'] for request in self.peer.models], ['planner', 'planner', 'writer', 'writer'])
+        self.assertEqual([request['model'] for request in self.peer.models], ['planner', 'writer'])
         self.assertEqual(result['questions'][0]['recipient'], 'maintainer')
         saved = store.ms.job_get(job['id'])
         self.assertEqual(saved['discussion_assessment']['plan']['proposal']['next_step'], 'operator')
@@ -182,7 +184,7 @@ class DiscussionReasoning(unittest.TestCase):
         service.decide(request, 'approve', decision_id='publish-prepared-reply')
         eventually(lambda: len(self.peer.writes) == 1, 10)
         self.assertEqual(self.peer.writes[0][1]['body'].split('\n\n<!--')[0], 'Thanks, the scope is clear.')
-        self.assertEqual([r['model'] for r in self.peer.models[:4]], ['planner', 'planner', 'writer', 'writer'])
+        self.assertEqual([r['model'] for r in self.peer.models[:4]], ['planner', 'writer'])
 
     def test_model_tool_descriptions_expose_actual_ids_without_weakening_dispatch(self):
         from homebrew_harness.tools.catalog import SERVICE_TOOL_DEFINITIONS, TOOL_SCHEMAS
@@ -207,13 +209,13 @@ class DiscussionReasoning(unittest.TestCase):
         service.pause('all')
         store, job = self.active(service)
         agent = service.runtime.maintenance.agent
-        with self.assertRaises(ValueError):
+        with self.assertRaises(AgentError):
             agent.run(job)
         self.assertIsNotNone(store.ms.job_get(job['id']).get('discussion_assessment'))
         self.peer.proposals = [{'communication': None}]
         result = agent.run(job)
         self.assertEqual(result['next_step'], 'wait')
-        self.assertEqual(sum(r['model'] == 'planner' for r in self.peer.models), 2)
+        self.assertEqual(sum(r['model'] == 'planner' for r in self.peer.models), 1)
         self.assertEqual(self.peer.writes, [])
 
     def test_acknowledgement_reuses_plan_but_code_change_invalidates_it(self):
@@ -232,7 +234,7 @@ class DiscussionReasoning(unittest.TestCase):
         self.peer.proposals = [self.plan(reply=False)]
         store, later = self.active(service, 'Thanks!', identity=3, kind='comment')
         store.ms.finish(later, agent.run(later))
-        self.assertEqual(len(self.peer.models), before + 2)
+        self.assertEqual(len(self.peer.models), before + 1)
 
     def test_prompt_edits_are_frozen_within_job_and_adopted_by_new_jobs(self):
         self.models()

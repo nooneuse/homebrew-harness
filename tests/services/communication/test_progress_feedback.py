@@ -12,8 +12,6 @@ class DiscussionProgress(unittest.TestCase):
     def test_repeated_no_progress_does_not_force_operator_or_hide_new_input(self):
         service = self.start(no_progress_rounds=2)
         service.pause('all')
-        service.runtime.maintenance.stop.set()
-        self.assertTrue(service.runtime.maintenance.finished.wait(5))
         store = service.runtime.maintenance.communication.store
         ref = ObjectRef('github', 'primary', 'example/project', 'issue', '1', 1)
         for iteration in range(4):

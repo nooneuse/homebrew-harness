@@ -20,6 +20,7 @@ from homebrew_harness.execution.model_gateway import (
     ModelGatewayError,
 )
 from homebrew_harness.execution.model_protocol import ProviderError
+from homebrew_harness.execution.model_retry import retry_policy
 from homebrew_harness.runtime.runtime_state import RecoveryRequired
 from homebrew_harness.tools.tool_outcome import needs_inspection
 from homebrew_harness.security.data_boundary import redact
@@ -148,6 +149,21 @@ class RunController:
     def test_authorization_fields(self, name, workdir):
         return self.test_authorizations.operation_fields(name, workdir)
 
+    def wait_for_source(self, *, workdir, until="event", reason=""):
+        if until not in {"event", "healthy"} or not isinstance(reason, str) or len(reason) > 1000:
+            raise ValueError("Source wait requires event/healthy and a short reason.")
+        if not self.state.get("source_enabled"):
+            raise ValueError("This Run has no external source.")
+        with self.store.runtime.backend().connection() as conn:
+            recipient = "reference_" + self.id
+            epoch = self.store.runtime.backend()._get(conn, "input_epochs", recipient, 0)
+            observed_sources = {row[0]: json.loads(row[1]).get("revision", 0) for row in conn.execute(
+                "SELECT key,value FROM records WHERE section='run_sources' AND owner=?", (self.session.checkpoint_key,))}
+        self.state = self.store.update(self.header, {"source_wait": {
+            "until": until, "reason": reason, "after_time": time.time(), "after_input": epoch, "after_sources": observed_sources}})
+        self.source_wait_requested = True
+        return json.dumps({"waiting_for": "source", "until": until, "accepted": True, "permission_granted": False})
+
     def request_attention(
         self, *, workdir, question, reason, impact, independent_work=""
     ):
@@ -202,12 +218,13 @@ class RunController:
         sources = self.store.runtime.items(
             "run_sources", owner=self.session.checkpoint_key
         )
-        if any(
-            r.get("last_error_status") in {401, 403, 404, 422}
-            for r in sources.values()
-            if r.get("failures", 0)
-        ):
-            raise RunStopped("source_access_required")
+        observation = [{"id": source.get("id"), "status": "unavailable" if source.get("failures", 0) else "ready" if source.get("last_success") else "unobserved",
+            "failures": source.get("failures", 0), "last_error": source.get("last_error"),
+            "last_error_status": source.get("last_error_status"), "last_success": source.get("last_success"),
+            "next_poll_at": source.get("next_poll_at")} for source in sources.values()]
+        if self.state.get("source_enabled"):
+            set_context(messages, "source_observations", {"role": "user", "name": "source_observations", "content": json.dumps({"sources": observation,
+                "instruction": "Collection errors are observations, not a change to accepted requirements. Continue independent work, inspect available events, explicitly wait_for_source, or request necessary host help. Do not claim missing current external proof."}, ensure_ascii=False)})
         rows = self.requests.reconcile(self)
         pending = [r for r in rows if r["state"] == "pending"]
         if pending:
@@ -497,12 +514,8 @@ class RunController:
                     value for value in pending if value not in {"team", "team_busy"}
                 ]
         state = self.store.get(self.id)
-        if state.get("source_enabled"):
-            sources = self.store.runtime.items(
-                "run_sources", owner=self.session.checkpoint_key
-            )
-            if not sources or any(r.get("failures", 0) for r in sources.values()):
-                pending.append("source")
+        if state.get("source_wait"):
+            pending.append("source")
         if self.store.runtime.mailbox("peek", "reference_" + self.id):
             pending.append("reference")
         rows = self.requests.records(self.id)
@@ -1153,6 +1166,7 @@ class RunController:
                 return True
         return self.session.gateway.wait_idle(0)
 
+    @retry_policy(1)
     def execute(self):
         if self.inspection_mode:
             raise ValueError("Inspection cannot execute managed business work.")
@@ -1384,6 +1398,8 @@ class RunController:
                         )
                     if isinstance(error, RunStopped):
                         reason = error.reason_code
+                        if reason == "source_wait":
+                            return self.finish("waiting", "source_wait", pending=("source",))
                         if (
                             reason in {"approval_required", "attention_required"}
                             and self.waiting_request

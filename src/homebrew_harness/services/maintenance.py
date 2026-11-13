@@ -109,7 +109,11 @@ class Maintenance:
                             break
                 with self.store.db.write() as conn:
                     self.store.report(conn)
-                job = self.store.claim_job()
+                with self.runtime.lock:
+                    meta = self.runtime.store.get(self.store.id)
+                    if meta["state"] == "stopping" or (meta["state"] == "paused" and meta["scope"] == "all"):
+                        continue
+                    job = self.store.claim_job()
                 if job is None:
                     continue
                 result = None

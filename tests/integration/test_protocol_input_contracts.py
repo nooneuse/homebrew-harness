@@ -366,7 +366,7 @@ class ProtocolInputContracts(unittest.TestCase):
         self.assertEqual(gateway.summary()["known_tokens"], 50)
         self.assertEqual(gateway.summary()["unknown_usage_calls"], 0)
 
-    def test_native_transport_errors_block_one_connection(self):
+    def test_native_transport_errors_remain_observations_and_allow_next_request(self):
         adapter = self.adapter()
         adapter.client.close()
 
@@ -382,12 +382,24 @@ class ProtocolInputContracts(unittest.TestCase):
                 gateway.request(
                     model="fixture", messages=[{"role": "user", "content": "Answer"}]
                 )
-        with self.assertRaises(ModelGatewayError):
+        with self.assertRaises(ProviderError):
             gateway.request(
                 model="fixture", messages=[{"role": "user", "content": "Answer"}]
             )
-        self.assertEqual(gateway.summary()["calls"], 3)
-        self.assertEqual(gateway.summary()["consecutive_failures"], 3)
+        self.assertEqual(gateway.summary()["calls"], 4)
+        self.assertEqual(gateway.summary()["consecutive_failures"], 4)
+        adapter.backend.client.close()
+        adapter.backend.client = httpx.Client(
+            base_url=local_endpoint(),
+            transport=httpx.MockTransport(lambda request: httpx.Response(
+                200, json=responses("Recovered"))),
+        )
+        recovered = gateway.request(
+            model="fixture", messages=[{"role": "user", "content": "Answer"}]
+        )
+        self.assertEqual(recovered.text, "Recovered")
+        self.assertEqual(gateway.summary()["calls"], 5)
+        self.assertEqual(gateway.summary()["consecutive_failures"], 0)
 
     def test_native_parameter_placement_and_thinking_limits(self):
         from homebrew_harness.execution.model_protocol import ModelCapabilities

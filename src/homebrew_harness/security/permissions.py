@@ -499,6 +499,7 @@ def check_permission(
     if managed is not None and tool_name in {
         "request_attention",
         "read_run_event",
+        "wait_for_source",
         "get_handoff",
         "integrate_stage",
         "publish_stage",

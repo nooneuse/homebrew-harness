@@ -219,11 +219,12 @@ class ConvergenceTests(unittest.TestCase):
         client, _ = fake_client([])
         memory = MemoryRuntime(client, "fixture", self.root)
         memory.store.replace([record()], memory.store.snapshot().version)
-        session, _ = self.session(memory_runtime=memory)
+        session, lead = self.session(memory_runtime=memory)
         session.run_user("/usage")
         session.gateway._state.blocked = "provider quota unavailable"
         self.assertTrue(json.loads(session.run_user("/memory")))
-        self.assertEqual(session.gateway.blocked, "provider quota unavailable")
+        lead.chat.completions.create.assert_not_called()
+        client.chat.completions.create.assert_not_called()
 
     def test_sqlite_replacement_is_rejected_before_external_initialization(self):
         outside = self.root / "outside"

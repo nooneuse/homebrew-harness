@@ -194,21 +194,12 @@ class RunServices:
 
                 notice(db, conn, run, "approval_expired")
                 return
-            if run.get("source_enabled") and "source" in (
-                run.get("last_outcome") or {}
-            ).get("pending_work", ()):
-                sources = [
-                    json.loads(row[0])
-                    for row in conn.execute(
-                        "SELECT value FROM records WHERE section='run_sources' AND owner=?",
-                        ("lead:" + run["session_id"],),
-                    ).fetchall()
-                ]
-                if not sources or any(r.get("failures", 0) for r in sources):
-                    return
             incoming = conn.execute(
                 "SELECT count(*) FROM inbox WHERE recipient=?", ("user_" + identity,)
             ).fetchone()[0]
+            from .source_observation import ready
+            if not incoming and not ready(db, conn, run):
+                return
             if incoming or not any(r["state"] == "pending" for r in rows):
                 enqueue(db, conn, run, "wake", {}, "ready:" + str(run["revision"]))
 
@@ -234,20 +225,8 @@ class RunServices:
                     "SELECT value FROM records WHERE section='run_requests' AND owner=?",
                     ("lead:" + run["session_id"],),
                 ).fetchall()
-                sources = conn.execute(
-                    "SELECT value FROM records WHERE section='run_sources' AND owner=?",
-                    ("lead:" + run["session_id"],),
-                ).fetchall()
-                source_wait = "source" in (run.get("last_outcome") or {}).get(
-                    "pending_work", ()
-                )
-                healthy = (
-                    not source_wait
-                    or bool(sources)
-                    and all(
-                        not json.loads(row[0]).get("failures", 0) for row in sources
-                    )
-                )
+                from .source_observation import ready
+                healthy = ready(db, conn, run)
                 if (
                     count
                     or healthy
@@ -259,7 +238,7 @@ class RunServices:
                         conn,
                         "runs",
                         run["id"],
-                        {**run, "status": "queued", "revision": run["revision"] + 1},
+                        {**run, "status": "queued", "source_wait": None, "revision": run["revision"] + 1},
                     )
             db._put(
                 conn,

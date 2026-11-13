@@ -77,6 +77,8 @@ Turn, Run, Workflow, and interaction task handles share these observation method
 
 `watch` projects confirmed state and pending requests. Progress can be merged or repeated; the stream is suitable for a UI, while durable state remains authoritative. Closing a watcher does not cancel execution. SDK execution does not print runtime messages to the terminal by default.
 
+External Run collection failures are source observations, rather than a blanket stop of existing work. The model may call `wait_for_source(until="event"|"healthy", reason=...)` to wait durably for a new event or fresh healthy collection. It can also continue independent work or ask for host help. A user instruction wakes the wait, and current PR/CI proof remains required where the action contract demands it.
+
 ## Submission, steering and cancellation
 
 ```python

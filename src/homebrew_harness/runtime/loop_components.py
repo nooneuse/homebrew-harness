@@ -37,3 +37,6 @@ class LoopComponents:
     project_guidance: object = None
     plan_observer: object = None
     planning: bool = False
+
+    completion_check: object = None
+    model_attempt_hook: object = None

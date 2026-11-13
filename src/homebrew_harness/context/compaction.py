@@ -492,7 +492,8 @@ class ContextCompactor:
             # providers. Retry a truncated, tool-free summary once; no action
             # response or completed side effect is replayed by this recovery.
             for budget in (2000, 6000):
-                response = model_request(
+                from homebrew_harness.execution.model_retry import request
+                response = request(
                     self.client,
                     purpose="compaction",
                     model=self.model,

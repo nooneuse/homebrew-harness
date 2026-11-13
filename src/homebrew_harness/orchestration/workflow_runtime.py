@@ -34,7 +34,6 @@ from homebrew_harness.execution.execution_control import (
 )
 from homebrew_harness.execution.model_gateway import ModelGatewayError, ensure_gateway
 from homebrew_harness.runtime.runtime_control import WorkAccepted, Workers
-from homebrew_harness.security.data_boundary import model_request
 from homebrew_harness.security.safe_files import SafeFile
 
 
@@ -281,17 +280,19 @@ class ModelWorkflowRunner:
             )
         return kwargs
 
-    def run(self, prompt, schema, label, max_tokens):
-        response = model_request(
+    def run(self, prompt, schema, label, max_tokens, *, on_attempt=None):
+        from homebrew_harness.execution.model_retry import request
+        response = request(
             self.client,
-            purpose="workflow_step",
+            purpose="workflow_step", on_attempt=on_attempt,
             **self.parameters(prompt, schema, max_tokens),
         )
         return self.result(response, schema)
 
-    async def arun(self, prompt, schema, label, max_tokens):
-        response = await ensure_gateway(self.client).arequest(
-            purpose="workflow_step", **self.parameters(prompt, schema, max_tokens)
+    async def arun(self, prompt, schema, label, max_tokens, *, on_attempt=None):
+        from homebrew_harness.execution.model_retry import arequest
+        response = await arequest(self.client,
+            purpose="workflow_step", on_attempt=on_attempt, **self.parameters(prompt, schema, max_tokens)
         )
         return self.result(response, schema)
 
@@ -699,11 +700,18 @@ class ExecutionState:
             if key in inflight and inflight[key].done():
                 del inflight[key]
 
+    def model_attempt(self, attempt):
+        self.check_stop()
+        self.task["progress"]["calls"] += 1
+        if attempt:
+            self.progress("agent", status="transport_retry", attempt=attempt)
+
     async def _request(self, prompt, schema, label):
         limits = self.runtime.limits
         async with self.shared["semaphore"]:
             self.check_stop()
-            self.task["progress"]["calls"] += 1
+            if not isinstance(self.runtime.runner, ModelWorkflowRunner):
+                self.task["progress"]["calls"] += 1
             if isinstance(self.runtime.runner, ModelWorkflowRunner):
                 gateway = ensure_gateway(self.runtime.runner.client)
                 with self.runtime._guard:
@@ -1146,7 +1154,7 @@ class WorkflowRuntime:
 
     async def request_runner(self, ctx, *args):
         if isinstance(self.runner, ModelWorkflowRunner):
-            return await self.runner.arun(*args)
+            return await self.runner.arun(*args, on_attempt=ctx.model_attempt)
         result = Future()
 
         def invoke():

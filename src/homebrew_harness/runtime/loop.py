@@ -32,7 +32,7 @@ from homebrew_harness.orchestration.teams import TeamManager
 from homebrew_harness.orchestration.workflow_runtime import WorkflowRuntime
 from homebrew_harness.runtime.hooks import HookRegistry
 from homebrew_harness.runtime.loop_components import LoopComponents
-from homebrew_harness.security.data_boundary import model_request, redact
+from homebrew_harness.security.data_boundary import redact
 from homebrew_harness.storage.durable_runtime import (
     RecoveryRequired,
     active_writer,
@@ -382,10 +382,25 @@ def _agent_loop(
             else None
         )
         member_revision = getattr(team_member, "user_revision", 0)
+        from homebrew_harness.execution.model_retry import request as retry_request, RetryBoundary
+        def model_attempt(attempt):
+            nonlocal turns
+            if attempt:
+                if turns >= max_turns:
+                    raise RetryBoundary("Model-turn limit reached during transport recovery.")
+                turns += 1
+                if goal_controller is not None:
+                    stopped = goal_controller.before_worker(max_turns)
+                    if stopped:
+                        raise RetryBoundary("Goal model-call limit reached.", stopped)
+            if components.model_attempt_hook is not None:
+                components.model_attempt_hook()
         try:
             with client.scope(cancel_event=steering.cancel if steering else None):
-                response = model_request(
+                response = retry_request(
                     client,
+                    attempts=1 if components.run_control is not None else None,
+                    on_attempt=model_attempt,
                     purpose="worker",
                     role="teammate"
                     if team_member
@@ -400,6 +415,10 @@ def _agent_loop(
                     protocol_root=compactor.store.workdir,
                     **({"tools": tools} if tools else {}),
                 )
+        except RetryBoundary as error:
+            if goal_controller is not None and error.decision is not None:
+                return goal_controller.report("", error.decision)
+            raise
         except ModelCancelled as error:
             if (
                 steering is not None
@@ -468,6 +487,10 @@ def _agent_loop(
         if not calls and guidance.refresh(messages, guidance_cwd()):
             continue
         if not calls:
+            if components.completion_check is not None:
+                if components.completion_check((), messages):
+                    return ""
+                continue
             if steering is not None and steering.apply(
                 messages, todo_manager, compactor
             ):
@@ -558,7 +581,9 @@ def _agent_loop(
                 control_error = None
             except ModelGatewayError as error:
                 control_error = error
-            if (
+            if components.run_control is not None and getattr(components.run_control, "source_wait_requested", False):
+                output = json.dumps({"error": "Explicit source wait requested; later calls were not executed.", "executed": False})
+            elif (
                 components.run_control is not None
                 and components.run_control.permission_required
             ):
@@ -657,6 +682,9 @@ def _agent_loop(
             raise RecoveryRequired(
                 "Tool outcome unknown; inspect saved execution facts before continuing. Session hosts can use /recovery."
             )
+        if components.run_control is not None and getattr(components.run_control, "source_wait_requested", False):
+            from homebrew_harness.runs.spec import RunStopped
+            raise RunStopped("source_wait")
         if (
             components.run_control is not None
             and components.run_control.permission_required
@@ -682,6 +710,10 @@ def _agent_loop(
             raise homebrew_harness.runtime.errors.AgentError(
                 "Agent turn stopped after closing its tool batch."
             )
+        if not changed_input and components.completion_check is not None:
+            if components.completion_check(calls, messages):
+                save_boundary(messages, todo_manager, compactor.intent)
+                return ""
         if todo_manager is not None:
             updated_todo = todo_manager.revision != revision_before
             rounds_since_todo = 0 if updated_todo else rounds_since_todo + 1

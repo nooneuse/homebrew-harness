@@ -282,7 +282,9 @@ class HarnessTests(unittest.TestCase):
         self.assertTrue(session.process_once())
         self.assertTrue(session._quota_blocked)
         self.assertFalse(session.process_once())
-        self.assertEqual(client.chat.completions.create.call_count, 1)
+        # Recovery of this delivery is bounded; the pending observation is retained
+        # after all transport attempts fail, until a new user request resumes it.
+        self.assertEqual(client.chat.completions.create.call_count, 3)
         self.assertTrue(session._pending_team)
         recovered, _ = fake_client([reply("User resumed"), reply("Events resumed")])
         session.client = recovered

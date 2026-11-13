@@ -87,6 +87,7 @@ class MaintenanceStore:
                 "project_context",
                 "discussion_assessment",
                 "discussion_prompts",
+                "phase_outputs",
                 "unapplied_result",
                 "integration",
                 "integration_quality",
@@ -547,7 +548,7 @@ class MaintenanceStore:
         self.db._put(conn, "service_work", work["id"], work)
 
     def prepare_job(self, job, **values):
-        if set(values) - {"project_context", "discussion_assessment", "discussion_prompts"}:
+        if set(values) - {"project_context", "discussion_assessment", "discussion_prompts", "phase_outputs"}:
             raise ValueError("Unknown service preparation field.")
         with self.db.write() as conn:
             self.store.guard(conn, self.header)

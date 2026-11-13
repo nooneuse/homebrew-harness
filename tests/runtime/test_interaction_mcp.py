@@ -167,8 +167,10 @@ class InteractionMCPTests(unittest.TestCase):
         task = host.submit("Look up documentation and continue as managed")
         self.assertTrue(entered.wait(15), host.status())
         source = host.session
+        self.assertTrue(source._input_dispatching.is_set())
         manifest = source.mcp.manifest()
         host.upgrade()
+        self.assertEqual(host.state.get(task["task_id"])["target"]["kind"], "session")
         release.set()
         eventually(
             lambda: (

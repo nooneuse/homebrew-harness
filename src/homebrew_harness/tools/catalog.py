@@ -52,7 +52,7 @@ SERVICE_TOOL_DEFINITIONS = [
     ),
     define_tool(
         "service_propose",
-        "Save a candidate JSON proposal for host validation; does not authorize or execute work.",
+        "Submit one complete final candidate as JSON. Call this tool by itself after reading the needed results; successful validation completes the phase. This does not authorize or execute work.",
         {"proposal": NONEMPTY_STRING},
         ["proposal"],
     ),
@@ -66,6 +66,7 @@ TOOLS = [
     define_tool("git_status", "Inspect visible changes in the bound Git workspace with fixed host options.", {}, []),
     define_tool("git_diff", "Inspect tracked working changes against HEAD; optional literal relative paths narrow the result.", {"paths": {"type": "array", "items": NONEMPTY_STRING, "minItems": 1, "maxItems": 32}}, []),
 
+    define_tool("wait_for_source", "Explicitly pause this Run until a new source event or a fresh healthy source observation. This grants no permission and preserves accepted requirements.", {"until": {"type": "string", "enum": ["event", "healthy"]}, "reason": {"type": "string", "maxLength": 1000}}, []),
     define_tool(
         "request_attention",
         "Ask the host for a task decision, then stop this work phase and wait. The answer amends the task; it grants no tool permission.",

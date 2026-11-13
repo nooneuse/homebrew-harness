@@ -61,6 +61,31 @@ class AgentLoopTests(unittest.TestCase):
                 capabilities=Capabilities.full(memory_mode="off"),
             )
 
+    def test_transport_retry_preserves_an_already_completed_tool_batch(self):
+        client, snapshots = fake_client([
+            reply(calls=[call("save", name="write_file",
+                              arguments='{"path":"result.txt","content":"done"}')]),
+            ProviderError("server_error", status_code=503),
+            reply("Done."),
+        ])
+        original = client.chat.completions.create.side_effect
+
+        def model(**kwargs):
+            response = original(**kwargs)
+            if isinstance(response, Exception):
+                raise response
+            return response
+
+        client.chat.completions.create.side_effect = model
+        write = Mock(return_value="Saved")
+        with patch.dict(homebrew_harness.tools.registry.TOOL_HANDLERS,
+                        {"write_file": write}):
+            self.assertEqual(self.run_loop(client), "Done.")
+        self.assertEqual(write.call_count, 1)
+        self.assertEqual(client.chat.completions.create.call_count, 3)
+        self.assertEqual(snapshots[1], snapshots[2])
+        self.assertEqual(sum(m.get("tool_call_id") == "save" for m in self.history), 1)
+
     def test_text_response_stops_without_an_empty_tool_message(self):
         # The actual calls, not finish_reason alone, determine whether to execute tools.
         client, snapshots = fake_client([reply("Done.", finish_reason="tool_calls")])

@@ -190,7 +190,7 @@ class MaintenanceBoundaries(unittest.TestCase):
         current = service.requests()[0]
         self.assertEqual(current.state, "pending")
         self.assertIsNone(service.store.work(work.id)["authority"])
-        self.assertEqual(len(self.peer.model_requests), 2)
+        self.assertEqual(len(self.peer.model_requests), 1)
 
     def test_service_code_discovery_excludes_runtime_and_credentials(self):
         import json

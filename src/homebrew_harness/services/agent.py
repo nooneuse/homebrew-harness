@@ -17,6 +17,7 @@ from homebrew_harness.runtime.loop_components import LoopComponents
 from homebrew_harness.runtime.output import output_scope
 from .maintenance_spec import number
 from .job_contracts import JobContract
+from .protocol import fingerprint
 
 SERVICE_TOOLS = frozenset({"service_read", "service_propose", "service_read_code"})
 
@@ -57,6 +58,12 @@ class ServiceAgent:
         self.stage = None
         self.assessment_plan = None
         self.project_context = None
+        self.phase_counts = {}
+        self.phase_feedback = None
+        self.phase_key = None
+        self.phase_signature = None
+        self.selected_evidence = None
+        self.used_phases = set()
         self.code_evidence = {}
         from .communication.prompts import defaults, identity
         self.builtin_prompts = defaults()
@@ -329,7 +336,15 @@ class ServiceAgent:
         return run_read(path=path, offset=offset, limit=limit, workdir=root)
 
     def propose(self, proposal, workdir=None):
+        self.proposal = None
         raw = json.loads(proposal)
+        selected = raw.pop("evidence_paths", None) if isinstance(raw, dict) else None
+        allowed = set(self.code_evidence)
+        allowed.update(d["path"] for d in (self.project_context or {}).get("documents", []))
+        if selected is not None and (not isinstance(selected, list) or len(selected) > 32
+                or any(not isinstance(path, str) or path not in allowed for path in selected)):
+            raise ValueError("evidence_paths must select provided or read project files.")
+        self.selected_evidence = selected
         if self.stage == "assessment":
             from .communication.reasoning import assessment
             self.proposal = assessment(self.store, self.job, raw)
@@ -341,6 +356,50 @@ class ServiceAgent:
         return json.dumps(
             {"candidate_ready": True, "persisted": False, "authorized": False}
         )
+
+    def model_attempt(self):
+        count = self.phase_counts.get(self.phase_key, 0)
+        if count >= self.store.policy["job_turns"]:
+            raise ValueError("Service phase model-call limit reached.")
+        self.phase_counts[self.phase_key] = count + 1
+
+    def complete_phase(self, calls, messages):
+        from .phase_output import overview_signature, versions
+        from .project_context import build
+        if len(calls) != 1 or calls[0].name != "service_propose":
+            if any(call.name == "service_propose" for call in calls):
+                self.proposal = None
+            messages.append({"role": "user", "content":
+                "Read the necessary results, then call service_propose by itself with the final phase candidate. Free text does not complete this phase."})
+            return False
+        if self.proposal is None:
+            return False
+        basis = dict(self.code_evidence)
+        for document in (self.project_context or {}).get("documents", []):
+            if self.selected_evidence is not None and document["path"] in self.selected_evidence:
+                basis.setdefault(document["path"], document["sha256"])
+        if self.selected_evidence is not None:
+            basis = {path: value for path, value in basis.items() if path in self.selected_evidence}
+        root = self.code_root() if self.project_context is not None else None
+        current = build(root, self.runtime.spec.communication or {}) if root is not None else None
+        observed = versions(root, basis)
+        changed = [{"path": path, "previous": value, "current": observed[path]}
+                   for path, value in basis.items() if value != observed[path]]
+        if overview_signature(current) != overview_signature(self.project_context) or changed:
+            self.project_context = current
+            self.code_evidence.update(observed)
+            self.proposal = None
+            messages.append({"role": "user", "content": json.dumps({
+                "project_evidence_update": current, "changed_files": changed,
+                "instruction": "These are current repository observations, not new user requirements. Re-read relevant files, ignore irrelevant evidence explicitly with evidence_paths, or revise your candidate; then submit a current final phase candidate."}, ensure_ascii=False)})
+            return False
+        saved = dict(self.store.job_get(self.job["id"]).get("phase_outputs", {}))
+        saved[self.phase_key] = {"signature": self.phase_signature,
+            "overview": overview_signature(current), "candidate": self.proposal,
+            "evidence": observed, "calls": self.phase_counts.get(self.phase_key, 0)}
+        self.store.prepare_job(self.job, phase_outputs=saved)
+        self.code_evidence = observed
+        return True
 
     def run(self, job):
         with self.model_control.lock:
@@ -355,6 +414,7 @@ class ServiceAgent:
         from .project_context import build
 
         self.job, self.stage, self.code_evidence = job, None, {}
+        self.phase_counts, self.used_phases, self.phase_feedback = {}, set(), None
         deadline = Deadline.after(self.store.policy["job_seconds"])
         with control_scope(deadline=deadline, cancel_events=(self.stop,)):
             context = build(self.code_root(), self.runtime.spec.communication or {}) if JobContract(self.store, job).handler.code else None
@@ -370,22 +430,28 @@ class ServiceAgent:
                     )
                     preparation["discussion_prompts"] = self.discussion_prompts
             self.store.prepare_job(job, **preparation)
-            if job["kind"] == "discussion" and not job["input"].get("review_id"):
-                from .communication.reasoning import run
-                result = run(self, job, context, deadline)
-            else:
-                result = self._execute(job, project=context, deadline=deadline)
-            if context and context.get("version"):
-                after = build(self.code_root(), self.runtime.spec.communication or {})
-                if after.get("version") != context["version"]:
-                    raise ValueError("Repository evidence changed during service reasoning.")
-            record = self.store.job_get(job["id"]).get("discussion_assessment")
-            if record:
-                from .project_context import file_version
-                for path, digest in record.get("evidence", {}).items():
-                    if digest and file_version(self.code_root(), path) != digest:
-                        raise ValueError("Read source evidence changed during reply preparation.")
-            return result
+            from .phase_output import overview_signature, versions
+            while True:
+                self.used_phases = set()
+                if job["kind"] == "discussion" and not job["input"].get("review_id"):
+                    from .communication.reasoning import run
+                    result = run(self, job, context, deadline)
+                else:
+                    result = self._execute(job, project=context, deadline=deadline)
+                after = build(self.code_root(), self.runtime.spec.communication or {}) if context is not None else None
+                outputs = self.store.job_get(job["id"]).get("phase_outputs", {})
+                stale = [phase for phase in self.used_phases if phase in outputs and (
+                    outputs[phase]["overview"] != overview_signature(after)
+                    or outputs[phase]["evidence"] != versions(self.code_root() if context is not None else None, outputs[phase]["evidence"]))]
+                assessment = self.store.job_get(job["id"]).get("discussion_assessment")
+                if assessment and (assessment["signature"]["project"] != overview_signature(after)
+                        or assessment.get("evidence", {}) != versions(self.code_root(), assessment.get("evidence", {}))):
+                    stale.append("assessment")
+                if not stale:
+                    return result
+                self.phase_feedback = {"changed_phases": stale,
+                    "instruction": "Repository observations changed after phase preparation. Saved candidates are available in this job's phase_outputs. Re-evaluate affected evidence; keep user requirements and fixed execution objects unchanged."}
+                context = after
 
     def _execute(self, job, *, project=None, stage=None, deadline=None, selected=None, plan=None):
         self.job, self.proposal = job, None
@@ -402,6 +468,30 @@ class ServiceAgent:
             from .operations.audit import verify
 
             verify(self.runtime, primary)
+        from .phase_output import identity, valid
+        self.phase_key = stage or ("combined" if kind == "discussion" else kind)
+        self.used_phases.add(self.phase_key)
+        self.phase_signature = {**identity(job, self.phase_key, self.binding, self.discussion_prompts, plan),
+                                "primary": fingerprint(primary)}
+        cached = self.store.job_get(job["id"]).get("phase_outputs", {}).get(self.phase_key)
+        root = self.code_root() if project is not None else None
+        if valid(cached, self.phase_signature, project, root):
+            try:
+                if stage == "assessment":
+                    from .communication.reasoning import assessment
+                    candidate = assessment(self.store, job, {**cached["candidate"]["proposal"],
+                        "reply_required": cached["candidate"]["reply_required"]})
+                elif stage == "reply":
+                    from .communication.reasoning import reply
+                    candidate = reply(plan, cached["candidate"], self.store, job)
+                else:
+                    candidate = contract.validate(cached["candidate"])
+            except (ValueError, KeyError, TypeError):
+                self.phase_feedback = {"instruction": "Saved phase output no longer matches the current contract; submit a current candidate."}
+            else:
+                self.code_evidence = dict(cached["evidence"])
+                self.proposal = candidate
+                return self.proposal
         preview = {
             k: v
             for k, v in primary.items()
@@ -473,10 +563,14 @@ class ServiceAgent:
                 ),
             },
         ]
+        if self.phase_feedback:
+            messages.append({"role": "user", "content": json.dumps(self.phase_feedback, ensure_ascii=False)})
         components = LoopComponents(
             skill_loader=self.skills,
             capabilities=Capabilities(),
             service_control=self,
+            completion_check=self.complete_phase,
+            model_attempt_hook=self.model_attempt,
             stop_event=self.stop,
             tool_allowlist=frozenset(
                 {"service_read", "service_propose", "load_skill", "compact"}
@@ -503,7 +597,7 @@ class ServiceAgent:
         ):
             loop.run(
                 messages,
-                self.store.policy["job_turns"],
+                max(1, self.store.policy["job_turns"] - self.phase_counts.get(self.phase_key, 0)),
                 active_request=json.dumps(preview, ensure_ascii=False),
             )
         if self.proposal is None:

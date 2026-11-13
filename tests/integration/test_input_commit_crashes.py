@@ -17,10 +17,10 @@ SCRIPT = r"""
 import os,sys
 from pathlib import Path
 from unittest.mock import patch
+from tests.support.clients import fake_client
 from homebrew_harness import HarnessSession,Capabilities
 from homebrew_harness.orchestration.teams import TeammateRuntime
 from homebrew_harness.storage.durable_runtime import checkpoint_scope
-from tests.support.clients import fake_client
 client,_=fake_client([])
 s=HarnessSession(client,'fixture',Path(sys.argv[1]),capabilities=Capabilities({'teams'}))
 s.run_user('/usage')
@@ -127,3 +127,16 @@ class InputCommitCrashes(unittest.TestCase):
             retry = session.inputs.manage("retry", receipt["input_id"])
         self.assertNotEqual(retry["input_id"], receipt["input_id"])
         client.chat.completions.create.assert_not_called()
+
+    def test_queued_transport_recovery_does_not_multiply_request_attempts(self):
+        session, client = self.session()
+        session.run_user("/usage")
+        client.chat.completions.create.side_effect = ProviderError("transport")
+        with patch.object(session, "start"):
+            receipt = session.submit_user_input("Work", mode="queued")
+            self.assertTrue(session.process_once())
+            self.assertFalse(session.process_once())
+        value = session.runtime_store.get("input_receipts", receipt["input_id"])
+        self.assertEqual(value["state"], "applied")
+        self.assertEqual(client.chat.completions.create.call_count, 3)
+        self.assertFalse(session.inputs.pending())

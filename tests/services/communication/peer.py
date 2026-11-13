@@ -180,7 +180,8 @@ class Peer:
                 body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
                 if self.path.endswith("/chat/completions"):
                     outer.models.append(body)
-                    if body["messages"][-1].get("role") == "tool":
+                    if (body["messages"][-1].get("role") == "tool"
+                            and not json.loads(body["messages"][-1].get("content", "{}" )).get("error")):
                         return self.send(
                             reply("Candidate saved.").model_dump(exclude_none=True)
                         )

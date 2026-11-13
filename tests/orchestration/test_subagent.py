@@ -514,10 +514,12 @@ class SubagentTests(unittest.TestCase):
 
     def test_child_api_failure_is_paired_and_private_details_are_not_forwarded(self):
         error = ProviderError("transport")
-        result, _, history = self.run_parent(
-            [reply(calls=[task_call("outer")]), error, reply("The subtask failed.")]
+        result, requests, history = self.run_parent(
+            [reply(calls=[task_call("outer")]), error, error, error,
+             reply("The subtask failed.")]
         )
         self.assertEqual(result, "The subtask failed.")
+        self.assertEqual(len(requests), 5)
         self.assertEqual(history[-2]["tool_call_id"], "outer")
         self.assertIn("transport", json.loads(history[-2]["content"])["error"])
         self.assertNotIn(
