@@ -63,6 +63,8 @@ class ServiceModels:
                 "blocked": gateway.blocked,
                 "revision": fingerprint(gateway.summary()["connection_faults"]),
                 "inflight": gateway.summary()["inflight"],
+                "failures": sum(f.get("failures", 0) for f in gateway.summary()["connection_faults"].values()),
+                "last_error": next((f.get("last_error") for f in gateway.summary()["connection_faults"].values() if f.get("last_error")), None),
             }
             for alias, (_binding, gateway) in sorted(self.contexts.items())
         ]

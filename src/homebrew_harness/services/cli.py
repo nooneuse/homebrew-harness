@@ -316,14 +316,17 @@ def commands(parser, *, attach=True):
         item.add_argument("work_id")
         item.add_argument("text")
         item.add_argument("--request-id")
-    for name in ("approve", "deny", "answer", "renew-tests"):
+    for name in ("approve", "deny", "answer", "renew-tests", "review-retry"):
         item = actions.add_parser(name)
         if attach:
             item.add_argument("service_id")
         item.add_argument("request_id")
         item.add_argument("revision", type=int)
         item.add_argument("--work-id")
-        item.add_argument("--decision-id")
+        if name == "review-retry":
+            item.add_argument("--retry-id")
+        else:
+            item.add_argument("--decision-id")
         if name == "answer":
             item.add_argument("text")
         if name == "renew-tests":
@@ -579,7 +582,7 @@ def operate(service, args):
                 args.text, request_id=args.request_id
             )
         return getattr(work, args.work_command.replace("-", "_"))()
-    if args.command in {"approve", "deny", "answer", "renew-tests"}:
+    if args.command in {"approve", "deny", "answer", "renew-tests", "review-retry"}:
         request = next(
             (
                 r
@@ -609,6 +612,8 @@ def operate(service, args):
                     cursor = page["next_cursor"]
         if request is None:
             raise ValueError("Request revision is stale; refresh requests.")
+        if args.command == "review-retry":
+            return service.retry_approval_review(request, request_id=args.retry_id)
         values = {}
         if args.command == "answer":
             values["text"] = args.text

@@ -17,7 +17,6 @@ class RunAutoApproval(unittest.TestCase):
             "decision": "approve",
             "reason": "Exact requested command",
             "risk": "low",
-            "authorization": "explicit",
         }
         spec = RunSpec(
             "Print ok",
@@ -55,7 +54,6 @@ class RunAutoApproval(unittest.TestCase):
             "decision": "human_required",
             "reason": "Insufficient context",
             "risk": "medium",
-            "authorization": "unknown",
         }
         spec = RunSpec(
             "Consider command",
@@ -80,7 +78,6 @@ class RunAutoApproval(unittest.TestCase):
             "decision": "approve",
             "reason": "Exact requested output",
             "risk": "low",
-            "authorization": "explicit",
         }
         spec = RunSpec(
             "Append ok to output.txt",
@@ -146,7 +143,6 @@ class MemberAutoApproval(unittest.TestCase):
                             "decision": "approve",
                             "reason": "Registered test in assigned work",
                             "risk": "low",
-                            "authorization": "explicit",
                         }
                     )
                 )

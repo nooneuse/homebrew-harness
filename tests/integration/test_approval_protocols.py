@@ -21,7 +21,6 @@ class ApprovalProtocolTests(unittest.TestCase):
                 "decision": "approve",
                 "reason": "Exact user command",
                 "risk": "low",
-                "authorization": "explicit",
             }
         )
         parent = self.service(
@@ -98,7 +97,6 @@ class ApprovalProtocolTests(unittest.TestCase):
                 "decision": "approve",
                 "reason": "Exact authorized action",
                 "risk": "low",
-                "authorization": "explicit",
             }
         )
         for protocol, answer in (
@@ -176,7 +174,6 @@ class ApprovalProtocolTests(unittest.TestCase):
                 "decision": "approve",
                 "reason": "Reviewed authorized script",
                 "risk": "low",
-                "authorization": "explicit",
             }
         )
         for protocol, first, last in (

@@ -38,7 +38,26 @@ Run 规格接受同一个 `approval_review` 对象；非空 Run 配置优先于�
 
 专用审核模型配置为 `model_source: "profile"`、`model_profile: "safety"`。`safety` 需在外部模型目录中定义，连接凭据仍由宿主环境提供，参见[模型接入](MODELS.zh-CN.md)。
 
-审核器通过 `read_review_file(path, offset=0, limit=10000)` 分块读取 UTF-8 项目文件，偏移和长度以 Unicode 字符计数。返回结果包含 `next_offset`、文件哈希与 `read_complete`，可以在当前上下文中继续读取。单次审核最多读取 16 个文件、16 MiB 不同文件内容和 64 页，单文件上限为 8 MiB。自动批准前，每个请求读取的文件必须完整覆盖，且分块读取和最终决定时的文件版本一致。必要证据缺失、变更或未读完时转人工审核。
+审核器通过 `read_review_file(path, offset=0, limit=10000)` 读取 UTF-8 文件，偏移以 Unicode 字符计数。返回结果描述文件版本、已读范围与下一页偏移。路径缺失和普通查询错误作为结构化工具反馈，由模型决定证据是否相关、是否继续读取；证据变更回到当前对话重新判断。仍保留单次审核 16 个文件、16 MiB 不同文件内容、64 页及单文件 8 MiB 的读取上限。
+
+最终结果包含 `decision` 和 `reason`，`risk` 可选，不再单独返回 `authorization` 决定。无效输出会反馈给模型纠正。模型服务错误在同一截止和调用轮次内最多连续尝试三次，历史失败不会禁用后续模型请求。
+
+上次审核中断、原请求仍待处理且没有活跃审核者时，会向模型说明中断并重新审核。已提交决定和提交确认未知的记录继续保留。失败尝试不会在每次 Service 轮询时无限重启。显式重试一个待处理的 Service 请求而不批准它：
+
+```python
+service.retry_approval_review(request, request_id="review-retry-1")
+```
+
+CLI 和 Text UI 提供相同重试入口：
+
+```sh
+homebrew-harness service review-retry SERVICE_ID REQUEST_ID REVISION --retry-id retry-1
+```
+
+
+原请求的参数、政策、执行归属及动作绑定继续有效。文件是否读完是供模型判断的信息，不要求所有查阅文件都完整读取。
+
+最终结果可用 `evidence_paths` 选择决定所依赖的已观察路径，空列表表示不需要文件证据。即时工具执行前复核这些证据与实际请求绑定，不把无关工作区变化当成审批失败。
 
 ## 运行方式
 

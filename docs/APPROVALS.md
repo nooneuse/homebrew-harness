@@ -38,7 +38,26 @@ Every model source uses an independent context and its complete model binding th
 
 For a dedicated reviewer, set `model_source: "profile"` and `model_profile: "safety"`. Configure `safety` in the external model catalog; connection secrets remain in the host environment. See [Models](MODELS.md).
 
-The reviewer reads UTF-8 project files through `read_review_file(path, offset=0, limit=10000)`. Offsets and limits count Unicode characters. Pages include `next_offset`, a file hash and `read_complete`; the reviewer can follow them without losing its current context. A review accepts at most 16 files, 16 MiB of distinct file content and 64 pages, with an 8 MiB limit per file. Approval requires complete coverage of each requested file and the same file version across pages and at the final decision. Missing, changed or incomplete required evidence returns to human review.
+The reviewer reads UTF-8 files through `read_review_file(path, offset=0, limit=10000)`. Offsets count Unicode characters. Pages describe the file version, viewed range and next offset. Missing paths and ordinary query errors return structured tool feedback; the model decides which evidence matters and whether another page is needed. Changed evidence returns to the conversation for a current decision. Reads remain limited to 16 files, 16 MiB of distinct content and 64 pages, with an 8 MiB limit per file.
+
+The final result contains `decision` and `reason`; `risk` is optional. There is no separate `authorization` decision. Invalid output is explained to the model so it can correct its answer. Model-service errors allow up to three consecutive attempts within the same deadline and model-call limit. Historical failures do not disable future model requests.
+
+An interrupted review with no active owner and a still-pending request is explained to the reviewer for reassessment. Completed decisions and unknown submission confirmation are preserved. A failed attempt does not restart on each service poll. To explicitly retry a pending Service request without approving it:
+
+```python
+service.retry_approval_review(request, request_id="review-retry-1")
+```
+
+The CLI and Text UI expose the same retry:
+
+```sh
+homebrew-harness service review-retry SERVICE_ID REQUEST_ID REVISION --retry-id retry-1
+```
+
+
+Requests retain their exact parameters, policy, ownership and execution bindings. File coverage is information for the reviewer, rather than a requirement to read every file in full.
+
+The optional `evidence_paths` result names which observed paths support the decision; an empty list means no file evidence is needed. Immediate tool execution rechecks that selected evidence and the actual request bindings, without treating unrelated workspace changes as an approval failure.
 
 ## Runtime behavior
 

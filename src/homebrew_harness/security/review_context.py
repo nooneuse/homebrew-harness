@@ -1,6 +1,8 @@
 """Host snapshots and execution guards for immediate approval review."""
 
 import copy
+from pathlib import Path
+from homebrew_harness.security.safe_files import canonical_root
 from contextlib import contextmanager
 from contextvars import ContextVar
 
@@ -50,12 +52,14 @@ def verify_guard(call_id):
 
 
 def session_context(session, tool, arguments, cwd, *, requester=None):
+    cwd = canonical_root(Path(cwd))
     actor = _EXECUTION.get()
     execution, intent = actor if actor else (None, None)
     task_id = execution.task_id if execution else None
     value = {
         "intent": session.intent.to_dict(),
         "cwd": str(cwd),
+        "cwd_identity": (cwd.stat().st_dev, cwd.stat().st_ino),
         "role": execution.role if execution else current_scope().role,
         "task_id": task_id,
         "input_epoch": session.runtime_store.input_guard(session.inputs.recipients),
@@ -65,8 +69,9 @@ def session_context(session, tool, arguments, cwd, *, requester=None):
         "backend": session.bash_policy.identity(),
         "tool": tool,
         "arguments": copy.deepcopy(arguments),
-        "workspace": workspace_digest(cwd, {"kind": "paths", "values": ["."]}),
     }
+    if tool in {"write_file", "edit_file"}:
+        value["workspace"] = workspace_digest(cwd, {"kind": "paths", "values": [arguments["path"]]})
     if intent:
         value["requester_intent"] = intent.to_dict()
     if task_id:
@@ -80,6 +85,7 @@ def session_context(session, tool, arguments, cwd, *, requester=None):
         }
     if tool == "run_tests":
         recipe = session.tests._recipe(arguments["name"])
+        value["workspace"] = workspace_digest(cwd, {"kind": "patterns", "values": list(recipe.input_globs), "limits": recipe.snapshot_limits})
         value["test_recipe"] = {
             "argv": list(recipe.argv),
             "timeout": recipe.timeout,

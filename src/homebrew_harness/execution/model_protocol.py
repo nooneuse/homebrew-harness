@@ -16,6 +16,10 @@ class ModelProtocolError(AgentError):
     pass
 
 
+class ModelOutputError(ModelProtocolError):
+    """The provider response violates the output contract; a new answer may repair it."""
+
+
 class ProviderError(ModelProtocolError):
     def __init__(self, kind, *, status_code=None, code=None, error_type=None, message=None):
         from homebrew_harness.security.data_boundary import redact
@@ -68,7 +72,7 @@ class ToolInvocation:
             or not isinstance(name, str)
             or not name
         ):
-            raise ModelProtocolError("Provider returned an invalid tool identity.")
+            raise ModelOutputError("Provider returned an invalid tool identity.")
         return cls(identity, name, arguments, value.get("type", "function"))
 
 
@@ -136,29 +140,29 @@ class ModelResponse:
             "failed",
             "invalid_output",
         }:
-            raise ModelProtocolError("Unknown model completion state.")
+            raise ModelOutputError("Unknown model completion state.")
         if any(p.get("type") not in {"text", "tool_call"} for p in self.parts):
-            raise ModelProtocolError("Unsupported model output part.")
+            raise ModelOutputError("Unsupported model output part.")
         if any(
             not isinstance(p.get("text"), str)
             for p in self.parts
             if p["type"] == "text"
         ):
-            raise ModelProtocolError("Model text must be a string.")
+            raise ModelOutputError("Model text must be a string.")
         calls = self.tool_calls
         if (
             len(calls) > 128
             or len({c.id for c in calls}) != len(calls)
             or any(c.kind != "function" for c in calls)
         ):
-            raise ModelProtocolError("Invalid or duplicate model tool identities.")
+            raise ModelOutputError("Invalid or duplicate model tool identities.")
         if (
             self.finish == "tool_calls"
             and not calls
             or self.finish == "completed"
             and calls
         ):
-            raise ModelProtocolError(
+            raise ModelOutputError(
                 "Model completion state disagrees with its tool output."
             )
         return self

@@ -23,7 +23,6 @@ class ServiceReview(unittest.TestCase):
                             "decision": "approve",
                             "reason": "Delegated work scope",
                             "risk": "low",
-                            "authorization": "explicit",
                         }
                     )
                 )
@@ -214,7 +213,6 @@ class ServiceRuntimeReview(unittest.TestCase):
             "decision": "approve",
             "reason": "Delegated scoped project improvement",
             "risk": "low",
-            "authorization": "explicit",
         }
         self.peer.triage["disposition"] = "decide"
 

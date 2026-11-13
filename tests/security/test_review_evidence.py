@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from homebrew_harness.security.review_evidence import ReviewEvidence, FILE_BYTES, MAX_FILES, MAX_PAGES
+from homebrew_harness.security.review_evidence import ReviewEvidence, EvidenceLimitReached, FILE_BYTES, MAX_FILES, MAX_PAGES
 
 
 class EvidencePages(unittest.TestCase):
@@ -27,7 +27,7 @@ class EvidencePages(unittest.TestCase):
         self.assertTrue(second['read_complete'])
         self.assertEqual(first['content'] + second['content'], content)
         self.assertEqual(first['sha256'], second['sha256'])
-        self.assertEqual(len(self.evidence.verify()), 1)
+        self.assertEqual(len(self.evidence.verify()["evidence"]), 1)
 
     def test_holes_and_overlapping_pages_do_not_claim_complete_coverage(self):
         (self.root / 'guide').write_text('0123456789')
@@ -35,9 +35,17 @@ class EvidencePages(unittest.TestCase):
         self.assertIsNone(tail['next_offset'])
         self.assertFalse(tail['read_complete'])
         self.evidence.read({'path': 'guide', 'offset': 0, 'limit': 4})
-        self.assertFalse(self.evidence.verify()[0]['read_complete'])
+        self.assertFalse(self.evidence.verify()["evidence"][0]['read_complete'])
         full = self.evidence.read({'path': 'guide', 'offset': 3, 'limit': 4})
         self.assertTrue(full['read_complete'])
+
+    def test_missing_leaf_and_parent_are_negative_observations(self):
+        for path in ('missing.txt', 'missing-parent/file.txt'):
+            result = self.evidence.read({'path': path})
+            self.assertEqual(result['error']['code'], 'not_found')
+        (self.root / 'missing.txt').write_text('Now present')
+        check = self.evidence.verify()
+        self.assertEqual(check['changes'][0]['current_status'], 'present')
 
     def test_empty_file_is_complete(self):
         (self.root / 'empty').write_text('')
@@ -58,10 +66,11 @@ class EvidencePages(unittest.TestCase):
                     alternate.replace(path)
                 else:
                     path.write_text('modified text')
-                with self.assertRaisesRegex(ValueError, 'changed between pages'):
-                    evidence.read({'path': 'guide', 'offset': 4})
-                with self.assertRaisesRegex(ValueError, 'changed'):
-                    evidence.verify()
+                check = evidence.verify()
+                self.assertEqual(len(check['changes']), 1)
+                page = evidence.read({'path': 'guide', 'offset': 4})
+                self.assertTrue(page['ok'])
+                self.assertEqual(evidence.verify()['changes'], [])
 
     def test_invalid_bounds_and_fields_are_rejected(self):
         (self.root / 'guide').write_text('text')
@@ -69,8 +78,8 @@ class EvidencePages(unittest.TestCase):
         invalid += [{'path': 'guide', 'limit': v} for v in (0, True, 1.5, '4', 10001)]
         invalid += [{}, [], {'path': ''}, {'path': 12}, {'path': 'guide', 'extra': 1}, {'path': 'guide', 'offset': 5}]
         for arguments in invalid:
-            with self.subTest(arguments=arguments), self.assertRaises(ValueError):
-                self.evidence.read(arguments)
+            with self.subTest(arguments=arguments):
+                self.assertFalse(self.evidence.read(arguments)['ok'])
 
     def test_sensitive_paths_traversal_and_symlinks_remain_unreadable(self):
         (self.root / '.env').write_text('private')
@@ -79,26 +88,29 @@ class EvidencePages(unittest.TestCase):
         (self.root / 'guide').write_text('text')
         (self.root / 'linked').symlink_to(self.root / 'guide')
         for name in ('.env', '.harness/state.json', '../outside', 'linked'):
-            with self.subTest(path=name), self.assertRaises((ValueError, OSError)):
-                self.evidence.read({'path': name})
+            with self.subTest(path=name):
+                result = self.evidence.read({'path': name})
+                self.assertFalse(result['ok'])
+                self.assertNotIn('content', result)
 
     def test_byte_file_and_page_limits_are_enforced(self):
         (self.root / 'too-large').write_bytes(b'x' * (FILE_BYTES + 1))
-        with self.assertRaisesRegex(ValueError, 'size limit'):
+        with self.assertRaisesRegex(EvidenceLimitReached, 'size limit'):
             self.evidence.read({'path': 'too-large'})
+        self.evidence = ReviewEvidence(self.root)
         (self.root / 'guide').write_text('text')
         for _ in range(MAX_PAGES):
             self.evidence.read({'path': 'guide'})
-        with self.assertRaisesRegex(ValueError, 'page limit'):
+        with self.assertRaisesRegex(EvidenceLimitReached, 'page limit'):
             self.evidence.read({'path': 'guide'})
         evidence = ReviewEvidence(self.root)
         for index in range(MAX_FILES):
             (self.root / str(index)).write_text('text')
             evidence.read({'path': str(index)})
-        with self.assertRaisesRegex(ValueError, 'file limit'):
+        with self.assertRaisesRegex(EvidenceLimitReached, 'file limit'):
             evidence.read({'path': 'guide'})
         with patch('homebrew_harness.security.review_evidence.TOTAL_BYTES', 7):
             evidence = ReviewEvidence(self.root)
             evidence.read({'path': 'guide'})
-            with self.assertRaisesRegex(ValueError, 'file limit'):
+            with self.assertRaisesRegex(EvidenceLimitReached, 'file limit'):
                 evidence.read({'path': '0'})

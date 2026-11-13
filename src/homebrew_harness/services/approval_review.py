@@ -2,10 +2,8 @@
 
 import copy
 import threading
-from pathlib import Path
 
 from homebrew_harness.security.approval_review import ApprovalReviewer, ReviewConfig
-from homebrew_harness.runs.requests import workspace_digest
 
 
 class ServiceApprovalReview:
@@ -99,10 +97,7 @@ class ServiceApprovalReview:
             "host_scope": copy.deepcopy(host_scope),
             "request": copy.deepcopy(current),
             "policy": self.config.data(),
-            "service_revision": meta["revision"],
-            "workspace": workspace_digest(
-                Path(runtime.spec.workspace), {"kind": "paths", "values": ["."]}
-            ),
+            "service_generation": meta.get("generation", 0),
         }
 
     def run(self):
@@ -114,7 +109,8 @@ class ServiceApprovalReview:
                     self.config,
                     runtime.store.runtime,
                     agent.models.registry,
-                    agent.gateway,
+                    agent.model_control.contexts[agent.models.alias or "@default"][1]
+                    if hasattr(agent, "model_control") else agent.gateway,
                     lambda: agent.base_binding,
                 )
             for view in runtime.requests():
@@ -153,15 +149,27 @@ class ServiceApprovalReview:
                     )
 
                 def current(view=view):
-                    try:
-                        return self.context(view)
-                    except (ValueError, OSError, KeyError):
-                        return None
+                    return self.context(view)
 
                 with agent.gateway.scope(cancel_event=self.stop):
                     self.reviewer.review(request, context, current, publish)
         finally:
             self.running = False
+
+    def retry(self, identity, revision, *, conn=None):
+        if self.config.mode != "auto_review":
+            raise ValueError("Automatic approval review is not enabled.")
+        request = next((r for r in self.runtime.requests()
+                        if r["ref"]["id"] == identity and r["ref"]["revision"] == revision
+                        and r["kind"] in self.config.kinds), None)
+        if request is None:
+            raise ValueError("The approval request is no longer pending or delegated.")
+        if self.reviewer is None:
+            agent = self.runtime.maintenance.agent
+            self.reviewer = ApprovalReviewer(self.config, self.runtime.store.runtime,
+                agent.models.registry, agent.model_control.contexts[agent.models.alias or "@default"][1],
+                lambda: agent.base_binding)
+        return self.reviewer.request_retry(identity, revision, conn=conn)
 
     def request_close(self):
         self.stop.set()

@@ -239,7 +239,6 @@ def run_benchmark(
                 concurrency=1,
                 request_timeout=30,
                 session_timeout=timeout_seconds,
-                max_failures=1,
             ),
             workdir=base,
         )

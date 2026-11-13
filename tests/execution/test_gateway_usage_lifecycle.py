@@ -187,25 +187,16 @@ class UsageLifecycleTests(Fixture):
             )
         self.assertEqual(limits.concurrency, 2)
 
-    def test_provider_quota_failure_stops_until_explicit_host_reset(self):
+    def test_saved_quota_failure_is_diagnostic_and_next_request_can_succeed(self):
         class QuotaFailure(Exception):
             status_code = 402
-
         gateway, client = self.gateway()
-        client.chat.completions.create.side_effect = QuotaFailure(
-            "insufficient balance"
-        )
+        client.chat.completions.create.side_effect = QuotaFailure('insufficient balance')
         with self.assertRaises(QuotaFailure):
             self.invoke(gateway)
-        from homebrew_harness.execution.model_gateway import ModelGatewayError
-
-        with self.assertRaises(ModelGatewayError):
-            self.invoke(gateway)
-        self.assertEqual(client.chat.completions.create.call_count, 1)
         snapshot = gateway.summary()
         gateway.close()
         restored, transport = self.restored(snapshot)
-        self.assertTrue(restored.blocked)
-        restored.reset_failures()
+        self.assertFalse(restored.blocked)
         self.invoke(restored)
         self.assertEqual(transport.chat.completions.create.call_count, 1)

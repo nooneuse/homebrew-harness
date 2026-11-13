@@ -70,6 +70,9 @@ Reasoning intensity remains an option of the selected model profile. A dedicated
 
 ## Discussion rounds
 
+The frozen job includes `no_progress`, the count of rounds reporting no progress. This informs the model; the runtime preserves its chosen next step rather than forcing an operator handoff after a fixed count.
+
+
 The default discovery interval is twelve hours. A completed source scan or tracked-PR observation marks relevant discussions ready for assessment. No new material means no model calls; waiting for an author does not keep a model request or development Run active. Authorized messages enter the sending queue without waiting for another discovery interval.
 
 The discussion preserves source events, unresolved questions, facts, drafts, findings and each assessment round. New messages update the discussion input, while accepted requirement versions belong to Work. Community replies and the service's own comments do not directly change a Goal or grant development permission.
@@ -130,11 +133,11 @@ Definite platform rejection marks the action failed and allows a corrected plan.
 
 ```python
 page = service.requests_page(limit=20)
-fault = next(row for row in service.models() if row["blocked"])
+fault = next(row for row in service.models() if row["failures"])
 service.recover_model(fault["profile"], revision=fault["revision"], request_id="recover-1")
 ```
 
-Model recovery confirms the recorded connection fault; failed jobs are retried separately. Restart the service when connection credentials must be reloaded. Discussion jobs read their frozen topic and associated evidence; internal conversations and reports use their own input contracts.
+Model recovery optionally clears recorded connection errors; historical errors do not prevent new requests. Failed jobs are retried separately. Restart the service when connection credentials must be reloaded. Discussion jobs read their frozen topic and associated evidence; internal conversations and reports use their own input contracts.
 
 ```sh
 homebrew-harness service requests SERVICE_ID --limit 20

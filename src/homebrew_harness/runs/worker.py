@@ -68,7 +68,7 @@ def make_session(store, control, args):
             run_control=control,
             mode="service",
             gateway_limits=GatewayLimits(
-                request_timeout=spec.request_seconds, max_failures=spec.retries + 1
+                request_timeout=spec.request_seconds
             ),
         )
         return session, None

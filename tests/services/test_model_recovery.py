@@ -34,8 +34,8 @@ class ModelRecovery(unittest.TestCase):
                     gateway.request(**arguments)
             self.assertEqual(call.call_count, 3)
         actor.model_control.save()
-        model = next(row for row in service.models() if row["blocked"])
-        self.assertFalse(service.health()["ready"])
+        model = next(row for row in service.models() if row["failures"])
+        self.assertNotIn("model_connection_blocked", [issue["code"] for issue in service.health()["issues"]])
         return service, actor, arguments, model
 
     def test_fault_confirmation_recovers_without_retrying_work_or_resetting_usage(self):
@@ -60,9 +60,8 @@ class ModelRecovery(unittest.TestCase):
         service, actor, arguments, model = self.broken()
         with self.assertRaises(SDKError):
             service.recover_model(model["profile"], revision="stale")
-        self.assertTrue(actor.gateway.blocked)
-        with self.assertRaises(ModelGatewayError):
-            actor.gateway.request(**arguments)
+        self.assertFalse(actor.gateway.blocked)
+        actor.gateway.request(**arguments)
 
     def test_saved_fault_survives_service_restart(self):
         service, actor, arguments, model = self.broken()
@@ -74,7 +73,7 @@ class ModelRecovery(unittest.TestCase):
         restored = next(
             row for row in restarted.models() if row["profile"] == model["profile"]
         )
-        self.assertTrue(restored["blocked"])
+        self.assertFalse(restored["blocked"])
         self.assertEqual(restored["revision"], model["revision"])
         restarted.recover_model(restored["profile"], revision=restored["revision"])
         self.assertFalse(

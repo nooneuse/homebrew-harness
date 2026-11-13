@@ -131,6 +131,12 @@ class ServiceControls:
     def models(self):
         return self.query("service_models")
 
+    def retry_approval_review(self, request, *, request_id=None):
+        ref = request.ref if hasattr(request, "ref") else request
+        if ref.target.kind != "service" or ref.target.id != self.id:
+            raise ValueError("Review retry requires this Service's request reference.")
+        return self.command("approval_review_retry", {"id": ref.id, "revision": ref.revision}, request_id)
+
     def recover_model(self, profile, *, revision, request_id=None):
         return self.command(
             "model_recover", {"profile": profile, "revision": revision}, request_id

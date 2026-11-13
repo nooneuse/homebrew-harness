@@ -9,6 +9,7 @@ from dataclasses import replace
 
 from homebrew_harness.execution.model_protocol import (
     ModelProtocolError,
+    ModelOutputError,
     ModelUsage,
     ProviderError,
     load_replay,
@@ -294,7 +295,7 @@ def response_errors(capture):
         elif isinstance(error, (KeyError, TypeError, ValueError)) and not isinstance(
             error, ModelProtocolError
         ):
-            normalized = ModelProtocolError("Provider returned a malformed response.")
+            normalized = ModelOutputError("Provider returned a malformed response.")
         normalized.model_usage = capture.value()
         if normalized is error:
             raise

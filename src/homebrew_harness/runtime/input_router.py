@@ -67,6 +67,7 @@ class ApprovalBroker:
                 "turn_id": self.owner.inputs.active_id if self.owner else None,
             }
         review_context = None
+        review_identity = None
         if automatic:
             from homebrew_harness.security.approval_review import requester_binding
             from homebrew_harness.security.review_context import session_context
@@ -79,6 +80,8 @@ class ApprovalBroker:
                         valid = identity in self.pending and not self.pending[identity][0].done() and not self.closed
                     return session_context(self.owner, tool_name, arguments, workdir, requester=requester) if valid else None
                 def publish(decision, review_id):
+                    nonlocal review_identity
+                    review_identity = review_id
                     with self.lock:
                         value = self.pending.get(identity)
                         if value is None or value[0].done() or self.closed or session_context(self.owner, tool_name, arguments, workdir, requester=requester) != review_context:
@@ -93,7 +96,9 @@ class ApprovalBroker:
             if result.action == "allow" and result.code == "auto_review" and review_context is not None:
                 from homebrew_harness.security.review_context import bind_guard
                 from homebrew_harness.security.permissions import _APPROVAL_CALL
-                bind_guard(_APPROVAL_CALL.get(), lambda: session_context(self.owner, tool_name, arguments, workdir, requester=requester) == review_context)
+                bind_guard(_APPROVAL_CALL.get(), lambda:
+                    session_context(self.owner, tool_name, arguments, workdir, requester=requester) == review_context
+                    and reviewer.execution_evidence_current(review_identity, workdir))
             with self.lock:
                 self.pending.pop(identity, None); self.requests.pop(identity, None); self.review_cancels.pop(identity, None)
             return result

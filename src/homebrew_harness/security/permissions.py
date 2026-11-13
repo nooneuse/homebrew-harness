@@ -411,10 +411,16 @@ def ask_user(
             snapshot = session_context(session, tool_name, arguments, workdir, requester=requester)
             def current():
                 return session_context(session, tool_name, arguments, workdir, requester=requester)
-            result = session.approval_reviewer.review(request, snapshot, current, lambda decision, review_id: PermissionDecision("allow" if decision == "approve" else "deny", "Independent approval review " + review_id, "auto_review"), requester=requester)
+            review_identity = None
+            def publish(decision, review_id):
+                nonlocal review_identity
+                review_identity = review_id
+                return PermissionDecision("allow" if decision == "approve" else "deny", "Independent approval review " + review_id, "auto_review")
+            result = session.approval_reviewer.review(request, snapshot, current, publish, requester=requester)
             if result is not None:
                 if result.action == "allow":
-                    bind_guard(_APPROVAL_CALL.get(), lambda: current() == snapshot)
+                    bind_guard(_APPROVAL_CALL.get(), lambda: current() == snapshot
+                        and session.approval_reviewer.execution_evidence_current(review_identity, workdir))
                 return result
         except Exception:
             pass

@@ -57,6 +57,7 @@ QUERY_METHODS = {
 }
 MAINTENANCE_COMMANDS = {
     "model_recover": {"profile", "revision"},
+    "approval_review_retry": {"id", "revision"},
     "discussion_assess": {"id", "revision"},
     "discussion_pause": {"id", "revision"},
     "discussion_reopen": {"id", "revision"},

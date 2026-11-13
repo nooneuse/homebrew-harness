@@ -52,6 +52,9 @@ SDK eligibility checks the package version and executor contract. A broken insta
 
 ## Shared execution and recovery
 
+Model connection errors remain observations. They do not permanently block later requests. Each execution controller owns its bounded retries and deadline; an unfinished request still occupies its actual concurrency resources.
+
+
 The protocol adapter prepares one native request, executes it through the selected backend, and converts its result to `ModelResponse`. HTTP and SDK share tool IDs, structured output, reasoning replay, stream completion checks and usage observations. The SDK executes model requests; harness tools continue through the existing permission and dispatch layer.
 
 `auto` selects during connection preparation. A sent request stays with that executor, including errors and interrupted streams. Gateway deadlines, cancellation and failure handling apply to both backends. Usage remains observational; spending limits belong to the provider.

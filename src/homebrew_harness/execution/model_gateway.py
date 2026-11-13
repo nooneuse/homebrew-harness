@@ -24,7 +24,6 @@ from pathlib import Path
 
 import httpx
 
-from homebrew_harness.execution.model_errors import quota_exhausted
 from homebrew_harness.runtime.runtime_control import WorkAccepted, Workers
 from homebrew_harness.security.data_boundary import redact, register_private_values
 from homebrew_harness.security.safe_files import SafeFile
@@ -62,10 +61,9 @@ class GatewayLimits:
     concurrency: int = 4
     request_timeout: float = 60
     session_timeout: float | None = None
-    max_failures: int = 3
 
     def __post_init__(self):
-        for name in ("concurrency", "max_failures"):
+        for name in ("concurrency",):
             if type(getattr(self, name)) is not int or getattr(self, name) < 1:
                 raise ValueError("Gateway " + name + " must be a positive integer.")
         for value in (self.request_timeout, self.session_timeout):
@@ -329,15 +327,6 @@ class GatewayState:
                 "Model operation deadline reached; unfinished work is retained.",
                 source=deadline.intersect(self.deadline).source,
             )
-        blocked = self.blocked or self.connection_faults.get(connection, {}).get(
-            "blocked", ""
-        )
-        if blocked:
-            raise ModelGatewayError(
-                "Model gateway stopped: "
-                + blocked
-                + ". Resume explicitly after resolving it."
-            )
 
     def acquire(self, metadata, deadline, cancel_events, *, wait=True):
         with self.condition:
@@ -427,22 +416,17 @@ class GatewayState:
             )
             if receipt.error is not None:
                 status = _number(getattr(receipt.error, "status_code", None)) or 0
-                transient = getattr(receipt.error, "transient", False)
                 if (
                     not self.closed
                     and receipt.abandoned != "ModelCancelled"
                     and not receipt.failure_counted
                 ):
-                    if transient and receipt.sent:
+                    if receipt.sent:
                         fault["failures"] += 1
                         receipt.failure_counted = True
                     self.failures = fault["failures"]
-                if quota_exhausted(receipt.error):
-                    fault["blocked"] = "provider quota unavailable"
-                elif status in {401, 403}:
-                    fault["blocked"] = "provider authentication or access denied"
-                elif fault["failures"] >= self.limits.max_failures:
-                    fault["blocked"] = "consecutive request failures"
+                fault.update(blocked="", last_error=type(receipt.error).__name__,
+                             last_status=status, last_error_at=time.time())
             elif not receipt.abandoned and not self.closed:
                 self.failures = 0
                 fault["failures"] = 0
@@ -540,6 +524,7 @@ class ModelGateway:
         return ModelGateway(
             client._adapter if isinstance(client, ModelGateway) else client,
             _state=self._state,
+            _timeout=self._timeout,
         )
 
     def with_options(self, **options):
@@ -655,17 +640,7 @@ class ModelGateway:
 
     @property
     def blocked(self):
-        return (
-            self._state.blocked
-            or self._state.connection_faults.get(self._connection_key(), {}).get(
-                "blocked", ""
-            )
-            or (
-                "session deadline reached"
-                if self._state.deadline.remaining() == 0
-                else ""
-            )
-        )
+        return "session deadline reached" if self._state.deadline.remaining() == 0 else ""
 
     def acknowledge_faults(self, expected):
         """Host resume acknowledges saved connection errors without resetting usage."""
@@ -699,7 +674,12 @@ class ModelGateway:
                 raise ModelGatewayError(
                     "Cannot restore faults during active execution."
                 )
-            self._state.connection_faults.update(copy.deepcopy(faults))
+            observed = copy.deepcopy(faults)
+            for fault in observed.values():
+                if fault.get("blocked"):
+                    fault["last_failure_note"] = fault["blocked"]
+                fault["blocked"] = ""
+            self._state.connection_faults.update(observed)
             self._state.failures = max(
                 (f.get("failures", 0) for f in self._state.connection_faults.values()),
                 default=0,
@@ -880,7 +860,11 @@ class ModelGateway:
             state.purposes = copy.deepcopy(latest.get("by_purpose", {}))
             state.roles = copy.deepcopy(latest.get("by_role", {}))
             state.connection_faults = copy.deepcopy(latest.get("connection_faults", {}))
-            state.blocked = "" if state.connection_faults else latest.get("blocked", "")
+            for fault in state.connection_faults.values():
+                if fault.get("blocked"):
+                    fault["last_failure_note"] = fault["blocked"]
+                fault["blocked"] = ""
+            state.blocked = ""
             state.failures = latest.get("consecutive_failures", 0)
             if not isinstance(state.blocked, str):
                 raise ModelGatewayError("Invalid provider state.")
@@ -1150,8 +1134,6 @@ class ModelGateway:
                 fault["failures"] += 1
                 self._state.failures = fault["failures"]
                 receipt.failure_counted = True
-                if fault["failures"] >= self._state.limits.max_failures:
-                    fault["blocked"] = "consecutive request failures"
 
     def request(
         self,

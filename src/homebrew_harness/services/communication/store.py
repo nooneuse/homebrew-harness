@@ -579,6 +579,7 @@ class CommunicationStore:
                 "work_id": row["work_id"],
                 "operator_note": row.get("operator_note"),
                 "assessment_job_id": row.get("assessment_job_id"),
+                "no_progress": row["no_progress"],
             }
             key = row["id"] + ":" + basis + ":" + str(through)
             job = self.ms.job(
@@ -691,8 +692,6 @@ class CommunicationStore:
             "decline": "waiting_operator",
             "settle": "settled",
         }[step]
-        if row["no_progress"] >= self.policy["no_progress_rounds"]:
-            row["state"] = "waiting_operator"
         self.put(conn, "discussions", row)
         if not fresh:
             row["state"] = "ready_to_assess"

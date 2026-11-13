@@ -39,7 +39,6 @@ class ApprovalCLITests(unittest.TestCase):
                 "decision": "approve",
                 "reason": "Exact user command",
                 "risk": "low",
-                "authorization": "explicit",
             }
         )
         server = self.service(

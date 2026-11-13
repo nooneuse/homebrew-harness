@@ -152,6 +152,9 @@ class Maintenance:
             self.agent_closed = True
 
     def command(self, method, payload, request_id):
+        if method == "approval_review_retry":
+            return self.runtime.store.command(self.runtime.header, method, payload, request_id,
+                lambda conn: self.runtime.approval_review.retry(payload["id"], payload["revision"], conn=conn))
         if method == "model_recover":
             return self.agent.model_control.recover(
                 payload["profile"], payload["revision"], request_id

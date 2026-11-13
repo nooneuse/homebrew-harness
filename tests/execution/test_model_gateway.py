@@ -759,10 +759,10 @@ class IntegrationTests(Fixture):
             task_id=task.id,
         )
         session.team.authorize_spawn(arguments)
-        with session.gateway.scope(deadline=Deadline.after(0.15)):
+        with session.gateway.scope(deadline=Deadline.after(0.5)):
             session.team.spawn(**arguments)
         member = session.team.members["reader"]
-        limit = time.monotonic() + 1
+        limit = time.monotonic() + 2
         while member.status != "failed" and time.monotonic() < limit:
             threading.Event().wait(0.01)
         self.assertEqual(member.status, "failed")
@@ -813,48 +813,32 @@ class IntegrationTests(Fixture):
         self.assertEqual(gateway.summary()["calls"], 1)
         self.assertEqual(client.chat.completions.create.call_count, 1)
 
-    def test_authentication_rejection_stops_without_automatic_retries(self):
+    def test_authentication_failure_is_observed_without_blocking_future_calls(self):
         class Denied(Exception):
             status_code = 401
-
         gateway, client = self.gateway()
-        client.chat.completions.create.side_effect = Denied(
-            "private rejected credential"
-        )
-        with self.assertRaises(Denied):
-            self.invoke(gateway)
-        with self.assertRaises(ModelGatewayError):
-            self.invoke(gateway)
-        self.assertEqual(client.chat.completions.create.call_count, 1)
-        self.assertEqual(
-            gateway.summary()["blocked"], "provider authentication or access denied"
-        )
-        gateway.reset_failures()
-        client.chat.completions.create.side_effect = None
-        client.chat.completions.create.return_value = response()
-        self.invoke(gateway)
-        self.assertEqual(client.chat.completions.create.call_count, 2)
-
-    def test_consecutive_provider_failures_stop_automatic_calls_until_host_reset(self):
-        from homebrew_harness.execution.model_protocol import ProviderError
-
-        Unavailable = ProviderError
-
-        gateway, client = self.gateway(max_failures=2)
-        client.chat.completions.create.side_effect = Unavailable(
-            "server_error", status_code=503
-        )
+        client.chat.completions.create.side_effect = Denied('denied')
         for _ in range(2):
-            with self.assertRaises(Unavailable):
+            with self.assertRaises(Denied):
                 self.invoke(gateway)
-        with self.assertRaises(ModelGatewayError):
-            self.invoke(gateway)
-        self.assertEqual(client.chat.completions.create.call_count, 2)
-        gateway.reset_failures()
+        self.assertFalse(gateway.blocked)
         client.chat.completions.create.side_effect = None
         client.chat.completions.create.return_value = response()
         self.invoke(gateway)
         self.assertEqual(client.chat.completions.create.call_count, 3)
+
+    def test_consecutive_failures_do_not_disable_the_connection(self):
+        from homebrew_harness.execution.model_protocol import ProviderError
+        gateway, client = self.gateway()
+        client.chat.completions.create.side_effect = ProviderError('server_error', status_code=503)
+        for _ in range(4):
+            with self.assertRaises(ProviderError):
+                self.invoke(gateway)
+        self.assertFalse(gateway.blocked)
+        client.chat.completions.create.side_effect = None
+        client.chat.completions.create.return_value = response()
+        self.invoke(gateway)
+        self.assertEqual(client.chat.completions.create.call_count, 5)
 
 
 class RealTransportTests(Fixture):

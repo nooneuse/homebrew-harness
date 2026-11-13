@@ -25,7 +25,6 @@ def verdict(decision="approve", authorization="explicit"):
                 "decision": decision,
                 "reason": "Exact action assessed against user goal",
                 "risk": "low",
-                "authorization": authorization,
             }
         )
     )
@@ -183,19 +182,17 @@ class ApprovalReviewTests(unittest.TestCase):
         self.assertFalse(worker.is_alive())
         self.assertEqual(output, ["Done"])
 
-    def test_unknown_authorization_cannot_be_approved(self):
-        reviewer, client, _ = self.reviewer([verdict("approve", "unknown")])
-        published = []
+    def test_legacy_authorization_field_is_corrected_before_approval(self):
+        legacy = reply(json.dumps({'decision': 'approve', 'reason': 'Goal permits action',
+                                  'authorization': 'unknown'}))
+        reviewer, client, payloads = self.reviewer([legacy, verdict()])
         context = self.context()
-        self.assertIsNone(
-            reviewer.review(
-                self.request(),
-                context,
-                lambda: context,
-                lambda *args: published.append(args),
-            )
-        )
-        self.assertFalse(published)
+        published = []
+        reviewer.review(self.request(), context, lambda: context,
+                        lambda value, identity: published.append(value))
+        self.assertEqual(published, ['approve'])
+        self.assertEqual(client.chat.completions.create.call_count, 2)
+        self.assertIn('Do not include authorization', str(payloads[-1]))
 
     def test_changed_context_or_human_decision_invalidates_verdict(self):
         reviewer, client, _ = self.reviewer([verdict()])
@@ -215,19 +212,19 @@ class ApprovalReviewTests(unittest.TestCase):
             "superseded",
         )
 
-    def test_model_failure_and_bad_output_do_not_repeat_review(self):
-        reviewer, client, _ = self.reviewer([reply("not JSON")])
+    def test_bad_output_is_corrected_within_limit_and_explicit_retry_is_fresh(self):
+        reviewer, client, payloads = self.reviewer([reply('not JSON')] * 3 + [verdict()])
         context = self.context()
         published = []
         for _ in range(2):
-            reviewer.review(
-                self.request(),
-                context,
-                lambda: context,
-                lambda *args: published.append(args),
-            )
-        self.assertEqual(client.chat.completions.create.call_count, 1)
-        self.assertFalse(published)
+            reviewer.review(self.request(), context, lambda: context,
+                            lambda value, identity: published.append(value))
+        self.assertEqual(client.chat.completions.create.call_count, 3)
+        self.assertEqual(published, [])
+        reviewer.review(self.request(), context, lambda: context,
+                        lambda value, identity: published.append(value), retry=True)
+        self.assertEqual(published, ['approve'])
+        self.assertEqual(client.chat.completions.create.call_count, 4)
 
     def test_requester_model_source_uses_actual_binding_and_explicit_fallback(self):
         reviewer, client, _ = self.reviewer(
@@ -326,7 +323,7 @@ class ApprovalReviewTests(unittest.TestCase):
         self.assertTrue(record['evidence'][0]['read_complete'])
         self.assertEqual(client.chat.completions.create.call_count, 3)
 
-    def test_unread_evidence_prevents_approval_but_allows_safe_denial(self):
+    def test_partial_evidence_sufficiency_is_the_models_decision(self):
         (self.root / 'guide').write_text('x' * 12000)
         for decision in ('approve', 'deny'):
             with self.subTest(decision=decision):
@@ -336,23 +333,19 @@ class ApprovalReviewTests(unittest.TestCase):
                 published = []
                 reviewer.review({**self.request(), 'id': decision}, context, lambda: context,
                                 lambda value, identity: published.append(value))
+                self.assertEqual(published, [decision])
                 record = next(iter(reviewer.store.items('approval_reviews').values()))
-                if decision == 'approve':
-                    self.assertEqual(published, [])
-                    self.assertEqual(record['state'], 'human_required')
-                    self.assertIn('not read completely', record['verdict']['reason'])
-                else:
-                    self.assertEqual(published, ['deny'])
+                self.assertFalse(record['evidence'][0]['read_complete'])
                 self.assertEqual(client.chat.completions.create.call_count, 2)
 
-    def test_file_change_between_pages_cannot_publish_approval(self):
+    def test_file_change_between_pages_is_reported_to_model(self):
         path = self.root / 'guide'
         path.write_text('original' * 2000)
         reviewer, client, _ = self.reviewer([])
         answers = iter([reply(calls=[call('first', name='read_review_file',
                                         arguments='{"path":"guide"}')]),
                         reply(calls=[call('second', name='read_review_file',
-                                        arguments='{"path":"guide","offset":10000}')])])
+                                        arguments='{"path":"guide","offset":10000}')]), verdict()])
         def model(**kwargs):
             result = next(answers)
             if client.chat.completions.create.call_count == 2:
@@ -363,9 +356,9 @@ class ApprovalReviewTests(unittest.TestCase):
         published = []
         reviewer.review(self.request(), context, lambda: context,
                         lambda *args: published.append(args))
-        self.assertEqual(published, [])
+        self.assertEqual(len(published), 1)
         self.assertEqual(next(iter(reviewer.store.items('approval_reviews').values()))['state'],
-                         'human_required')
+                         'approved')
 
     def test_reviewer_cannot_read_private_state_or_run_bash(self):
         reviewer, client, _ = self.reviewer(
@@ -389,14 +382,14 @@ class ApprovalReviewTests(unittest.TestCase):
         )
         self.assertFalse((self.root / "forbidden").exists())
 
-    def test_state_change_after_approval_blocks_execution_at_dispatch(self):
+    def test_policy_change_after_approval_blocks_execution_at_dispatch(self):
         session, client, _ = self.session(
             [reply(calls=[call("bash", command="printf ok")]), verdict(), reply("Done")]
         )
 
         def change(event):
             if event.name == "bash":
-                (self.root / "changed").write_text("after approval")
+                session.approval_reviewer.config = ReviewConfig(mode="manual")
 
         session.hooks.register_hook("PreToolUse", change)
         session.run_user("Print ok")
@@ -405,6 +398,54 @@ class ApprovalReviewTests(unittest.TestCase):
         )
         self.assertFalse(result.get("executed", True))
         self.assertIn("stale", result["error"])
+
+    def test_unrelated_file_change_does_not_invalidate_plain_command(self):
+        session, client, _ = self.session(
+            [reply(calls=[call("bash", command="printf ok")]), verdict(), reply("Done")])
+        def change(event):
+            if event.name == "bash":
+                (self.root / "unrelated.md").write_text("New documentation")
+        session.hooks.register_hook("PreToolUse", change)
+        session.run_user("Print ok")
+        result = json.loads(next(m["content"] for m in session.messages if m.get("role") == "tool"))
+        self.assertNotIn("error", result)
+        self.assertEqual(result["exit_code"], 0)
+        self.assertIn("ok", result["stdout"])
+
+    def test_selected_execution_evidence_is_still_guarded_after_approval(self):
+        import sys, shlex
+        script = self.root / 'script.py'
+        script.write_text("print('safe')")
+        decision = reply(json.dumps({'decision': 'approve', 'reason': 'Reviewed this script.', 'evidence_paths': ['script.py']}))
+        session, client, _ = self.session([
+            reply(calls=[call('bash', command=shlex.quote(sys.executable)+' '+shlex.quote(str(script)))]),
+            reply(calls=[call('read', name='read_review_file', arguments='{"path":"script.py"}')]),
+            decision, reply('Done')])
+        def change(event):
+            if event.name == 'bash':
+                script.write_text("open('should-not-exist','w').write('unsafe')")
+        session.hooks.register_hook('PreToolUse', change)
+        session.run_user('Run the reviewed script')
+        result = json.loads(next(m['content'] for m in session.messages if m.get('role') == 'tool'))
+        self.assertFalse(result.get('executed', True))
+        self.assertIn('stale', result['error'])
+        self.assertFalse((self.root / 'should-not-exist').exists())
+
+    def test_discarded_optional_evidence_does_not_block_later_execution(self):
+        (self.root / 'guide').write_text('Optional guidance')
+        decision = reply(json.dumps({'decision': 'approve', 'reason': 'The guide is irrelevant to printing ok.', 'evidence_paths': []}))
+        session, client, _ = self.session([
+            reply(calls=[call('bash', command='printf ok')]),
+            reply(calls=[call('read', name='read_review_file', arguments='{"path":"guide"}')]),
+            decision, reply('Done')])
+        def change(event):
+            if event.name == 'bash':
+                (self.root / 'guide').write_text('Updated optional guidance')
+        session.hooks.register_hook('PreToolUse', change)
+        session.run_user('Print ok')
+        result = json.loads(next(m['content'] for m in session.messages if m.get('role') == 'tool'))
+        self.assertEqual(result['exit_code'], 0)
+        self.assertEqual(result['stdout'], 'ok')
 
     def test_timeout_leaves_manual_request_without_second_model_call(self):
         reviewer, client, _ = self.reviewer(
@@ -541,7 +582,7 @@ class ApprovalReviewTests(unittest.TestCase):
         self.assertEqual(published, ["approve"])
         self.assertEqual(client.chat.completions.create.call_count, 1)
 
-    def test_changed_required_file_falls_back_before_publication(self):
+    def test_changed_required_file_allows_model_to_request_human(self):
         (self.root / "script.py").write_text('print("ok")')
         read = reply(
             calls=[
@@ -549,12 +590,12 @@ class ApprovalReviewTests(unittest.TestCase):
             ]
         )
         reviewer, client, _ = self.reviewer([])
-        responses = iter([read, verdict()])
+        responses = iter([read, verdict(), verdict("human_required")])
         published = []
 
         def model(**kwargs):
             response = next(responses)
-            if not response.choices[0].message.__dict__.get("tool_calls"):
+            if client.chat.completions.create.call_count == 2:
                 (self.root / "script.py").write_text("changed")
             return response
 
@@ -571,6 +612,9 @@ class ApprovalReviewTests(unittest.TestCase):
             next(iter(reviewer.store.items("approval_reviews").values()))["state"],
             "human_required",
         )
+
+        self.assertEqual(client.chat.completions.create.call_count, 3)
+        self.assertEqual(next(iter(reviewer.store.items("approval_reviews").values()))["verdict"]["decision"], "human_required")
 
     def test_private_evidence_and_oversized_context_fall_back(self):
         reviewer, client, _ = self.reviewer(

@@ -12,6 +12,9 @@
 
 ## 多轮讨论
 
+冻结的 job 包含 `no_progress`，表示连续报告无进展的轮次数。这个计数供模型参考，运行时保留模型选择的下一步，不因固定次数强制交给操作者。
+
+
 新回复推进讨论输入，不直接改变正式 Work 需求、Goal 或开发权限。没有新材料不调用模型，等待作者不占用开发 Run。问题、事实、草案、分歧和每轮结论持久保存；已授权发言进入发送队列，不等下一次半天巡检。
 
 需求足够清晰后产生正式接受请求，接受后创建或更新 proposed Work，再走已有开发授权。替换活动工作的需求前，需要先让原 Run 收尾。方向分歧或多轮无进展交给操作者决定，不按总轮数自动拒绝。
@@ -51,7 +54,7 @@ Text UI 使用同样命令，省去前缀和 Service ID。discussion pause/reope
 
 平台明确拒绝时，动作进入 failed，可以创建修正计划；可能已发表的动作保持 unknown。只有当前版本的明确“已查证未执行”结论才能重新申请授权，查不到回执不会自动重发。公开讨论读取冻结议题与关联证据，内部对话和报告使用自己的任务合同。
 
-`service.requests_page(limit=20)` 分页查询维护决定；`service.models()` 查看连接故障。修复连接环境后，用 `service.recover_model(profile, revision=..., request_id=...)` 确认当前故障，失败 job 另行重试。需要重新读取凭据时先重启服务。
+`service.requests_page(limit=20)` 分页查询维护决定；`service.models()` 查看连接错误观察；历史错误不会阻止新请求。`service.recover_model(profile, revision=..., request_id=...)` 可清理当前错误观察，失败 job 另行重试。需要重新读取凭据时先重启服务。
 
 ```sh
 homebrew-harness service requests SERVICE_ID --limit 20
