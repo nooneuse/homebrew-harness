@@ -90,7 +90,7 @@ def frozen_options(value):
     if "reasoning" in value and (
         not isinstance(value["reasoning"], str)
         or value["reasoning"]
-        not in {"none", "minimal", "low", "medium", "high", "xhigh"}
+        not in {"none", "minimal", "low", "medium", "high", "xhigh", "max"}
     ):
         raise ValueError("Unsupported reasoning effort.")
     extensions = value.get("extensions", {})

@@ -59,3 +59,17 @@ homebrew-harness service models SERVICE_ID list
 homebrew-harness service models SERVICE_ID recover PROFILE --revision FAULT_REVISION --request-id recover-1
 homebrew-harness service communication SERVICE_ID inspect ACTION_ID --conclusion retry_not_executed --confirm-not-executed --revision ACTION_REVISION --request-id inspect-2
 ```
+
+## 仓库知识、研判与可配置提示词
+
+较长的 issue 研判可在宿主配置中设置 `request_seconds: 500`，并在 Service 配置中设置 `maintenance.job_seconds: 1500`。请求时限会显式传递给模型传输层。研判与起草共享 1500 秒任务截止时间，每次请求最多使用 500 秒或任务剩余时间。这两个设置与平台 HTTP 请求、自动审批的时限分别配置。
+
+读取代码的 job 会获得有界 project_context，包含源码版本、入口声明、目录导航和文档摘录；可以用 service_read(kind="project_context") 获取并按需阅读相关代码。摘录是取证入口，不是完整功能或验收证明。
+
+assessment_model 默认选择维护 Lead；与 model_profile 的绑定不同时，Lead 先确定事实、问题归属、范围和下一步，讨论模型只起草正文，不改变研判。相同绑定合并处理；外部 PR 仍使用 review_model。questions 的 recipient 为 requester/maintainer，缺省 requester。需求行为、环境、优先级向提出者澄清；架构、文档位置、实现归属和 CI 资源交维护者决定。公开 communication.question_ids 只能引用当前开放的 requester 问题。只剩内部问题时使用 operator，信息充分可以零提问。字段校验不能代替对自由正文的语义判断。
+
+完成的研判先保存在当前 job。重试在输入、源码证据、政策、模板和模型版本有效时复用；纯确认评论可直接消费事件，不重复提问或模型调用，实质变更重新研判。缓存历史缺失会重新研判。阶段共享原 job 时间边界，保留每阶段轮次上限。研判不授予开发或发布权限，审批仍独立执行。
+
+内置 guidance 位于 services/prompts/discussion-assessment.md 和 discussion-draft.md。communication.prompt_files 可以通过 assessment/draft 两个键选择仓库与控制目录外的绝对 UTF-8 文件路径，无需修改 Python。文件不能是 symlink，每个文件最多 16 KiB、8,000 字符。新 job 读取新快照；已有 job 及其重试始终使用原快照。对当前议题应用新文字，使用现有 discussion assess 控制产生新的研判；更换文件路径仍走配置替换流程。模板不能改变工具、结果校验或权限边界。
+
+模型思考强度仍通过模型目录 options 配置，可为研判单独选择高强度 profile，不必将所有回复调到最高强度。

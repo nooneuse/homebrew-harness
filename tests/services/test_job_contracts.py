@@ -283,9 +283,12 @@ class JobContracts(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.agent.read_code("module.py")
         result = self.agent.run(job)
-        offered = {
-            tool["function"]["name"] for tool in self.peer.model_requests[0]["tools"]
-        }
+        report_request = next(
+            request for request in self.peer.model_requests
+            if any(message.get("role") == "user" and '"kind": "report"' in message.get("content", "")
+                   for message in request["messages"])
+        )
+        offered = {tool["function"]["name"] for tool in report_request["tools"]}
         self.assertIn("service_read", offered)
         self.assertNotIn("service_read_code", offered)
         self.assertNotIn("glob", offered)

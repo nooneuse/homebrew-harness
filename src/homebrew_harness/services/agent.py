@@ -1,6 +1,7 @@
 """Narrow service reasoning on the existing prepared Agent Loop."""
 
 import json
+import copy
 from pathlib import Path
 
 from homebrew_harness.context.skill_loader import SkillLoader
@@ -47,12 +48,20 @@ class ServiceAgent:
             self.binding.client,
             GatewayLimits(request_timeout=settings.request_seconds),
             workdir=runtime.store.root,
-        )
+        ).with_options(timeout=settings.request_seconds)
         self.models.track_gateway(self.gateway)
         self.base_binding = self.binding
         self.skills = SkillLoader(Path(__file__).parent / "skills")
         self.job = None
         self.proposal = None
+        self.stage = None
+        self.assessment_plan = None
+        self.project_context = None
+        self.code_evidence = {}
+        from .communication.prompts import defaults, identity
+        self.builtin_prompts = defaults()
+        self.discussion_prompts = None
+        self.prompt_identity = identity(runtime.spec.communication.get("prompt_files", {}), self.builtin_prompts)
         self.override_bindings = {}
         from .model_control import ServiceModels
 
@@ -62,6 +71,7 @@ class ServiceAgent:
             (runtime.spec.delivery or {}).get("review_model"),
             (runtime.spec.communication or {}).get("model_profile"),
             (runtime.spec.communication or {}).get("review_model"),
+            (runtime.spec.communication or {}).get("assessment_model"),
         } - {None, self.models.alias}:
             selected = self.models.registry.select(
                 alias,
@@ -79,10 +89,49 @@ class ServiceAgent:
             "model": self.base_binding.identity(),
             "catalog": self.models.registry.manifest(),
             "overrides": self.override_bindings,
+            "prompts": self.prompt_identity,
             "skills": fingerprint(
                 {k: v.content for k, v in self.skills.skills.items()}
             ),
         }
+
+    def describe_tools(self, definitions):
+        tools = copy.deepcopy(definitions)
+        for definition in tools:
+            function = definition.get("function", {})
+            properties = function.get("parameters", {}).get("properties", {})
+            # Keep validation in the dispatch contract; model-facing string schemas
+            # need not rely on regex generation in compatible provider tool decoders.
+            for value in properties.values():
+                value.pop("pattern", None)
+            if function.get("name") != "service_read" or not self.job or self.job["kind"] != "discussion":
+                continue
+            properties["kind"]["enum"] = [
+                "discussions", "discussion_events", "events", "rounds", "review_snapshots",
+                "review_operations", "communication_actions", "decisions", "requirements",
+                "work", "policy", "job", "project_context",
+            ]
+            properties["identity"]["description"] = "Use the exact current job/topic ID or an ID returned by the frozen evidence directory. Never invent placeholders."
+            ids = {"", self.job["id"], self.job["target"]}
+            ids.update(self.job["input"].get("events", []))
+            for field in ("review_id", "work_id"):
+                if self.job["input"].get(field):
+                    ids.add(self.job["input"][field])
+            for field in ("facts", "questions", "findings"):
+                for item in self.job["input"]["projection"].get(field, []):
+                    ids.update(item.get("sources", []))
+            with self.store.db.connection() as conn:
+                count = conn.execute("SELECT count(*) FROM records WHERE section='service_events' AND owner=? AND json_extract(value,'$.discussion_id')=? AND json_extract(value,'$.sequence')<=?", ("service:" + self.store.id, self.job["target"], self.job["input"]["seq"])).fetchone()[0]
+            if count <= 32 and len(ids) <= 32:
+                with self.store.db.connection() as conn:
+                    ids.update(row[0] for row in conn.execute("SELECT key FROM records WHERE section='service_events' AND owner=? AND json_extract(value,'$.discussion_id')=? AND json_extract(value,'$.sequence')<=?", ("service:" + self.store.id, self.job["target"], self.job["input"]["seq"])))
+                for section in ("service_decisions", "service_requirements", "service_communication_actions", "service_review_operations", "service_discussion_rounds"):
+                    with self.store.db.connection() as conn:
+                        rows = conn.execute("SELECT key FROM records WHERE section=? AND owner=? AND json_extract(value,'$.discussion_id')=? LIMIT 33", (section, "service:" + self.store.id, self.job["target"])).fetchall()
+                    ids.update(row[0] for row in rows)
+                if len(ids) <= 32:
+                    properties["identity"]["enum"] = sorted(ids)
+        return tools
 
     def handlers(self):
         return {
@@ -98,6 +147,10 @@ class ServiceAgent:
         contract.authorize(kind, identity)
         number(offset, "offset", 0, 2**63 - 1, integer=True)
         number(limit, "limit", 1, 16000, integer=True)
+        if kind == "project_context":
+            raw = json.dumps(self.project_context, ensure_ascii=False)
+            return json.dumps({"text": raw[offset:offset + limit], "length": len(raw),
+                               "next_offset": offset + limit if offset + limit < len(raw) else None})
         override = contract.override(kind, identity)
         if override is not None:
             raw = json.dumps(override, ensure_ascii=False)
@@ -249,6 +302,8 @@ class ServiceAgent:
         )
 
         root = self.code_root()
+        if path == "project_context" and not (root / path).is_file():
+            raise ValueError("project_context is JSON evidence, not a file. Use service_read(kind='project_context') or a real file path from its documents/subcommands.")
         if path.startswith("@base/"):
             if (
                 not self.job
@@ -265,11 +320,24 @@ class ServiceAgent:
             )
         number(offset, "offset", 0, 10000000, integer=True)
         number(limit, "limit", 1, 500, integer=True)
+        if self.stage != "reply":
+            from .project_context import file_version
+            try:
+                self.code_evidence[path] = file_version(root, path)
+            except (OSError, ValueError):
+                self.code_evidence[path] = None
         return run_read(path=path, offset=offset, limit=limit, workdir=root)
 
     def propose(self, proposal, workdir=None):
         raw = json.loads(proposal)
-        self.proposal = JobContract(self.store, self.job).validate(raw)
+        if self.stage == "assessment":
+            from .communication.reasoning import assessment
+            self.proposal = assessment(self.store, self.job, raw)
+        elif self.stage == "reply":
+            from .communication.reasoning import reply
+            self.proposal = reply(self.assessment_plan, raw, self.store, self.job)
+        else:
+            self.proposal = JobContract(self.store, self.job).validate(raw)
         return json.dumps(
             {"candidate_ready": True, "persisted": False, "authorized": False}
         )
@@ -283,7 +351,48 @@ class ServiceAgent:
                 self.model_control.save()
 
     def _run(self, job):
+        from homebrew_harness.execution.execution_control import control_scope
+        from .project_context import build
+
+        self.job, self.stage, self.code_evidence = job, None, {}
+        deadline = Deadline.after(self.store.policy["job_seconds"])
+        with control_scope(deadline=deadline, cancel_events=(self.stop,)):
+            context = build(self.code_root(), self.runtime.spec.communication or {}) if JobContract(self.store, job).handler.code else None
+            preparation = {"project_context": context}
+            if job["kind"] == "discussion":
+                from .communication.prompts import load
+                self.discussion_prompts = self.store.job_get(job["id"]).get("discussion_prompts")
+                if self.discussion_prompts is None:
+                    self.discussion_prompts = load(
+                        self.runtime.spec.communication.get("prompt_files", {}),
+                        builtin=self.builtin_prompts,
+                        roots=(self.runtime.store.root, self.runtime.spec.workspace),
+                    )
+                    preparation["discussion_prompts"] = self.discussion_prompts
+            self.store.prepare_job(job, **preparation)
+            if job["kind"] == "discussion" and not job["input"].get("review_id"):
+                from .communication.reasoning import run
+                result = run(self, job, context, deadline)
+            else:
+                result = self._execute(job, project=context, deadline=deadline)
+            if context and context.get("version"):
+                after = build(self.code_root(), self.runtime.spec.communication or {})
+                if after.get("version") != context["version"]:
+                    raise ValueError("Repository evidence changed during service reasoning.")
+            record = self.store.job_get(job["id"]).get("discussion_assessment")
+            if record:
+                from .project_context import file_version
+                for path, digest in record.get("evidence", {}).items():
+                    if digest and file_version(self.code_root(), path) != digest:
+                        raise ValueError("Read source evidence changed during reply preparation.")
+            return result
+
+    def _execute(self, job, *, project=None, stage=None, deadline=None, selected=None, plan=None):
         self.job, self.proposal = job, None
+        self.project_context = project
+        self.stage, self.assessment_plan, self.code_evidence = stage, plan, {}
+        if selected is not None:
+            self.binding, self.gateway = selected
         kind = job["kind"]
         contract = JobContract(self.store, job)
         primary = contract.primary()
@@ -325,15 +434,38 @@ class ServiceAgent:
         )
         directory.mkdir(parents=True, exist_ok=True)
         instruction = contract.instruction(self.skills)
+        if stage in {"assessment", "reply"}:
+            from .job_contracts import COMMON
+            name = "assessment" if stage == "assessment" else "draft"
+            instruction = COMMON + self.discussion_prompts["texts"][name]
+        elif kind == "discussion":
+            instruction += "\n" + self.discussion_prompts["texts"]["assessment"]
+        if kind == "discussion":
+            budget, sources = 6000, []
+            for identity in reversed(job["input"].get("events", [])):
+                if budget == 0:
+                    break
+                contract.authorize("events", identity)
+                event = self.store.get("events", identity)
+                body = event.get("content", {}).get("body", "")
+                text = body[:budget]
+                sources.append({"id": identity, "text": text, "body_length": len(body),
+                                "truncated": len(text) < len(body)})
+                budget -= len(text)
+            preview["source_previews"] = list(reversed(sources))
+        if project:
+            preview["project_context"] = project
+        if plan:
+            from .communication.reasoning import public
+            preview["lead_assessment"] = public(plan)
         messages = [
             {"role": "system", "content": instruction},
             {
                 "role": "user",
                 "content": json.dumps(
                     {
-                        "job": {
-                            k: job[k] for k in ("id", "kind", "target", "revision")
-                        },
+                        "job": {**{k: job[k] for k in ("id", "kind", "target", "revision")},
+                                **({"phase": stage} if stage else {})},
                         "policy": contract.policy(),
                         "input": preview,
                     },
@@ -351,7 +483,7 @@ class ServiceAgent:
             )
             | (
                 {"service_read_code", "glob", "search_text"}
-                if contract.handler.code
+                if contract.handler.code and stage != "reply"
                 else set()
             ),
             context_chars=self.binding.context_chars,
@@ -362,7 +494,7 @@ class ServiceAgent:
             self.gateway.scope(
                 role="service",
                 context_id=job["id"],
-                deadline=Deadline.after(self.store.policy["job_seconds"]),
+                deadline=deadline or Deadline.after(self.store.policy["job_seconds"]),
                 cancel_event=self.stop,
             ),
             _prepare_loop(

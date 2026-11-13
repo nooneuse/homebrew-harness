@@ -41,6 +41,7 @@ def validate_service(spec_file, host_file, control):
             spec.delivery.get("review_model"),
             spec.communication.get("model_profile"),
             spec.communication.get("review_model"),
+            spec.communication.get("assessment_model"),
             spec.operations.get("audit_model"),
             spec.run_defaults.get("model_profile"),
             *spec.run_defaults.get("fallback_models", ()),

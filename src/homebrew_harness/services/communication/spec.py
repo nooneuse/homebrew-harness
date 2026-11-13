@@ -52,6 +52,8 @@ def validate(raw, sources):
         "no_progress_rounds": 3,
         "model_profile": None,
         "review_model": None,
+        "assessment_model": None,
+        "prompt_files": {},
         "review_globs": ["**/*"],
         "max_paths": 10000,
         "max_bytes": 32000000,
@@ -62,6 +64,12 @@ def validate(raw, sources):
     if not isinstance(raw, dict) or set(raw) - set(defaults):
         raise ValueError("Invalid communication policy fields.")
     value = {**defaults, **raw}
+    files = value["prompt_files"]
+    if (not isinstance(files, dict) or set(files) - {"assessment", "draft"}
+            or any(not isinstance(path, str) or not Path(path).expanduser().is_absolute()
+                   for path in files.values())):
+        raise ValueError("Discussion prompts require known phases and external absolute paths.")
+    value["prompt_files"] = {name: str(Path(path).expanduser()) for name, path in files.items()}
     if value["mode"] not in {"remote", "local"}:
         raise ValueError("Unknown communication mode.")
     if not isinstance(value["projects"], list) or not 1 <= len(value["projects"]) <= 8:
@@ -113,7 +121,7 @@ def validate(raw, sources):
         )
     if value["max_debounce_seconds"] < value["debounce_seconds"]:
         raise ValueError("Maximum debounce precedes the debounce window.")
-    for name in ("model_profile", "review_model"):
+    for name in ("model_profile", "review_model", "assessment_model"):
         if value[name] is not None and (
             not isinstance(value[name], str)
             or not re.fullmatch(r"[A-Za-z0-9_.-]{1,100}", value[name])
@@ -254,7 +262,8 @@ def validate_proposal(raw, policy):
             allowed = (
                 {"id", "text", "sources", "status", "path", "severity"}
                 if name == "findings"
-                else {"id", "text", "sources", "status"}
+                else ({"id", "text", "sources", "status", "recipient"}
+                      if name == "questions" else {"id", "text", "sources", "status"})
             )
             if set(entry) - allowed:
                 raise ValueError("Unknown discussion projection fields.")
@@ -266,7 +275,9 @@ def validate_proposal(raw, policy):
                 or any(not isinstance(s, str) for s in entry.get("sources", []))
             ):
                 raise ValueError("Invalid discussion evidence references.")
-            if name == "findings" and entry.get("status", "open") not in {
+            if name == "questions" and entry.get("recipient", "requester") not in {"requester", "maintainer"}:
+                raise ValueError("Question recipient must be requester or maintainer.")
+            if name in {"questions", "findings"} and entry.get("status", "open") not in {
                 "open",
                 "needs_explanation",
                 "resolved",
@@ -289,11 +300,32 @@ def validate_proposal(raw, policy):
             text(draft["out_of_scope"], "out_of_scope", 8000)
         if draft.get("scope") is not None and draft["scope"] not in policy["scopes"]:
             raise ValueError("Draft must choose a host scope.")
+    internal = open_questions(raw, "maintainer")
+    external = open_questions(raw, "requester")
+    if internal and not external and raw["next_step"] != "operator":
+        raise ValueError("Only maintainer questions remain; use operator instead of public clarification.")
     if raw.get("communication") is not None:
-        validate_plan(raw["communication"])
+        plan = validate_plan(raw["communication"])
+        validate_public_questions(plan, raw)
     if len(json.dumps(raw, allow_nan=False)) > 96000:
         raise ValueError("Discussion proposal exceeds its size limit.")
     return raw
+
+
+def open_questions(proposal, recipient):
+    return [q for q in proposal.get("questions", [])
+            if q.get("recipient", "requester") == recipient
+            and q.get("status", "open") in {"open", "needs_explanation"}]
+
+
+def validate_public_questions(plan, projection):
+    internal = open_questions(projection, "maintainer")
+    external = open_questions(projection, "requester")
+    allowed = {q["id"] for q in external}
+    if any(identity not in allowed for identity in plan.get("question_ids", [])):
+        raise ValueError("Public questions must reference current open requester questions.")
+    if internal and not external and plan["intent"] == "clarify":
+        raise ValueError("Maintainer decisions cannot be requested through public clarification.")
 
 
 def validate_plan(plan):
@@ -304,10 +336,16 @@ def validate_plan(plan):
         "thread_id",
         "event",
         "comments",
+        "question_ids",
     }:
         raise ValueError("Invalid communication plan.")
     if plan.get("kind") not in ACTIONS or plan.get("intent") not in INTENTS:
         raise ValueError("Unknown publication kind or intent.")
+    ids = plan.get("question_ids", [])
+    if (not isinstance(ids, list) or len(ids) > 16
+            or any(not isinstance(identity, str) for identity in ids)
+            or len(set(ids)) != len(ids)):
+        raise ValueError("Public question IDs must be a bounded unique list.")
     text(plan.get("body"), "body", 16000)
     if plan["kind"] == "reply_thread":
         text(plan.get("thread_id"), "thread", 200)

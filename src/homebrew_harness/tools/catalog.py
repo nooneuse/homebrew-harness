@@ -42,11 +42,11 @@ SERVICE_TOOL_DEFINITIONS = [
     ),
     define_tool(
         "service_read_code",
-        "Read bounded project source for maintenance reasoning, without execution or writes.",
+        "Read an actual relative repository file path from project_context.documents/subcommands or glob/search results. project_context is JSON metadata, not a filename. Offset and limit are source lines, not characters; no execution or writes.",
         {
-            "path": NONEMPTY_STRING,
-            "offset": {"type": "integer", "minimum": 0},
-            "limit": {"type": "integer", "minimum": 1},
+            "path": {**NONEMPTY_STRING, "description": "Actual relative file path, e.g. README.md or a path returned by glob/search; never a service record kind."},
+            "offset": {"type": "integer", "minimum": 0, "maximum": 10000000},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 500, "description": "Number of source lines, between 1 and 500."},
         },
         ["path"],
     ),

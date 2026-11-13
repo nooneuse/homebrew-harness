@@ -28,4 +28,4 @@ dependencies = {file = ["requirements.txt"]}
 
 [tool.setuptools.package-data]
 "homebrew_harness.context" = ["skills/*/*.md", "skills/*/agents/*.yaml"]
-"homebrew_harness.services" = ["skills/*/*.md", "skills/*/agents/*.yaml"]
+"homebrew_harness.services" = ["skills/*/*.md", "skills/*/agents/*.yaml", "prompts/*.md"]

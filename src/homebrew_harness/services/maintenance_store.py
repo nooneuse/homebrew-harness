@@ -84,6 +84,9 @@ class MaintenanceStore:
                 "facts",
                 "history",
                 "candidate",
+                "project_context",
+                "discussion_assessment",
+                "discussion_prompts",
                 "unapplied_result",
                 "integration",
                 "integration_quality",
@@ -542,6 +545,19 @@ class MaintenanceStore:
         )
         work.pop("result", None)
         self.db._put(conn, "service_work", work["id"], work)
+
+    def prepare_job(self, job, **values):
+        if set(values) - {"project_context", "discussion_assessment", "discussion_prompts"}:
+            raise ValueError("Unknown service preparation field.")
+        with self.db.write() as conn:
+            self.store.guard(conn, self.header)
+            current = self.get("jobs", job["id"], conn)
+            if (current["state"] != "running"
+                    or current["generation"] != self.header["generation"]
+                    or current["input"] != job["input"]):
+                raise ValueError("Job preparation ownership or input changed.")
+            current.update(values)
+            self.put(conn, "jobs", current)
 
     def finish(self, job, result=None, error=None):
         with self.db.write() as conn:

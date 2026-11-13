@@ -310,6 +310,9 @@ def build_tool_pool(client, model, workdir, components: LoopComponents):
         handlers.update(components.service_control.handlers())
         service_tools = SERVICE_TOOLS
         tools = [*tools, *homebrew_harness.tools.catalog.SERVICE_TOOL_DEFINITIONS]
+        describe = getattr(components.service_control, "describe_tools", None)
+        if describe is not None:
+            tools = describe(tools)
     return ToolPool.build(
         tools,
         handlers,

@@ -8,7 +8,7 @@ from homebrew_harness.platforms.contracts import ObjectRef, SourceEvent, digest
 from homebrew_harness.services.protocol import request_key, fingerprint
 from homebrew_harness.services.maintenance_spec import text
 from homebrew_harness.services.action_runtime import start_attempt, finish_attempt
-from .spec import validate_plan, validate_proposal
+from .spec import validate_plan, validate_proposal, open_questions, validate_public_questions
 from .transitions import observation_event, mark_input, request_analysis
 
 SECTIONS = {
@@ -578,6 +578,7 @@ class CommunicationStore:
                 "review_id": row["review_id"],
                 "work_id": row["work_id"],
                 "operator_note": row.get("operator_note"),
+                "assessment_job_id": row.get("assessment_job_id"),
             }
             key = row["id"] + ":" + basis + ":" + str(through)
             job = self.ms.job(
@@ -700,8 +701,11 @@ class CommunicationStore:
             return "completed"
         if step == "develop":
             self.requirements_request(conn, row, result)
-        elif row["state"] == "waiting_operator":
+        elif row["state"] == "waiting_operator" or open_questions(result, "maintainer"):
             self.information_request(conn, row)
+        if job.get("discussion_assessment") and fresh:
+            row["assessment_job_id"] = job["id"]
+            self.put(conn, "discussions", row)
         if result.get("communication"):
             action = self.plan(conn, row, result["communication"])
             row["state"] = "awaiting_publication"
@@ -879,6 +883,7 @@ class CommunicationStore:
 
     def plan(self, conn, row, proposal):
         validate_plan(proposal)
+        validate_public_questions(proposal, row["projection"])
         if proposal["kind"] not in self.policy["enabled_actions"]:
             raise ValueError("Communication operation is disabled by host policy.")
         if row["state"] in {"paused", "blocked"}:

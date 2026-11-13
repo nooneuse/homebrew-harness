@@ -20,7 +20,7 @@ class ServiceModels:
                 request_timeout=self.agent.runtime.core.config.settings.request_seconds
             ),
             workdir=self.agent.runtime.store.root,
-        )
+        ).with_options(timeout=self.agent.runtime.core.config.settings.request_seconds)
         self.agent.models.track_gateway(gateway)
         self.contexts[alias] = (binding, gateway)
 
@@ -125,6 +125,10 @@ class ServiceModels:
             return result
         finally:
             self.lock.release()
+
+    def assessment(self):
+        alias = self.agent.runtime.spec.communication.get("assessment_model")
+        return self.contexts[alias or self.agent.models.alias or "@default"]
 
     def select(self, job):
         spec = self.agent.runtime.spec

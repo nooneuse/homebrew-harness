@@ -26,7 +26,9 @@ Add `communication` to a `repository_maintenance` ServiceSpec. The project must 
     "review_globs": ["src/**", "tests/**"],
     "required_tests": [],
     "model_profile": null,
-    "review_model": null
+    "review_model": null,
+    "assessment_model": null,
+    "prompt_files": {}
   }
 }
 ```
@@ -34,6 +36,37 @@ Add `communication` to a `repository_maintenance` ServiceSpec. The project must 
 The private credential file must be owner-only and outside both the control and project directories. Write credentials are separate from the model/development environment. Each publisher is bound to its authenticated platform identity. `local` mode accepts only a synthetic loopback peer for demonstrations.
 
 `auto_intents` can preauthorize `acknowledge`, `clarify` and `followup` within configured projects. The default requires approval for every public action. Formal reviews and project direction commitments require explicit decisions. A submitted review does not merge or close a PR.
+
+## Repository context and reply preparation
+
+Code-reading jobs receive a bounded `project_context` with a source version, entry-point observations, directory navigation and document excerpts. The agent can retrieve it through `service_read(kind="project_context")` and follow relevant source paths. Excerpts are evidence to investigate, rather than complete descriptions of behavior or verification.
+
+For issues, `assessment_model` selects the requirement assessor; its default is the maintenance Lead. When the assessor and discussion model use different bindings, the Lead prepares facts, question recipients, scope and the next step; `model_profile` drafts the public message without changing that assessment. Matching bindings use a combined pass. External PR review continues to use `review_model`.
+
+Question entries carry `recipient: "requester"` or `"maintainer"` (default: requester). Ask requesters about desired behavior, environment and priorities. Put architecture, document placement, implementation ownership and CI resources into maintainer decisions. Only open requester question IDs may appear in public `communication.question_ids`. If only internal questions remain, use `operator`; information that is already sufficient need not produce another question. Free-text quality still depends on model judgment; structured IDs do not constitute a semantic proof of the entire body.
+
+The job saves completed assessments before drafting. Retries reuse valid assessment input, source evidence, policy, prompt and model versions. Pure acknowledgements can consume the new event without repeating questions or calling the model; substantive changes require a new assessment. Cached history is optional, and its absence causes fresh assessment. Preparation stages share the existing job deadline and retain the per-stage model-turn limit. Assessment does not grant work or publication authority, and the existing approval workflow remains separate.
+
+For long issue assessments, configure `request_seconds: 500` in the host settings and `maintenance.job_seconds: 1500` in the Service specification. The request limit is passed explicitly to the model transport. Assessment and drafting share the 1,500-second job deadline; each request receives at most 500 seconds or the remaining job time. These settings are separate from platform HTTP requests and approval-review deadlines.
+
+## Configurable discussion prompts
+
+Built-in assessment and drafting guidance lives in `services/prompts/discussion-assessment.md` and `discussion-draft.md`. To tune it without editing Python, select external UTF-8 files:
+
+```json
+{
+  "communication": {
+    "prompt_files": {
+      "assessment": "/path/to/private/discussion-assessment.md",
+      "draft": "/path/to/private/discussion-draft.md"
+    }
+  }
+}
+```
+
+Merge this fragment into the full communication declaration. Files must stay outside both workspaces, cannot use symlinks, and are bounded to 16 KiB and 8,000 characters each. New jobs read a fresh snapshot. An existing job, including its retries, retains its original snapshot across assessment and drafting. To apply edited guidance to the current topic, request a new assessment through the existing discussion `assess` control. Changing the selected file paths requires the existing configuration replacement process. Templates cannot alter tool scope, result validation or authorization rules.
+
+Reasoning intensity remains an option of the selected model profile. A dedicated assessment profile can use provider-supported higher effort without applying it to every public reply.
 
 ## Discussion rounds
 

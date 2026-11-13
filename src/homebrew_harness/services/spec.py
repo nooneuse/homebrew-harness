@@ -144,6 +144,9 @@ class ServiceSpec:
         return json.loads(json.dumps(asdict(self), allow_nan=False))
 
     def validate_location(self, control):
+        if self.communication:
+            from .communication.prompts import load
+            load(self.communication.get("prompt_files", {}), roots=(control, self.workspace))
         import os, stat
 
         control, workspace = canonical_root(Path(control)), Path(self.workspace)
