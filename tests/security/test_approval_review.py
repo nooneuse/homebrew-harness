@@ -307,6 +307,66 @@ class ApprovalReviewTests(unittest.TestCase):
         self.assertEqual([t["function"]["name"] for t in tools], ["read_review_file"])
         self.assertIn("print", str(payloads[-1]))
 
+    def test_long_evidence_is_read_in_pages_before_native_approval(self):
+        content = '证据🌱\r\n' * 2500
+        (self.root / 'guide.md').write_bytes(content.encode())
+        answers = [reply(calls=[call('first', name='read_review_file', arguments=json.dumps(
+            {'path': 'guide.md'}))]), reply(calls=[call('second', name='read_review_file',
+            arguments=json.dumps({'path': 'guide.md', 'offset': 10000}))]), verdict()]
+        reviewer, client, payloads = self.reviewer(answers)
+        context = self.context()
+        self.assertEqual(reviewer.review(self.request(), context, lambda: context,
+                         lambda decision, identity: decision), 'approve')
+        pages = [json.loads(message['content']) for message in payloads[-1]
+                 if message['role'] == 'tool']
+        self.assertEqual(''.join(page['content'] for page in pages), content)
+        self.assertEqual([page['read_complete'] for page in pages], [False, True])
+        record = next(iter(reviewer.store.items('approval_reviews').values()))
+        self.assertEqual(record['state'], 'approved')
+        self.assertTrue(record['evidence'][0]['read_complete'])
+        self.assertEqual(client.chat.completions.create.call_count, 3)
+
+    def test_unread_evidence_prevents_approval_but_allows_safe_denial(self):
+        (self.root / 'guide').write_text('x' * 12000)
+        for decision in ('approve', 'deny'):
+            with self.subTest(decision=decision):
+                reviewer, client, _ = self.reviewer([reply(calls=[call(
+                    'read', name='read_review_file', arguments='{"path":"guide"}')]), verdict(decision)])
+                context = self.context()
+                published = []
+                reviewer.review({**self.request(), 'id': decision}, context, lambda: context,
+                                lambda value, identity: published.append(value))
+                record = next(iter(reviewer.store.items('approval_reviews').values()))
+                if decision == 'approve':
+                    self.assertEqual(published, [])
+                    self.assertEqual(record['state'], 'human_required')
+                    self.assertIn('not read completely', record['verdict']['reason'])
+                else:
+                    self.assertEqual(published, ['deny'])
+                self.assertEqual(client.chat.completions.create.call_count, 2)
+
+    def test_file_change_between_pages_cannot_publish_approval(self):
+        path = self.root / 'guide'
+        path.write_text('original' * 2000)
+        reviewer, client, _ = self.reviewer([])
+        answers = iter([reply(calls=[call('first', name='read_review_file',
+                                        arguments='{"path":"guide"}')]),
+                        reply(calls=[call('second', name='read_review_file',
+                                        arguments='{"path":"guide","offset":10000}')])])
+        def model(**kwargs):
+            result = next(answers)
+            if client.chat.completions.create.call_count == 2:
+                path.write_text('modified' * 2000)
+            return result
+        client.chat.completions.create.side_effect = model
+        context = self.context()
+        published = []
+        reviewer.review(self.request(), context, lambda: context,
+                        lambda *args: published.append(args))
+        self.assertEqual(published, [])
+        self.assertEqual(next(iter(reviewer.store.items('approval_reviews').values()))['state'],
+                         'human_required')
+
     def test_reviewer_cannot_read_private_state_or_run_bash(self):
         reviewer, client, _ = self.reviewer(
             [

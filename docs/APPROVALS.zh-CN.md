@@ -38,6 +38,8 @@ Run 规格接受同一个 `approval_review` 对象；非空 Run 配置优先于�
 
 专用审核模型配置为 `model_source: "profile"`、`model_profile: "safety"`。`safety` 需在外部模型目录中定义，连接凭据仍由宿主环境提供，参见[模型接入](MODELS.zh-CN.md)。
 
+审核器通过 `read_review_file(path, offset=0, limit=10000)` 分块读取 UTF-8 项目文件，偏移和长度以 Unicode 字符计数。返回结果包含 `next_offset`、文件哈希与 `read_complete`，可以在当前上下文中继续读取。单次审核最多读取 16 个文件、16 MiB 不同文件内容和 64 页，单文件上限为 8 MiB。自动批准前，每个请求读取的文件必须完整覆盖，且分块读取和最终决定时的文件版本一致。必要证据缺失、变更或未读完时转人工审核。
+
 ## 运行方式
 
 Session 审核包含原始约束、输入版本、执行角色、工作区和工具的宿主信息。不确定时回到审批 broker。无 broker 的一次性调用保留终端提示；非交互调用返回 `approval_required`。Session broker 请求受当前轮次和 deadline 约束。

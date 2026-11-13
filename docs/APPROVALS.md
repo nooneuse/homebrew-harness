@@ -38,6 +38,8 @@ Every model source uses an independent context and its complete model binding th
 
 For a dedicated reviewer, set `model_source: "profile"` and `model_profile: "safety"`. Configure `safety` in the external model catalog; connection secrets remain in the host environment. See [Models](MODELS.md).
 
+The reviewer reads UTF-8 project files through `read_review_file(path, offset=0, limit=10000)`. Offsets and limits count Unicode characters. Pages include `next_offset`, a file hash and `read_complete`; the reviewer can follow them without losing its current context. A review accepts at most 16 files, 16 MiB of distinct file content and 64 pages, with an 8 MiB limit per file. Approval requires complete coverage of each requested file and the same file version across pages and at the final decision. Missing, changed or incomplete required evidence returns to human review.
+
 ## Runtime behavior
 
 Session reviews include original requirements, input version, execution role, workspace and tool-specific host details. Uncertainty returns to the approval broker. Without a broker, one-shot execution retains the terminal prompt; a noninteractive call returns `approval_required`. Session broker requests belong to their active turn and deadline.
