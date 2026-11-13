@@ -139,6 +139,7 @@ class ContainerBackend:
         self.active = {}
         self.pending = {}
         self.unknown_create = set()
+        self.rejected_create = set()
         self.requests = {}
         self.control_runners = []
         self.cli_identity = None
@@ -462,6 +463,8 @@ class ContainerBackend:
                 command, request.deadline.remaining() or 0.001, request.cancel_events
             )
             if creation.returncode != 0:
+                if self._precreation_rejection(creation):
+                    self.rejected_create.add(name)
                 raise BackendUnavailable(
                     "Container creation failed; no task code was started."
                 )
@@ -525,39 +528,68 @@ class ContainerBackend:
             start_new_session=True,
         )
 
+    @staticmethod
+    def _precreation_rejection(result):
+        # This daemon validation error occurs before a container is created.
+        # Transport errors and incomplete control output remain ambiguous.
+        return (
+            result.returncode == 1
+            and not getattr(result, "output_limit", False)
+            and (result.stderr or "").startswith(
+                'Error response from daemon: invalid mount config for type '
+            )
+        )
+
+    def _absent(self, name, timeout):
+        listing = self._control(
+            [
+                self.policy.cli,
+                "container",
+                "ls",
+                "-a",
+                "--filter",
+                "name=" + name,
+                "--format",
+                "{{.Names}}",
+            ],
+            max(0.001, timeout),
+        )
+        return (
+            listing.returncode == 0
+            and not getattr(listing, "output_limit", False)
+            and name not in listing.stdout.splitlines()
+        )
+
     def _remove(self, name, temporary, root, timeout=1):
         deadline = Deadline.after(timeout)
+        absent = False
         try:
             if name in self.unknown_create:
                 observed = self._inspect(name, deadline.remaining() or 0.001)
                 if observed is None:
-                    return False
-                labels = observed.get("Config", {}).get("Labels") or {}
-                if labels.get("homebrew-harness.run") != name:
-                    return False
+                    if (
+                        name not in self.rejected_create
+                        or deadline.remaining() == 0
+                        or not self._absent(name, deadline.remaining())
+                    ):
+                        return False
+                    absent = True
+                else:
+                    labels = observed.get("Config", {}).get("Labels") or {}
+                    if labels.get("homebrew-harness.run") != name:
+                        return False
                 self.unknown_create.discard(name)
-            result = self._control(
-                [self.policy.cli, "rm", "-f", name],
-                max(0.001, deadline.remaining() or 0.001),
-            )
-            if result.returncode != 0:
-                if deadline.remaining() == 0:
-                    return False
-                listing = self._control(
-                    [
-                        self.policy.cli,
-                        "container",
-                        "ls",
-                        "-a",
-                        "--filter",
-                        "name=" + name,
-                        "--format",
-                        "{{.Names}}",
-                    ],
-                    deadline.remaining(),
+                self.rejected_create.discard(name)
+            if not absent:
+                result = self._control(
+                    [self.policy.cli, "rm", "-f", name],
+                    max(0.001, deadline.remaining() or 0.001),
                 )
-                if listing.returncode != 0 or name in listing.stdout.splitlines():
-                    return False
+                if result.returncode != 0:
+                    if deadline.remaining() == 0 or not self._absent(
+                        name, deadline.remaining()
+                    ):
+                        return False
         except (OSError, ValueError, subprocess.TimeoutExpired):
             return False
         from homebrew_harness.execution.execution_control import cleanup_scope
