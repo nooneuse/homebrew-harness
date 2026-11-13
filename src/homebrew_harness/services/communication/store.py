@@ -587,6 +587,29 @@ class CommunicationStore:
             self.put(conn, "discussions", row)
             return job
 
+    def validate_evidence(self, job, result, conn=None):
+        """Reject invalid frozen references before accepting a model candidate."""
+        if conn is None:
+            with self.db.connection() as connection:
+                return self.validate_evidence(job, result, connection)
+        for kind in ("facts", "questions", "findings"):
+            for entry in result.get(kind, []):
+                for source in entry.get("sources", []):
+                    event = self.db._get(conn, "service_events", source)
+                    if (
+                        not event
+                        or event.get("discussion_id") != job["target"]
+                        or event["sequence"] > job["input"]["seq"]
+                        or event.get("echo")
+                    ):
+                        raise ValueError(
+                            "Discussion candidate cites an unknown source."
+                        )
+        if result.get("findings") and not job["input"].get("review_id"):
+            raise ValueError(
+                "Code findings require a fixed review snapshot; use facts for issue observations."
+            )
+
     def finish(self, conn, job, result):
         result = validate_proposal(result, self.ms.policy)
         row = self.get("discussions", job["target"], conn)
@@ -625,19 +648,7 @@ class CommunicationStore:
                 row["state"] = "ready_to_assess"
             self.put(conn, "discussions", row)
             return "stale"
-        for kind in ("facts", "questions", "findings"):
-            for entry in result.get(kind, []):
-                for source in entry.get("sources", []):
-                    event = self.db._get(conn, "service_events", source)
-                    if (
-                        not event
-                        or event.get("discussion_id") != row["id"]
-                        or event["sequence"] > job["input"]["seq"]
-                        or event.get("echo")
-                    ):
-                        raise ValueError(
-                            "Discussion candidate cites an unknown source."
-                        )
+        self.validate_evidence(job, result, conn)
         projection = {
             key: result.get(key, row["projection"].get(key, []))
             for key in ("facts", "questions", "findings")

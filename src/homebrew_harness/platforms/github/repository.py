@@ -131,8 +131,9 @@ class GithubRepository:
             "page": page,
             "sort": "updated",
             "direction": "asc",
-            "since": stamp(cursor["since"]),
         }
+        if cursor["since"] > 0:
+            params["since"] = stamp(cursor["since"])
         if stream == "issues":
             params["state"] = "all"
         rows, headers = self.transport.request("GET", path, deadline, params=params)

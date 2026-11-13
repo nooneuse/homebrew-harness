@@ -84,6 +84,7 @@ class MaintenanceStore:
                 "facts",
                 "history",
                 "candidate",
+                "unapplied_result",
                 "integration",
                 "integration_quality",
                 "merge_rules",
@@ -556,14 +557,20 @@ class MaintenanceStore:
                 self.db._put(conn, "service_jobs_model", job["id"], current)
                 return current
             if error is not None:
+                from homebrew_harness.security.data_boundary import redact
+
                 current.update(
                     state="queued"
                     if current["attempts"]
                     < current.get("attempt_limit", self.policy["job_attempts"])
                     else "failed",
                     error=type(error).__name__,
+                    error_detail=redact(str(error))[:2000],
+                    error_stage="apply" if result is not None else "reasoning",
                     next_attempt=time.time() + min(60, 2 ** current["attempts"]),
                 )
+                if result is not None:
+                    current["unapplied_result"] = redact(result)
                 if current["state"] == "failed":
                     self.fail_target(conn, current)
                 elif job["kind"] == "conversation":

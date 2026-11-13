@@ -38,7 +38,10 @@ def triage(store, job, raw, conn=None):
 def discussion(store, job, raw, conn=None):
     from .communication.spec import validate_proposal
 
-    return validate_proposal(raw, store.policy)
+    result = validate_proposal(raw, store.policy)
+    if store.communication is not None:
+        store.communication.validate_evidence(job, result, conn)
+    return result
 
 
 def review(store, job, raw, conn=None):

@@ -112,6 +112,7 @@ class Maintenance:
                 job = self.store.claim_job()
                 if job is None:
                     continue
+                result = None
                 try:
                     result = self.agent.run(job)
                     if self.stop.is_set():
@@ -120,7 +121,7 @@ class Maintenance:
                         self.store.finish(job, result)
                 except Exception as error:
                     with self.runtime.lock:
-                        self.store.finish(job, error=error)
+                        self.store.finish(job, result=result, error=error)
         except Exception as error:
             self.error = type(error).__name__
         finally:
