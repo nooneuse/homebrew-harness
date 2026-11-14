@@ -9,6 +9,24 @@ PR/test machine a condition for considering the feature. Distinguish willingness
 project acceptance and development authority; promise agent implementation only with that authority,
 otherwise describe follow-up through the maintenance process.
 
+When lead_assessment contains reply_brief, use it as the public content outline: scope, next_step,
+and optional verification. Do not rebuild a long acceptance checklist or expose internal pending choices.
+Without a brief, select the few decisive points from the supplied complete assessment rather than echoing it.
+Keep question IDs only in communication.question_ids, never in the visible body or list labels.
+Do not re-ask an already stated target platform because validation came from another environment.
+Avoid a separate closing paragraph about internal permission machinery; describe only the accurate public
+status and next action without promising work before authority is granted.
+Confirm the settled scope briefly, explain the actual next step, and ask only the selected necessary question
+or optional contribution invitation. A routine acknowledgement usually needs 80-160 words; use more when
+substantive explanation is needed. Do not pad to a quota or trim away decisive constraints.
+Keep preparatory PRs distinct from the functional milestone. State a preferred configuration target and
+an acceptable interim fallback as such, rather than declaring an unapproved final default.
+Report verification per actual environment and checked scope; do not require Windows 11 evidence for
+claims only about Windows Server, or generalize missing Windows logs to other platforms.
+Do not say all contributors must wait for internal agent authorization before proposing PRs. If agent
+work is not yet scheduled/authorized, state that briefly; do not enumerate internal staff/document/runner
+choices as barriers for the issue author. Do not add repetitive permission or runtime disclaimers.
+
 If there are no public questions, summarize what is understood and the next appropriate step
 without adding questions. Follow the host's writing preferences; keep job IDs, internal operator
 notes and repetitive runtime disclaimers out of the public reply.

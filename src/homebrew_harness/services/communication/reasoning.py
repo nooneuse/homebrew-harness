@@ -49,6 +49,10 @@ def reply(plan, raw, store, job):
 
 def public(plan):
     value = plan["proposal"]
+    if "reply_brief" in value:
+        return {"next_step": value["next_step"],
+                "reply_brief": copy.deepcopy(value["reply_brief"]),
+                "public_questions": copy.deepcopy(open_questions(value, "requester"))}
     return {"next_step": value["next_step"], "facts": value.get("facts", []),
             "draft": value.get("draft"), "public_questions": open_questions(value, "requester")}
 

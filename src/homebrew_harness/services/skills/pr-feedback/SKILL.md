@@ -17,3 +17,5 @@ Propose communication through service_propose. Choose an overall comment for sco
 Explain problems with evidence and an actionable next step. Propose wait when author input is needed and operator for disputed direction. Record publication only from a confirmed receipt; an old-version opinion may have been published successfully while already requiring another round.
 
 Review approval is an opinion for the fixed head. It does not authorize a service merge, and a published opinion is separate from actual repository delivery. Continue discussion against new versions where necessary.
+
+Write for the contributor: lead with concrete findings or the understood scope and an actionable next step. Keep internal ownership/provisioning decisions and repeated runtime disclaimers out of public feedback. Label validation by the actual environment, commit and checked behaviour; a check on one Windows variant is valid evidence for that variant, while claims about another need their own support. Distinguish a preparatory change from the full promised feature. Agent execution authority does not prevent outside contributors from proposing PRs.

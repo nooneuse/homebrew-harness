@@ -224,6 +224,7 @@ def validate_proposal(raw, policy):
         "progress",
         "requirements_changed",
         "category",
+        "reply_brief",
     }
     if not isinstance(raw, dict) or set(raw) - allowed:
         raise ValueError("Invalid discussion proposal fields.")
@@ -300,6 +301,14 @@ def validate_proposal(raw, policy):
             text(draft["out_of_scope"], "out_of_scope", 8000)
         if draft.get("scope") is not None and draft["scope"] not in policy["scopes"]:
             raise ValueError("Draft must choose a host scope.")
+    if "reply_brief" in raw:
+        brief = raw["reply_brief"]
+        if not isinstance(brief, dict) or set(brief) - {"scope", "next_step", "verification"}:
+            raise ValueError("Invalid public reply brief.")
+        text(brief.get("scope"), "reply brief scope", 2000)
+        text(brief.get("next_step"), "reply brief next step", 1000)
+        if "verification" in brief:
+            text(brief["verification"], "reply brief verification", 1000)
     internal = open_questions(raw, "maintainer")
     external = open_questions(raw, "requester")
     if internal and not external and raw["next_step"] != "operator":
