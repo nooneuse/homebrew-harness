@@ -73,6 +73,26 @@ def tool_ok(packet):
     )
 
 
+class GoalGenerationLimitTests(unittest.TestCase):
+    def test_checker_request_includes_reasoning_room_and_a_bounded_timeout(self):
+        from homebrew_harness.execution.model_gateway import ModelGateway
+
+        client, requests = fake_client([reply(json.dumps({
+            "ok": False, "impossible": False, "reason": "More evidence needed.", "evidence_ids": []
+        }))])
+        gateway = ModelGateway(client)
+        try:
+            result = PromptGoalEvaluator(gateway, "checker").evaluate({"condition": "verify"})
+            self.assertFalse(result.ok)
+            arguments = client.chat.completions.create.call_args.kwargs
+            self.assertEqual(arguments["max_tokens"], 8000)
+            self.assertGreater(arguments["timeout"], 110)
+            self.assertLessEqual(arguments["timeout"], 120)
+        finally:
+            gateway.close()
+            gateway.wait_idle(5)
+
+
 class GoalTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -781,7 +801,7 @@ class GoalTests(unittest.TestCase):
         )
         client = SimpleNamespace(with_options=Mock(return_value=api))
         evaluator = PromptGoalEvaluator(client, "checker", max_tokens=1024)
-        client.with_options.assert_called_once_with(max_retries=0, timeout=20)
+        client.with_options.assert_called_once_with(max_retries=0, timeout=120)
         goal = GoalController(self.root, evaluator)
         self.addCleanup(goal.close)
         goal.set_goal("check the answer")

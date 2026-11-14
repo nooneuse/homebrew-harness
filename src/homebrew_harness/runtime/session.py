@@ -2,6 +2,17 @@
 
 from __future__ import annotations
 
+from homebrew_harness.runtime.errors import error_info, error_message
+
+from homebrew_harness.configuration import (
+    DEFAULT_CONTEXT_CHARS,
+    DEFAULT_GOAL_OUTPUT_TOKENS,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    DEFAULT_TASK_SECONDS,
+)
+
+
+
 from homebrew_harness.runtime.output import print
 
 import copy
@@ -93,7 +104,7 @@ class HarnessSession:
         cron_scheduler=None,
         team_manager=None,
         mcp_runtime=None,
-        context_chars: int = 50_000,
+        context_chars: int = DEFAULT_CONTEXT_CHARS,
         max_turns: int = 20,
         clock=datetime.now,
         poll_interval: float = 1,
@@ -102,7 +113,7 @@ class HarnessSession:
         workflow_runtime=None,
         goal_controller=None,
         goal_evaluator_model=None,
-        goal_check_tokens=2048,
+        goal_check_tokens=DEFAULT_GOAL_OUTPUT_TOKENS,
         goal_input_chars=12000,
         stop_block_cap=8,
         mode="interactive",
@@ -111,7 +122,7 @@ class HarnessSession:
         gateway_limits=None,
         test_runner=None,
         resume_session=None,
-        turn_timeout=300,
+        turn_timeout=DEFAULT_TASK_SECONDS,
         model_profile=None,
         worker_output_tokens=None,
         capabilities=None,
@@ -203,7 +214,7 @@ class HarnessSession:
                 )
             self.models.claim(self)
             self._model_source_client, self._model_source_name = client, model
-            self._model_defaults = (context_chars, worker_output_tokens or 4096)
+            self._model_defaults = (context_chars, worker_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS)
             self._memory_tracks_model = memory_runtime is None
             self._goal_tracks_model = goal_controller is None and goal_evaluator_model is None
             own("models", self.models)
@@ -217,12 +228,12 @@ class HarnessSession:
                 client=client,
                 model=model,
                 context_chars=context_chars,
-                max_output_tokens=worker_output_tokens or 4096,
+                max_output_tokens=worker_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS,
             )
             from homebrew_harness.runtime.model_selection import choose_binding, validate_choice
             self.model_selection = validate_choice(model_selection or {"profile": lead_alias, "model": model if lead_alias is None else None})
             initial = choose_binding(self.models, self._model_source_client, self._model_source_name, self.model_selection,
-                context_chars=context_chars, output_tokens=worker_output_tokens or 4096)
+                context_chars=context_chars, output_tokens=worker_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS)
             client, model = initial.client, initial.model
             self.gateway = gateway or (
                 client
@@ -1549,10 +1560,11 @@ class HarnessSession:
                     self._api_turn_id,
                     "blocked" if self._recovery_blocked else "failed",
                     None,
-                    str(error),
+                    error_message(error),
+                    diagnostic=error_info(error),
                 )
             print(
-                "[runtime] User work stopped (" + type(error).__name__ + ").",
+                "[runtime] User work stopped: " + error_message(error),
                 file=sys.stderr,
             )
         finally:
@@ -1560,7 +1572,7 @@ class HarnessSession:
         self._drain_changed.set()
         return True
 
-    def _finish_api_turn(self, identity, state, output, error=None):
+    def _finish_api_turn(self, identity, state, output, error=None, diagnostic=None):
         row = self.runtime_store.get("api_turns", identity)
         if not row or row["state"] in {"completed", "cancelled", "failed"}:
             return
@@ -1573,6 +1585,8 @@ class HarnessSession:
             "error": error,
             "input_revision": self.inputs.revision,
         }
+        if diagnostic is not None:
+            value["error_info"] = diagnostic
         with cleanup_scope():
             self._checkpoint_writer.save("idle", boundary={"api_turn": value})
 
@@ -2278,7 +2292,7 @@ class HarnessSession:
                         )
                     self._observation_retry = time.monotonic() + self.retry_delay
                     print(
-                        f"[runtime] Observation turn stopped ({type(error).__name__}).",
+                        "[runtime] Observation turn stopped: " + error_message(error),
                         file=sys.stderr,
                     )
                 return True
@@ -2337,7 +2351,7 @@ class HarnessSession:
                     self.cron.restore(job)
                     self._cron_retry[job.id] = time.monotonic() + self.retry_delay
                     print(
-                        f"[runtime] Scheduled turn stopped ({type(error).__name__}).",
+                        "[runtime] Scheduled turn stopped: " + error_message(error),
                         file=sys.stderr,
                     )
                 return True

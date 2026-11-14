@@ -108,6 +108,7 @@ def decode(value):
         usage(value.get("usage"), protocol="openai_responses"),
         {"items": value.get("output") or []},
         value.get("id"),
+        {"provider_finish_reason": status, "provider_incomplete_reason": (value.get("incomplete_details") or {}).get("reason")},
     )
 
 

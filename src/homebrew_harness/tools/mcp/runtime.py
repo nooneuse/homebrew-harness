@@ -832,6 +832,7 @@ class MCPRuntime:
 
     def _submit(self, coroutine, timeout: float):
         deadline = operation_deadline(timeout)
+        available_seconds = deadline.remaining()
         try:
             check(deadline)
             self._ensure_loop()
@@ -847,9 +848,14 @@ class MCPRuntime:
             return wait_future(future, deadline)
         except (TimeoutError, ModelGatewayError) as error:
             future.cancel()
-            raise MCPError(
-                "MCP request timed out; outcome may be unknown and no automatic retry was made."
-            ) from error
+            from homebrew_harness.execution.model_gateway import ModelDeadlineExceeded, ModelCancelled
+            from homebrew_harness.runtime.errors import boundary_error
+            timed_out = isinstance(error, (TimeoutError, ModelDeadlineExceeded))
+            code = "mcp_operation_timeout" if timed_out else "mcp_cancelled" if isinstance(error, ModelCancelled) else "mcp_runtime_boundary"
+            description = "MCP request timed out" if timed_out else "MCP request cancelled" if isinstance(error, ModelCancelled) else "MCP request stopped by a runtime boundary"
+            raise boundary_error(MCPError, code, description + "; outcome may be unknown and no automatic retry was made.",
+                                 limit_name="mcp.operation_timeout_seconds", limit_value=timeout,
+                                 effective_timeout_seconds=available_seconds, unit="seconds", phase="mcp") from error
         except MCPError:
             raise
         except Exception as error:

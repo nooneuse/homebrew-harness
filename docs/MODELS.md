@@ -15,6 +15,15 @@ The base installation uses HTTP for all supported protocols. Optional vendor SDK
 
 From a project checkout, install an extra with `python -m pip install -e ".[openai]"`, replacing the extra name as needed. Multiple extras can be installed together with `".[openai,anthropic,dashscope]"`. The installed package supports the same extras.
 
+General model generation defaults to a maximum of **20,000 output tokens per request** across Session, Run, Service, Workflow, teams and subagents. The allowance may include reasoning tokens, depending on the provider. It is a ceiling, not a target. A model profile can override it with `max_output_tokens`; host settings and Run specifications use `output_tokens`, and direct Workflow execution uses `--max-output-tokens`. Session also accepts `--worker-output-tokens` or `HARNESS_WORKER_OUTPUT_TOKENS`. Explicit limits saved in existing configurations and execution bindings remain in effect.
+
+The default context threshold is 100,000 serialized request characters, not the provider's token context window. Configure `context_chars` for the selected model and workload. Compaction, Memory selection, Goal checking and benchmark scenarios retain their separate limits.
+
+
+The default model request deadline is 500 seconds. Session turns, Run episodes and Service maintenance jobs have a 1,500-second deadline; Run and automatic interaction executions have a 10,800-second total deadline. Maintenance jobs allow up to 24 model calls. Workflow defaults to 1,500 seconds and accepts up to 64,000 input characters. Every nested request uses the earlier of its own deadline and the caller's remaining deadline. Explicit host settings retain their configured limits.
+
+Goal model checks default to 8,000 output tokens and 120 seconds. Context summaries allow 6,000 output tokens, with one 12,000-token retry for incomplete generation; their retained text and history coverage limits stay the same. Approval review has its own [configuration](APPROVALS.md).
+
 ## Connection policy
 
 The model catalog's `connections` entries accept `transport`:
@@ -67,3 +76,9 @@ Session, Run, Workflow, Service, benchmark, teams and subagents use the shared m
 Optional [Approval review](APPROVALS.md) uses the same model bindings and gateway. Select the current Lead, actual requester or a dedicated profile; every review starts an independent conversation.
 
 For direct inspection, `ProtocolAdapter.transport_description` reports the selected backend, declared policy, selection reason, and SDK version. `ModelBinding.identity()` exposes the persistent identity without connection secrets.
+
+## Boundary diagnostics
+
+Execution failures expose `error_info` with `type`, `code`, `message` and `details`. Limit details name the configuration, configured value, observed value and unit where available. Model output failures retain the provider finish reason, requested output allowance and reported output/reasoning usage. A missing stream terminator is reported separately from a provider-declared output limit.
+
+Timeout diagnostics distinguish preparation, queue waiting and transport, and show the gateway limit, any tighter client limit and the effective deadline. `sent` and `settled` describe whether execution was submitted and has finished. Session turn snapshots, Run outcome details, Workflow error results and Service jobs retain the same diagnostics. Service `job` and `records jobs` display them; tool error results include them as well. Raw request bodies and reasoning text are excluded.

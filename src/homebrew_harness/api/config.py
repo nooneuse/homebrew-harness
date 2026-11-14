@@ -1,5 +1,11 @@
 """Host references and explicit process-local extensions for the public SDK."""
 
+from homebrew_harness.configuration import (
+    DEFAULT_CONTEXT_CHARS,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+)
+
+
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -34,7 +40,7 @@ class _LocalModels:
         self.binding = None
         self.gateways = []
 
-    def open(self, *, context_chars=50000, output_tokens=4096):
+    def open(self, *, context_chars=DEFAULT_CONTEXT_CHARS, output_tokens=DEFAULT_MAX_OUTPUT_TOKENS):
         if self.binding is None:
             self.binding = self.registry.select(
                 self.alias,

@@ -112,5 +112,5 @@ class EvidencePages(unittest.TestCase):
         with patch('homebrew_harness.security.review_evidence.TOTAL_BYTES', 7):
             evidence = ReviewEvidence(self.root)
             evidence.read({'path': 'guide'})
-            with self.assertRaisesRegex(EvidenceLimitReached, 'file limit'):
+            with self.assertRaisesRegex(EvidenceLimitReached, 'content limit'):
                 evidence.read({'path': '0'})

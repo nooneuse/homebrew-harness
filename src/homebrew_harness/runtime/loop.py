@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from homebrew_harness.runtime.errors import boundary_error
+
 from homebrew_harness.runtime.activities import activity
 
 from homebrew_harness.runtime.output import print
@@ -331,12 +333,12 @@ def _agent_loop(
                 return goal_controller.report(
                     "",
                     goal_controller.suspend(
-                        "limit", "Global main-model turn limit reached; goal retained."
+                        "limit", f"Global main-model turn limit reached (max_turns={max_turns}, model_calls={turns}); goal retained."
                     ),
                 )
-            raise homebrew_harness.runtime.errors.AgentError(
-                "Model-turn limit reached; the task may still be unfinished."
-            )
+            raise boundary_error(homebrew_harness.runtime.errors.AgentError, "model_turn_limit",
+                "Model-turn limit reached; the task may still be unfinished.",
+                limit_name="max_turns", limit_value=max_turns, observed_value=turns, unit="model_calls")
         turns += 1
 
         if collect_background and background_manager is not None:
@@ -387,7 +389,7 @@ def _agent_loop(
             nonlocal turns
             if attempt:
                 if turns >= max_turns:
-                    raise RetryBoundary("Model-turn limit reached during transport recovery.")
+                    raise boundary_error(RetryBoundary, "model_turn_limit", "Model-turn limit reached during transport recovery.", limit_name="max_turns", limit_value=max_turns, observed_value=turns, unit="model_calls")
                 turns += 1
                 if goal_controller is not None:
                     stopped = goal_controller.before_worker(max_turns)
@@ -450,9 +452,8 @@ def _agent_loop(
         if goal_controller is not None:
             goal_controller.worker_response(response)
         if response.finish not in {"completed", "tool_calls"}:
-            raise homebrew_harness.runtime.errors.AgentError(
-                "Model output was incomplete or requires provider continuation; no tools were executed."
-            )
+            raise response.failure(homebrew_harness.runtime.errors.AgentError,
+                "No tools from this response were executed.")
         calls = response.tool_calls
         if stop_event is not None and stop_event.is_set():
             raise homebrew_harness.runtime.errors.AgentError(

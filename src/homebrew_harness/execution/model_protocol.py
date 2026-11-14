@@ -1,5 +1,7 @@
 """Serializable model contract. SDK objects belong to provider adapters only."""
 
+from homebrew_harness.configuration import DEFAULT_MAX_OUTPUT_TOKENS
+
 import copy
 import hashlib
 import json
@@ -115,7 +117,7 @@ class ModelRequest:
     model: str
     messages: tuple
     tools: tuple = ()
-    max_output_tokens: int = 4096
+    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
     output_contract: dict | None = None
     options: dict = field(default_factory=dict)
     context_key: str = ""
@@ -129,6 +131,7 @@ class ModelResponse:
     usage: ModelUsage = field(default_factory=ModelUsage)
     replay: dict | None = None
     provider_id: str | None = None
+    diagnostics: dict = field(default_factory=dict, compare=False)
 
     def validate(self):
         if self.finish not in {
@@ -189,6 +192,7 @@ class ModelResponse:
         usage=None,
         replay=None,
         provider_id=None,
+        diagnostics=None,
     ):
         parts = []
         if text is not None:
@@ -203,14 +207,27 @@ class ModelResponse:
             raise ModelProtocolError(
                 "Provider tool identities collide or exceed the limit."
             )
-        return cls(tuple(parts), finish, usage or ModelUsage(), replay, provider_id)
+        return cls(tuple(parts), finish, usage or ModelUsage(), replay, provider_id, copy.deepcopy(diagnostics or {}))
+
+    def failure(self, kind=ModelProtocolError, message=None):
+        from homebrew_harness.runtime.errors import boundary_error
+
+        details = {**self.diagnostics, **self.usage.data(), "finish": self.finish}
+        reported_limit = (details.get("provider_finish_reason") in {"length", "max_tokens"}
+                          or details.get("provider_incomplete_reason") == "max_output_tokens")
+        code = "model_output_limit" if reported_limit else "model_response_" + self.finish
+        description = ("Model response is incomplete; provider reports an output limit." if reported_limit else
+                       "Model response is not a complete result (finish=" + self.finish + ").")
+        facts = ", ".join(key + "=" + str(details[key]) for key in
+                         ("provider_finish_reason", "provider_incomplete_reason", "max_output_tokens", "output_tokens", "reasoning_tokens")
+                         if details.get(key) is not None)
+        return boundary_error(kind, code, (message + " " if message else "") + description
+                              + (" " + facts if facts else ""), **details)
 
     def require_text(self, *, nonempty=False):
         self.validate()
         if self.finish != "completed" or self.tool_calls:
-            raise ModelProtocolError(
-                "Model did not return a complete tool-free result."
-            )
+            raise self.failure(message="Expected a complete tool-free result.")
         if nonempty and not self.text.strip():
             raise ModelProtocolError("Model returned empty text.")
         return self.text

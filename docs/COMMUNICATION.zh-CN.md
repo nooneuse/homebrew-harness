@@ -74,7 +74,7 @@ homebrew-harness service communication SERVICE_ID inspect ACTION_ID --conclusion
 
 ## 仓库知识、研判与可配置提示词
 
-较长的 issue 研判可在宿主配置中设置 `request_seconds: 500`，并在 Service 配置中设置 `maintenance.job_seconds: 1500`。请求时限会显式传递给模型传输层。研判与起草共享 1500 秒任务截止时间，每次请求最多使用 500 秒或任务剩余时间。这两个设置与平台 HTTP 请求、自动审批的时限分别配置。
+Issue 研判的宿主请求时限默认为 `request_seconds: 500`，Service 默认为 `maintenance.job_seconds: 1500`、`maintenance.job_turns: 24`。可通过显式设置调整这些上限。请求时限会显式传递给模型传输层。研判与起草共享 1500 秒任务截止时间，每次请求最多使用 500 秒或任务剩余时间。这两个设置与平台 HTTP 请求、自动审批的时限分别配置。
 
 读取代码的 job 会获得有界 project_context，包含源码版本、入口声明、目录导航和文档摘录；可以用 service_read(kind="project_context") 获取并按需阅读相关代码。摘录是取证入口，不是完整功能或验收证明。
 

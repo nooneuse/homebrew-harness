@@ -1,5 +1,7 @@
 """POSIX descriptor-relative file access and atomic, version-checked writes."""
 
+from homebrew_harness.runtime.errors import boundary_error
+
 import hashlib
 import os
 import stat
@@ -144,7 +146,7 @@ class SafeFile:
                 chunks, size = [], 0
                 info = os.fstat(stream.fileno())
                 if info.st_size > max_bytes:
-                    raise ValueError("File snapshot exceeds the host size limit.")
+                    raise boundary_error(ValueError, "file_snapshot_bytes_limit", "File snapshot exceeds the host size limit.", limit_name="max_bytes", limit_value=max_bytes, observed_value=info.st_size if info.st_size > max_bytes else size, unit="bytes")
                 while True:
                     check()
                     chunk = stream.read(min(65536, max_bytes - size + 1))
@@ -152,7 +154,7 @@ class SafeFile:
                         break
                     size += len(chunk)
                     if size > max_bytes:
-                        raise ValueError("File snapshot exceeds the host size limit.")
+                        raise boundary_error(ValueError, "file_snapshot_bytes_limit", "File snapshot exceeds the host size limit.", limit_name="max_bytes", limit_value=max_bytes, observed_value=info.st_size if info.st_size > max_bytes else size, unit="bytes")
                     chunks.append(chunk)
                 data = b"".join(chunks)
                 info = os.fstat(stream.fileno())

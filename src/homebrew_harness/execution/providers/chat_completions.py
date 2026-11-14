@@ -1,5 +1,7 @@
 """Chat Completions SDK projection and buffered streaming."""
 
+from homebrew_harness.runtime.errors import boundary_error
+
 import copy
 import json
 
@@ -66,6 +68,7 @@ def decode(value):
         usage=usage(data.get("usage"), protocol="chat_completions"),
         replay=replay,
         provider_id=data.get("id"),
+        diagnostics={"provider_finish_reason": reason},
     )
 
 
@@ -238,7 +241,7 @@ def streamed(events):
         data = as_data(chunk)
         size += len(json.dumps(data, default=str))
         if size > 8_000_000:
-            raise ModelProtocolError("Model stream exceeded its bounded buffer.")
+            raise boundary_error(ModelProtocolError, "model_stream_buffer_limit", "Model stream exceeded its bounded buffer.", limit_name="stream_buffer_characters", limit_value=8_000_000, observed_value=size, unit="serialized_characters")
         if data.get("usage") is not None:
             collected["usage"] = data["usage"]
         for choice in data.get("choices") or []:
@@ -261,6 +264,6 @@ def streamed(events):
                 collected["choices"][0]["finish_reason"] = choice["finish_reason"]
                 finished = True
     if not finished:
-        raise ModelProtocolError("Model stream ended without a completion proof.")
+        raise boundary_error(ModelProtocolError, "model_stream_incomplete", "Model stream ended without a completion proof; no finish reason was received.")
     collected["choices"][0]["message"]["tool_calls"] = [calls[k] for k in sorted(calls)]
     return decode(collected)

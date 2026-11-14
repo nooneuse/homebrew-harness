@@ -31,8 +31,8 @@ Run 规格接受同一个 `approval_review` 对象；非空 Run 配置优先于�
 | `model_profile` | 未设置 | `profile` 来源必须提供的模型目录别名 |
 | `requester_fallback` | 未设置 | 缺少可信请求者绑定时显式回退 `lead` |
 | `kinds` | `["tool", "test_grant"]` | 委托审核器处理的审批种类 |
-| `timeout_seconds` | `15` | 审核 deadline，允许 `0.01`～`120` 秒 |
-| `max_turns` | `3` | 最多调用审核模型的次数，允许 `1`～`8` |
+| `timeout_seconds` | `120` | 审核 deadline，允许 `0.01`～`500` 秒 |
+| `max_turns` | `6` | 最多调用审核模型的次数，允许 `1`～`8` |
 
 所有来源都使用独立上下文，并通过 ModelGateway 使用完整模型绑定，包括协议、参数、输出额度和上下文窗口。调用次数和用量进入已有观察记录。`requester` 在可用时捕获实际 subagent／teammate 的绑定。缺少可信来源时默认转人工，宿主可明确设置 `requester_fallback: "lead"`。模型连接失败同样转人工。
 
@@ -87,3 +87,5 @@ with Harness(workdir="project", config=config) as harness:
 调用方可通过 `harness.requests` 回答剩余请求，决定绑定精确引用和版本。参见[Python API](PYTHON_API.zh-CN.md)。
 
 运行时将审核模型绑定、请求与上下文版本、结论、简短理由和证据引用保存在 `approval_reviews`。请求改变或人工先决定时，自动审核作废。被中断的审核及提交确认未知的记录不会自动重复调用或发布，原审批记录仍是执行依据。Session 审核记录随 checkpoint 一起退休和恢复。
+
+审核尝试触及边界时，记录会保留 `error_info`，展示生效的截止时间或文件／页数／内容限额。原因描述具体执行边界；普通文件查询错误仍作为工具反馈交给审核模型。

@@ -102,6 +102,24 @@ class Fixture(unittest.TestCase):
             gateway._state.ledger.flush(1)
 
 
+class OutputAllowanceTests(Fixture):
+    def test_default_environment_and_request_allowances_reach_the_provider(self):
+        cases = (("", None, 20000), ("768", None, 768), ("768", 256, 256))
+        for environment, explicit, expected in cases:
+            with (
+                self.subTest(environment=environment, explicit=explicit),
+                patch.dict(os.environ, {"HARNESS_WORKER_OUTPUT_TOKENS": environment}),
+            ):
+                gateway, client = self.gateway()
+                arguments = {"max_tokens": explicit} if explicit is not None else {}
+                gateway.request(
+                    model="test", messages=[{"role": "user", "content": "task"}], **arguments
+                )
+                self.assertEqual(
+                    client.chat.completions.create.call_args.kwargs["max_tokens"], expected
+                )
+
+
 class AccountingTests(Fixture):
     def test_all_provider_token_categories_are_preserved_without_double_counting(self):
         usage = normalize_usage(
@@ -315,6 +333,17 @@ class RuntimeControlTests(Fixture):
 
 
 class DeadlineTests(Fixture):
+    def test_default_request_room_and_explicit_parent_deadline(self):
+        gateway, client = self.gateway()
+        arguments = {"model": "test", "messages": [{"role": "user", "content": "task"}]}
+        gateway.request(**arguments)
+        self.assertGreater(client.chat.completions.create.call_args.kwargs["timeout"], 490)
+        self.assertLessEqual(client.chat.completions.create.call_args.kwargs["timeout"], 500)
+        with gateway.scope(deadline=Deadline.after(0.05)):
+            gateway.request(**arguments)
+        self.assertGreater(client.chat.completions.create.call_args.kwargs["timeout"], 0)
+        self.assertLessEqual(client.chat.completions.create.call_args.kwargs["timeout"], 0.05)
+
     def blocked(self, **limits):
         entered, release = threading.Event(), threading.Event()
         self.addCleanup(release.set)

@@ -20,15 +20,15 @@
       "connection": "provider_a",
       "model_env": "PLANNER_MODEL",
       "description": "Planning and review",
-      "context_chars": 50000,
-      "max_output_tokens": 8192
+      "context_chars": 100000,
+      "max_output_tokens": 20000
     },
     "coder": {
       "connection": "provider_b",
       "model_env": "CODER_MODEL",
       "description": "Focused implementation and tests",
-      "context_chars": 50000,
-      "max_output_tokens": 4096
+      "context_chars": 100000,
+      "max_output_tokens": 20000
     }
   },
   "defaults": {

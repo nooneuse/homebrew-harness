@@ -1,5 +1,9 @@
 """Isolated network executors; protocol conversion and tool execution stay elsewhere."""
 
+from homebrew_harness.configuration import (
+    DEFAULT_MODEL_REQUEST_SECONDS,
+)
+
 import copy
 import importlib
 import importlib.metadata
@@ -219,7 +223,7 @@ class HTTPBackend:
         self.client = httpx.Client(
             base_url=base_url.rstrip("/") + "/",
             headers=headers,
-            timeout=60,
+            timeout=DEFAULT_MODEL_REQUEST_SECONDS,
             trust_env=False,
             follow_redirects=False,
         )
@@ -261,7 +265,7 @@ class SDKBackend:
     def __init__(self, protocol, api_key, base_url, api_version, module, version):
         self.protocol, self.module = protocol, module
         network = module.DefaultHttpxClient(
-            timeout=60,
+            timeout=DEFAULT_MODEL_REQUEST_SECONDS,
             trust_env=False,
             follow_redirects=False,
             event_hooks={"response": [bounded_status]},
@@ -270,7 +274,7 @@ class SDKBackend:
             "api_key": api_key,
             "base_url": base_url,
             "max_retries": 0,
-            "timeout": 60,
+            "timeout": DEFAULT_MODEL_REQUEST_SECONDS,
             "http_client": network,
         }
         if protocol == "anthropic_messages":
@@ -352,7 +356,7 @@ class GenerationSDKBackend:
         from dashscope.transport import SyncTransport
 
         self.network = httpx.Client(
-            timeout=60,
+            timeout=DEFAULT_MODEL_REQUEST_SECONDS,
             trust_env=False,
             follow_redirects=False,
             event_hooks={"response": [bounded_status]},
@@ -363,7 +367,7 @@ class GenerationSDKBackend:
                 base_url=base_url,
                 max_retries=0,
                 http_client=self.network,
-                timeout=60,
+                timeout=DEFAULT_MODEL_REQUEST_SECONDS,
             )
         except BaseException:
             self.network.close()

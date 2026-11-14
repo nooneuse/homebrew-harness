@@ -1,5 +1,7 @@
 """Connect one bounded run to Session checkpoints and the shared loop."""
 
+from homebrew_harness.runtime.errors import error_info, error_message
+
 import copy
 import hashlib
 import json
@@ -1124,7 +1126,8 @@ class RunController:
                     "cause_type": type(error.__cause__).__name__
                     if error.__cause__
                     else None,
-                    "message": redact(str(error))[:500],
+                    "message": error_message(error)[:4000],
+                    "error_info": error_info(error),
                 },
             )
         with cleanup_scope():

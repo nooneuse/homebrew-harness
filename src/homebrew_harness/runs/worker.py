@@ -1,5 +1,7 @@
 """Dedicated managed Session process using external host configuration."""
 
+from homebrew_harness.runtime.errors import error_info
+
 import argparse
 import json
 import time
@@ -121,6 +123,7 @@ def main(argv=None):
                     "configuration_or_execution_failed",
                     "lead:" + control.state["session_id"],
                     required_host_actions=(type(error).__name__,),
+                    details={"error_info": error_info(error)},
                 ).data(),
             },
         )

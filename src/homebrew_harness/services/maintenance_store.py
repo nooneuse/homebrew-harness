@@ -1,5 +1,7 @@
 """Service-owned events, proposals, decisions, conversations and report windows."""
 
+from homebrew_harness.runtime.errors import annotate_error, error_info, error_message
+
 import json
 import time
 
@@ -280,7 +282,8 @@ class MaintenanceStore:
                     "name": name,
                     "state": "retrying",
                     "error": type(error).__name__,
-                    "attempts": old.get("attempts", 0) + 1,
+                    "error_detail": error_message(error),
+                    "error_info": error_info(error),                    "attempts": old.get("attempts", 0) + 1,
                     "next_poll": time.time() + delay,
                 },
             )
@@ -288,7 +291,8 @@ class MaintenanceStore:
     def fail_target(self, conn, job):
         if job["kind"] == "discussion" and self.communication is not None:
             row = self.communication.get("discussions", job["target"], conn)
-            row.update(state="blocked", error=job.get("error", "model_job_failed"))
+            row.update(state="blocked", error=job.get("error", "model_job_failed"),
+                       error_detail=job.get("error_detail"), error_info=job.get("error_info"))
             self.communication.put(conn, "discussions", row)
             return
         if job["kind"] in {"audit", "incident", "upgrade_assessment"}:
@@ -313,7 +317,7 @@ class MaintenanceStore:
         elif job["kind"] in {"conversation", "report"}:
             kind = "messages" if job["kind"] == "conversation" else "reports"
             target = self.get(kind, job["target"], conn)
-            target.update(state="failed", error=job["error"])
+            target.update(state="failed", error=job["error"], error_detail=job.get("error_detail"), error_info=job.get("error_info"))
             self.put(conn, kind, target)
         elif job["kind"] == "triage":
             work = self.db._get(conn, "service_work", job["target"])
@@ -576,13 +580,17 @@ class MaintenanceStore:
             if error is not None:
                 from homebrew_harness.security.data_boundary import redact
 
+                annotate_error(error, job_id=current["id"], job_kind=current["kind"],
+                               job_seconds=self.policy["job_seconds"], job_turns=self.policy["job_turns"])
                 current.update(
                     state="queued"
                     if current["attempts"]
                     < current.get("attempt_limit", self.policy["job_attempts"])
                     else "failed",
                     error=type(error).__name__,
-                    error_detail=redact(str(error))[:2000],
+                    error_detail=(error_message(error) if error_info(error)["code"] or "request_timeout_seconds" in error_info(error)["details"] else redact(str(error)))[:4000],
+                    error_info=error_info(error),
+                    error_code=error_info(error)["code"],
                     error_stage="apply" if result is not None else "reasoning",
                     next_attempt=time.time() + min(60, 2 ** current["attempts"]),
                 )
@@ -592,7 +600,7 @@ class MaintenanceStore:
                     self.fail_target(conn, current)
                 elif job["kind"] == "conversation":
                     message = self.get("messages", job["target"], conn)
-                    message.update(state=current["state"], error=current["error"])
+                    message.update(state=current["state"], error=current["error"], error_detail=current.get("error_detail"), error_info=current.get("error_info"))
                     self.put(conn, "messages", message)
             else:
                 from .job_contracts import JobContract

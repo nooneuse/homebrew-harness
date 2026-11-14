@@ -1,5 +1,9 @@
 """Shared protocol semantics over explicit HTTP or optional SDK executors."""
 
+from homebrew_harness.configuration import (
+    DEFAULT_MODEL_REQUEST_SECONDS,
+)
+
 from homebrew_harness.execution.model_protocol import (
     ModelCapabilities,
     ModelProtocolError,
@@ -49,7 +53,7 @@ class ProtocolAdapter:
         self.backend = open_backend(
             protocol, api_key, base_url, api_version, transport, expected_transport
         )
-        self.timeout = 60
+        self.timeout = DEFAULT_MODEL_REQUEST_SECONDS
 
     @property
     def client(self):

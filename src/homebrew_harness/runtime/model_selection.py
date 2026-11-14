@@ -1,5 +1,10 @@
 """Interactive choices over the existing model registry, without provider discovery."""
 
+from homebrew_harness.configuration import (
+    DEFAULT_CONTEXT_CHARS,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+)
+
 import copy
 import hashlib
 import json
@@ -29,7 +34,7 @@ def validate_choice(value):
     return {name: value.get(name) for name in ("profile", "model", "reasoning")}
 
 
-def choose_binding(registry, client, model, choice, *, context_chars=50000, output_tokens=4096):
+def choose_binding(registry, client, model, choice, *, context_chars=DEFAULT_CONTEXT_CHARS, output_tokens=DEFAULT_MAX_OUTPUT_TOKENS):
     choice = validate_choice(choice)
     base = registry.select(choice["profile"], client=client, model=choice["model"] or model,
         context_chars=context_chars, max_output_tokens=output_tokens)

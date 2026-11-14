@@ -93,7 +93,8 @@ class TurnHandle(Handle):
             row.get("confirmed", False),
             pending,
             {"scope": "turn", "session_retained": True},
-            {"turn_id": row["turn_id"], "request_id": row["request_id"]},
+            {"turn_id": row["turn_id"], "request_id": row["request_id"],
+             **({"error_info": row["error_info"]} if row.get("error_info") else {})},
         )
 
     def result(self):

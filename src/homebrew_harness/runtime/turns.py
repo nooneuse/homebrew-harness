@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+from homebrew_harness.configuration import (
+    DEFAULT_CONTEXT_CHARS,
+)
+
 from homebrew_harness.runtime.output import print
 
 import copy
@@ -57,7 +61,7 @@ def run_subagent(
     hooks: HookRegistry | None = None,
     max_turns: int = homebrew_harness.tools.catalog.SUBAGENT_MAX_TURNS,
     skill_loader: SkillLoader | None = None,
-    context_chars: int = 50_000,
+    context_chars: int = DEFAULT_CONTEXT_CHARS,
     stop_event: threading.Event | None = None,
     mcp_runtime: MCPRuntime | None = None,
     parent_intent: TaskIntent | None = None,
@@ -499,7 +503,7 @@ def run_member_loop(
     model: str,
     hooks: HookRegistry,
     skill_loader: SkillLoader,
-    context_chars: int = 50_000,
+    context_chars: int = DEFAULT_CONTEXT_CHARS,
     max_turns: int = 30,
     mcp_runtime: MCPRuntime | None = None,
 ) -> str:

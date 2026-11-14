@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from homebrew_harness.configuration import DEFAULT_MAX_OUTPUT_TOKENS
+
 from homebrew_harness.execution.model_connections import HostModels
 
 import json
@@ -190,13 +192,13 @@ def _execute_session(args, parser):
             )
             binding = host_models.open(
                 context_chars=args.context_chars,
-                output_tokens=args.worker_output_tokens or 4096,
+                output_tokens=args.worker_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS,
             )
             client, effective_model = binding.client, binding.model
             if getattr(args, "model_selection", None) is not None:
                 from homebrew_harness.runtime.model_selection import choose_binding
                 binding = choose_binding(models, client, effective_model, args.model_selection,
-                    context_chars=args.context_chars, output_tokens=args.worker_output_tokens or 4096)
+                    context_chars=args.context_chars, output_tokens=args.worker_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS)
             with termination_guard():
                 mcp_runtime = (
                     MCPRuntime(

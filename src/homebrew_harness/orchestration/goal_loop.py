@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from homebrew_harness.configuration import (
+    DEFAULT_GOAL_OUTPUT_TOKENS,
+    DEFAULT_GOAL_REQUEST_SECONDS,
+)
+
 import fcntl
 import copy
 import hashlib
@@ -264,7 +269,7 @@ class GoalStore:
 class PromptGoalEvaluator:
     """One JSON-only, tool-free request; no history, memory or SDK retries."""
 
-    def __init__(self, client, model, *, max_tokens=2048, timeout=20):
+    def __init__(self, client, model, *, max_tokens=DEFAULT_GOAL_OUTPUT_TOKENS, timeout=DEFAULT_GOAL_REQUEST_SECONDS):
         if type(max_tokens) is not int or not 128 <= max_tokens <= 8192:
             raise GoalError("Goal checker output limit must be between 128 and 8192.")
         client = ensure_gateway(client)

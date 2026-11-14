@@ -1,5 +1,11 @@
 """Host model selection shared by session and direct execution entry points."""
 
+from homebrew_harness.configuration import (
+    DEFAULT_CONTEXT_CHARS,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    DEFAULT_MODEL_REQUEST_SECONDS,
+)
+
 import io
 import os
 import stat
@@ -98,7 +104,7 @@ class HostModels:
                 self.environment["OPENAI_API_KEY"], self.environment["OPENAI_BASE_URL"]
             )
 
-    def open(self, *, context_chars=50000, output_tokens=4096):
+    def open(self, *, context_chars=DEFAULT_CONTEXT_CHARS, output_tokens=DEFAULT_MAX_OUTPUT_TOKENS):
         if self.binding is not None:
             return self.binding
         client = model = None
@@ -119,7 +125,7 @@ class HostModels:
                 raw = self.factory(
                     api_key=self.environment["OPENAI_API_KEY"],
                     base_url=self.environment["OPENAI_BASE_URL"],
-                    timeout=60,
+                    timeout=DEFAULT_MODEL_REQUEST_SECONDS,
                     max_retries=0,
                 )
                 entered = hasattr(raw, "__enter__")

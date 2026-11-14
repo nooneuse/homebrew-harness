@@ -96,6 +96,18 @@ class WorkflowTests(unittest.TestCase):
             for name in (".json", ".output.json", ".journal.jsonl")
         }
 
+    def test_default_workflow_accepts_large_prompt_and_keeps_output_room(self):
+        async def script(ctx, _args):
+            return await ctx.agent("x" * 20000)
+
+        runner = Runner()
+        runtime = self.runtime(script, runner=runner)
+        self.addCleanup(runtime.close)
+        result = runtime.run("test-flow", {})
+        self.assertEqual(result["task"]["status"], "completed")
+        self.assertEqual(len(runner.calls[0][0]), 20000)
+        self.assertEqual(runner.calls[0][3], 20000)
+
     def test_real_review_script_and_fresh_runtime_resume(self):
         runtime = WorkflowRuntime(
             self.root,

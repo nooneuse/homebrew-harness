@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+from homebrew_harness.configuration import (
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    DEFAULT_TASK_SECONDS,
+)
+
 import json
 import sys
 from pathlib import Path
@@ -23,9 +28,9 @@ def register(groups):
     parser.add_argument(
         "--model-profile", help="Host model capability revision for cache identity."
     )
-    parser.add_argument("--max-output-tokens", type=int, default=2048)
+    parser.add_argument("--max-output-tokens", type=int, default=DEFAULT_MAX_OUTPUT_TOKENS)
     parser.add_argument("--concurrency", type=int, default=2)
-    parser.add_argument("--timeout-seconds", type=float, default=300)
+    parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TASK_SECONDS)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("list")
     commands.add_parser(

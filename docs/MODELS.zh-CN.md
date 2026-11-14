@@ -15,6 +15,15 @@
 
 在项目目录中使用 `python -m pip install -e ".[openai]"` 安装 extra，按需替换名称。也可以通过 `".[openai,anthropic,dashscope]"` 一起安装多个 SDK。安装包提供同名 extras。
 
+Session、Run、Service、Workflow、团队与 subagent 的常规模型生成，默认上限统一为**每次请求 20,000 个输出 token**。根据提供商的计数方式，这可能包括思考 token。它是允许生成的上限，不要求模型用满。模型 profile 可通过 `max_output_tokens` 覆盖；宿主配置与 Run 使用 `output_tokens`，直接 Workflow 使用 `--max-output-tokens`。Session 也支持 `--worker-output-tokens` 或 `HARNESS_WORKER_OUTPUT_TOKENS`。已有配置及执行绑定中保存的显式上限继续生效。
+
+默认上下文阈值为序列化请求的 100,000 个字符，并非提供商的 token 上下文窗口。可根据模型能力和任务设置 `context_chars`。压缩摘要、Memory 筛选、Goal 检查与 benchmark 场景保留各自的独立限制。
+
+
+模型请求默认上限为 500 秒。Session turn、Run episode 和 Service maintenance job 默认上限为 1500 秒；Run 和自动交互执行的总时长默认为 10800 秒。Maintenance job 最多调用模型 24 轮。Workflow 默认上限为 1500 秒，接受最多 64000 个输入字符。嵌套请求以自身截止时间与调用者剩余时间中更早到期者为准。显式宿主设置仍按其配置执行。
+
+Goal 模型检查默认允许 8000 个输出 token、120 秒。上下文摘要首次允许 6000 个输出 token，生成不完整时仅重试一次，放宽到 12000；保留的摘要正文长度和历史覆盖边界保持原值。自动审批使用独立的[配置](APPROVALS.zh-CN.md)。
+
 ## 连接策略
 
 模型目录的 `connections` 条目支持 `transport`：
@@ -67,3 +76,9 @@ Session、Run、Workflow、Service、benchmark、团队和 Subagent 共用模型
 可选的[自动审批审核](APPROVALS.zh-CN.md)复用同一模型绑定与网关。可选择当前 Lead、实际请求者或专用 profile，每次审核使用独立上下文。
 
 直接检查时，`ProtocolAdapter.transport_description` 提供实际后端、声明策略、选择理由和 SDK 版本。`ModelBinding.identity()` 提供持久身份，内容不包含连接秘密。
+
+## 边界诊断
+
+执行失败通过 `error_info` 返回 `type`、`code`、`message` 和 `details`。可用时，限额信息包含配置名称、配置值、观测值和单位。模型输出错误保留提供商结束原因、请求输出上限和已报告的输出／思考用量；流缺少结束标记与提供商明确报告达到输出上限分别描述。
+
+超时诊断区分准备、排队和传输阶段，并展示 Gateway 上限、可能更短的客户端上限和实际生效的截止时间。`sent`、`settled` 表示请求是否已提交、执行是否已结束。Session turn 快照、Run outcome details、Workflow 错误结果和 Service job 保留同一份诊断。Service 的 `job`、`records jobs` 及工具错误结果均可查看。诊断不包含原始请求正文或思考文本。

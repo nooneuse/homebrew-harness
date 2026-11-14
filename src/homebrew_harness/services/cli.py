@@ -372,7 +372,11 @@ def render_error(error, *, file=None):
             file=file,
         )
     else:
-        print(redact(str(error)), file=file)
+        if getattr(error, "code", None) or getattr(error, "reason_code", None):
+            from homebrew_harness.runtime.errors import error_info
+            render(error_info(error), file=file)
+        else:
+            print(redact(str(error)), file=file)
 
 
 def submit(service, text, *, priority=0, request_id=None):

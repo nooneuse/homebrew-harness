@@ -1,5 +1,7 @@
 """Shared content snapshots and bounded workspace metadata observations."""
 
+from homebrew_harness.runtime.errors import boundary_error
+
 import fnmatch
 import hashlib
 import json
@@ -94,11 +96,11 @@ def snapshot(
         for name in sorted(files):
             paths_seen += 1
             if paths_seen > max_paths:
-                raise TestRunnerError(
+                raise boundary_error(TestRunnerError, "snapshot_path_limit",
                     "Source inventory exceeds max_paths="
                     + str(max_paths)
-                    + "; narrow the project or adjust the host inventory limit."
-                )
+                    + "; narrow the project or adjust the host inventory limit.",
+                    limit_name="max_paths", limit_value=max_paths, observed_value=paths_seen, unit="paths")
             path = (relative / name).as_posix()
             if (
                 name in _EXCLUDED
@@ -110,15 +112,18 @@ def snapshot(
                 info = os.fstat(stream.fileno())
                 total += info.st_size
                 if total > max_bytes or len(records) >= max_files:
-                    raise TestRunnerError(
+                    raise boundary_error(TestRunnerError, "snapshot_bytes_limit" if total > max_bytes else "snapshot_file_limit",
                         "Watched source exceeds max_files="
                         + str(max_files)
                         + " or max_bytes="
                         + str(max_bytes)
                         + "; watched patterns="
                         + repr(patterns)
-                        + "; register narrower inputs."
-                    )
+                        + "; register narrower inputs.",
+                        limit_name="max_bytes" if total > max_bytes else "max_files",
+                        limit_value=max_bytes if total > max_bytes else max_files,
+                        observed_value=total if total > max_bytes else len(records)+1,
+                        unit="bytes" if total > max_bytes else "files")
                 hasher = hashlib.sha256()
                 while chunk := stream.read(65536):
                     check()

@@ -1,5 +1,9 @@
 """Host policy for service proposals; scope selection can only narrow Run defaults."""
 
+from homebrew_harness.configuration import (
+    DEFAULT_TASK_SECONDS,
+)
+
 import json
 import math
 import re
@@ -86,8 +90,8 @@ def validate_policy(raw, run_spec):
         "auto_categories": [],
         "authority_seconds": 3600,
         "report_seconds": 43200,
-        "job_seconds": 120,
-        "job_turns": 8,
+        "job_seconds": DEFAULT_TASK_SECONDS,
+        "job_turns": 24,
         "job_attempts": 3,
         "model_profile": None,
         "instructions": {},

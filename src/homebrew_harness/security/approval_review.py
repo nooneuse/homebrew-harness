@@ -1,5 +1,7 @@
 """Independent approval judgment; native policy and decision publishers stay authoritative."""
 
+from homebrew_harness.runtime.errors import boundary_error, error_info, error_message
+
 import hashlib
 import copy
 import json
@@ -50,8 +52,8 @@ class ReviewConfig:
     model_profile: str | None = None
     requester_fallback: str | None = None
     kinds: tuple = ("tool", "test_grant")
-    timeout_seconds: float = 15
-    max_turns: int = 3
+    timeout_seconds: float = 120
+    max_turns: int = 6
 
     def __post_init__(self):
         if self.mode not in {"manual", "auto_review"} or self.model_source not in {
@@ -82,7 +84,7 @@ class ReviewConfig:
         if (
             type(self.timeout_seconds) not in {int, float}
             or not math.isfinite(self.timeout_seconds)
-            or not 0.01 <= self.timeout_seconds <= 120
+            or not 0.01 <= self.timeout_seconds <= 500
             or type(self.max_turns) is not int
             or not 1 <= self.max_turns <= 8
         ):
@@ -192,7 +194,7 @@ class ApprovalReviewer:
                 check(deadline)
                 if gateway.input_size(binding.model, messages, tools, self.store.workdir,
                                       binding.max_output_tokens) >= binding.context_chars:
-                    raise ValueError("Required review context exceeds the selected model's window.")
+                    raise boundary_error(ValueError, "review_context_limit", "Required review context exceeds the selected model's window.", limit_name="context_chars", limit_value=binding.context_chars, observed_value=gateway.input_size(binding.model, messages, tools, self.store.workdir, binding.max_output_tokens), unit="serialized_characters")
                 try:
                     response = gateway.request(
                         model=binding.model, messages=messages, max_tokens=binding.max_output_tokens,
@@ -253,7 +255,7 @@ class ApprovalReviewer:
                                        for path in verdict["evidence_paths"])))):
                         raise ValueError("Invalid approval review result.")
                 except (ValueError, TypeError):
-                    diagnostics.append({"kind": "result_correction", "finish": response.finish})
+                    diagnostics.append({"kind": "result_correction", "finish": response.finish, "error_info": error_info(response.failure())})
                     messages.append({"role": "user", "content":
                         'Return one JSON object only, without surrounding prose, with decision=approve/deny/human_required and reason. '
                         'Optional risk may be low/medium/high/critical, and evidence_paths may select already observed paths. Do not include authorization or unrelated fields. '
@@ -267,7 +269,7 @@ class ApprovalReviewer:
                         "instruction": "Evaluate this current evidence state. Read again if relevant, or explain why it does not affect your decision. Return a new current decision."}, ensure_ascii=False)})
                     continue
                 return redact(verdict), observed["evidence"]
-        raise ValueError("Approval review model-turn limit reached.")
+        raise boundary_error(ValueError, "review_turn_limit", "Approval review model-turn limit reached.", limit_name="approval_review.max_turns", limit_value=self.config.max_turns, observed_value=self.config.max_turns, unit="model_calls")
 
     def review(self, request, context, current, publish, *, requester=None, cancel_event=None, retry=False):
         cfg = self.config
@@ -335,7 +337,8 @@ class ApprovalReviewer:
                 with cleanup_scope():
                     self.store.put("approval_reviews", identity, {**record,
                         "state": "human_required" if still_pending else "superseded",
-                        "reason": "Review attempt failed (" + type(error).__name__ + ").",
+                        "reason": error_message(error),
+                        "error_info": error_info(error),
                         "diagnostics": redact(diagnostics[-64:])})
                 return None
             record["diagnostics"] = redact(diagnostics[-64:])

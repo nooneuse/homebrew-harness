@@ -137,6 +137,7 @@ def decode(value):
         usage(value.get("usage"), protocol="anthropic_messages"),
         {"blocks": blocks},
         value.get("id"),
+        {"provider_finish_reason": reason},
     )
 
 

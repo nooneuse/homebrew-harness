@@ -1,5 +1,7 @@
 """Native Generation wire format and delta/cumulative response aggregation."""
 
+from homebrew_harness.runtime.errors import boundary_error
+
 import copy
 from homebrew_harness.execution.model_protocol import ModelProtocolError
 from .chat_completions import decode as chat_decode
@@ -89,7 +91,7 @@ def streamed(events, *, incremental):
             choices and choices[0].get("finish_reason") not in {None, "null"}
         )
     if final is None or not finished:
-        raise ModelProtocolError("Generation stream lacks a final finish reason.")
+        raise boundary_error(ModelProtocolError, "model_stream_incomplete", "Generation stream lacks a final finish reason.")
     if incremental and calls:
         final["output"]["choices"][0]["message"]["tool_calls"] = [
             calls[i] for i in sorted(calls)

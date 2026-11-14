@@ -1,5 +1,7 @@
 """Bounded evidence observations; the reviewer decides relevance and sufficiency."""
 
+from homebrew_harness.runtime.errors import boundary_error
+
 from pathlib import Path
 import errno
 
@@ -35,7 +37,7 @@ class ReviewEvidence:
                     raw, version, _ = file.snapshot(max_bytes=FILE_BYTES)
                 except ValueError as error:
                     if str(error) == "File snapshot exceeds the host size limit.":
-                        raise EvidenceLimitReached(str(error)) from error
+                        raise boundary_error(EvidenceLimitReached, "review_file_bytes_limit", str(error), limit_name="review_file_bytes", limit_value=FILE_BYTES, observed_value=getattr(error, "details", {}).get("observed_value"), unit="bytes") from error
                     raise
                 file.verify_binding()
             return raw, version
@@ -47,8 +49,10 @@ class ReviewEvidence:
         size = len(raw) if raw is not None else 0
         prior_size = previous["bytes"] if previous else 0
         delta = max(0, size - prior_size)
-        if (previous is None and len(self.files) >= MAX_FILES) or self.bytes + delta > TOTAL_BYTES:
-            raise EvidenceLimitReached("Review evidence file limit reached.")
+        if previous is None and len(self.files) >= MAX_FILES:
+            raise boundary_error(EvidenceLimitReached, "review_file_count_limit", "Review evidence file limit reached (file count).", limit_name="review_files", limit_value=MAX_FILES, observed_value=len(self.files)+1, unit="files")
+        if self.bytes + delta > TOTAL_BYTES:
+            raise boundary_error(EvidenceLimitReached, "review_total_bytes_limit", "Review evidence total content limit reached.", limit_name="review_total_bytes", limit_value=TOTAL_BYTES, observed_value=self.bytes+delta, unit="bytes")
         changed = previous is not None and previous["version"] != version
         if previous is None or changed:
             previous = self.files[path] = {
@@ -64,7 +68,7 @@ class ReviewEvidence:
 
     def read(self, arguments):
         if self.pages >= MAX_PAGES:
-            raise EvidenceLimitReached("Review evidence page limit reached.")
+            raise boundary_error(EvidenceLimitReached, "review_page_limit", "Review evidence page limit reached.", limit_name="review_pages", limit_value=MAX_PAGES, observed_value=self.pages+1, unit="pages")
         self.pages += 1
         path = None
         try:

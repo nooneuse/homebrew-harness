@@ -31,8 +31,8 @@ Run specifications accept the same `approval_review` object. A non-null Run sett
 | `model_profile` | Unset | Model catalog alias, required for `profile` |
 | `requester_fallback` | Unset | Explicit `lead` fallback if requester provenance is unavailable |
 | `kinds` | `["tool", "test_grant"]` | Approval kinds delegated to the reviewer |
-| `timeout_seconds` | `15` | Review deadline, from `0.01` to `120` seconds |
-| `max_turns` | `3` | Maximum review model calls, from `1` to `8` |
+| `timeout_seconds` | `120` | Review deadline, from `0.01` to `500` seconds |
+| `max_turns` | `6` | Maximum review model calls, from `1` to `8` |
 
 Every model source uses an independent context and its complete model binding through ModelGateway, including protocol, options, output allowance and context window. Calls and usage enter the existing observations. `requester` captures the actual subagent or teammate binding where available. Missing provenance requires human review unless the host explicitly sets `requester_fallback: "lead"`. A model connection failure also falls back to human review.
 
@@ -87,3 +87,5 @@ with Harness(workdir="project", config=config) as harness:
 Answer remaining requests through `harness.requests`, using their exact reference and revision. See [Python API](PYTHON_API.md).
 
 The runtime saves reviewer binding, request/context versions, verdict, short reason and evidence references in `approval_reviews`. A changed request or earlier human decision supersedes the review. Interrupted reviews and unknown publication confirmation do not trigger repeated model calls or publication; the native decision record remains authoritative. Session review records follow checkpoint retirement and restoration.
+
+Boundary failures in an approval attempt retain `error_info`, including the selected deadline or file/page/content limit. The reason identifies the execution boundary; ordinary file-query errors continue to return to the reviewer as tool feedback.

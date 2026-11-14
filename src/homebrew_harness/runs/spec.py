@@ -1,5 +1,13 @@
 """Host-selected managed execution settings and structured results."""
 
+from homebrew_harness.configuration import (
+    DEFAULT_CONTEXT_CHARS,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    DEFAULT_MODEL_REQUEST_SECONDS,
+    DEFAULT_RUN_SECONDS,
+    DEFAULT_TASK_SECONDS,
+)
+
 import copy
 import math
 import re
@@ -61,12 +69,12 @@ class RunSpec:
         "provider_timeout",
         "provider_server_error",
     )
-    context_chars: int = 50000
-    output_tokens: int = 4096
-    total_seconds: float = 3600
-    episode_seconds: float = 300
+    context_chars: int = DEFAULT_CONTEXT_CHARS
+    output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
+    total_seconds: float = DEFAULT_RUN_SECONDS
+    episode_seconds: float = DEFAULT_TASK_SECONDS
     episode_model_calls: int = 20
-    request_seconds: float = 60
+    request_seconds: float = DEFAULT_MODEL_REQUEST_SECONDS
     retries: int = 3
     retry_delay: float = 2
     heartbeat_seconds: float = 2

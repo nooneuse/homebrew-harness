@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from homebrew_harness.runtime.errors import boundary_error
+
 
 import hashlib
 import json
@@ -682,14 +684,12 @@ class TestRunner:
         started = time.monotonic()
         durable_scope = self.receipt_scope() if self.receipt_scope else None
         try:
-            if (
-                self.closed.is_set()
-                or self.runs >= self.max_runs
-                or self.seconds >= self.total_seconds
-            ):
-                raise TestRunnerError(
-                    "TestRunner is closed or its shared run/time budget is exhausted."
-                )
+            if self.closed.is_set():
+                raise TestRunnerError("TestRunner is closed.")
+            if self.runs >= self.max_runs:
+                raise boundary_error(TestRunnerError, "test_run_limit", "TestRunner shared run limit is exhausted.", limit_name="test_runner.max_runs", limit_value=self.max_runs, observed_value=self.runs, unit="test_runs")
+            if self.seconds >= self.total_seconds:
+                raise boundary_error(TestRunnerError, "test_time_limit", "TestRunner shared time limit is exhausted.", limit_name="test_runner.total_seconds", limit_value=self.total_seconds, observed_value=self.seconds, unit="seconds")
             grant = self._grant(recipe, cwd, context)
             if grant is None:
                 raise TestRunnerError(
@@ -894,6 +894,11 @@ class TestRunner:
                 "stdout": prefix + "/stdout.txt",
                 "stderr": prefix + "/stderr.txt",
             }
+            receipt["limits"] = {"timeout_seconds": recipe.timeout, "deadline_source": deadline.source,
+                "effective_timeout_seconds": max(0, deadline.expires_at-started),
+                "output_bytes": recipe.output_bytes, "cpu_seconds": recipe.cpu_seconds,
+                "memory_mb": recipe.memory_mb, "shared_max_runs": self.max_runs,
+                "shared_total_seconds": self.total_seconds}
             receipt["execution_backend"] = self.backend.name
             receipt["isolation"] = isolation or (
                 self.backend.status()

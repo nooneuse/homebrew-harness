@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from homebrew_harness.runtime.errors import error_info, error_message
+
 from homebrew_harness.storage.control_boundary import ProposalSuperseded
 
 import json
@@ -91,6 +93,8 @@ def validate_arguments(arguments: dict, schema: dict) -> None:
 def tool_error(error: Exception) -> str:
     if isinstance(error, ToolExecutionError):
         return error.serialize()
+    if getattr(error, "code", None) or getattr(error, "reason_code", None):
+        return json.dumps({"error": error_message(error), "error_info": error_info(error)}, ensure_ascii=False)
     if isinstance(error, ValueError):
         return json.dumps({"error": str(error)}, ensure_ascii=False)
     if isinstance(error, OSError):
@@ -492,7 +496,8 @@ def _execute_tool(
             return finish(
                 json.dumps(
                     {
-                        "error": "Tool call not executed: " + str(error),
+                        "error": "Tool call not executed: " + error_message(error),
+                        "error_info": error_info(error),
                         "executed": False,
                     }
                 )
@@ -600,7 +605,8 @@ def _execute_tool(
         return finish(
             json.dumps(
                 {
-                    "error": str(error),
+                    "error": error_message(error),
+                    "error_info": error_info(error),
                     "executed": False,
                     **(
                         {"reason_code": error.reason_code}
@@ -678,7 +684,7 @@ def _execute_tool(
                 isinstance(error, ModelGatewayError)
                 or getattr(error, "outcome", None) == "unknown"
             ):
-                output = json.dumps({"error": str(error), "outcome": "unknown"})
+                output = json.dumps({"error": error_message(error), "error_info": error_info(error), "outcome": "unknown"})
         output = redact(output)
         if writer:
             writer.tool_finished(operation_id, output)

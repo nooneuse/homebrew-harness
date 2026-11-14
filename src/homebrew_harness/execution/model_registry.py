@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+from homebrew_harness.configuration import (
+    DEFAULT_CONTEXT_CHARS,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    DEFAULT_MODEL_REQUEST_SECONDS,
+    register_model_environment,
+)
+
 import hashlib
 import json
 import os
@@ -12,7 +19,6 @@ from pathlib import Path
 from types import MappingProxyType
 from urllib.parse import urlsplit
 
-from homebrew_harness.configuration import register_model_environment
 
 from homebrew_harness.execution.execution_control import acquired, check
 from homebrew_harness.execution.model_profile import profile_fingerprint
@@ -246,8 +252,8 @@ class ModelRegistry:
         *,
         client=None,
         model=None,
-        context_chars=50000,
-        max_output_tokens=4096,
+        context_chars=DEFAULT_CONTEXT_CHARS,
+        max_output_tokens=DEFAULT_MAX_OUTPUT_TOKENS,
         role=None,
     ):
         chosen = alias if alias is not None else self.teammate_roles.get(role)
@@ -271,7 +277,7 @@ class ModelRegistry:
                         raw = self.client_factory(
                             api_key=spec.api_key,
                             base_url=spec.base_url,
-                            timeout=60.0,
+                            timeout=DEFAULT_MODEL_REQUEST_SECONDS,
                             max_retries=0,
                         )
                         base = ChatCompletionsAdapter(raw, connection_id=key)

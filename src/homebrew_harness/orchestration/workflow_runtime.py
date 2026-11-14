@@ -2,6 +2,15 @@
 
 from __future__ import annotations
 
+from homebrew_harness.runtime.errors import annotate_error
+
+from homebrew_harness.runtime.errors import boundary_error, error_info, error_message
+
+from homebrew_harness.configuration import (
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    DEFAULT_TASK_SECONDS,
+)
+
 import asyncio
 import fcntl
 import hashlib
@@ -176,9 +185,9 @@ class WorkflowRegistry:
 @dataclass(frozen=True)
 class WorkflowLimits:
     concurrency: int = 2
-    max_output_tokens: int = 2048
-    max_input_chars: int = 16_000
-    timeout_seconds: float = 300
+    max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
+    max_input_chars: int = 64_000
+    timeout_seconds: float = DEFAULT_TASK_SECONDS
     cleanup_seconds: float = 0.2
 
     def __post_init__(self):
@@ -205,6 +214,7 @@ class WorkflowLimits:
 class RunnerOutput:
     value: object
     complete: bool = True
+    error_info: dict | None = None
 
 
 class ModelWorkflowRunner:
@@ -275,9 +285,7 @@ class ModelWorkflowRunner:
             )
             > self.binding.context_chars
         ):
-            raise WorkflowError(
-                "Workflow step exceeds the selected model context limit."
-            )
+            raise boundary_error(WorkflowError, "workflow_context_limit", "Workflow step exceeds the selected model context limit.", limit_name="context_chars", limit_value=self.binding.context_chars, observed_value=gateway.input_size(self.model, kwargs["messages"], [], gateway._state.ledger.workdir, max_tokens, output_contract=kwargs.get("output_contract"), settings=self.settings), unit="serialized_characters")
         return kwargs
 
     def run(self, prompt, schema, label, max_tokens, *, on_attempt=None):
@@ -299,19 +307,21 @@ class ModelWorkflowRunner:
     @staticmethod
     def result(response, schema):
         value = response.text
+        diagnostic = None
         from homebrew_harness.execution.model_protocol import ModelProtocolError
 
         try:
             response.require_text(nonempty=True)
             complete = True
-        except ModelProtocolError:
+        except ModelProtocolError as error:
             complete = False
+            diagnostic = error_info(error)
         if complete and schema is not None:
             try:
                 value = clone(json.loads(value))
             except (WorkflowError, ValueError, TypeError):
                 pass  # The runtime validates and allows one bounded correction.
-        return RunnerOutput(value, complete=complete)
+        return RunnerOutput(value, complete=complete, error_info=diagnostic)
 
 
 class WorkflowStore:
@@ -656,9 +666,9 @@ class ExecutionState:
             or not prompt.strip()
             or len(prompt) > self.runtime.limits.max_input_chars
         ):
-            raise WorkflowError(
-                "Workflow step input is empty or exceeds the host character limit."
-            )
+            if isinstance(prompt, str) and len(prompt) > self.runtime.limits.max_input_chars:
+                raise boundary_error(WorkflowError, "workflow_input_limit", "Workflow step input exceeds the host character limit.", limit_name="max_input_chars", limit_value=self.runtime.limits.max_input_chars, observed_value=len(prompt), unit="characters")
+            raise WorkflowError("Workflow step input is empty or invalid.")
         if not isinstance(label, str) or not label.strip() or len(label) > 120:
             raise WorkflowError("Workflow step label must be a short nonempty string.")
         if phase is not None and phase not in self.spec.phases:
@@ -745,7 +755,7 @@ class ExecutionState:
                 raise
             except Exception as error:
                 raise WorkflowError(
-                    "Workflow model request failed (" + type(error).__name__ + ")."
+                    "Workflow model request failed: " + error_message(error)
                 ) from error
             value = clone(output.value)
             if output.complete and (
@@ -760,13 +770,16 @@ class ExecutionState:
             if attempt == 0:
                 self.progress("agent", label=label, phase=phase, status="retry")
                 prompt += "\nYour previous response was incomplete or failed validation. Return a complete concise answer and, when specified, valid JSON matching the schema."
+                if output.error_info:
+                    prompt += "\nPrevious response diagnostic: " + json_text(output.error_info)
                 if len(prompt) > self.runtime.limits.max_input_chars:
-                    raise WorkflowError(
-                        "Corrective step input exceeds the host character limit."
-                    )
-        raise WorkflowError(
-            "Workflow step failed output validation after one correction."
-        )
+                    raise boundary_error(WorkflowError, "workflow_input_limit", "Corrective step input exceeds the host character limit.", limit_name="max_input_chars", limit_value=self.runtime.limits.max_input_chars, observed_value=len(prompt), unit="characters")
+        error = WorkflowError("Workflow step failed output validation after one correction.")
+        if output.error_info:
+            annotate_error(error, code=output.error_info["code"], **output.error_info["details"])
+        else:
+            annotate_error(error, code="workflow_output_contract", phase="step_output")
+        raise error
 
     async def parallel(self, thunks):
         if (
@@ -851,6 +864,8 @@ class WorkflowExecution:
         self.run_id = resume or "wf_" + uuid.uuid4().hex
         self.identity = uuid.uuid4().hex
         self.deadline = deadline
+        self.available_seconds = deadline.remaining()
+        self.boundary_diagnostic = None
         self.stop = stop_event if stop_event is not None else threading.Event()
         self.guard = (
             threading.Lock()
@@ -1343,7 +1358,7 @@ class WorkflowRuntime:
             if not matches(schema_validator(spec.args_schema), args):
                 raise WorkflowError("Workflow arguments failed the registered schema.")
             if len(json_text(args)) > self.limits.max_input_chars:
-                raise WorkflowError("Workflow arguments exceed the host input limit.")
+                raise boundary_error(WorkflowError, "workflow_input_limit", "Workflow arguments exceed the host input limit.", limit_name="max_input_chars", limit_value=self.limits.max_input_chars, observed_value=len(json_text(args)), unit="characters")
         run_id = (
             owner.run_id
             if owner
@@ -1384,7 +1399,7 @@ class WorkflowRuntime:
             if not matches(schema_validator(spec.args_schema), args):
                 raise WorkflowError("Workflow arguments failed the registered schema.")
             if len(json_text(args)) > self.limits.max_input_chars:
-                raise WorkflowError("Workflow arguments exceed the host input limit.")
+                raise boundary_error(WorkflowError, "workflow_input_limit", "Workflow arguments exceed the host input limit.", limit_name="max_input_chars", limit_value=self.limits.max_input_chars, observed_value=len(json_text(args)), unit="characters")
             journal = WorkflowJournal(self.store, run_id, resume=resume)
             task = {
                 "run_id": run_id,
@@ -1462,7 +1477,8 @@ class WorkflowRuntime:
                         "paused" if isinstance(error, WorkflowStopped) else "failed"
                     )
                     result = {
-                        "error": str(error)
+                        "error_info": owner.boundary_diagnostic or error_info(error),
+                        "error": owner.reason if owner.boundary_diagnostic else error_message(error)
                         if isinstance(error, WorkflowError)
                         else "Workflow script failed (" + type(error).__name__ + ")."
                     }
@@ -1586,7 +1602,10 @@ class WorkflowRuntime:
         try:
             execution_check(owner.deadline)
         except ModelGatewayError as error:
-            return str(error)
+            annotate_error(error, limit_name="effective_workflow_seconds", limit_value=owner.available_seconds,
+                           workflow_timeout_seconds=self.limits.timeout_seconds, unit="seconds", phase="workflow")
+            owner.boundary_diagnostic = error_info(error)
+            return error_message(error)
         return None
 
     def _pending_response(self, owner):

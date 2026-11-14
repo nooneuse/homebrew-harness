@@ -143,7 +143,7 @@ class CompactionTests(unittest.TestCase):
         ContextCompactor.groups(prepared)
 
     def test_snip_preserves_batch_boundaries_request_plan_and_system_policy(self):
-        compactor = self.compactor()
+        compactor = self.compactor(context_chars=50000)
         messages = [
             {"role": "system", "content": "Never bypass permissions."},
             {"role": "user", "content": "Initial request"},
@@ -326,7 +326,7 @@ class CompactionTests(unittest.TestCase):
         prepared = compactor.prepare(history, "Task")
         self.assertEqual(
             [request["max_tokens"] for request in requests],
-            [2000, 6000, 2000, 2000, 2000, 2000],
+            [6000, 12000, 6000, 6000, 6000, 6000],
         )
         ranges = [
             json.loads(request["messages"][-1]["content"])["coverage"]

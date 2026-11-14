@@ -2,6 +2,7 @@
 
 import threading
 import time
+from homebrew_harness.runtime.errors import error_info, error_message
 from pathlib import Path
 
 from homebrew_harness.execution.execution_control import (
@@ -168,6 +169,8 @@ class CommunicationRuntime:
             current = self.store.get("discussions", row["id"], conn)
             current.update(
                 error=type(error).__name__,
+                error_detail=error_message(error),
+                error_info=error_info(error),
                 next_poll=time.time()
                 + retry_after(error, current.get("poll_attempts", 0) + 1),
                 poll_attempts=current.get("poll_attempts", 0) + 1,

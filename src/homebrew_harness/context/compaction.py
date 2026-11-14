@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from homebrew_harness.runtime.errors import boundary_error, error_message
+
+from homebrew_harness.configuration import (
+    DEFAULT_CONTEXT_CHARS,
+)
+
 from homebrew_harness.runtime.output import print
 
 import copy
@@ -207,7 +213,7 @@ class ContextCompactor:
         client,
         model: str,
         workdir: Path,
-        context_chars: int = 50_000,
+        context_chars: int = DEFAULT_CONTEXT_CHARS,
         trigger_messages: int = 50,
         target_messages: int = 30,
         archive_namespace: str | None = None,
@@ -451,9 +457,7 @@ class ContextCompactor:
                 conversation[i : i + limit] for i in range(0, len(conversation), limit)
             ]
             if len(chunks) > 8:
-                raise CompactionError(
-                    "History needs more than eight summary chunks; archive/narrow the task before continuing. No middle content was silently omitted."
-                )
+                raise boundary_error(CompactionError, "summary_chunk_limit", "History needs more than eight summary chunks; archive/narrow the task before continuing. No middle content was silently omitted.", limit_name="summary_chunks", limit_value=8, observed_value=len(chunks), unit="chunks")
             summaries = []
             for index, chunk in enumerate(chunks):
                 summaries.append(
@@ -491,7 +495,7 @@ class ContextCompactor:
             # Reasoning tokens also consume the output budget on compatible
             # providers. Retry a truncated, tool-free summary once; no action
             # response or completed side effect is replayed by this recovery.
-            for budget in (2000, 6000):
+            for budget in (6000, 12000):
                 from homebrew_harness.execution.model_retry import request
                 response = request(
                     self.client,
@@ -518,20 +522,18 @@ class ContextCompactor:
                 if (
                     response.finish == "incomplete"
                     and not response.tool_calls
-                    and budget == 2000
+                    and budget == 6000
                 ):
                     continue
                 summary = response.require_text(nonempty=True)
                 if len(summary) > 4000:
-                    raise CompactionError(
-                        "Context still exceeds the summary output budget; no repeated reduction was attempted."
-                    )
+                    raise boundary_error(CompactionError, "summary_text_limit", "Context still exceeds the summary output budget; no repeated reduction was attempted.", limit_name="summary_characters", limit_value=4000, observed_value=len(summary), unit="characters")
                 return summary
         except (CompactionError, ModelGatewayError):
             raise
         except Exception as error:
             raise CompactionError(
-                f"Context summary failed ({type(error).__name__}); history was retained."
+                "Context summary failed: " + error_message(error) + "; history was retained."
             ) from error
 
     def operation_index(self, history):
@@ -618,13 +620,13 @@ class ContextCompactor:
         fixed.append({"role": "user", "content": active_request + plan})
         minimum = self.estimate_chars(fixed, tools)
         if minimum >= self.context_chars:
-            raise CompactionError(
+            raise boundary_error(CompactionError, "context_fixed_limit",
                 "System instructions, tools and current request require at least "
                 + str(minimum + 1)
                 + " context characters; configured "
                 + str(self.context_chars)
-                + ". Increase --context-chars or configure fewer optional tools. No model request was sent."
-            )
+                + ". Increase --context-chars or configure fewer optional tools. No model request was sent.",
+                limit_name="context_chars", limit_value=self.context_chars, observed_value=minimum, unit="serialized_characters", phase="context_prepare", sent=False)
         return minimum
 
     def prepare(
@@ -655,9 +657,7 @@ class ContextCompactor:
                     )
                 prepared = self.compact_history(prepared, active_request, plan)
             if self.estimate_chars(prepared, tools) > self.context_chars:
-                raise CompactionError(
-                    "Context still exceeds the configured budget after compaction; history was retained."
-                )
+                raise boundary_error(CompactionError, "context_compacted_limit", "Context still exceeds the configured budget after compaction; history was retained.", limit_name="context_chars", limit_value=self.context_chars, observed_value=self.estimate_chars(prepared, tools), unit="serialized_characters", phase="context_prepare", sent=False)
         return [
             originals[id(message)]
             if id(message) in originals and message == originals[id(message)]

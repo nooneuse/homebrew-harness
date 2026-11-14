@@ -2,6 +2,13 @@
 
 from __future__ import annotations
 
+from homebrew_harness.runtime.errors import annotate_error, error_info
+
+from homebrew_harness.configuration import (
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    DEFAULT_MODEL_REQUEST_SECONDS,
+)
+
 import asyncio
 import copy
 import inspect
@@ -51,6 +58,17 @@ class ModelDeadlineExceeded(ModelGatewayError):
         self.kind = "timeout" if source == "request" else self.reason_code
         self.transient = source == "request"
 
+    def __str__(self):
+        details = getattr(self, "details", {})
+        facts = {"source": self.source, "phase": self.phase,
+                 "request_id": self.request_id, "sent": self.sent, "settled": self.settled}
+        for key in ("gateway_request_timeout_seconds", "client_timeout_seconds", "request_timeout_seconds", "effective_timeout_seconds", "elapsed_seconds",
+                    "preparation_seconds", "queue_seconds", "job_seconds", "job_turns"):
+            if key in details:
+                facts[key] = details[key]
+        shown = ", ".join(key + "=" + str(value) for key, value in facts.items() if value is not None)
+        return super().__str__() + (" (" + shown + ")" if shown else "")
+
 
 class ModelCancelled(ModelGatewayError):
     pass
@@ -59,7 +77,7 @@ class ModelCancelled(ModelGatewayError):
 @dataclass(frozen=True)
 class GatewayLimits:
     concurrency: int = 4
-    request_timeout: float = 60
+    request_timeout: float = DEFAULT_MODEL_REQUEST_SECONDS
     session_timeout: float | None = None
 
     def __post_init__(self):
@@ -310,7 +328,7 @@ class GatewayState:
         self.observation_incomplete = False
         self.observation_error = None
         self.worker_output_tokens = int(
-            os.getenv("HARNESS_WORKER_OUTPUT_TOKENS", "").strip() or "4096"
+            os.getenv("HARNESS_WORKER_OUTPUT_TOKENS", "").strip() or str(DEFAULT_MAX_OUTPUT_TOKENS)
         )
         if not 128 <= self.worker_output_tokens <= 32768:
             raise ValueError(
@@ -444,6 +462,9 @@ class GatewayState:
                 "blocked": self.blocked,
                 "consecutive_failures": self.failures,
                 "error_type": type(receipt.error).__name__ if receipt.error else None,
+                "error_info": error_info(receipt.error) if receipt.error else None,
+                "response_diagnostics": receipt.response.diagnostics if receipt.response else None,
+                "finish": receipt.response.finish if receipt.response else None,
             }
             if receipt.registered:
                 self.finished.append(event)
@@ -956,7 +977,7 @@ class ModelGateway:
             if name in params:
                 params[name] = redact(params[name])
         output_limit = params.get(
-            "max_completion_tokens", params.get("max_tokens", 4096)
+            "max_completion_tokens", params.get("max_tokens", self.worker_output_tokens)
         )
         if type(output_limit) is not int or output_limit < 1:
             raise ValueError("Model output limit must be a positive integer.")
@@ -966,10 +987,8 @@ class ModelGateway:
         configured_timeout = params.pop("timeout", self._timeout)
         if configured_timeout is None:
             configured_timeout = getattr(self._client, "timeout", None)
-        timeout = min(
-            self._state.limits.request_timeout,
-            _timeout_seconds(configured_timeout, self._client),
-        )
+        client_timeout = _timeout_seconds(configured_timeout, self._client)
+        timeout = min(self._state.limits.request_timeout, client_timeout)
         params["timeout"] = configured_timeout
         expires = (
             Deadline(request_started + timeout, source="request")
@@ -988,6 +1007,11 @@ class ModelGateway:
             "task_id": task_id or scope.task_id,
             "model": str(params.get("model", "")),
             "output_limit": output_limit,
+            "gateway_request_timeout_seconds": self._state.limits.request_timeout,
+            "client_timeout_seconds": client_timeout if math.isfinite(client_timeout) else None,
+            "request_timeout_seconds": timeout,
+            "effective_timeout_seconds": max(0, expires.expires_at - request_started),
+            "deadline_source": expires.source,
         }
         from homebrew_harness.execution.model_protocol import ModelRequest
         from homebrew_harness.storage.durable_runtime import active_writer
@@ -1047,13 +1071,10 @@ class ModelGateway:
                 self._prepared = (identity, prepared)
         metadata["connection"] = self._connection_key()
         metadata["protocol"] = self._adapter.protocol
+        metadata["preparation_seconds"] = max(0, time.monotonic()-request_started)
         if expires.remaining() == 0:
-            raise ModelDeadlineExceeded(
-                "Model preparation exceeded its deadline.",
-                source=expires.source,
-                phase="prepare",
-                settled=True,
-            )
+            error = ModelDeadlineExceeded("Model preparation exceeded its deadline.", source=expires.source, phase="prepare", settled=True)
+            raise annotate_error(error, **metadata)
         return (request, prepared, configured_timeout), metadata, expires, cancels
 
     def input_size(
@@ -1100,6 +1121,7 @@ class ModelGateway:
                 "Model launch interrupted after acceptance; its request remains pending."
             ) from error
         except BaseException as error:
+            annotate_error(error, **receipt.metadata)
             receipt.error = error
             self._state.finish(receipt)
             raise
@@ -1158,11 +1180,14 @@ class ModelGateway:
         params, metadata, expires, cancels = self._prepare_request(
             purpose, role, task_id, deadline, cancel_event, kwargs
         )
+        queue_started = time.monotonic()
         try:
             receipt = self._state.acquire(metadata, expires, cancels)
+            receipt.metadata["queue_seconds"] = max(0, time.monotonic()-queue_started)
         except ModelDeadlineExceeded as error:
             error.phase = "queue"
             error.settled = True
+            annotate_error(error, **metadata, queue_seconds=max(0, time.monotonic()-queue_started))
             raise
         self._launch_request(receipt, params)
         try:
@@ -1181,6 +1206,7 @@ class ModelGateway:
                     receipt.done.is_set(),
                 )
                 error.phase = error.phase or "transport"
+            annotate_error(error, **receipt.metadata, elapsed_seconds=max(0, time.monotonic() - receipt.started))
             self._abandon(receipt, error)
             raise
 
@@ -1211,11 +1237,13 @@ class ModelGateway:
         caller_cancel = threading.Event()
         cancels = (*cancels, caller_cancel)
         receipt = None
+        queue_started = time.monotonic()
         try:
             while receipt is None:
                 receipt = self._state.acquire(metadata, expires, cancels, wait=False)
                 if receipt is None:
                     await asyncio.sleep(min(0.01, expires.remaining()))
+            receipt.metadata["queue_seconds"] = max(0, time.monotonic()-queue_started)
             self._launch_request(receipt, params)
             while not receipt.done.is_set():
                 with self._state.condition:
@@ -1229,6 +1257,7 @@ class ModelGateway:
                 error.request_id = receipt.id if receipt else None
                 error.sent = bool(receipt and receipt.sent)
                 error.settled = receipt.done.is_set() if receipt else True
+            annotate_error(error, **metadata, elapsed_seconds=max(0, time.monotonic() - receipt.started) if receipt else None, queue_seconds=max(0, time.monotonic()-queue_started) if receipt is None else receipt.metadata.get("queue_seconds"))
             if receipt is not None:
                 self._abandon(receipt, error)
             raise
@@ -1288,11 +1317,18 @@ class ModelGateway:
                     response.replay,
                 )
                 response = replace(response, replay=state)
+            from dataclasses import replace
+            response = replace(response, diagnostics={**response.diagnostics,
+                "max_output_tokens": request.max_output_tokens,
+                "protocol": receipt.metadata["protocol"], "purpose": receipt.metadata["purpose"],
+                "context_id": receipt.metadata["context_id"], "request_id": receipt.id})
             receipt.response = response
         except BaseException as error:
+            annotate_error(error, **receipt.metadata)
             receipt.error = error
             if getattr(error, "model_usage", None) is not None:
                 receipt.usage = error.model_usage
+                annotate_error(error, **receipt.usage.data())
         finally:
             self._state.finish(receipt)
 

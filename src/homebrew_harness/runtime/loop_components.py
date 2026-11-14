@@ -1,5 +1,9 @@
 """Actual loop dependencies; building prompts and tools never constructs resources."""
 
+from homebrew_harness.configuration import (
+    DEFAULT_CONTEXT_CHARS,
+)
+
 from dataclasses import dataclass
 
 
@@ -25,7 +29,7 @@ class LoopComponents:
     subagent: bool = False
     stop_event: object = None
     tool_allowlist: object = None
-    context_chars: int = 50_000
+    context_chars: int = DEFAULT_CONTEXT_CHARS
     archive_namespace: str | None = None
     model_registry: object = None
     worker_output_tokens: int | None = None

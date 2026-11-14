@@ -1,5 +1,11 @@
 """Argument definitions shared by the public CLI and its private worker."""
 
+from homebrew_harness.configuration import (
+    DEFAULT_CONTEXT_CHARS,
+    DEFAULT_TASK_SECONDS,
+    DEFAULT_GOAL_OUTPUT_TOKENS,
+)
+
 import argparse
 import json
 from pathlib import Path
@@ -70,7 +76,7 @@ def add_lead_model_argument(parser):
 def add_gateway_arguments(parser):
     descriptions = {
         "model_concurrency": "Maximum in-flight model requests (default: 4).",
-        "model_request_timeout": "Absolute model queue/request deadline in seconds (default: 60).",
+        "model_request_timeout": "Absolute model queue/request deadline in seconds (default: 500).",
         "model_session_timeout": "Optional absolute session duration, including idle time, in seconds.",
     }
     for name, converter in (
@@ -104,7 +110,7 @@ def add_session_arguments(parser):
     parser.add_argument(
         "--worker-output-tokens",
         type=int,
-        help="Host worker output/reasoning allowance; default HARNESS_WORKER_OUTPUT_TOKENS or 4096.",
+        help="Host worker output/reasoning allowance; default HARNESS_WORKER_OUTPUT_TOKENS or 20000.",
     )
     parser.add_argument(
         "--model-profile",
@@ -127,14 +133,14 @@ def add_session_arguments(parser):
     parser.add_argument(
         "--context-chars",
         type=int,
-        default=50_000,
-        help="Approximate message and tool-schema character budget (default: 50000, minimum: 10000).",
+        default=DEFAULT_CONTEXT_CHARS,
+        help="Approximate message and tool-schema character budget (default: 100000, minimum: 10000).",
     )
     parser.add_argument(
         "--turn-timeout",
         type=float,
-        default=300,
-        help="Absolute deadline for a user/event turn including child tools (default: 300 seconds).",
+        default=DEFAULT_TASK_SECONDS,
+        help="Absolute deadline for a user/event turn including child tools (default: 1500 seconds).",
     )
     parser.add_argument(
         "--resume-session",
@@ -173,8 +179,8 @@ def add_session_arguments(parser):
     parser.add_argument(
         "--goal-check-tokens",
         type=int,
-        default=2048,
-        help="Goal checker output limit (default: 2048).",
+        default=DEFAULT_GOAL_OUTPUT_TOKENS,
+        help="Goal checker output limit (default: 8000).",
     )
     parser.add_argument(
         "--goal-input-chars",

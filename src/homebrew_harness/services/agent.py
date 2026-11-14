@@ -1,5 +1,7 @@
 """Narrow service reasoning on the existing prepared Agent Loop."""
 
+from homebrew_harness.runtime.errors import boundary_error
+
 import json
 import copy
 from pathlib import Path
@@ -360,7 +362,9 @@ class ServiceAgent:
     def model_attempt(self):
         count = self.phase_counts.get(self.phase_key, 0)
         if count >= self.store.policy["job_turns"]:
-            raise ValueError("Service phase model-call limit reached.")
+            raise boundary_error(ValueError, "service_job_turn_limit", "Service phase model-call limit reached.",
+                limit_name="maintenance.job_turns", limit_value=self.store.policy["job_turns"],
+                observed_value=count, unit="model_calls", phase=self.phase_key)
         self.phase_counts[self.phase_key] = count + 1
 
     def complete_phase(self, calls, messages):

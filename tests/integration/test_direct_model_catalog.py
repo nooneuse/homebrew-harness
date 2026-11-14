@@ -327,9 +327,58 @@ class DirectModelCatalogTests(unittest.TestCase):
                 sampling = first.get("parameters", first)
                 self.assertEqual(sampling["temperature"], 0.2)
                 allowance = sampling.get("max_tokens", first.get("max_output_tokens"))
-                self.assertLessEqual(allowance, 1024)
+                self.assertEqual(allowance, 1024)
                 self.assertNotIn("CATALOG_TEST_KEY", os.environ)
                 service.close()
+
+    def test_workflow_default_and_explicit_allowances_reach_all_protocols(self):
+        async def script(ctx, _args):
+            return await ctx.agent("Return ok", schema={"type": "object"})
+
+        for protocol in (
+            "chat_completions", "openai_responses", "dashscope_generation", "anthropic_messages"
+        ):
+            with self.subTest(protocol=protocol):
+                service = ProtocolService(protocol)
+                self.addCleanup(service.close)
+                config, env = self.config(protocol, service)
+                catalog = json.loads(config.read_text())
+                catalog["profiles"]["selected"].pop("max_output_tokens")
+                config.write_text(json.dumps(catalog))
+                argsfile = self.base / "allowance-args.json"
+                argsfile.write_text("{}")
+                registry = WorkflowRegistry(
+                    [WorkflowSpec("allowance", "allowance", script, {"type": "object"})]
+                )
+                for extra, expected in (([], 20000), (["--max-output-tokens", "512"], 512)):
+                    with (
+                        patch("homebrew_harness.orchestration.workflows.default_registry", return_value=registry),
+                        redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()),
+                    ):
+                        argv = [
+                            "--cwd", str(self.root), "workflow", "--models-config", str(config),
+                            "--env-file", str(env), *extra, "run", "allowance",
+                            "--args-file", str(argsfile),
+                        ]
+                        self.assertEqual(main(argv), 0)
+                    body = service.requests[-1][1]
+                    sampling = body.get("parameters", body)
+                    self.assertEqual(
+                        sampling.get("max_tokens", body.get("max_output_tokens")), expected
+                    )
+                service.close()
+
+    def test_native_http_default_timeout_does_not_shorten_long_requests(self):
+        from homebrew_harness.execution.providers.adapter import ProtocolAdapter
+
+        service = ProtocolService("chat_completions")
+        self.addCleanup(service.close)
+        adapter = ProtocolAdapter("chat_completions", api_key="fixture-credential", base_url=service.url, transport="http")
+        try:
+            self.assertEqual(adapter.timeout, 500)
+            self.assertEqual(adapter.client.timeout.read, 500)
+        finally:
+            adapter.close()
 
     def test_offline_and_bad_alias_do_not_request_a_model(self):
         service = ProtocolService("openai_responses")

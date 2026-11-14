@@ -4,6 +4,15 @@ from __future__ import annotations
 
 import threading
 
+# Shared allowance for general model generation. Utility calls may set smaller limits.
+DEFAULT_MAX_OUTPUT_TOKENS = 20_000
+DEFAULT_CONTEXT_CHARS = 100_000
+DEFAULT_MODEL_REQUEST_SECONDS = 500
+DEFAULT_TASK_SECONDS = 1500
+DEFAULT_RUN_SECONDS = 10800
+DEFAULT_GOAL_OUTPUT_TOKENS = 8000
+DEFAULT_GOAL_REQUEST_SECONDS = 120
+
 CONFIG_VARIABLES = ("OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENAI_MODEL")
 
 

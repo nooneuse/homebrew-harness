@@ -398,7 +398,7 @@ class ModelSelectionTests(unittest.TestCase):
 
     def test_selected_model_deadline_does_not_execute_late_tools(self):
         parent, _ = fake_client([])
-        gate = threading.Event()
+        gate, entered = threading.Event(), threading.Event()
         self.addCleanup(gate.set)
         child = SimpleNamespace(
             close=Mock(),
@@ -406,6 +406,7 @@ class ModelSelectionTests(unittest.TestCase):
                 completions=SimpleNamespace(
                     create=Mock(
                         side_effect=lambda **_kwargs: (
+                            entered.set(),
                             gate.wait(),
                             reply(
                                 calls=[
@@ -435,7 +436,7 @@ class ModelSelectionTests(unittest.TestCase):
             shutdown_timeout=0.02,
         )
         try:
-            with session.gateway.scope(deadline=Deadline.after(0.08)):
+            with session.gateway.scope(deadline=Deadline.after(0.5)):
                 with self.assertRaises(ModelDeadlineExceeded):
                     run_subagent(
                         "Write",
@@ -445,6 +446,7 @@ class ModelSelectionTests(unittest.TestCase):
                         model_registry=registry,
                         model_profile="coder",
                     )
+            self.assertTrue(entered.is_set(), "The test must exercise an in-flight request, not pre-send expiry.")
             session.close()
             child.close.assert_not_called()
             self.assertFalse(session.wait_closed(0.02))

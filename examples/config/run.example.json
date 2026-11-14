@@ -3,16 +3,21 @@
   "goal": {
     "condition": "项目说明已保存",
     "predicates": [
-      {"id": "report", "type": "file_exists", "path": "REPORT.md", "min_bytes": 1}
+      {
+        "id": "report",
+        "type": "file_exists",
+        "path": "REPORT.md",
+        "min_bytes": 1
+      }
     ],
     "judge": false
   },
-  "total_seconds": 3600,
-  "episode_seconds": 300,
+  "total_seconds": 10800,
+  "episode_seconds": 1500,
   "episode_model_calls": 20,
-  "request_seconds": 60,
+  "request_seconds": 500,
   "retries": 3,
-  "context_chars": 50000,
-  "output_tokens": 4096,
+  "context_chars": 100000,
+  "output_tokens": 20000,
   "allow_tests": []
 }

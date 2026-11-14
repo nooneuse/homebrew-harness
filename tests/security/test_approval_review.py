@@ -97,6 +97,14 @@ class ApprovalReviewTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 ReviewConfig.parse(config)
 
+    def test_review_has_room_for_slow_models_but_keeps_a_deadline_bound(self):
+        self.assertEqual(ReviewConfig.parse(None).timeout_seconds, 120)
+        self.assertEqual(ReviewConfig.parse(None).max_turns, 6)
+        for seconds in (300, 500):
+            self.assertEqual(ReviewConfig.parse({"timeout_seconds": seconds}).timeout_seconds, seconds)
+        with self.assertRaises(ValueError):
+            ReviewConfig.parse({"timeout_seconds": 501})
+
     def test_rules_allow_and_hard_deny_never_call_reviewer(self):
         session, client, _ = self.session(
             [
@@ -213,7 +221,7 @@ class ApprovalReviewTests(unittest.TestCase):
         )
 
     def test_bad_output_is_corrected_within_limit_and_explicit_retry_is_fresh(self):
-        reviewer, client, payloads = self.reviewer([reply('not JSON')] * 3 + [verdict()])
+        reviewer, client, payloads = self.reviewer([reply('not JSON')] * 3 + [verdict()], {"mode": "auto_review", "max_turns": 3})
         context = self.context()
         published = []
         for _ in range(2):

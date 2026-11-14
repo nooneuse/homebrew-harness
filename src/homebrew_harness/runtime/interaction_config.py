@@ -1,5 +1,13 @@
 """Small host configuration for automatic entry; no CLI Namespace in runtime."""
 
+from homebrew_harness.configuration import (
+    DEFAULT_CONTEXT_CHARS,
+    DEFAULT_MAX_OUTPUT_TOKENS,
+    DEFAULT_MODEL_REQUEST_SECONDS,
+    DEFAULT_RUN_SECONDS,
+    DEFAULT_TASK_SECONDS,
+)
+
 import json
 import math
 from contextlib import ExitStack
@@ -34,12 +42,12 @@ class InteractionConfig:
     model_planning: bool = True
     prefer_session: bool = False
     detached: bool = False
-    total_seconds: float = 3600
-    turn_seconds: float = 300
-    request_seconds: float = 60
+    total_seconds: float = DEFAULT_RUN_SECONDS
+    turn_seconds: float = DEFAULT_TASK_SECONDS
+    request_seconds: float = DEFAULT_MODEL_REQUEST_SECONDS
     shutdown_seconds: float = 5
-    context_chars: int = 50000
-    output_tokens: int = 4096
+    context_chars: int = DEFAULT_CONTEXT_CHARS
+    output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
     max_turns: int = 20
 
     def __post_init__(self):
