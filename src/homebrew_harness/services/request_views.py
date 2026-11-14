@@ -6,35 +6,37 @@ from .maintenance_spec import number
 from .protocol import MAX_FRAME
 
 
-def project(maintenance, value, work_id):
+def _project(maintenance, value, work_id):
     if work_id and value["work_id"] != work_id:
-        return None
+        return None, "different_work"
     store = maintenance.store
     if value["kind"] == "delivery_authority":
+        if maintenance.delivery is None:
+            return None, "delivery_not_configured"
         action = store.get("actions", value["action_id"])
         if action["state"] not in {"awaiting_approval", "queued", "unknown"}:
-            return None
+            return None, "action_no_longer_pending"
         try:
             maintenance.delivery.store.current(
                 store.get("changesets", value["changeset_id"])
             )
         except ValueError:
-            return None
+            return None, "candidate_changed"
     if value["kind"] in {
         "communication_authority",
         "discussion_information",
         "discussion_requirements",
     }:
         if maintenance.communication is None:
-            return None
+            return None, "communication_not_configured"
         c = maintenance.communication.store
         discussion = c.get("discussions", value["discussion_id"])
         if value["basis"] != c.basis(discussion):
-            return None
+            return None, "basis_changed"
         if value["kind"] == "communication_authority" and c.get(
             "communication_actions", value["action_id"]
         )["state"] not in {"awaiting_approval", "queued"}:
-            return None
+            return None, "action_no_longer_pending"
         arguments = {
             "discussion_id": value["discussion_id"],
             "action_id": value.get("action_id"),
@@ -44,7 +46,7 @@ def project(maintenance, value, work_id):
     else:
         work = maintenance.runtime.store.work(value["work_id"], store.id)
         if value["requirements_revision"] != work["requirements_revision"]:
-            return None
+            return None, "requirements_changed"
         arguments = {
             "work_id": value["work_id"],
             "scope": value["candidate"].get("scope"),
@@ -76,7 +78,35 @@ def project(maintenance, value, work_id):
         "arguments": arguments,
         "reason": value.get("reason", ""),
         "expires_at": value.get("expires_at"),
-    }
+    }, "expired" if expired else None
+
+
+def project(maintenance, value, work_id):
+    return _project(maintenance, value, work_id)[0]
+
+
+def summary(maintenance):
+    result = {"actionable": 0, "unavailable": 0, "unavailable_examples": [], "oldest_actionable": None}
+    cursor = 0
+    while True:
+        with maintenance.store.db.connection() as conn:
+            rows = conn.execute(
+                "SELECT rowid,value FROM records WHERE section='service_decisions' AND owner=? AND rowid>? AND json_extract(value,'$.state')='pending' ORDER BY rowid LIMIT 100",
+                ("service:" + maintenance.store.id, cursor)).fetchall()
+        for cursor, raw in rows:
+            value = json.loads(raw)
+            projected, reason = _project(maintenance, value, None)
+            if projected and reason is None:
+                result["actionable"] += 1
+                created = value.get("created_at")
+                if created is not None:
+                    result["oldest_actionable"] = min(created, result["oldest_actionable"] or created)
+            else:
+                result["unavailable"] += 1
+                if len(result["unavailable_examples"]) < 10:
+                    result["unavailable_examples"].append({"id": value["id"], "kind": value["kind"], "reason": reason})
+        if len(rows) < 100:
+            return result
 
 
 def page(maintenance, *, work_id=None, cursor=0, limit=20, expired=False):

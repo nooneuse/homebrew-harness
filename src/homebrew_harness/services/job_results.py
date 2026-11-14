@@ -1,5 +1,6 @@
 """Candidate validation and short transaction application for service jobs."""
 
+from homebrew_harness.runtime.errors import boundary_error
 import time
 
 from .maintenance_spec import CATEGORIES, DISPOSITIONS, number, text
@@ -21,7 +22,7 @@ def triage(store, job, raw, conn=None):
         or raw.get("disposition") not in DISPOSITIONS
         or raw.get("category") not in CATEGORIES
     ):
-        raise ValueError("Invalid triage proposal.")
+        raise boundary_error(ValueError, "service_result_invalid", "Invalid triage proposal.")
     text(raw.get("reason"), "reason", 8000)
     text(raw.get("plan"), "plan", 16000)
     number(raw.get("priority", 0), "priority", 0, 100, integer=True)
@@ -29,9 +30,9 @@ def triage(store, job, raw, conn=None):
         raw["disposition"] in {"accept", "decide"}
         and raw.get("scope") not in store.policy["scopes"]
     ):
-        raise ValueError("Select a host execution scope before requesting work.")
+        raise boundary_error(ValueError, "service_result_invalid", "Select a host execution scope before requesting work.")
     if raw.get("scope") is not None and raw["scope"] not in store.policy["scopes"]:
-        raise ValueError("Unknown scope.")
+        raise boundary_error(ValueError, "service_result_invalid", "Unknown scope.")
     return raw
 
 
@@ -52,7 +53,7 @@ def review(store, job, raw, conn=None):
         or not isinstance(raw["findings"], list)
         or len(raw["findings"]) > 32
     ):
-        raise ValueError("Invalid independent review proposal.")
+        raise boundary_error(ValueError, "service_result_invalid", "Invalid independent review proposal.")
     text(raw["text"], maximum=16000)
     if "publication" in raw:
         from homebrew_harness.platforms.merges import CLOSING
@@ -63,18 +64,18 @@ def review(store, job, raw, conn=None):
             or not isinstance(publication, dict)
             or set(publication) != {"title", "body"}
         ):
-            raise ValueError("Only a delivery review can propose PR publication text.")
+            raise boundary_error(ValueError, "service_result_invalid", "Only a delivery review can propose PR publication text.")
         text(publication["title"], "PR title", 200)
         text(publication["body"], "PR body", 16000)
         if CLOSING.search(publication["title"]) or CLOSING.search(publication["body"]):
-            raise ValueError("PR text cannot implicitly close issues.")
+            raise boundary_error(ValueError, "service_result_invalid", "PR text cannot implicitly close issues.")
     for item in raw["findings"]:
         if (
             not isinstance(item, dict)
             or set(item) != {"severity", "path", "message"}
             or item["severity"] not in {"blocking", "warning"}
         ):
-            raise ValueError("Invalid review finding.")
+            raise boundary_error(ValueError, "service_result_invalid", "Invalid review finding.")
         text(item["path"], maximum=1000)
         text(item["message"], maximum=4000)
     return raw
@@ -87,7 +88,7 @@ def ci_triage(store, job, raw, conn=None):
         or raw["classification"]
         not in {"code", "baseline", "flaky", "infrastructure", "unknown"}
     ):
-        raise ValueError("Invalid CI diagnosis.")
+        raise boundary_error(ValueError, "service_result_invalid", "Invalid CI diagnosis.")
     text(raw["reason"], maximum=8000)
     text(raw["plan"], maximum=16000)
     return raw
@@ -95,24 +96,24 @@ def ci_triage(store, job, raw, conn=None):
 
 def conversation(store, job, raw, conn=None):
     if not isinstance(raw, dict) or set(raw) - {"text", "work_id", "plan"}:
-        raise ValueError("A conversation expects text and optional work_id/plan.")
+        raise boundary_error(ValueError, "service_result_invalid", "A conversation expects text and optional work_id/plan.")
     text(raw.get("text"), maximum=32000)
     message = store.get("messages", job["target"], conn)
     if "work_id" in raw:
         text(raw["work_id"], "work_id", 100)
         if raw["work_id"] != message.get("work_id"):
-            raise ValueError("Conversation plan must target its explicitly bound Work.")
+            raise boundary_error(ValueError, "service_result_invalid", "Conversation plan must target its explicitly bound Work.")
     if raw.get("plan") is not None:
         triage(store, job, raw["plan"], conn)
         if raw["plan"]["disposition"] not in {"accept", "decide"}:
-            raise ValueError(
+            raise boundary_error(ValueError, "service_result_invalid",
                 "Conversation execution proposals need an acceptance decision."
             )
         if not raw.get("work_id") or raw["work_id"] != message.get("work_id"):
-            raise ValueError("Conversation plan must target its explicitly bound Work.")
+            raise boundary_error(ValueError, "service_result_invalid", "Conversation plan must target its explicitly bound Work.")
         work = store.get("work", raw["work_id"], conn)
         if message["work_revision"] != work["requirements_revision"]:
-            raise ValueError("Conversation plan target changed.")
+            raise boundary_error(ValueError, "service_result_invalid", "Conversation plan target changed.")
     return raw
 
 
@@ -126,7 +127,7 @@ def assessment(store, job, raw, conn=None):
 
 def _text_only(raw, maximum):
     if not isinstance(raw, dict) or set(raw) != {"text"}:
-        raise ValueError("This job expects text only.")
+        raise boundary_error(ValueError, "service_result_invalid", "This job expects text only.")
     text(raw["text"], maximum=maximum)
     return raw
 
@@ -146,7 +147,7 @@ def apply_triage(store, conn, job, result):
     if disposition == "merge":
         related = store.get("work", result.get("related_work"), conn)
         if related["id"] == work["id"]:
-            raise ValueError("Cannot merge a work item with itself.")
+            raise boundary_error(ValueError, "service_result_invalid", "Cannot merge a work item with itself.")
     if not active:
         work["state"] = {
             "accept": "proposed",

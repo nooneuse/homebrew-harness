@@ -28,7 +28,8 @@ class TestResources:
                 with cleanup_scope():
                     runner.close()
             except Exception as error:
-                self.error = type(error).__name__
+                from homebrew_harness.runtime.errors import error_message
+                self.error = error_message(error)
 
     def settle(self, seconds=1):
         if not self.lock.acquire(timeout=seconds):
@@ -42,7 +43,8 @@ class TestResources:
                     if not self.runner.wait_closed(seconds):
                         raise ClosePending("Test resources have not finished cleanup.")
             except Exception as error:
-                self.error = type(error).__name__
+                from homebrew_harness.runtime.errors import error_message
+                self.error = error_message(error)
                 raise ClosePending("Test cleanup remains pending.") from error
             self.runner = None
             self.error = None

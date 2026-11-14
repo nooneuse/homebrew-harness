@@ -1,5 +1,6 @@
 """Transactional discussion projections, rounds and independently authorized messages."""
 
+from homebrew_harness.runtime.errors import boundary_error
 import copy
 import json
 import time
@@ -37,14 +38,14 @@ class CommunicationStore:
 
     def get(self, kind, identity, conn=None):
         if kind not in SECTIONS:
-            raise ValueError("Unknown communication record kind.")
+            raise boundary_error(ValueError, "communication_contract", "Unknown communication record kind.")
         value = (
             self.db._get(conn, SECTIONS[kind], identity)
             if conn is not None
             else self.ms.store.runtime.get(SECTIONS[kind], identity)
         )
         if not value or value["service_id"] != self.id:
-            raise ValueError("Communication record belongs to another service.")
+            raise boundary_error(ValueError, "communication_contract", "Communication record belongs to another service.")
         return value
 
     def put(self, conn, kind, value):
@@ -58,7 +59,7 @@ class CommunicationStore:
         number(cursor, "cursor", 0, 2**63 - 1, integer=True)
         number(limit, "limit", 1, 100, integer=True)
         if kind not in SECTIONS:
-            raise ValueError("Unknown communication record kind.")
+            raise boundary_error(ValueError, "communication_contract", "Unknown communication record kind.")
         with self.db.connection() as conn:
             rows = conn.execute(
                 "SELECT rowid,value FROM records WHERE section=? AND owner=? AND rowid>? AND (? IS NULL OR json_extract(value,'$.state')=?) ORDER BY rowid LIMIT ?",
@@ -359,12 +360,12 @@ class CommunicationStore:
 
     def ingest(self, name, items, scope, *, page=None, observed=False):
         if scope not in self.scopes:
-            raise ValueError("Discussion crosses host project scope.")
+            raise boundary_error(ValueError, "communication_contract", "Discussion crosses host project scope.")
         with self.db.write() as conn:
             self.runtime.store.guard(conn, self.runtime.header)
             for item in items:
                 if not isinstance(item, SourceEvent) or item.subject.scope() != scope:
-                    raise ValueError("Invalid communication source event.")
+                    raise boundary_error(ValueError, "communication_contract", "Invalid communication source event.")
                 eid = observation_event(
                     self, conn, item, self.event_identity(item), observed=observed
                 )
@@ -604,11 +605,11 @@ class CommunicationStore:
                         or event["sequence"] > job["input"]["seq"]
                         or event.get("echo")
                     ):
-                        raise ValueError(
+                        raise boundary_error(ValueError, "communication_contract",
                             "Discussion candidate cites an unknown source."
                         )
         if result.get("findings") and not job["input"].get("review_id"):
-            raise ValueError(
+            raise boundary_error(ValueError, "communication_contract",
                 "Code findings require a fixed review snapshot; use facts for issue observations."
             )
 
@@ -666,7 +667,7 @@ class CommunicationStore:
             for finding in projection["findings"]:
                 finding["review_id"] = job["input"]["review_id"]
         elif projection["findings"]:
-            raise ValueError("Code findings require a fixed review snapshot.")
+            raise boundary_error(ValueError, "communication_contract", "Code findings require a fixed review snapshot.")
         row.update(
             projection=projection,
             assessed_input_revision=job["input"]["input_revision"],
@@ -756,7 +757,7 @@ class CommunicationStore:
                 or not native.get("cleanup_complete")
                 or not native.get("finalized_at")
             ):
-                raise ValueError(
+                raise boundary_error(ValueError, "communication_contract",
                     "Settle or cancel the existing Run before accepting replacement requirements."
                 )
         proposal = {
@@ -814,7 +815,7 @@ class CommunicationStore:
     def requirements_request(self, conn, row, result):
         draft = row["projection"].get("draft")
         if not draft or not draft.get("scope"):
-            raise ValueError("Development proposals require scope and acceptance.")
+            raise boundary_error(ValueError, "communication_contract", "Development proposals require scope and acceptance.")
         category = result.get("category", "feature")
         if category in self.ms.policy["auto_categories"] and row["work_id"] is None:
             self.accept_requirements(conn, row, draft, category, automatic=True)
@@ -849,33 +850,33 @@ class CommunicationStore:
             and plan["kind"] == "submit_review"
         ):
             if not row.get("review_id"):
-                raise ValueError("A review must have a fixed code snapshot.")
+                raise boundary_error(ValueError, "communication_contract", "A review must have a fixed code snapshot.")
             snapshot = self.get("review_snapshots", row["review_id"], conn)
             if snapshot["basis"] != row.get("observed_basis"):
-                raise ValueError("Review code basis changed.")
+                raise boundary_error(ValueError, "communication_contract", "Review code basis changed.")
             if plan["event"] == "APPROVE":
                 if not snapshot["coverage"]["complete"] or any(
                     f.get("status", "open") in {"open", "needs_explanation"}
                     for f in row["projection"]["findings"]
                 ):
-                    raise ValueError(
+                    raise boundary_error(ValueError, "communication_contract",
                         "Approval requires complete coverage and no unresolved findings."
                     )
                 if self.policy["require_tests_for_approval"] and not snapshot.get(
                     "tests_passed"
                 ):
-                    raise ValueError("Approval requires current fixed test evidence.")
+                    raise boundary_error(ValueError, "communication_contract", "Approval requires current fixed test evidence.")
             for comment in plan.get("comments", []):
                 key = comment["path"] + ":" + comment["side"]
                 if comment["line"] not in snapshot.get("anchors", {}).get(key, []):
-                    raise ValueError("Inline comment is outside the fixed diff.")
+                    raise boundary_error(ValueError, "communication_contract", "Inline comment is outside the fixed diff.")
         if plan["kind"] == "reply_thread":
             found = conn.execute(
                 "SELECT 1 FROM records WHERE section='service_events' AND owner=? AND json_extract(value,'$.discussion_id')=? AND cast(json_extract(value,'$.content.metadata.thread_id') AS TEXT)=? LIMIT 1",
                 ("service:" + self.id, row["id"], plan["thread_id"]),
             ).fetchone()
             if not found:
-                raise ValueError(
+                raise boundary_error(ValueError, "communication_contract",
                     "Thread reply must reference observed discussion history."
                 )
         return snapshot
@@ -884,9 +885,9 @@ class CommunicationStore:
         validate_plan(proposal)
         validate_public_questions(proposal, row["projection"])
         if proposal["kind"] not in self.policy["enabled_actions"]:
-            raise ValueError("Communication operation is disabled by host policy.")
+            raise boundary_error(ValueError, "communication_contract", "Communication operation is disabled by host policy.")
         if row["state"] in {"paused", "blocked"}:
-            raise ValueError("Discussion is not accepting publication.")
+            raise boundary_error(ValueError, "communication_contract", "Discussion is not accepting publication.")
         snapshot = self.validate_anchors(row, proposal, conn)
         pending = conn.execute(
             "SELECT value FROM records WHERE section='service_communication_actions' AND owner=? AND json_extract(value,'$.discussion_id')=? AND json_extract(value,'$.state') IN ('awaiting_approval','queued','started','unknown')",
@@ -907,7 +908,7 @@ class CommunicationStore:
         if prior:
             return prior
         if pending:
-            raise ValueError("This discussion already has a pending public message.")
+            raise boundary_error(ValueError, "communication_contract", "This discussion already has a pending public message.")
         auto = (
             proposal["intent"] in self.policy["auto_intents"]
             and proposal["kind"] != "submit_review"
@@ -967,11 +968,11 @@ class CommunicationStore:
         if (
             request["expires_at"] is not None and request["expires_at"] <= time.time()
         ) or request["basis"] != self.basis(row):
-            raise ValueError("Discussion decision has expired or changed.")
+            raise boundary_error(ValueError, "communication_contract", "Discussion decision has expired or changed.")
         choice = payload["decision"]
         if request["kind"] == "discussion_information":
             if choice != "answer":
-                raise ValueError("Discussion requires an operator answer.")
+                raise boundary_error(ValueError, "communication_contract", "Discussion requires an operator answer.")
             answer = text(payload.get("text"), "operator answer", 8000)
             row["operator_note"] = answer
             row["analysis_epoch"] += 1
@@ -981,13 +982,13 @@ class CommunicationStore:
             request["state"] = "answered"
         elif request["kind"] == "communication_authority":
             if choice not in {"approve", "deny"} or "text" in payload:
-                raise ValueError("Communication requires approve/deny.")
+                raise boundary_error(ValueError, "communication_contract", "Communication requires approve/deny.")
             action = self.get("communication_actions", request["action_id"], conn)
             if (
                 action["state"] not in {"awaiting_approval", "queued"}
                 or action["plan_hash"] != request["plan_hash"]
             ):
-                raise ValueError("Publication plan changed.")
+                raise boundary_error(ValueError, "communication_contract", "Publication plan changed.")
             self.validate_anchors(row, action["plan"], conn)
             action.update(
                 state="queued" if choice == "approve" else "denied",
@@ -1001,7 +1002,7 @@ class CommunicationStore:
             request["state"] = "approved" if choice == "approve" else "denied"
         elif request["kind"] == "discussion_requirements":
             if choice not in {"approve", "deny"} or "text" in payload:
-                raise ValueError("Requirements acceptance requires approve/deny.")
+                raise boundary_error(ValueError, "communication_contract", "Requirements acceptance requires approve/deny.")
             if choice == "approve":
                 self.accept_requirements(
                     conn,
@@ -1015,7 +1016,7 @@ class CommunicationStore:
                 row["state"] = "waiting_operator"
                 request["state"] = "denied"
         else:
-            raise ValueError("Unknown discussion decision.")
+            raise boundary_error(ValueError, "communication_contract", "Unknown discussion decision.")
         request["revision"] += 1
         self.put(conn, "discussions", row)
         self.ms.put(conn, "decisions", request)
@@ -1037,11 +1038,11 @@ class CommunicationStore:
                 meta["state"] != "running"
                 or meta.get("operations_phase", "active") != "active"
             ):
-                raise ValueError("Service publication is paused.")
+                raise boundary_error(ValueError, "communication_contract", "Service publication is paused.")
             current = self.get("communication_actions", action["id"], conn)
             row = self.get("discussions", current["discussion_id"], conn)
             if row["state"] == "paused" or current["basis"] != self.basis(row):
-                raise ValueError("Discussion publication became stale.")
+                raise boundary_error(ValueError, "communication_contract", "Discussion publication became stale.")
             self.validate_anchors(row, current["plan"], conn)
             return self.put(
                 conn,
@@ -1109,7 +1110,7 @@ class CommunicationStore:
                 else self.get("communication_actions", payload["id"], conn)
             )
             if row["revision"] != payload["revision"]:
-                raise ValueError("Communication reference revision changed.")
+                raise boundary_error(ValueError, "communication_contract", "Communication reference revision changed.")
             if method in {"discussion_assess", "discussion_reopen"}:
                 request_analysis(row)
             elif method == "discussion_pause":
@@ -1128,10 +1129,10 @@ class CommunicationStore:
                     "denied",
                     "failed",
                 }:
-                    raise ValueError("Only unstarted messages can renew authorization.")
+                    raise boundary_error(ValueError, "communication_contract", "Only unstarted messages can renew authorization.")
                 discussion = self.get("discussions", row["discussion_id"], conn)
                 if row["basis"] != self.basis(discussion):
-                    raise ValueError("Plan basis changed.")
+                    raise boundary_error(ValueError, "communication_contract", "Plan basis changed.")
                 row.update(
                     state="awaiting_approval",
                     authorization=None,
@@ -1140,7 +1141,7 @@ class CommunicationStore:
                 self.put(conn, "communication_actions", row)
                 return self.request_authority(conn, discussion, row)
             else:
-                raise ValueError("Unknown communication control.")
+                raise boundary_error(ValueError, "communication_contract", "Unknown communication control.")
             self.put(conn, "discussions", row)
             self.supersede(conn, row)
             return row

@@ -303,7 +303,7 @@ class ControlClient:
                 result.get("message", "Control command failed."),
                 code=result.get("code", "control_error"),
                 ref=ExecutionRef("service", service_id),
-                details={**details, "status": status},
+                details={**details, "status": status, "error_info": result.get("details")},
             )
         if status != 200 or "result" not in result:
             raise SDKError(

@@ -68,6 +68,7 @@ class RemoteService(ServiceControls, Handle):
                 for key in (
                     "profile",
                     "maintenance",
+                    "runtime_failures",
                     "generation",
                     "active_work",
                     "active_run",

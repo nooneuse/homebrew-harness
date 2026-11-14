@@ -1,6 +1,6 @@
 """Service-owned events, proposals, decisions, conversations and report windows."""
 
-from homebrew_harness.runtime.errors import annotate_error, error_info, error_message
+from homebrew_harness.runtime.errors import annotate_error, error_info, error_message, failure_signature
 
 import json
 import time
@@ -269,7 +269,8 @@ class MaintenanceStore:
     def source_error(self, name, old, error, delay):
         with self.db.write() as conn:
             self.store.guard(conn, self.header)
-            if old.get("error") != type(error).__name__:
+            diagnostic = error_info(error)
+            if failure_signature(old.get("error_info")) != failure_signature(diagnostic):
                 self.changed(
                     conn, detail={"source": name, "error": type(error).__name__}
                 )

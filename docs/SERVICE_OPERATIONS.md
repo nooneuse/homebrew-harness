@@ -50,6 +50,12 @@ Incidents retain their identity and resolution. Optional incident diagnosis uses
 
 Operations progress through queued, running, completed or blocked. Stable request IDs retain acceptance receipts. A completed preparation operation may reference an independent audit/model job; inspect that referenced job for its final result. Lists return summaries, and long plans use paginated record reads.
 
+Failures include a short reason and, where relevant, `error_info` identifying the component, phase and observed cause. Delivery actions distinguish preparation, execution and inspection failures; preparation retries expose `next_attempt`. Use the existing action, job or operation record for details.
+
+`waiting_for_operator` counts currently actionable service decisions. `decisions.unavailable` and its bounded examples explain pending records whose basis changed or whose authority expired. Source health entries provide a short reason and a reference to the saved source record. These queries leave decisions unchanged.
+
+Service snapshots retain component failures under `runtime_failures`, including occurrence counts and recovery times. A successful phase resolves its own temporary failure. Shutdown progress retains the resource owner, cleanup reason and repeated-failure count until actual closure is confirmed.
+
 ## Park and resume
 
 ```sh

@@ -78,19 +78,33 @@ class HookRegistry:
         if event not in self._callbacks:
             raise ValueError(f"Unknown hook event: {event}")
         # Registrations made during a callback apply to the next event emission.
-        for callback in tuple(self._callbacks[event]):
+        for index, callback in enumerate(tuple(self._callbacks[event])):
             try:
                 result = callback(*args)
             except Exception as error:
-                self._failures.append({"event": event, "callback": getattr(callback, "__name__", type(callback).__name__), "error_type": type(error).__name__})
-                self._failures[:] = self._failures[-20:]
-                failure = HookError(f"{event} hook failed ({type(error).__name__}).")
+                from homebrew_harness.runtime.errors import failure_record, error_message
+                name = getattr(callback, "__name__", type(callback).__name__)
+                previous = next((row for row in reversed(self._failures) if row["event"] == event and row.get("callback_index") == index), None)
+                record = {"event": event, "callback": name, "callback_index": index, "error_type": type(error).__name__,
+                          **failure_record(error, previous, component=name, phase=event)}
+                if previous and record["occurrences"] > 1:
+                    self._failures[self._failures.index(previous)] = record
+                else:
+                    self._failures.append(record)
+                    self._failures[:] = self._failures[-20:]
+                failure = HookError(f"{event} hook failed ({name}): {error_message(error)}")
                 if event in CONTROL_EVENTS:
                     raise failure from error
                 # Observer failures must not erase a real tool result or cause
                 # the model to repeat an already completed side effect.
-                print(f"[hook warning] {failure}", file=sys.stderr)
+                if record["occurrences"] == 1:
+                    print(f"[hook warning] {failure}", file=sys.stderr)
                 continue
+            for record in reversed(self._failures):
+                if record["event"] == event and record.get("callback_index") == index and not record.get("resolved_at"):
+                    import time
+                    record["resolved_at"] = time.time()
+                    break
             if event in CONTROL_EVENTS and result is not None:
                 if not isinstance(result, str) or not result.strip():
                     raise HookError(

@@ -33,14 +33,15 @@ def snapshot(runtime):
                 ("service:" + runtime.id,),
             )
         ]
-        pending = conn.execute(
-            "SELECT min(json_extract(value,'$.created_at')) FROM records WHERE section='service_decisions' AND owner=? AND json_extract(value,'$.state')='pending'",
-            ("service:" + runtime.id,),
-        ).fetchone()[0]
+
     free = shutil.disk_usage(runtime.store.root).free
     maintenance = runtime.maintenance
     delivery = maintenance.delivery if maintenance else None
+    from homebrew_harness.services.request_views import summary
+    decisions = summary(maintenance) if maintenance else {"actionable": 0, "unavailable": 0, "unavailable_examples": [], "oldest_actionable": None}
+    pending = decisions["oldest_actionable"]
     issues = []
+    active_faults = {k: v for k, v in meta.get("runtime_failures", {}).items() if not v.get("resolved_at")}
     age = now - (meta["heartbeat_at"] or meta["created_at"])
     if age > runtime.spec.operations["stale_seconds"]:
         issues.append({"code": "heartbeat_stale", "target": runtime.id})
@@ -62,7 +63,7 @@ def snapshot(runtime):
             ("delivery", delivery),
             ("communication", communication),
         ):
-            if worker and (worker.error or worker.finished.is_set()):
+            if worker and (worker.error or worker.finished.is_set()) and name + ":loop" not in active_faults:
                 issues.append({"code": name + "_stopped", "target": runtime.id})
     for row in sources:
         if row.get("error"):
@@ -76,7 +77,7 @@ def snapshot(runtime):
         issues.append(
             {"code": "workspace_synchronization_pending", "target": runtime.id}
         )
-    if runtime.operations.error:
+    if runtime.operations.error and "operations:loop" not in active_faults:
         issues.append({"code": "operations_stopped", "target": runtime.id})
     unknown = counts["service_actions"].get("unknown", 0) + counts[
         "service_actions"
@@ -91,6 +92,12 @@ def snapshot(runtime):
             {"code": "communication_inspection_required", "target": runtime.id}
         )
     unknown += communication_unknown
+    for key, fault in active_faults.items():
+        issues.append({"code": "runtime_failed", "target": key,
+                       "message": fault.get("error_detail"), "diagnostic_ref": {"query": "snapshot", "field": "runtime_failures", "key": key}})
+    pending_fault = getattr(runtime, "unpersisted_failure", None)
+    if pending_fault:
+        issues.append({"code": "runtime_failure_not_persisted", "target": runtime.id, "message": pending_fault["error_detail"]})
     if meta.get("error"):
         issues.append({"code": meta["error"], "target": runtime.id})
     live = runtime.leases.held("service") and not runtime.finished.is_set()
@@ -110,13 +117,15 @@ def snapshot(runtime):
         "workspace_sync_pending": sync_count,
         "sources": [
             {
-                k: r.get(k)
-                for k in ("id", "next_poll", "last_success", "attempts", "error")
+                **{k: r.get(k) for k in ("id", "next_poll", "last_success", "attempts", "error")},
+                "reason": (r.get("error_detail") or "")[:500],
+                "diagnostic_ref": {"record": "sources", "id": r["id"]} if r.get("error") else None
             }
             for r in sources
         ],
         "issues": issues,
-        "waiting_for_operator": bool(counts["service_decisions"].get("pending", 0)),
+        "waiting_for_operator": bool(decisions["actionable"]),
+        "decisions": decisions,
         "active_work": meta.get("active_work"),
         "active_run": meta.get("active_run"),
     }

@@ -112,6 +112,7 @@ class CommunicationRuntime:
     def loop(self):
         self.started = True
         try:
+            self.runtime.store.runtime_failure(self.runtime.header, "communication")
             self.store.recover()
             while not self.stop.wait(0.05):
                 try:
@@ -160,6 +161,7 @@ class CommunicationRuntime:
                         self.execute(action)
         except Exception as error:
             self.error = type(error).__name__
+            self.runtime.report_failure("communication", error)
         finally:
             self.finished.set()
 
@@ -440,9 +442,7 @@ class CommunicationRuntime:
                         self.store.finish_action(
                             accepted,
                             failed_state(error),
-                            error=str(error)
-                            if hasattr(error, "outcome")
-                            else type(error).__name__,
+                            error=error,
                         )
                 else:
                     with self.ms.db.write() as conn:
@@ -451,13 +451,9 @@ class CommunicationRuntime:
                             "communication_actions", action["id"], conn
                         )
                         if current["state"] == "queued":
-                            failures = current.get("preflight_failures", 0) + 1
-                            current.update(
-                                preflight_failures=failures,
-                                next_attempt=time.time() + min(60, 2**failures),
-                                error=type(error).__name__,
-                                revision=current["revision"] + 1,
-                            )
+                            from homebrew_harness.services.action_runtime import preflight_failure
+                            current = preflight_failure(current, error)
+                            failures = current["preflight_failures"]
                             if failures >= 3:
                                 current["state"] = "failed"
                                 current["authorization"] = None

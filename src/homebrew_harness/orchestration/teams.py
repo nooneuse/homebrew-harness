@@ -89,6 +89,7 @@ class TeammateRuntime:
                 manager.managed.control.stages, name, self.store
             )
         self.failure_kind = None
+        self.error_info = None
         self.last_outcome = None
         self.permission_blocked = None
         self.store.intent = TaskIntent()
@@ -584,11 +585,14 @@ class TeammateRuntime:
                     else getattr(error, "kind", type(error).__name__)
                 )
                 self.status = "failed"
+                from homebrew_harness.runtime.errors import annotate_error, error_info, error_message
+                annotate_error(error, member=self.name, task_id=self.assignment.id if self.assignment else None)
+                self.error_info = error_info(error)
                 try:
                     self.manager.bus.send(
                         self.name,
                         "lead",
-                        f"Teammate stopped ({type(error).__name__}); verify existing files before resuming.",
+                        f"Teammate stopped: {error_message(error)}; verify existing files before resuming.",
                         "error",
                     )
                 except Exception:
@@ -600,11 +604,12 @@ class TeammateRuntime:
                     if task:
                         self.store.release(task.id)
                 except Exception as error:
+                    from homebrew_harness.runtime.errors import error_message
                     try:
                         self.manager.bus.send(
                             self.name,
                             "lead",
-                            f"Assignment cleanup failed ({type(error).__name__}).",
+                            f"Assignment cleanup failed: {error_message(error)}",
                             "error",
                         )
                     except Exception:
@@ -614,10 +619,12 @@ class TeammateRuntime:
                 try:
                     self.manager.persist_checkpoint()
                 except Exception as error:
+                    from homebrew_harness.runtime.errors import error_info
                     self.manager.cleanup_errors.append(
                         {
                             "component": "member_checkpoint",
                             "error_type": type(error).__name__,
+                            "error_info": error_info(error),
                         }
                     )
                 finally:
@@ -717,6 +724,7 @@ class TeamManager(WorkspaceRuntime):
                     "pending_context": copy.deepcopy(m.pending_context),
                     "status": m.status,
                     "failure_kind": m.failure_kind,
+                    "error_info": m.error_info,
                     "last_outcome": m.last_outcome,
                     "gate": m.gate,
                     "require_plan": m.require_plan,

@@ -2519,6 +2519,7 @@ class HarnessSession:
             "persistence_ok": complete and not errors,
             "errors": errors,
             "start_error": self._shutdown.error,
+            "start_error_info": self._shutdown.error_info,
             "session_lease_held": held,
             "cleanup_history": progress["history"],
             "retryable": self._closed and not complete and not self._shutdown.started,

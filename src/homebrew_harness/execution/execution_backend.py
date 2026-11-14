@@ -1,5 +1,6 @@
 """Host-selected execution backends. Container requests never fall back to native."""
 
+from homebrew_harness.runtime.errors import boundary_error
 import hashlib
 import json
 import os
@@ -101,7 +102,7 @@ class ContainerPolicy:
         if not Path(self.cli).is_absolute() or not re.fullmatch(
             r"(?:[A-Za-z0-9._/-]+@)?sha256:[0-9a-f]{64}", self.image
         ):
-            raise ValueError(
+            raise boundary_error(ValueError, "execution_backend",
                 "Container policy needs an absolute local CLI and an immutable image digest."
             )
         if (
@@ -113,7 +114,7 @@ class ContainerPolicy:
                 for arg in (*self.argv, *self.native_argv)
             )
         ):
-            raise ValueError(
+            raise boundary_error(ValueError, "execution_backend",
                 "Container command must be a fixed host-selected argv inside the image."
             )
         if (
@@ -125,7 +126,7 @@ class ContainerPolicy:
             or type(self.workspace_bytes) is not int
             or not 1024 * 1024 <= self.workspace_bytes <= 512 * 1024 * 1024
         ):
-            raise ValueError(
+            raise boundary_error(ValueError, "execution_backend",
                 "Container resource policy exceeds the supported host bounds."
             )
 

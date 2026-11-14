@@ -745,6 +745,8 @@ class TestRunner:
             streams = {"stdout": bytearray(), "stderr": bytearray()}
             status, after, stable, execution_error = "error", {}, False, None
             isolation = None
+            diagnostic = None
+            phase = "prepare"
             try:
                 relative_cwd = cwd.relative_to(self.workdir)
                 with SafeFile(
@@ -767,6 +769,7 @@ class TestRunner:
                             ExecutionRequest,
                         )
 
+                        phase = "launch"
                         process = self.backend.launch(
                             ExecutionRequest(
                                 (sys.executable, "-I", "-c", _WORKER),
@@ -800,6 +803,7 @@ class TestRunner:
                     os.close(cwd_fd)
                 streams = {"stdout": bytearray(), "stderr": bytearray()}
                 status = "completed"
+                phase = "execute"
                 with selectors.DefaultSelector() as selector:
                     for kind in streams:
                         pipe = getattr(process, kind)
@@ -842,7 +846,9 @@ class TestRunner:
                 self._kill(
                     process, deadline.expires_at
                 )  # Also stop descendants that outlive a successful parent.
+                phase = "cleanup"
                 isolation = self.backend.finish(process)
+                phase = "verify_inputs"
                 after = snapshot(cwd, recipe.input_globs, **recipe.snapshot_limits)
                 stable = before == after
                 if status == "completed":
@@ -867,9 +873,9 @@ class TestRunner:
                     if isinstance(error, ModelGatewayError)
                     else "error"
                 )
-                execution_error = (
-                    "Test verification unavailable (" + type(error).__name__ + ")."
-                )
+                from homebrew_harness.runtime.errors import failure_fields
+                diagnostic = failure_fields(error, component="test_runner", phase=phase)
+                execution_error = diagnostic["error_detail"]
                 if process is not None:
                     self._kill(process, deadline.expires_at)
                     if isolation is None:
@@ -899,6 +905,8 @@ class TestRunner:
                 "output_bytes": recipe.output_bytes, "cpu_seconds": recipe.cpu_seconds,
                 "memory_mb": recipe.memory_mb, "shared_max_runs": self.max_runs,
                 "shared_total_seconds": self.total_seconds}
+            if diagnostic:
+                receipt["error_info"] = diagnostic["error_info"]
             receipt["execution_backend"] = self.backend.name
             receipt["isolation"] = isolation or (
                 self.backend.status()

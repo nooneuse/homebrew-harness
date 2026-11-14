@@ -320,10 +320,16 @@ class PromptGoalEvaluator:
 
         try:
             value = json.loads(response.require_text(nonempty=True))
-            if set(value) != {"ok", "impossible", "reason", "evidence_ids"}:
-                raise ValueError("Invalid checker fields")
-            if not isinstance(value["evidence_ids"], list):
-                raise ValueError("Invalid evidence list")
+            from homebrew_harness.runtime.errors import boundary_error
+            if not isinstance(value, dict) or set(value) != {"ok", "impossible", "reason", "evidence_ids"}:
+                raise boundary_error(ValueError, "goal_result_invalid", "Expected exactly ok, impossible, reason and evidence_ids.", field="result")
+            for key in ("ok", "impossible"):
+                if type(value[key]) is not bool:
+                    raise boundary_error(ValueError, "goal_result_invalid", "Expected a Boolean.", field=key)
+            if not isinstance(value["reason"], str) or not value["reason"].strip() or len(value["reason"]) > 500:
+                raise boundary_error(ValueError, "goal_result_invalid", "Expected nonempty text of at most 500 characters.", field="reason")
+            if not isinstance(value["evidence_ids"], list) or any(not isinstance(item, str) for item in value["evidence_ids"]):
+                raise boundary_error(ValueError, "goal_result_invalid", "Expected an array of evidence ID strings.", field="evidence_ids")
             return GoalEvaluation(
                 value["ok"],
                 value["reason"],
@@ -338,8 +344,11 @@ class PromptGoalEvaluator:
             KeyError,
             ModelProtocolError,
         ) as error:
+            from homebrew_harness.runtime.errors import annotate_error, error_message
+            if isinstance(error, json.JSONDecodeError):
+                annotate_error(error, message="Goal checker returned invalid JSON.", line=error.lineno, column=error.colno)
             raise GoalEvaluatorError(
-                "Goal checker did not return complete valid JSON; goal retained."
+                "Goal checker did not return complete valid JSON; goal retained. " + error_message(error)
             ) from error
 
 

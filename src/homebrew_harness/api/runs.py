@@ -1,5 +1,6 @@
 """Run handles use the existing supervisor, durable controls and worker entry."""
 
+from homebrew_harness.runtime.errors import error_info
 import threading
 import uuid
 from dataclasses import replace
@@ -38,6 +39,7 @@ class RunHandle(Handle):
         self.supervisor = None
         self.workers = Workers()
         self.error = None
+        self.error_info = None
         self.start_lock = threading.RLock()
         self.closing = False
         self.closed_cache = False
@@ -94,6 +96,7 @@ class RunHandle(Handle):
                 "member_outcomes": value.get("member_outcomes", {}),
                 "mcp_resources": value.get("mcp_resources", []),
                 "launch_error": self.error,
+                "launch_error_info": self.error_info,
             },
             requests=self.requests(),
             output_available=value["status"] in {"completed", "failed", "cancelled"}
@@ -135,6 +138,7 @@ class RunHandle(Handle):
 
     def _start_supervisor(self):
         self.error = None
+        self.error_info = None
         self.closing = False
         self.closed_cache = False
         if self.lifetime == "detached":
@@ -172,6 +176,7 @@ class RunHandle(Handle):
                     self.supervisor.supervise(self.id)
             except Exception as error:
                 self.error = type(error).__name__
+                self.error_info = error_info(error)
             finally:
                 self.supervisor.close()
                 self.core.changed.set()
@@ -376,6 +381,7 @@ class Runs:
                 handle._ensure_started()
             except Exception as error:
                 handle.error = type(error).__name__
+                handle.error_info = error_info(error)
         return handle
 
     @host_operation
@@ -437,6 +443,7 @@ class Runs:
                     handle._ensure_started()
                 except Exception as error:
                     handle.error = type(error).__name__
+                    handle.error_info = error_info(error)
             return handle
 
     def get(self, identity, *, control=False):

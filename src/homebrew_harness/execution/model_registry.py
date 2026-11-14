@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from homebrew_harness.runtime.errors import boundary_error
 from homebrew_harness.configuration import (
     DEFAULT_CONTEXT_CHARS,
     DEFAULT_MAX_OUTPUT_TOKENS,
@@ -33,7 +34,7 @@ _ENV = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,99}\Z")
 
 def _alias(value):
     if not isinstance(value, str) or not _ALIAS.fullmatch(value):
-        raise ValueError("Model aliases must be short identifiers.")
+        raise boundary_error(ValueError, "model_configuration", "Model aliases must be short identifiers.")
     return value
 
 
@@ -60,9 +61,9 @@ class ModelSpec:
     def __post_init__(self):
         _alias(self.name)
         if self.transport not in {"auto", "http", "sdk"}:
-            raise ValueError("Model transport must be auto, http or sdk.")
+            raise boundary_error(ValueError, "model_configuration", "Model transport must be auto, http or sdk.")
         if self.protocol not in PROTOCOLS:
-            raise ValueError("Unsupported model protocol.")
+            raise boundary_error(ValueError, "model_configuration", "Unsupported model protocol.")
         object.__setattr__(
             self, "options_json", frozen_options(json.loads(self.options_json))
         )
@@ -74,7 +75,7 @@ class ModelSpec:
             not isinstance(v, str) or not v.strip() or "\0" in v
             for v in (self.model, self.api_key, self.base_url)
         ):
-            raise ValueError(
+            raise boundary_error(ValueError, "model_configuration",
                 "Model configuration requires nonempty external connection values."
             )
         parsed = urlsplit(self.base_url)
@@ -84,21 +85,21 @@ class ModelSpec:
             or parsed.username
             or parsed.password
         ):
-            raise ValueError(
+            raise boundary_error(ValueError, "model_configuration",
                 "Model endpoint must be an HTTP(S) address without embedded credentials."
             )
         if not isinstance(self.description, str) or len(self.description) > 500:
-            raise ValueError("Model description must contain at most 500 characters.")
+            raise boundary_error(ValueError, "model_configuration", "Model description must contain at most 500 characters.")
         if self.context_chars is not None and (
             type(self.context_chars) is not int
             or not 10000 <= self.context_chars <= 2000000
         ):
-            raise ValueError("Model context_chars must be between 10000 and 2000000.")
+            raise boundary_error(ValueError, "model_configuration", "Model context_chars must be between 10000 and 2000000.")
         if self.max_output_tokens is not None and (
             type(self.max_output_tokens) is not int
             or not 128 <= self.max_output_tokens <= 32768
         ):
-            raise ValueError("Model max_output_tokens must be between 128 and 32768.")
+            raise boundary_error(ValueError, "model_configuration", "Model max_output_tokens must be between 128 and 32768.")
 
     def identity(self):
         return _hash(
@@ -145,7 +146,7 @@ class ModelRegistry:
             or any(not isinstance(s, ModelSpec) for s in values)
             or len({s.name for s in values}) != len(values)
         ):
-            raise ValueError(
+            raise boundary_error(ValueError, "model_configuration",
                 "Model registry requires at most 16 uniquely named ModelSpec entries."
             )
         connections = {}
@@ -159,7 +160,7 @@ class ModelRegistry:
                 spec.transport,
             )
             if key in connections and connections[key] != identity:
-                raise ValueError(
+                raise boundary_error(ValueError, "model_configuration",
                     "One connection cannot have conflicting credentials or protocol settings."
                 )
             connections[key] = identity
@@ -214,11 +215,11 @@ class ModelRegistry:
                         for k in ("backend", "revision", "sdk", "sdk_version")
                     }
                 ):
-                    raise ValueError(
+                    raise boundary_error(ValueError, "model_configuration",
                         "Restore requires the saved model backend; close the changed client first."
                     )
                 if key in self.backend_pins and self.backend_pins[key] != value:
-                    raise ValueError(
+                    raise boundary_error(ValueError, "model_configuration",
                         "Model connection already has a different saved binding."
                     )
             self.backend_pins.update(expected)
@@ -226,13 +227,13 @@ class ModelRegistry:
     def claim(self, owner):
         with acquired(self._lock):
             if self._closed or self._owner is not None and self._owner is not owner:
-                raise ValueError("Model registry requires one owning session.")
+                raise boundary_error(ValueError, "model_configuration", "Model registry requires one owning session.")
             self._owner = owner
 
     def validate(self, alias):
         _alias(alias)
         if alias not in self.specs:
-            raise ValueError("Unknown model profile; choose a host-registered alias.")
+            raise boundary_error(ValueError, "model_configuration", "Unknown model profile; choose a host-registered alias.")
 
     def catalog(self):
         return [
@@ -260,7 +261,7 @@ class ModelRegistry:
         with acquired(self._lock):
             check()
             if self._closed:
-                raise ValueError("Model registry is closed.")
+                raise boundary_error(ValueError, "model_configuration", "Model registry is closed.")
             if chosen is not None:
                 self.validate(chosen)
                 spec = self.specs[chosen]
@@ -302,7 +303,7 @@ class ModelRegistry:
                         base.base_url is not None
                         and str(base.base_url).rstrip("/") != spec.base_url.rstrip("/")
                     ):
-                        raise ValueError(
+                        raise boundary_error(ValueError, "model_configuration",
                             "One model connection cannot have conflicting protocol or endpoint definitions."
                         )
                     import copy
@@ -315,7 +316,7 @@ class ModelRegistry:
                 context_chars = spec.context_chars or context_chars
                 max_output_tokens = spec.max_output_tokens or max_output_tokens
             if client is None or not isinstance(model, str) or not model.strip():
-                raise ValueError(
+                raise boundary_error(ValueError, "model_configuration",
                     "An inherited model or a registered model profile is required."
                 )
             from homebrew_harness.execution.providers import adapter_for
@@ -362,7 +363,7 @@ class ModelRegistry:
     def own_client(self, client):
         with acquired(self._lock):
             if self._closed or "@inherited" in self._clients:
-                raise ValueError("Inherited model client already has an owner.")
+                raise boundary_error(ValueError, "model_configuration", "Inherited model client already has an owner.")
             self._clients["@inherited"] = client
 
     def close(self):
@@ -376,10 +377,12 @@ class ModelRegistry:
                 try:
                     client.close()
                     self._closed_clients.add(name)
-                except Exception:
-                    failures.append(name)
+                except Exception as error:
+                    failures.append((name, error))
             if failures:
-                raise ClosePending("Model client cleanup is pending; retry host close.")
+                from homebrew_harness.runtime.errors import annotate_error
+                raise annotate_error(ClosePending("Model client cleanup is pending; retry host close."),
+                    failed_profiles=", ".join(name for name, _ in failures)) from failures[0][1]
 
 
 def load_model_registry(path, workdir, *, client_factory=None, environment=None):
@@ -387,18 +390,19 @@ def load_model_registry(path, workdir, *, client_factory=None, environment=None)
     environment = os.environ if environment is None else environment
     path = Path(path).expanduser().resolve()
     if path.is_relative_to(Path(workdir).resolve()):
-        raise ValueError("Model configuration must be outside the workspace.")
+        raise boundary_error(ValueError, "model_configuration", "Model configuration must be outside the workspace.")
+    field = "document"
     try:
         with path.open("rb") as stream:
             raw = stream.read(65537)
         if len(raw) > 65536:
-            raise ValueError("Model configuration exceeds 64 KiB.")
+            raise boundary_error(ValueError, "model_configuration", "Model configuration exceeds 64 KiB.")
 
         def unique(pairs):
             result = {}
             for name, value in pairs:
                 if name in result:
-                    raise ValueError("Duplicate configuration field.")
+                    raise boundary_error(ValueError, "model_configuration", "Duplicate configuration field.")
                 result[name] = value
             return result
 
@@ -409,7 +413,7 @@ def load_model_registry(path, workdir, *, client_factory=None, environment=None)
             or type(data.get("version")) is not int
             or data["version"] != 2
         ):
-            raise ValueError("Model configuration requires current version 2.")
+            raise boundary_error(ValueError, "model_configuration", "Model configuration requires current version 2.")
         connections, profiles, defaults = (
             data.get("connections"),
             data.get("profiles"),
@@ -421,22 +425,23 @@ def load_model_registry(path, workdir, *, client_factory=None, environment=None)
             or not isinstance(defaults, dict)
             or set(defaults) - {"lead", "teammate_roles"}
         ):
-            raise ValueError("Invalid model connections, profiles or defaults.")
+            raise boundary_error(ValueError, "model_configuration", "Invalid model connections, profiles or defaults.")
 
-        def external(name):
+        def external(name, setting):
             if not isinstance(name, str) or not _ENV.fullmatch(name):
-                raise ValueError(
-                    "Model configuration requires an environment variable name."
+                raise boundary_error(ValueError, "model_configuration",
+                    "Model configuration requires an environment variable name.", field=field + "." + setting
                 )
             value = str(environment.get(name) or "").strip()
             if not value:
-                raise ValueError("A registered model environment variable is missing.")
+                raise boundary_error(ValueError, "model_configuration", "A registered model environment variable is missing.", field=field + "." + setting)
             register_model_environment(names=(name,))
             return value
 
         prepared = {}
         for name, value in connections.items():
             _alias(name)
+            field = "connections." + name
             if not isinstance(value, dict) or set(value) - {
                 "protocol",
                 "api_key_env",
@@ -445,20 +450,22 @@ def load_model_registry(path, workdir, *, client_factory=None, environment=None)
                 "options",
                 "transport",
             }:
-                raise ValueError("Invalid model connection fields.")
+                raise boundary_error(ValueError, "model_configuration", "Invalid model connection fields.")
             protocol = value.get("protocol")
             if protocol not in PROTOCOLS:
-                raise ValueError("Invalid model connection protocol.")
+                raise boundary_error(ValueError, "model_configuration", "Invalid model connection protocol.")
             prepared[name] = (
                 protocol,
-                external(value.get("api_key_env")),
-                external(value.get("base_url_env")),
+                external(value.get("api_key_env"), "api_key_env"),
+                external(value.get("base_url_env"), "base_url_env"),
                 value.get("api_version", "2023-06-01"),
                 value.get("options", {}),
                 value.get("transport", "auto"),
             )
         specs = []
         for name, value in profiles.items():
+            _alias(name)
+            field = "profiles." + name
             if not isinstance(value, dict) or set(value) - {
                 "connection",
                 "model_env",
@@ -468,9 +475,9 @@ def load_model_registry(path, workdir, *, client_factory=None, environment=None)
                 "options",
                 "capabilities",
             }:
-                raise ValueError("Invalid model profile fields.")
+                raise boundary_error(ValueError, "model_configuration", "Invalid model profile fields.")
             if value.get("connection") not in prepared:
-                raise ValueError("Unknown model connection reference.")
+                raise boundary_error(ValueError, "model_configuration", "Unknown model connection reference.")
             protocol, key, endpoint, version, options, transport = prepared[
                 value["connection"]
             ]
@@ -481,11 +488,11 @@ def load_model_registry(path, workdir, *, client_factory=None, environment=None)
                 or set(caps) - {"tools", "json_schema", "thinking"}
                 or any(type(v) is not bool for v in caps.values())
             ):
-                raise ValueError("Invalid model capabilities.")
+                raise boundary_error(ValueError, "model_configuration", "Invalid model capabilities.")
             specs.append(
                 ModelSpec(
                     name,
-                    external(value.get("model_env")),
+                    external(value.get("model_env"), "model_env"),
                     key,
                     endpoint,
                     value.get("description", ""),
@@ -499,9 +506,10 @@ def load_model_registry(path, workdir, *, client_factory=None, environment=None)
                     transport,
                 )
             )
+        field = "defaults"
         roles = defaults.get("teammate_roles", {})
         if not isinstance(roles, dict):
-            raise ValueError("Invalid teammate role defaults.")
+            raise boundary_error(ValueError, "model_configuration", "Invalid teammate role defaults.")
         return ModelRegistry(
             specs,
             lead_default=defaults.get("lead"),
@@ -509,6 +517,9 @@ def load_model_registry(path, workdir, *, client_factory=None, environment=None)
             client_factory=client_factory,
         )
     except (OSError, ValueError, TypeError, UnicodeError) as error:
-        raise ValueError(
-            "Cannot load external model registry (" + type(error).__name__ + ")."
-        ) from error
+        from homebrew_harness.runtime.errors import annotate_error, error_info
+        if isinstance(error, json.JSONDecodeError):
+            annotate_error(error, message="Invalid model configuration JSON.", line=error.lineno, column=error.colno)
+        info = error_info(error)
+        raise boundary_error(ValueError, "model_configuration",
+            "Cannot load external model registry: " + info["message"], field=info["details"].get("field", field)) from error

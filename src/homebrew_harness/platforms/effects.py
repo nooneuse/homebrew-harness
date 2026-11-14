@@ -10,7 +10,10 @@ REJECTED = frozenset({400, 401, 403, 404, 405, 409, 410, 413, 415, 422, 429})
 
 class EffectFailure(ValueError):
     def __init__(self, outcome, *, status=None):
+        from homebrew_harness.runtime.errors import annotate_error
         self.outcome, self.status = outcome, status
+        self.status_code = status
+        annotate_error(self, outcome=outcome)
         super().__init__(
             "Platform effect " + outcome + (" (" + str(status) + ")" if status else "")
         )

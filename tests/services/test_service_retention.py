@@ -46,6 +46,13 @@ class RetentionTests(unittest.TestCase):
         target = eventually(lambda: self.pending_target(service), 30)
         service.decide(target, "approve", decision_id="target")
         eventually(lambda: work.snapshot().state == "delivered", 20)
+        # Delivery publishes the result before primary workspace synchronization.
+        # GC must retain its evidence until that independent operation completes.
+        eventually(
+            lambda: (work.snapshot().details.get("workspace_sync") or {}).get("state")
+            == "synchronized",
+            20,
+        )
         self.wait_operation(service, service.quiesce())
         row = service.runtime.maintenance.store.get(
             "changesets", work.snapshot().details["changeset_id"]

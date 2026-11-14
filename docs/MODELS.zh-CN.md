@@ -79,6 +79,8 @@ Session、Run、Workflow、Service、benchmark、团队和 Subagent 共用模型
 
 ## 边界诊断
 
+模型配置错误标明相关字段；JSON 语法错误提供行列位置。重试最终失败时说明实际尝试次数、配置上限及停止重试的原因。重试成功继续使用原有用量观察。
+
 执行失败通过 `error_info` 返回 `type`、`code`、`message` 和 `details`。可用时，限额信息包含配置名称、配置值、观测值和单位。模型输出错误保留提供商结束原因、请求输出上限和已报告的输出／思考用量；流缺少结束标记与提供商明确报告达到输出上限分别描述。
 
 超时诊断区分准备、排队和传输阶段，并展示 Gateway 上限、可能更短的客户端上限和实际生效的截止时间。`sent`、`settled` 表示请求是否已提交、执行是否已结束。Session turn 快照、Run outcome details、Workflow 错误结果和 Service job 保留同一份诊断。Service 的 `job`、`records jobs` 及工具错误结果均可查看。诊断不包含原始请求正文或思考文本。

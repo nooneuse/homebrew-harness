@@ -222,6 +222,7 @@ class RunController:
         )
         observation = [{"id": source.get("id"), "status": "unavailable" if source.get("failures", 0) else "ready" if source.get("last_success") else "unobserved",
             "failures": source.get("failures", 0), "last_error": source.get("last_error"),
+            "error_info": source.get("error_info"),
             "last_error_status": source.get("last_error_status"), "last_success": source.get("last_success"),
             "next_poll_at": source.get("next_poll_at")} for source in sources.values()]
         if self.state.get("source_enabled"):

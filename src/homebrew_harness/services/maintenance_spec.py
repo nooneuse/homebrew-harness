@@ -1,5 +1,6 @@
 """Host policy for service proposals; scope selection can only narrow Run defaults."""
 
+from homebrew_harness.runtime.errors import boundary_error
 from homebrew_harness.configuration import (
     DEFAULT_TASK_SECONDS,
 )
@@ -20,7 +21,7 @@ INSTRUCTION_TARGETS = frozenset({
 
 def text(value, label="text", maximum=64000):
     if not isinstance(value, str) or not value.strip() or len(value) > maximum:
-        raise ValueError(label + " must be nonempty bounded text.")
+        raise boundary_error(ValueError, "service_configuration", label + " must be nonempty bounded text.")
     return value
 
 
@@ -30,7 +31,7 @@ def number(value, label, minimum, maximum, *, integer=False):
         or not math.isfinite(value)
         or not minimum <= value <= maximum
     ):
-        raise ValueError("Invalid " + label)
+        raise boundary_error(ValueError, "service_configuration", "Invalid " + label)
     return value
 
 
@@ -52,16 +53,16 @@ def validate_sources(sources):
     from homebrew_harness.platforms.registry import validate_declaration
 
     if not isinstance(sources, (list, tuple)) or len(sources) > 8:
-        raise ValueError("Sources must contain at most eight host declarations.")
+        raise boundary_error(ValueError, "service_configuration", "Sources must contain at most eight host declarations.")
     result = [validate_declaration(s, "repository_events", named=True) for s in sources]
     if len({s["name"] for s in result}) != len(result):
-        raise ValueError("Source names must be unique.")
+        raise boundary_error(ValueError, "service_configuration", "Source names must be unique.")
     instances = {}
     for source in result:
         identity = (source["provider"], source["instance"])
         connection = (source["api_url_env"], source.get("ca_file_env"))
         if identity in instances and instances[identity] != connection:
-            raise ValueError(
+            raise boundary_error(ValueError, "service_configuration",
                 "A platform instance alias has conflicting connection declarations."
             )
         instances[identity] = connection
@@ -82,7 +83,7 @@ def validate_policy(raw, run_spec):
         "model_profile",
         "instructions",
     }:
-        raise ValueError("Invalid maintenance policy fields.")
+        raise boundary_error(ValueError, "service_configuration", "Invalid maintenance policy fields.")
     policy = {
         "objectives": "Maintain the project within its existing contract.",
         "non_goals": "Do not publish external changes.",
@@ -101,15 +102,15 @@ def validate_policy(raw, run_spec):
     text(policy["non_goals"], "non_goals", 8000)
     instructions = policy["instructions"]
     if not isinstance(instructions, dict) or set(instructions) - INSTRUCTION_TARGETS:
-        raise ValueError("Instructions must select known service task names.")
+        raise boundary_error(ValueError, "service_configuration", "Instructions must select known service task names.")
     from homebrew_harness.security.data_boundary import redact
 
     for value in instructions.values():
         text(value, "task instructions", 8000)
         if redact(value) != value:
-            raise ValueError("Task instructions cannot contain private connection values.")
+            raise boundary_error(ValueError, "service_configuration", "Task instructions cannot contain private connection values.")
     if sum(map(len, instructions.values())) > 16000:
-        raise ValueError("Combined task instructions exceed 16000 characters.")
+        raise boundary_error(ValueError, "service_configuration", "Combined task instructions exceed 16000 characters.")
     for key in ("authority_seconds", "report_seconds"):
         number(policy[key], key, 1, 31536000)
     number(policy["job_seconds"], "job_seconds", 1, 3600)
@@ -119,13 +120,13 @@ def validate_policy(raw, run_spec):
         not isinstance(policy["model_profile"], str)
         or not NAME.fullmatch(policy["model_profile"])
     ):
-        raise ValueError("Invalid service model alias.")
+        raise boundary_error(ValueError, "service_configuration", "Invalid service model alias.")
     if not isinstance(policy["auto_categories"], (list, tuple)) or any(
         c not in CATEGORIES for c in policy["auto_categories"]
     ):
-        raise ValueError("Invalid automatically accepted categories.")
+        raise boundary_error(ValueError, "service_configuration", "Invalid automatically accepted categories.")
     if not isinstance(policy["scopes"], dict) or len(policy["scopes"]) > 16:
-        raise ValueError("Invalid scope catalog.")
+        raise boundary_error(ValueError, "service_configuration", "Invalid scope catalog.")
     scopes = {}
     for name, scope in policy["scopes"].items():
         if (
@@ -133,7 +134,7 @@ def validate_policy(raw, run_spec):
             or not isinstance(scope, dict)
             or set(scope) - {"write_paths", "tools", "allow_tests"}
         ):
-            raise ValueError("Invalid execution scope.")
+            raise boundary_error(ValueError, "service_configuration", "Invalid execution scope.")
         compiled = {
             key: list(scope.get(key, getattr(run_spec, key)))
             for key in ("write_paths", "tools", "allow_tests")
@@ -144,11 +145,11 @@ def validate_policy(raw, run_spec):
         if not all(
             within(path, run_spec.write_paths) for path in compiled["write_paths"]
         ):
-            raise ValueError("Scope widens writable paths.")
+            raise boundary_error(ValueError, "service_configuration", "Scope widens writable paths.")
         if set(compiled["tools"]) - set(run_spec.tools) or set(
             compiled["allow_tests"]
         ) - set(run_spec.allow_tests):
-            raise ValueError("Scope widens tools or fixed tests.")
+            raise boundary_error(ValueError, "service_configuration", "Scope widens tools or fixed tests.")
         scopes[name] = compiled
     policy["scopes"] = scopes
     return json.loads(json.dumps(policy, allow_nan=False))

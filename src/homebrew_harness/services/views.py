@@ -35,6 +35,7 @@ class WorkHandle(Handle):
             execution_pending=pending,
             details={
                 "run_id": value["run_id"],
+                "error_info": value.get("error_info"),
                 "changeset_id": value.get("changeset_id"),
                 "workspace_sync": value.get("workspace_sync"),
                 "ci_fix_attempts": value.get("ci_fix_attempts", 0),

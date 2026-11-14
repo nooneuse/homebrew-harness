@@ -21,11 +21,18 @@ class CloseProgress:
         self.history = []
 
     def record_error(self, name, error):
-        record = {"component": name, "error_type": type(error).__name__}
+        from homebrew_harness.runtime.errors import failure_record
         with self.lock:
+            previous = next((item for item in self.errors if item["component"] == name), None)
+            record = {"component": name, "error_type": type(error).__name__,
+                      **failure_record(error, previous, component=name, phase="cleanup")}
             self.errors[:] = [item for item in self.errors if item["component"] != name]
             self.errors.append(record)
-            self.history.append(record)
+            if previous and record["occurrences"] > 1 and previous in self.history:
+                self.history[self.history.index(previous)] = record
+            else:
+                self.history.append(record)
+                self.history[:] = self.history[-64:]
 
     def step(self, name, action, *, repeat=False):
         with self.lock:
@@ -43,6 +50,9 @@ class CloseProgress:
         with self.lock:
             self.done.add(name)
             self.terminal.discard(name)
+            for record in self.errors:
+                if record["component"] == name:
+                    record["resolved_at"] = time.time()
             self.errors[:] = [item for item in self.errors if item["component"] != name]
         return True
 
@@ -152,6 +162,7 @@ class Shutdown:
         self.started = False
         self.finished = threading.Event()
         self.error = None
+        self.error_info = None
         self.workers = Workers()
 
     def request(self, action, timeout=5):
@@ -164,7 +175,9 @@ class Shutdown:
                     except BaseException as error:
                         with self.lock:
                             self.started = False
-                            self.error = type(error).__name__
+                            from homebrew_harness.runtime.errors import error_info, error_message
+                            self.error = error_message(error)
+                            self.error_info = error_info(error)
                     else:
                         self.finished.set()
 
@@ -174,11 +187,14 @@ class Shutdown:
                         finish, name="harness-shutdown", track_operation=False
                     )
                     self.error = None
+                    self.error_info = None
                 except WorkAccepted:
                     self.error = None
                 except BaseException as error:
                     self.started = False
-                    self.error = type(error).__name__
+                    from homebrew_harness.runtime.errors import error_info, error_message
+                    self.error = error_message(error)
+                    self.error_info = error_info(error)
         return self.finished.wait(max(0, timeout))
 
 

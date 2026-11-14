@@ -1,5 +1,6 @@
 """Durable host operations, with a live control plane while native writers park."""
 
+from homebrew_harness.runtime.errors import failure_fields
 import json
 import threading
 import time
@@ -174,6 +175,7 @@ class Operations:
         self.started = True
         next_health = 0
         try:
+            self.runtime.store.runtime_failure(self.runtime.header, "operations")
             while not self.stop.wait(0.05):
                 meta = self.store.get(self.runtime.id)
                 if meta["state"] == "stopping":
@@ -205,11 +207,11 @@ class Operations:
                     self.update(
                         row,
                         state="blocked",
-                        error=type(error).__name__,
-                        error_detail=str(error)[:2000],
+                        **failure_fields(error, message=str(error) if isinstance(error, ValueError) else None, phase="operation", operation=row["kind"]),
                     )
         except Exception as error:
             self.error = type(error).__name__
+            self.runtime.report_failure("operations", error)
         finally:
             self.finished.set()
 
@@ -246,6 +248,10 @@ class Operations:
                     self.store.db._put(conn, "service_incidents", identity, value)
                     if self.spec["diagnose_incidents"] and self.runtime.maintenance:
                         diagnoses.append(identity)
+                elif prior[identity]["issue"] != issue:
+                    value = {**prior[identity], "issue": issue, "updated_at": time.time(),
+                             "revision": prior[identity]["revision"] + 1}
+                    self.store.db._put(conn, "service_incidents", identity, value)
             for key, value in prior.items():
                 if key[9:] not in {k[:32] for k in active}:
                     value.update(

@@ -128,6 +128,7 @@ class Delivery:
     def loop(self):
         self.started = True
         try:
+            self.runtime.store.runtime_failure(self.runtime.header, "delivery")
             while not self.stop.wait(0.1):
                 from homebrew_harness.runtime.runtime_control import ClosePending
 
@@ -168,6 +169,8 @@ class Delivery:
                         if action["expires_at"] <= time.time():
                             self.store.expire_action(action)
                             continue
+                        if action.get("next_attempt", 0) > time.time():
+                            continue
                         with control_scope(Deadline.after(self.spec["gate_seconds"])):
                             self.execute(action)
                     elif action["state"] == "started":
@@ -176,6 +179,7 @@ class Delivery:
                 self.sync_pending()
         except Exception as error:
             self.error = type(error).__name__
+            self.runtime.report_failure("delivery", error)
         finally:
             self.finished.set()
 
@@ -460,7 +464,8 @@ class Delivery:
                 "actions", action["id"], state="superseded", error=type(error).__name__
             )
             return
-        except Exception:
+        except Exception as error:
+            self.store.preflight_failed(action, error)
             return
         plan = {**accepted["plan"], "correlation": accepted["id"]}
         try:
@@ -493,7 +498,7 @@ class Delivery:
             from homebrew_harness.services.action_runtime import failed_state
 
             self.store.settle_action(
-                accepted, failed_state(error), error=type(error).__name__
+                accepted, failed_state(error), error=error
             )
 
     def reconcile(self, action):
@@ -529,10 +534,10 @@ class Delivery:
                     action, "unknown", error="unconfirmed_external_result"
                 )
             )
-        except Exception:
-            return self.store.settle_action(
-                action, "unknown", error="inspection_required"
-            )
+        except Exception as error:
+            from homebrew_harness.runtime.errors import annotate_error
+            annotate_error(error, phase="inspect")
+            return self.store.settle_action(action, "unknown", error=error)
 
     def repair(self, row, work):
         if work.get("ci_fix_attempts", 0) >= self.spec["ci_fix_limit"]:

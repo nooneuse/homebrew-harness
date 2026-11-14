@@ -1,5 +1,6 @@
 """Platform-neutral change feedback ingestion and native execution fences."""
 
+from homebrew_harness.runtime.errors import error_info
 import json
 import time
 from homebrew_harness.platforms.contracts import (
@@ -196,6 +197,7 @@ class ChangeRequestSource:
                         "revision": current["revision"] + 1,
                         "failures": failures,
                         "last_error": type(error).__name__,
+                        "error_info": error_info(error),
                         "last_error_status": error.status
                         if isinstance(error, RemoteFailure)
                         else None,

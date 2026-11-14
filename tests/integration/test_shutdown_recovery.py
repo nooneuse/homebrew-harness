@@ -232,8 +232,10 @@ class ShutdownRecoveryTests(unittest.TestCase):
         self.assertFalse(status["errors"])
         self.assertEqual(
             [item["component"] for item in status["cleanup_history"]],
-            ["session_lease", "session_lease"],
+            ["session_lease"],
         )
+        self.assertEqual(status["cleanup_history"][0]["occurrences"], 2)
+        self.assertIn("resolved_at", status["cleanup_history"][0])
         self.assertTrue(
             session.runtime_store.get("session_meta", session.session_id)[
                 "close_complete"

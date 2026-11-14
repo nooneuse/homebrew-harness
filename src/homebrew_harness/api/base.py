@@ -1,5 +1,6 @@
 """Common observation and waiting; execution control remains mode-specific."""
 
+from homebrew_harness.runtime.errors import error_info
 from functools import wraps
 from .types import SDKError, InvalidInput
 
@@ -15,13 +16,13 @@ def host_operation(function):
             except SDKError:
                 raise
             except ValueError as error:
-                raise InvalidInput(str(error)) from error
+                raise InvalidInput(str(error), details=error_info(error)) from error
             except OSError as error:
                 raise SDKError(
                     "Host persistence or resource operation failed ("
                     + type(error).__name__
                     + "). Inspect accepted state before retrying.",
-                    code="operation_unknown",
+                    code="operation_unknown", details=error_info(error),
                 ) from error
             except RuntimeError as error:
                 from homebrew_harness.storage.durable_runtime import RecoveryRequired
@@ -32,7 +33,7 @@ def host_operation(function):
                 if isinstance(error, RecoveryRequired):
                     raise SDKError(str(error), code="recovery_required") from error
                 if isinstance(error, WorkflowError):
-                    raise InvalidInput(str(error)) from error
+                    raise InvalidInput(str(error), details=error_info(error)) from error
                 raise
 
     return invoke

@@ -1,5 +1,6 @@
 """Authenticated loopback HTTP control server with bounded request ownership."""
 
+from homebrew_harness.runtime.errors import error_info, error_message
 import hmac
 import http.client
 import json
@@ -119,7 +120,7 @@ class ControlServer(ThreadingHTTPServer):
                 finally:
                     self.rfile = original
 
-            def reply(self, status, result=None, code=None, message=None):
+            def reply(self, status, result=None, code=None, message=None, details=None):
                 value = {
                     "version": VERSION,
                     "service_id": server.service_id,
@@ -129,6 +130,8 @@ class ControlServer(ThreadingHTTPServer):
                     value["result"] = result
                 else:
                     value.update(code=code, message=message or code)
+                    if details is not None:
+                        value["details"] = details
                 raw = json.dumps(value, ensure_ascii=False, allow_nan=False).encode()
                 if len(raw) > MAX_FRAME:
                     status = 413
@@ -277,7 +280,8 @@ class ControlServer(ThreadingHTTPServer):
                     self.reply(
                         409 if code == "stale_reference" else 400,
                         code=code,
-                        message=redact(str(error)),
+                        message=redact(str(error)) if isinstance(error, ValueError) else error_message(error),
+                        details=error_info(error),
                     )
                     return
                 self.reply(200, result=result)

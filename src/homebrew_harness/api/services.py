@@ -57,6 +57,7 @@ class ServiceHandle(ServiceControls, Handle):
                 "launch": meta.get("launch"),
                 "scope": meta["scope"],
                 "heartbeat_at": meta["heartbeat_at"],
+                "runtime_failures": meta.get("runtime_failures", {}),
             },
         )
 
@@ -228,6 +229,7 @@ class Services:
                 runtime.start()
             except Exception as error:
                 runtime.start_error = type(error).__name__
+                runtime.report_failure("service", error, phase="start")
                 runtime.close()
             return handle
 

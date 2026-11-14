@@ -64,7 +64,9 @@ class ModelRetries(unittest.TestCase):
     def test_exhausted_attempts_do_not_disable_next_request(self):
         self.create.side_effect=[ProviderError('server_error',status_code=503)]*3+[reply('Recovered')]
         with self.gateway.scope(deadline=Deadline.after(2)):
-            with self.assertRaises(ProviderError):request(self.gateway,**self.params)
+            with self.assertRaises(ProviderError) as raised:request(self.gateway,**self.params)
+            self.assertEqual(raised.exception.details['attempts'],3)
+            self.assertEqual(raised.exception.details['retry_stop'],'attempts_exhausted')
             self.assertEqual(request(self.gateway,**self.params).text,'Recovered')
         self.assertEqual(self.create.call_count,4);self.assertFalse(self.gateway.blocked)
 
@@ -127,6 +129,9 @@ class ModelRetries(unittest.TestCase):
                 with self.assertRaises(ModelDeadlineExceeded) as raised:
                     request(gateway,**self.params)
             self.assertEqual(raised.exception.source,'caller')
+            self.assertEqual(raised.exception.details['attempts'],1)
+            self.assertEqual(raised.exception.details['retry_stop'],'waiting_for_previous_request')
+            self.assertIn('deadline',raised.exception.details['previous_error'].lower())
             self.assertEqual(self.create.call_count,1)
             self.assertTrue(gateway._state.inflight)
         finally:

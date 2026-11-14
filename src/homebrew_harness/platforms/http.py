@@ -12,10 +12,22 @@ from .contracts import digest
 
 
 class RemoteFailure(ValueError):
-    def __init__(self, status, headers=None):
+    def __init__(self, status, headers=None, detail=None):
         self.status = status
         self.headers = dict(headers or {})
-        super().__init__("Remote service returned status " + str(status))
+        from homebrew_harness.runtime.errors import annotate_error
+        from homebrew_harness.security.data_boundary import redact
+        self.status_code = status
+        detail = detail if isinstance(detail, dict) else {}
+        message = detail.get("message")
+        import re
+        message = re.sub(r"[\x00-\x1f\x7f]", " ", redact(message))[:1000] if isinstance(message, str) else None
+        super().__init__("Remote service returned status " + str(status) + (": " + message if message else ""))
+        lowered = {k.lower(): v for k, v in self.headers.items()}
+        annotate_error(self, status_code=status,
+            platform_code=detail.get("code") if isinstance(detail.get("code"), (str, int)) else None,
+            platform_request_id=lowered.get("x-request-id") or lowered.get("x-github-request-id"),
+            retry_after=lowered.get("retry-after"))
 
 
 def validated_url(value):
@@ -113,7 +125,24 @@ class JsonTransport:
             timeout=min(5, remaining) if remaining is not None else 5,
         ) as response:
             if response.status_code < 200 or response.status_code >= 300:
-                raise RemoteFailure(response.status_code, response.headers)
+                detail = None
+                async def read_error():
+                    chunks, size = [], 0
+                    async for chunk in response.aiter_bytes():
+                        size += len(chunk)
+                        if size > 8192:
+                            break
+                        chunks.append(chunk)
+                    else:
+                        body = json.loads(b"".join(chunks))
+                        if isinstance(body, dict):
+                            return body.get("error", body)
+                try:
+                    left = deadline.remaining()
+                    detail = await asyncio.wait_for(read_error(), 0.25 if left is None else min(0.25, max(0, left)))
+                except (ValueError, httpx.HTTPError, asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
+                raise RemoteFailure(response.status_code, response.headers, detail)
             if not parse_json:
                 return None, dict(response.headers)
             chunks, size = [], 0

@@ -49,12 +49,16 @@ def pause_seconds(deadline, end=None):
     return seconds if remaining is None else min(seconds, remaining)
 
 
-def wait_retry(gateway, error, attempt, deadline):
+def wait_retry(gateway, error, attempt, deadline, *, on_phase=None):
     if deadline.remaining() is None and receipt_pending(gateway, error):
         raise error
     while receipt_pending(gateway, error):
+        if on_phase:
+            on_phase("waiting_for_previous_request")
         check(deadline)
         time.sleep(pause_seconds(deadline))
+    if on_phase:
+        on_phase("retry_delay")
     check(deadline)
     delay_end = time.monotonic() + min(0.1 * 2 ** attempt, 1)
     while time.monotonic() < delay_end:
@@ -62,17 +66,29 @@ def wait_retry(gateway, error, attempt, deadline):
         time.sleep(pause_seconds(deadline, delay_end))
 
 
-async def await_retry(gateway, error, attempt, deadline):
+async def await_retry(gateway, error, attempt, deadline, *, on_phase=None):
     if deadline.remaining() is None and receipt_pending(gateway, error):
         raise error
     while receipt_pending(gateway, error):
+        if on_phase:
+            on_phase("waiting_for_previous_request")
         check(deadline)
         await asyncio.sleep(pause_seconds(deadline))
+    if on_phase:
+        on_phase("retry_delay")
     check(deadline)
     delay_end = time.monotonic() + min(0.1 * 2 ** attempt, 1)
     while time.monotonic() < delay_end:
         check(deadline)
         await asyncio.sleep(pause_seconds(deadline, delay_end))
+
+
+def retry_diagnostic(error, used, limit, stage, previous=None):
+    from homebrew_harness.runtime.errors import annotate_error, error_info
+    reason = "attempts_exhausted" if used == limit and stage == "request" else (
+        "not_retryable" if stage == "request" else stage)
+    annotate_error(error, attempts=used, attempt_limit=limit, retry_stop=reason,
+                   previous_error=error_info(previous)["message"] if previous is not None and previous is not error else None)
 
 
 def request(client, *, attempts=None, on_attempt=None, **parameters):
@@ -81,16 +97,29 @@ def request(client, *, attempts=None, on_attempt=None, **parameters):
         raise ValueError("Model retry attempts must be between 1 and 8.")
     gateway = ensure_gateway(client)
     deadline = operation_deadline().intersect(parameters.get("deadline") or operation_deadline())
-    for attempt in range(attempts):
-        check(deadline)
-        if on_attempt:
-            on_attempt(attempt)
-        try:
-            return gateway.request(**parameters)
-        except (ProviderError, ModelDeadlineExceeded) as error:
-            if not retryable(error) or attempt + 1 == attempts:
-                raise
-            wait_retry(gateway, error, attempt, deadline)
+    used, previous, stage = 0, None, "before_attempt"
+    def observe_phase(value):
+        nonlocal stage
+        stage = value
+    try:
+        for attempt in range(attempts):
+            stage = "before_attempt"
+            check(deadline)
+            if on_attempt:
+                on_attempt(attempt)
+            used += 1
+            stage = "request"
+            try:
+                return gateway.request(**parameters)
+            except (ProviderError, ModelDeadlineExceeded) as error:
+                if not retryable(error) or attempt + 1 == attempts:
+                    raise
+                previous = error
+                stage = "waiting_for_previous_request" if receipt_pending(gateway, error) else "retry_delay"
+                wait_retry(gateway, error, attempt, deadline, on_phase=observe_phase)
+    except Exception as error:
+        retry_diagnostic(error, used, attempts, stage, previous)
+        raise
 
 
 async def arequest(client, *, attempts=None, on_attempt=None, **parameters):
@@ -99,13 +128,26 @@ async def arequest(client, *, attempts=None, on_attempt=None, **parameters):
         raise ValueError("Model retry attempts must be between 1 and 8.")
     gateway = ensure_gateway(client)
     deadline = operation_deadline().intersect(parameters.get("deadline") or operation_deadline())
-    for attempt in range(attempts):
-        check(deadline)
-        if on_attempt:
-            on_attempt(attempt)
-        try:
-            return await gateway.arequest(**parameters)
-        except (ProviderError, ModelDeadlineExceeded) as error:
-            if not retryable(error) or attempt + 1 == attempts:
-                raise
-            await await_retry(gateway, error, attempt, deadline)
+    used, previous, stage = 0, None, "before_attempt"
+    def observe_phase(value):
+        nonlocal stage
+        stage = value
+    try:
+        for attempt in range(attempts):
+            stage = "before_attempt"
+            check(deadline)
+            if on_attempt:
+                on_attempt(attempt)
+            used += 1
+            stage = "request"
+            try:
+                return await gateway.arequest(**parameters)
+            except (ProviderError, ModelDeadlineExceeded) as error:
+                if not retryable(error) or attempt + 1 == attempts:
+                    raise
+                previous = error
+                stage = "waiting_for_previous_request" if receipt_pending(gateway, error) else "retry_delay"
+                await await_retry(gateway, error, attempt, deadline, on_phase=observe_phase)
+    except Exception as error:
+        retry_diagnostic(error, used, attempts, stage, previous)
+        raise

@@ -27,6 +27,12 @@ homebrew-harness service ops SERVICE_ID read OPERATION_ID --offset 0 --limit 400
 
 操作使用 queued、running、completed、blocked 状态和稳定 request_id。准备操作的完成可能只表示已产生独立审查任务，需要继续查询对应 job/audit。列表提供摘要，长计划通过分页记录读取。
 
+失败提供简短原因，必要时通过 `error_info` 标明组件、阶段及已观察到的根因。交付动作区分准备、执行和查证失败；准备重试显示 `next_attempt`。详情继续使用原有 action、job 或 operation 记录。
+
+`waiting_for_operator` 统计当前可操作的 Service 决定。`decisions.unavailable` 及其有界示例说明依据已变更或授权已到期的 pending 记录。来源健康条目提供短原因及已保存来源记录的引用。查询不会修改决定。
+
+Service 快照中的 `runtime_failures` 保留组件故障、发生次数与恢复时间。成功阶段只解除自身的暂态故障。收尾状态保留资源归属、具体原因及重复次数，直到确认真实关闭。
+
 ## 停靠与恢复业务
 
 ```sh

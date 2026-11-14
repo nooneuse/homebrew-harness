@@ -989,6 +989,7 @@ class WorkflowExecution:
             "component": component,
             "run_id": self.run_id,
             "error_type": type(error).__name__,
+            "error_info": error_info(error),
         }
         self.runtime.cleanup_errors.append(record)
         if self.snapshot is not None:

@@ -197,6 +197,24 @@ class ServiceStore:
             self.db._put(conn, "service_meta", value["id"], value)
             return value
 
+    def runtime_failure(self, header, component, error=None, *, phase="loop"):
+        from homebrew_harness.runtime.errors import failure_record
+        with self.db.write() as conn:
+            meta = self.guard(conn, header)
+            faults = dict(meta.get("runtime_failures", {}))
+            key = component + ":" + phase
+            previous = faults.get(key)
+            if error is None:
+                if not previous or previous.get("resolved_at"):
+                    return
+                faults[key] = {**previous, "resolved_at": time.time()}
+            else:
+                faults[key] = failure_record(error, previous, component=component, phase=phase)
+                if previous and faults[key]["occurrences"] == 1:
+                    meta["runtime_failure_history"] = [*meta.get("runtime_failure_history", []), previous][-8:]
+            meta["runtime_failures"] = faults
+            self.db._put(conn, "service_meta", meta["id"], meta)
+
     def command(self, header, method, payload, request_id, action):
         key = request_key("command", header["id"], request_id)
         signature = fingerprint([method, payload])

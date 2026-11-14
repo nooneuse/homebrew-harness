@@ -229,10 +229,8 @@ class HardVerifier:
                         else "Current file does not satisfy the predicate.",
                     )
             except (OSError, ValueError, UnicodeError) as error:
-                result["reason"] = (
-                    str(error)
-                    if isinstance(error, (ConditionError, TestRunnerError))
-                    else "Hard verification unavailable (" + type(error).__name__ + ")."
-                )
+                from homebrew_harness.runtime.errors import failure_fields
+                diagnostic = failure_fields(error, component="goal", phase="verify", field=predicate["type"])
+                result.update(reason=diagnostic["error_detail"], error_info=diagnostic["error_info"], verification="unavailable")
             results.append(result)
         return {"ok": all(result["ok"] for result in results), "results": results}

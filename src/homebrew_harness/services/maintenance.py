@@ -78,6 +78,7 @@ class Maintenance:
     def loop(self):
         self.started = True
         try:
+            self.runtime.store.runtime_failure(self.runtime.header, "maintenance")
             while not self.stop.wait(0.05):
                 meta = self.runtime.store.get(self.store.id)
                 if meta["state"] == "stopping":
@@ -128,6 +129,7 @@ class Maintenance:
                         self.store.finish(job, result=result, error=error)
         except Exception as error:
             self.error = type(error).__name__
+            self.runtime.report_failure("maintenance", error)
         finally:
             self.finished.set()
 

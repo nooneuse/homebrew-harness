@@ -79,6 +79,8 @@ For direct inspection, `ProtocolAdapter.transport_description` reports the selec
 
 ## Boundary diagnostics
 
+Model configuration errors identify the affected field, with line and column for invalid JSON. Final retry failures include the actual attempt count, configured attempt limit and the reason retrying stopped. Successful retries use the existing usage observations.
+
 Execution failures expose `error_info` with `type`, `code`, `message` and `details`. Limit details name the configuration, configured value, observed value and unit where available. Model output failures retain the provider finish reason, requested output allowance and reported output/reasoning usage. A missing stream terminator is reported separately from a provider-declared output limit.
 
 Timeout diagnostics distinguish preparation, queue waiting and transport, and show the gateway limit, any tighter client limit and the effective deadline. `sent` and `settled` describe whether execution was submitted and has finished. Session turn snapshots, Run outcome details, Workflow error results and Service jobs retain the same diagnostics. Service `job` and `records jobs` display them; tool error results include them as well. Raw request bodies and reasoning text are excluded.

@@ -1,6 +1,7 @@
 """A serial service coordinator; all agent execution stays in native Runs."""
 
 import json
+from homebrew_harness.runtime.errors import failure_fields
 import threading
 import time
 import uuid
@@ -71,6 +72,7 @@ class ServiceRuntime:
         self.children = {}
         self.error = None
         self.start_error = None
+        self.unpersisted_failure = None
         self.next_close_retry = 0
         self.leases = ExecutionLeases(store.root)
         self.workspace_lease = ExecutionLeases(Path(self.spec.workspace))
@@ -158,6 +160,7 @@ class ServiceRuntime:
             pass
         if self.store.get(self.id).get("operations_phase", "active") == "active":
             self.start_business()
+        self.store.runtime_failure(self.header, "service", phase="start")
         self.store.update(
             self.header, launch={"token": self.token, "phase": "accepted"}, error=None
         )
@@ -235,6 +238,7 @@ class ServiceRuntime:
             "live_owner": self.leases.held("service") and not self.finished.is_set(),
             "heartbeat_at": meta["heartbeat_at"],
             "error": meta.get("error"),
+            "runtime_failures": meta.get("runtime_failures", {}),
             "work_counts": counts,
             "maintenance": {
                 "running": not self.maintenance.finished.is_set(),
@@ -254,11 +258,31 @@ class ServiceRuntime:
             "binding": meta["binding"],
         }
 
+    def report_failure(self, component, error, *, phase="loop"):
+        try:
+            self.store.runtime_failure(self.header, component, error, phase=phase)
+        except Exception as storage_error:
+            self.unpersisted_failure = {**failure_fields(error, component=component, phase=phase),
+                "persistence_error": failure_fields(storage_error, phase="persist_diagnostic")}
+        else:
+            if self.unpersisted_failure and self.unpersisted_failure["error_info"]["details"].get("component") == component and self.unpersisted_failure["error_info"]["details"].get("phase") == phase:
+                self.unpersisted_failure = None
+
+    def phase_succeeded(self, phase, meta):
+        fault = meta.get("runtime_failures", {}).get("service:" + phase)
+        if fault and not fault.get("resolved_at"):
+            self.store.runtime_failure(self.header, "service", phase=phase)
+        pending = self.unpersisted_failure
+        if pending and pending["error_info"]["details"].get("component") == "service" and pending["error_info"]["details"].get("phase") == phase:
+            self.unpersisted_failure = None
+
     def loop(self):
         heartbeat = 0
         while not self.finished.wait(self.spec.poll_seconds):
+            phase = "observe"
             try:
                 meta = self.store.get(self.id)
+                self.phase_succeeded(phase, meta)
                 if meta["state"] == "stopping":
                     self.closed = True
                     if time.monotonic() >= self.next_close_retry:
@@ -290,7 +314,9 @@ class ServiceRuntime:
                     )
                 with self.lock:
                     if meta.get("operations_phase", "active") == "active":
+                        phase = "recover_commands"
                         self.recover_commands()
+                        self.phase_succeeded(phase, meta)
                     if time.time() < meta.get("last_clock", meta["created_at"]) - 1:
                         self.store.update(
                             self.header,
@@ -300,15 +326,20 @@ class ServiceRuntime:
                             revision=meta["revision"] + 1,
                         )
                     elif meta.get("operations_phase", "active") == "active":
+                        phase = "tick"
                         self.tick()
+                        self.phase_succeeded(phase, meta)
                 if time.monotonic() - heartbeat >= 1:
+                    phase = "heartbeat"
                     self.store.update(self.header, heartbeat_at=time.time())
                     self.store.update(self.header, last_clock=time.time())
+                    self.phase_succeeded(phase, meta)
                     heartbeat = time.monotonic()
+                self.error = None
             except Exception as error:
                 self.error = type(error).__name__
                 try:
-                    self.store.update(self.header, error=self.error)
+                    self.report_failure("service", error, phase=phase)
                 except Exception:
                     pass
 
@@ -334,7 +365,7 @@ class ServiceRuntime:
                         {
                             **current,
                             "result": {
-                                "error": type(error).__name__,
+                                **failure_fields(error, phase="command_recovery", operation=value["method"]),
                                 "code": getattr(error, "code", "command_failed"),
                             },
                         },
@@ -447,7 +478,8 @@ class ServiceRuntime:
                     self.header,
                     work["id"],
                     state="approved" if busy else "failed",
-                    error="workspace_busy" if busy else type(error).__name__,
+                    **{**failure_fields(error, phase="run_start"),
+                       **({"error": "workspace_busy"} if busy else {})},
                 )
                 return
             self.current = handle

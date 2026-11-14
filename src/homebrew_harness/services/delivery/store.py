@@ -1,5 +1,6 @@
 """Versioned ChangeSets, immutable action plans and per-item host decisions."""
 
+from homebrew_harness.runtime.errors import boundary_error
 import time
 from homebrew_harness.services.protocol import request_key, fingerprint
 from homebrew_harness.services.maintenance_spec import text
@@ -112,24 +113,24 @@ class DeliveryStore:
             "merge_change_request",
             "post_comment",
         }:
-            raise ValueError("Unknown delivery action.")
+            raise boundary_error(ValueError, "delivery_contract", "Unknown delivery action.")
         if not row.get("frozen"):
-            raise ValueError("Candidate is not quality-ready.")
+            raise boundary_error(ValueError, "delivery_contract", "Candidate is not quality-ready.")
         if row["candidate"].get("artifacts_retired"):
-            raise ValueError(
+            raise boundary_error(ValueError, "delivery_contract",
                 "Candidate artifacts were retired; prepare new reviewed work before delivery."
             )
         if row["frozen"] != self.freeze(row):
-            raise ValueError("Candidate quality evidence changed.")
+            raise boundary_error(ValueError, "delivery_contract", "Candidate quality evidence changed.")
         if (
             kind == "merge_change_request"
             and self.spec["merge"]["mode"] != "service_approved"
         ):
-            raise ValueError(
+            raise boundary_error(ValueError, "delivery_contract",
                 "Manual delivery waits for a platform maintainer to merge."
             )
         if kind == "merge_change_request" and row["state"] != "merge_ready":
-            raise ValueError("Target delivery is not merge-ready.")
+            raise boundary_error(ValueError, "delivery_contract", "Target delivery is not merge-ready.")
         content = {
             "changeset": row["id"],
             "hash": row["frozen"],
@@ -158,7 +159,7 @@ class DeliveryStore:
                 self.spec["instance"],
                 self.spec["project"],
             ):
-                raise ValueError("Comment crosses platform scope.")
+                raise boundary_error(ValueError, "delivery_contract", "Comment crosses platform scope.")
             content.update(body=body, subject=subject)
         if kind == "ensure_change_request":
             work = self.current(row)
@@ -224,7 +225,7 @@ class DeliveryStore:
 
     def request(self, conn, row, action, *, renew=False):
         if action["state"] not in {"awaiting_approval", "denied", "queued", "failed"}:
-            raise ValueError(
+            raise boundary_error(ValueError, "delivery_contract",
                 "Only an unstarted delivery action can request authorization."
             )
         if action["state"] == "failed":
@@ -271,13 +272,13 @@ class DeliveryStore:
                 or request["revision"] != payload["revision"]
                 or request["expires_at"] <= time.time()
             ):
-                raise ValueError("CI decision is stale or expired.")
+                raise boundary_error(ValueError, "delivery_contract", "CI decision is stale or expired.")
             if payload["decision"] == "approve":
                 row.update(state="repair_approved")
             elif payload["decision"] == "deny":
                 row.update(state="blocked", error="repair_denied")
             else:
-                raise ValueError("CI repair expects approve/deny.")
+                raise boundary_error(ValueError, "delivery_contract", "CI repair expects approve/deny.")
             request.update(
                 state="approved" if payload["decision"] == "approve" else "denied",
                 revision=request["revision"] + 1,
@@ -290,12 +291,12 @@ class DeliveryStore:
                 "request_id": decision_id,
             }
         if request["kind"] != "delivery_authority":
-            raise ValueError("Unknown delivery decision type.")
+            raise boundary_error(ValueError, "delivery_contract", "Unknown delivery decision type.")
         action = self.get("actions", request["action_id"], conn)
         row = self.get("changesets", action["changeset_id"], conn)
         self.current(row)
         if action["kind"] == "merge_change_request" and row["state"] != "merge_ready":
-            raise ValueError("PR is no longer merge-ready.")
+            raise boundary_error(ValueError, "delivery_contract", "PR is no longer merge-ready.")
         if (
             type(payload["revision"]) is not int
             or request["revision"] != payload["revision"]
@@ -305,9 +306,9 @@ class DeliveryStore:
             or row["frozen"] != action["plan"]["hash"]
             or action["state"] not in {"queued", "awaiting_approval"}
         ):
-            raise ValueError("Delivery request is stale or expired.")
+            raise boundary_error(ValueError, "delivery_contract", "Delivery request is stale or expired.")
         if payload["decision"] not in {"approve", "deny"} or "text" in payload:
-            raise ValueError("Delivery expects an explicit approve/deny.")
+            raise boundary_error(ValueError, "delivery_contract", "Delivery expects an explicit approve/deny.")
         approve = payload["decision"] == "approve"
         action.update(
             state="queued" if approve else "denied",
@@ -331,7 +332,7 @@ class DeliveryStore:
         with self.db.write() as conn:
             meta = self.runtime.store.guard(conn, self.runtime.header)
             if meta["state"] != "running":
-                raise ValueError("Service is not executing delivery.")
+                raise boundary_error(ValueError, "delivery_contract", "Service is not executing delivery.")
             current = self.get("actions", action["id"], conn)
             row = self.get("changesets", current["changeset_id"], conn)
             self.current(row)
@@ -340,35 +341,44 @@ class DeliveryStore:
                 or current["authorization"] is None
                 or current["expires_at"] <= time.time()
             ):
-                raise ValueError("Action is not authorized or has expired.")
+                raise boundary_error(ValueError, "delivery_contract", "Action is not authorized or has expired.")
             if row["frozen"] != current["plan"]["hash"]:
-                raise ValueError("Action candidate changed.")
+                raise boundary_error(ValueError, "delivery_contract", "Action candidate changed.")
             if row["frozen"] != self.freeze(row):
-                raise ValueError("Candidate quality evidence changed.")
+                raise boundary_error(ValueError, "delivery_contract", "Candidate quality evidence changed.")
             if (
                 current["kind"] == "merge_change_request"
                 and row["state"] != "merge_ready"
             ):
-                raise ValueError("Target delivery is not merge-ready.")
+                raise boundary_error(ValueError, "delivery_contract", "Target delivery is not merge-ready.")
             if current["kind"] == "merge_change_request":
                 from .merge_flow import gate
 
                 if current["plan"]["gate_hash"] != gate(row["ci"], self.spec)[
                     "hash"
                 ] or current["plan"]["policy"] != fingerprint(self.spec["merge"]):
-                    raise ValueError("Merge evidence changed since authorization.")
+                    raise boundary_error(ValueError, "delivery_contract", "Merge evidence changed since authorization.")
             pending = conn.execute(
                 "SELECT 1 FROM records WHERE section='service_actions' AND owner=? AND key<>? AND json_extract(value,'$.state') IN ('started','unknown') LIMIT 1",
                 ("service:" + self.id, current["id"]),
             ).fetchone()
             if pending:
-                raise ValueError(
+                raise boundary_error(ValueError, "delivery_contract",
                     "Inspect uncertain external actions before further writes."
                 )
             from homebrew_harness.services.action_runtime import start_attempt
 
             current = start_attempt(current, self.runtime.header["generation"])
             return self.put(conn, "actions", current)
+
+    def preflight_failed(self, action, error):
+        from homebrew_harness.services.action_runtime import preflight_failure
+        with self.db.write() as conn:
+            self.runtime.store.guard(conn, self.runtime.header)
+            current = self.get("actions", action["id"], conn)
+            if current["state"] != "queued" or current["revision"] != action["revision"]:
+                return current
+            return self.put(conn, "actions", preflight_failure(current, error))
 
     def expire_action(self, action):
         with self.db.write() as conn:
@@ -527,9 +537,9 @@ class DeliveryStore:
                     self.put(conn, "changesets", row)
                 return row
             if row["candidate"]["commit"] != observed["head"]:
-                raise ValueError("Merge observation belongs to another candidate.")
+                raise boundary_error(ValueError, "delivery_contract", "Merge observation belongs to another candidate.")
             if observed["subject"] != row["change_request"]:
-                raise ValueError("Merge observation belongs to another PR.")
+                raise boundary_error(ValueError, "delivery_contract", "Merge observation belongs to another PR.")
             import json
             from homebrew_harness.services.action_runtime import finish_attempt
 
@@ -601,7 +611,7 @@ class DeliveryStore:
             "rebase_replay",
             "fixed_tree",
         }:
-            raise ValueError(
+            raise boundary_error(ValueError, "delivery_contract",
                 "Integration completion needs a verified content and quality receipt."
             )
         with self.db.write() as conn:
@@ -613,7 +623,7 @@ class DeliveryStore:
                 row["merge"]["result_commit"] != actual["commit"]
                 or row["candidate"]["commit"] != actual["head"]
             ):
-                raise ValueError("Verified merge result changed before completion.")
+                raise boundary_error(ValueError, "delivery_contract", "Verified merge result changed before completion.")
             from pathlib import Path
 
             expected = (
@@ -623,7 +633,7 @@ class DeliveryStore:
                 / "workspace"
             )
             if Path(actual["workspace"]) != expected:
-                raise ValueError(
+                raise boundary_error(ValueError, "delivery_contract",
                     "Verified integration workspace is outside its fixed owner."
                 )
             row.update(
