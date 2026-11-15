@@ -57,6 +57,14 @@ def public(plan):
             "draft": value.get("draft"), "public_questions": open_questions(value, "requester")}
 
 
+def work_status(store, job):
+    identity = job["input"].get("work_id")
+    work = store.store.work(identity, store.id) if identity else None
+    return {"work_exists": work is not None, "state": work["state"] if work else None,
+            "development_authorized": bool(work and store.valid_authority(work)),
+            "execution_created": bool(work and work.get("run_id"))}
+
+
 def signature(job, project, binding):
     return {"input": fingerprint(job["input"]), "project": overview_signature(project),
             "model": binding.identity(), "policy": job["input"]["policy_hash"],

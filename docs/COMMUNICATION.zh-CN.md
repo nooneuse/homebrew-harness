@@ -85,3 +85,6 @@ assessment_model 默认选择维护 Lead；与 model_profile 的绑定不同时�
 内置 guidance 位于 services/prompts/discussion-assessment.md 和 discussion-draft.md。communication.prompt_files 可以通过 assessment/draft 两个键选择仓库与控制目录外的绝对 UTF-8 文件路径，无需修改 Python。文件不能是 symlink，每个文件最多 16 KiB、8,000 字符。新 job 读取新快照；已有 job 及其重试始终使用原快照。对当前议题应用新文字，使用现有 discussion assess 控制产生新的研判；更换文件路径仍走配置替换流程。模板不能改变工具、结果校验或权限边界。
 
 模型思考强度仍通过模型目录 options 配置，可为研判单独选择高强度 profile，不必将所有回复调到最高强度。
+
+
+起草输入中的 `work_status` 来自真实 Work 与授权记录。提出 develop 候选不表示已安排或授权开发；公开正文用日常语言说明实际进度，完整验收草案保持。日常回复通常建议 100–160 词，实质性说明可以更长，这不是硬性字数限制。

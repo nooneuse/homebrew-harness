@@ -124,3 +124,16 @@ def build(root, policy):
     if context["version"]:
         context["version"] = hashlib.sha256(json.dumps(context, sort_keys=True).encode()).hexdigest()
     return redact(context)
+
+
+def review_navigation(prepared):
+    """Reuse recorded paths; do not rescan the repository during request freshness checks."""
+    prepared = prepared or {}
+    evidence = dict((prepared.get("discussion_assessment") or {}).get("evidence", {}))
+    for phase in (prepared.get("phase_outputs") or {}).values():
+        for path, version in phase.get("evidence", {}).items():
+            evidence.setdefault(path, version)
+    for document in (prepared.get("project_context") or {}).get("documents", []):
+        evidence.setdefault(document["path"], document.get("sha256"))
+    return [{"path": path, "observed_sha256": version} for path, version in list(evidence.items())[:16]
+            if not path.startswith("@base/")]

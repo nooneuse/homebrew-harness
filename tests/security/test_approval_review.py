@@ -200,7 +200,8 @@ class ApprovalReviewTests(unittest.TestCase):
                         lambda value, identity: published.append(value))
         self.assertEqual(published, ['approve'])
         self.assertEqual(client.chat.completions.create.call_count, 2)
-        self.assertIn('Do not include authorization', str(payloads[-1]))
+        self.assertIn('unexpected_fields', str(payloads[-1]))
+        self.assertIn('Only decision, reason, risk and evidence_paths', str(payloads[-1]))
 
     def test_changed_context_or_human_decision_invalidates_verdict(self):
         reviewer, client, _ = self.reviewer([verdict()])
@@ -309,7 +310,7 @@ class ApprovalReviewTests(unittest.TestCase):
             "approve",
         )
         tools = client.chat.completions.create.call_args.kwargs["tools"]
-        self.assertEqual([t["function"]["name"] for t in tools], ["read_review_file"])
+        self.assertEqual([t["function"]["name"] for t in tools], ["read_review_file", "find_review_files", "search_review_text"])
         self.assertIn("print", str(payloads[-1]))
 
     def test_long_evidence_is_read_in_pages_before_native_approval(self):

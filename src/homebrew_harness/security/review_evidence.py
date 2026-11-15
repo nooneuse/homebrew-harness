@@ -13,6 +13,9 @@ FILE_BYTES = 8 * 1024 * 1024
 TOTAL_BYTES = 16 * 1024 * 1024
 MAX_FILES = 16
 MAX_PAGES = 64
+NAVIGATION_PATHS = 10_000
+NAVIGATION_BYTES = 8 * 1024 * 1024
+NAVIGATION_FILE_BYTES = 2 * 1024 * 1024
 
 
 class EvidenceLimitReached(RuntimeError):
@@ -29,6 +32,8 @@ class ReviewEvidence:
         self.files = {}
         self.pages = 0
         self.bytes = 0
+        self.navigation_bytes = 0
+        self.hints = {}
 
     def _snapshot(self, path):
         try:
@@ -113,6 +118,8 @@ class ReviewEvidence:
                 "next_offset": end if end < len(text) else None,
                 "read_complete": merged == [(0, len(text))],
                 "sha256": digest(version), "changed_since_last_read": changed,
+                **({"differs_from_navigation_hint": self.hints[path] != digest(version)}
+                   if self.hints.get(path) is not None else {}),
             }
         except UnicodeError:
             return self.error("not_utf8", "This file cannot be read as UTF-8 text.", path)
@@ -125,6 +132,151 @@ class ReviewEvidence:
             elif isinstance(error, OSError) and error.errno == errno.ELOOP:
                 code = "forbidden"
             return self.error(code, str(error)[:1000], path)
+
+    def catalog(self, entries):
+        """Stored path hints are navigation, not current file or approval proof."""
+        result = []
+        for entry in entries[:16] if isinstance(entries, list) else []:
+            if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+                continue
+            try:
+                _, parts = model_parts(self.root, entry["path"])
+                if host_managed_parts(parts) or ".worktrees" in parts:
+                    continue
+                assert_visible(self.root, entry["path"])
+            except (OSError, ValueError):
+                continue
+            path = "/".join(parts)
+            value = entry.get("observed_sha256")
+            value = value if isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value) else None
+            if path in self.hints:
+                continue
+            self.hints[path] = value
+            result.append({"path": path, "observed_sha256": value})
+        return result
+
+    def navigate(self, arguments, *, search=False):
+        from homebrew_harness.execution.execution_control import check
+        from homebrew_harness.tools.file_iteration import FileWalk
+        from .file_visibility import file_access_scope
+        if self.pages >= MAX_PAGES:
+            raise boundary_error(EvidenceLimitReached, "review_page_limit", "Review evidence page limit reached.", limit_name="review_pages", limit_value=MAX_PAGES, observed_value=self.pages + 1, unit="pages")
+        self.pages += 1
+        allowed = {"pattern", "cursor", "limit"} | ({"text"} if search else set())
+        if not isinstance(arguments, dict) or set(arguments) - allowed:
+            return self.error("invalid_arguments", "Use a relative pattern, cursor and limit, plus literal text for search.")
+        pattern, cursor, limit = arguments.get("pattern", "**/*"), arguments.get("cursor", 0), arguments.get("limit", 50)
+        text = arguments.get("text")
+        if (not isinstance(pattern, str) or not 1 <= len(pattern) <= 1000
+                or type(cursor) is not int or not 0 <= cursor <= NAVIGATION_PATHS
+                or type(limit) is not int or not 1 <= limit <= 100
+                or search and (not isinstance(text, str) or not 1 <= len(text) <= 1000)):
+            return self.error("invalid_arguments", "Navigation needs bounded pattern/text, a nonnegative cursor and a limit between 1 and 100.")
+        try:
+            if host_managed_parts(Path(pattern).parts) or ".worktrees" in Path(pattern).parts:
+                raise ValueError("Host-managed state is outside reviewer scope.")
+            walk = FileWalk(self.root, pattern, max_paths=NAVIGATION_PATHS)
+        except (OSError, ValueError) as error:
+            return self.error("forbidden", str(error)[:500])
+        items, skipped, next_cursor, stop_reason = [], 0, None, None
+        with file_access_scope(restrict_archives=True):
+            for position, path in enumerate(walk):
+                check()
+                if position < cursor:
+                    continue
+                if host_managed_parts(Path(path).parts) or ".worktrees" in Path(path).parts:
+                    continue
+                if search and self.navigation_bytes >= NAVIGATION_BYTES:
+                    stop_reason = "byte_limit"
+                    break
+                try:
+                    assert_visible(self.root, path)
+                    with SafeFile(self.root, path) as file:
+                        if search:
+                            raw, version, _ = file.snapshot(max_bytes=min(NAVIGATION_FILE_BYTES, NAVIGATION_BYTES - self.navigation_bytes))
+                            if raw is None:
+                                skipped += 1
+                                continue
+                            self.navigation_bytes += len(raw)
+                        else:
+                            with file.open_read():
+                                pass
+                        file.verify_binding()
+                    assert_visible(self.root, path)
+                except (OSError, ValueError) as error:
+                    if (search and getattr(error, "code", None) == "file_snapshot_bytes_limit"
+                            and NAVIGATION_BYTES - self.navigation_bytes < NAVIGATION_FILE_BYTES):
+                        stop_reason = "byte_limit"
+                        break
+                    skipped += 1
+                    continue
+                if search:
+                    try:
+                        decoded = raw.decode("utf-8")
+                    except UnicodeError:
+                        skipped += 1
+                        continue
+                    if "\0" in decoded:
+                        skipped += 1
+                        continue
+                    for line, content in enumerate(decoded.splitlines(), 1):
+                        check()
+                        column = content.find(text)
+                        if column >= 0:
+                            start = max(0, column - 100)
+                            items.append({"path": path, "line": line, "column": column + 1,
+                                          "text": content[start:start + 400], "sha256": digest(version)})
+                            break
+                else:
+                    items.append(path)
+                if len(items) >= limit:
+                    next_cursor, stop_reason = position + 1, "result_limit"
+                    break
+        from .data_boundary import redact
+        return redact({"ok": True, "matches" if search else "paths": items,
+                       "next_cursor": next_cursor, "truncated": bool(stop_reason or walk.truncated or skipped or walk.skipped),
+                       "stop_reason": stop_reason or walk.reason or ("unreadable_file" if skipped or walk.skipped else None),
+                       "visited_paths": walk.visited, "skipped_files": skipped + walk.skipped,
+                       "navigation_bytes": self.navigation_bytes, "navigation_byte_limit": NAVIGATION_BYTES,
+                       "trust": "Navigation observations only. Read a relevant file before using it as approval evidence."})
+
+    def observed(self):
+        return [{"path": path, "last_read_sha256": value["last_read_sha256"],
+                 "status": "present" if value["version"] is not None else "not_found",
+                 "read_complete": value["length"] is not None and value["ranges"] == [(0, value["length"])]}
+                for path, value in self.files.items()]
+
+    def observation(self, round_number, tool, arguments, result):
+        """A bounded query/result summary, without file contents or reasoning."""
+        from .data_boundary import redact
+        row = {"round": round_number, "tool": tool, "ok": result.get("ok", False)}
+        if isinstance(arguments, dict):
+            for key in ("pattern", "text"):
+                value = arguments.get(key)
+                if isinstance(value, str):
+                    row[key] = value[:200] if not Path(value).is_absolute() and ".." not in Path(value).parts else "<outside_review_root>"
+            for key in ("offset", "limit", "cursor"):
+                if type(arguments.get(key)) is int:
+                    row[key] = arguments[key]
+        path = result.get("path") or result.get("error", {}).get("path")
+        if isinstance(path, str):
+            try:
+                _, parts = model_parts(self.root, path)
+                row["path"] = "/".join(parts)[:4096]
+            except (OSError, ValueError):
+                row["path"] = "<outside_review_root>"
+        for key in ("offset", "length", "read_complete", "next_offset", "sha256", "truncated", "next_cursor", "stop_reason", "visited_paths", "navigation_bytes"):
+            if key in result:
+                row[key] = result[key]
+        if not result.get("ok"):
+            row["error_code"] = result.get("error", {}).get("code")
+        if "content" in result:
+            row["returned_characters"] = len(result["content"])
+        if "paths" in result or "matches" in result:
+            paths = result.get("paths", [item["path"] for item in result.get("matches", [])])
+            row["result_count"] = len(paths)
+            row["result_paths"] = [path[:256] for path in paths[:16]]
+        return redact(row)
 
     def verify(self, selected=None):
         changes, evidence = [], []

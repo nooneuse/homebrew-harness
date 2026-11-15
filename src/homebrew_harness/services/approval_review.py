@@ -64,6 +64,7 @@ class ServiceApprovalReview:
             else None
         )
         proposal = {"decision": raw, "trust": "proposal, not authorization"}
+        cwd, navigation = runtime.spec.workspace, []
         host_scope = {
             "project_policy": maintenance.policy,
             "delegated_kinds": list(self.config.kinds),
@@ -83,12 +84,31 @@ class ServiceApprovalReview:
                 "communication_actions", raw["action_id"]
             )
             host_scope["communication_policy"] = communication.policy
+            discussion = communication.get("discussions", raw["discussion_id"])
+            if discussion.get("review_id"):
+                snapshot = communication.get("review_snapshots", discussion["review_id"])
+                cwd = snapshot["workspace"]
+            if discussion.get("last_round"):
+                try:
+                    completed = communication.get("rounds", discussion["last_round"])
+                    prepared = maintenance.job_get(completed["job_id"])
+                except ValueError:
+                    prepared = None  # Retired optional navigation does not invalidate a pending request.
+                if (prepared and prepared["target"] == discussion["id"]
+                        and prepared["input"].get("review_id") == discussion.get("review_id")):
+                    from .project_context import review_navigation
+                    navigation = review_navigation(prepared)
         elif current["kind"] == "delivery_authority":
             proposal["action"] = maintenance.get("actions", raw["action_id"])
             proposal["changeset"] = maintenance.get("changesets", raw["changeset_id"])
             host_scope["delivery_policy"] = runtime.maintenance.delivery.store.spec
+            candidate = proposal["changeset"].get("candidate") or {}
+            cwd = candidate.get("workspace") or cwd
+            navigation = [{"path": path, "observed_sha256": value.get("sha256")}
+                          for path, value in list(candidate.get("files", {}).items())[:16]]
         return {
-            "cwd": runtime.spec.workspace,
+            "cwd": cwd,
+            "evidence_navigation": navigation,
             "intent": {
                 "original": "Assess this proposed action against the operator-configured project policy and delegated approval kinds.",
                 "operator_policy": maintenance.policy,

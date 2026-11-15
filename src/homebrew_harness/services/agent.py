@@ -378,6 +378,16 @@ class ServiceAgent:
             return False
         if self.proposal is None:
             return False
+        if self.job["kind"] == "discussion":
+            from .communication.reasoning import work_status
+            latest = work_status(self.store, self.job)
+            if latest != self.phase_work_status:
+                self.phase_work_status = latest
+                self.proposal = None
+                self.phase_signature["primary"] = fingerprint({**JobContract(self.store, self.job).primary(), "work_status": latest})
+                messages.append({"role": "user", "content": json.dumps({"work_status": latest,
+                    "instruction": "The recorded work state changed. Re-evaluate the public progress and submit a current candidate; original requirements are unchanged."})})
+                return False
         basis = dict(self.code_evidence)
         for document in (self.project_context or {}).get("documents", []):
             if self.selected_evidence is not None and document["path"] in self.selected_evidence:
@@ -466,6 +476,11 @@ class ServiceAgent:
         kind = job["kind"]
         contract = JobContract(self.store, job)
         primary = contract.primary()
+        self.phase_work_status = None
+        if kind == "discussion":
+            from .communication.reasoning import work_status
+            self.phase_work_status = work_status(self.store, job)
+            primary = {**primary, "work_status": self.phase_work_status}
         if kind in {"review", "ci_triage"}:
             self.store.delivery.git.verify(primary["candidate"])
         if kind == "audit":

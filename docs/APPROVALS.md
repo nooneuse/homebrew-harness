@@ -57,6 +57,12 @@ homebrew-harness service review-retry SERVICE_ID REQUEST_ID REVISION --retry-id 
 
 Requests retain their exact parameters, policy, ownership and execution bindings. File coverage is information for the reviewer, rather than a requirement to read every file in full.
 
+`find_review_files(pattern="**/*", cursor=0, limit=50)` locates visible files; `search_review_text(text, pattern="**/*", cursor=0, limit=50)` returns the first matching line per file. Both use bounded navigation and return a continuation cursor or a reason to narrow the query. Navigation visits at most 10,000 entries per call; literal search shares an 8 MiB content allowance with a 2 MiB per-file allowance. Navigation and file reads share the existing page limit. Search hits and stored path hints help locate evidence; read relevant files before selecting them as decision evidence.
+
+Service review contexts reuse a small directory of previously observed code paths and versions. Communication review uses its fixed PR snapshot when present; delivery review uses the candidate workspace. A previously recorded version is a navigation hint, while the reviewer decides relevance and the runtime checks its selected current evidence.
+
+The reviewer receives the remaining model turns and observed paths. It can continue reading or return a decision. Review records retain bounded `observations` describing successful and failed queries, plus `observed_evidence` even when review stops. These observations contain paths, ranges, versions and result codes; they are separate from the final verdict's `evidence` and do not authorize execution.
+
 The optional `evidence_paths` result names which observed paths support the decision; an empty list means no file evidence is needed. Immediate tool execution rechecks that selected evidence and the actual request bindings, without treating unrelated workspace changes as an approval failure.
 
 ## Runtime behavior

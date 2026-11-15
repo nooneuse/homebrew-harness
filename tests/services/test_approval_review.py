@@ -113,6 +113,7 @@ class ServiceReview(unittest.TestCase):
         runtime.maintenance.store.get = lambda *args: {
             "work_id": None,
             "action_id": "action-fixture",
+            "discussion_id": "discussion-fixture",
             "candidate": {"body": "Which parser behavior?"},
         }
         runtime.store.work = lambda *args: self.fail(
@@ -185,6 +186,19 @@ class ServiceReview(unittest.TestCase):
             "superseded",
         )
 
+
+    def test_communication_review_uses_the_fixed_snapshot_root(self):
+        runtime, request, _, _, _ = self.runtime(["communication_authority"])
+        request['kind'] = 'communication_authority'
+        snapshot = self.root / 'fixed'; snapshot.mkdir()
+        runtime.maintenance.store.get = lambda *args: {'work_id': None, 'action_id': 'action', 'discussion_id': 'discussion'}
+        values = {'communication_actions': {'id': 'action'},
+                  'discussions': {'id': 'discussion', 'review_id': 'review'},
+                  'review_snapshots': {'workspace': str(snapshot)}}
+        runtime.maintenance.communication = SimpleNamespace(store=SimpleNamespace(get=lambda kind, identity: values[kind], policy={}))
+        reviewer = ServiceApprovalReview(runtime)
+        self.addCleanup(reviewer.close)
+        self.assertEqual(reviewer.context(request)['cwd'], str(snapshot))
 
 class ServiceRuntimeReview(unittest.TestCase):
     from tests.services.test_maintenance import MaintenanceTests as _fixture

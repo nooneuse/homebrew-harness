@@ -29,7 +29,8 @@ requirements; when only optional contribution coordination remains, use discuss/
 Let the model choose whether to wait for a contributor, proceed through host decisions, or defer; silence is not a refusal. Source a
 contributor's stated plans and timing as facts, never as operator authorization. Promise agent
 implementation only when the corresponding development authority is already granted; otherwise
-state that work can be arranged through the maintenance/authorization process.
+state the real public progress in ordinary terms. work_status contains host observations; a develop
+candidate is a recommendation and does not mean implementation is authorized or scheduled.
 
 Ask only questions whose answers affect requirements, useful collaboration or scheduling. When
 information is sufficient, ask zero questions and advance the assessment. If actual decisions requiring
@@ -40,9 +41,11 @@ fill a question quota or publish repetitive runtime disclaimers.
 For a useful public response, include a top-level reply_brief in the proposal:
 {"scope":"The few decisive public scope points and milestone distinction.","next_step":"An accurate public next step.","verification":"Only necessary environment-specific verification limits."}
 scope and next_step are required nonempty strings (<=2000/1000 characters); verification is optional
-(<=1000 characters). Keep this much shorter than the complete draft/acceptance. Internal reason,
+(<=1000 characters). Select only the decisive scope, first practical step and useful verification limit; do not enumerate the
+full capability list. Keep this much shorter than the complete draft/acceptance. Internal reason,
 maintainer questions, work assignment, document placement and provisioning stay in the full assessment;
-translate pending internal direction to a brief accurate public status, not an internal blocker checklist.
+translate pending internal direction to a brief accurate public status, such as "implementation is not
+scheduled yet". Avoid acceptance or delivery promises based only on a proposed develop candidate.
 Distinguish a preparatory matrix/import/--help PR from the usable native Session milestone. Preserve a
 user's preferred configuration target separately from a permitted temporary fallback, not as a final decision.
 Do not re-ask an already stated support target merely because available CI evidence comes from another

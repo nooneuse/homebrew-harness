@@ -82,3 +82,24 @@ class ReplyBriefFlow(unittest.TestCase):
         self.assertEqual(request.arguments['candidate']['out_of_scope'],lead['draft']['out_of_scope'])
         self.assertEqual(service.work.list()['items'],[])
         self.assertEqual(self.peer.writes,[])
+
+    def test_drafting_gets_host_work_status_and_review_reuses_navigation(self):
+        from homebrew_harness.services.approval_review import ServiceApprovalReview
+        (self.project / "README.md").write_text("Public project description.")
+        service, store, job = self.setup_round()
+        result = service.runtime.maintenance.agent.run(job)
+        for request in self.peer.models[:2]:
+            packet = json.loads(next(message['content'] for message in request['messages'] if message['role'] == 'user'))
+            self.assertFalse(packet['input']['work_status']['work_exists'])
+            self.assertFalse(packet['input']['work_status']['development_authorized'])
+        store.ms.finish(job, result)
+        view = next(v for v in service.runtime.requests() if v['kind'] == 'communication_authority')
+        controller = ServiceApprovalReview(service.runtime)
+        self.addCleanup(controller.close)
+        service.resume()
+        first = controller.context(view)
+        self.assertIn('README.md', [entry['path'] for entry in first['evidence_navigation']])
+        (self.project / "README.md").write_text("New repository observation.")
+        second = controller.context(view)
+        self.assertEqual(first, second)
+        self.assertEqual(self.peer.writes, [])
