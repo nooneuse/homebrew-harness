@@ -97,6 +97,8 @@ class RunHandle(Handle):
                 "mcp_resources": value.get("mcp_resources", []),
                 "launch_error": self.error,
                 "launch_error_info": self.error_info,
+                "error_info": (outcome.get("details") or {}).get("error_info") if state in {"blocked", "failed"} else None,
+                "required_host_actions": outcome.get("required_host_actions", []) if state in {"blocked", "failed"} else [],
             },
             requests=self.requests(),
             output_available=value["status"] in {"completed", "failed", "cancelled"}

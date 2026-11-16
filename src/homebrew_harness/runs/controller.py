@@ -1480,8 +1480,13 @@ class RunController:
                                 else "provider_transient",
                                 retry_at=retry_at,
                             )
+                    from homebrew_harness.context.compaction import SummaryCompactionError
                     reason = (
-                        "provider_blocked"
+                        "deadline_reached"
+                        if self.deadline().remaining() == 0
+                        else "context_compaction_required"
+                        if isinstance(error, SummaryCompactionError)
+                        else "provider_blocked"
                         if isinstance(error, ModelGatewayError)
                         and not isinstance(error, ModelDeadlineExceeded)
                         and s.gateway.blocked
@@ -1500,11 +1505,11 @@ class RunController:
                         else "blocked"
                         if isinstance(
                             error,
-                            (ProviderError, ModelGatewayError, RecoveryRequired),
+                            (ProviderError, ModelGatewayError, RecoveryRequired, SummaryCompactionError),
                         )
                         else "failed",
                         reason,
-                        actions=("Inspect run status before resuming",),
+                        actions=("Inspect retained history and summary diagnostics; adjust context or explicitly resume",) if isinstance(error, SummaryCompactionError) else ("Inspect run status before resuming",),
                     )
         finally:
             # Keep heartbeats during true resource cleanup; Runner closes them afterwards.

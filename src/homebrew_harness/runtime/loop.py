@@ -443,7 +443,7 @@ def _agent_loop(
         except Exception as error:
             if is_context_overflow(error) and reactive_retries < 1:
                 messages[:] = compactor.compact_history(
-                    messages, active_request, plan, keep_recent=5
+                    messages, active_request, plan, keep_recent=5, tools=tools
                 )
                 reactive_retries += 1
                 continue
@@ -726,7 +726,7 @@ def _agent_loop(
         if compactor.compact_requested:
             compactor.compact_requested = False
             plan = todo_manager.render() if todo_manager is not None else ""
-            messages[:] = compactor.compact_history(messages, active_request, plan)
+            messages[:] = compactor.compact_history(messages, active_request, plan, tools=tools)
         if changed_input:
             continue
         if (

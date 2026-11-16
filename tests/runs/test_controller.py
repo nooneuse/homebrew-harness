@@ -6,6 +6,7 @@ import time
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from homebrew_harness import HarnessSession, Capabilities
@@ -191,6 +192,39 @@ class RunTests(unittest.TestCase):
         self.assertEqual(outcome.reason_code, "recovery_required")
         self.assertFalse((self.root / "b.txt").exists())
         self.assertTrue(session.recovery_operations())
+
+    def test_summary_failure_is_resumable_and_never_repeats_completed_write(self):
+        control, session, client, _ = self.controller([
+            reply(calls=[
+                call("written", name="write_file", arguments='{"path":"result.txt","content":"kept"}'),
+                call("compact", name="compact", arguments="{}"),
+            ]),
+            reply("S" * 10100), reply("S" * 11000),
+        ], RunSpec("Create result.txt and retain the original constraints", episode_model_calls=3))
+        outcome = control.execute()
+        self.assertEqual(outcome.status, "blocked")
+        self.assertEqual(outcome.reason_code, "context_compaction_required")
+        self.assertEqual((self.root / "result.txt").read_text(), "kept")
+        self.assertEqual([m["tool_call_id"] for m in session.messages if m["role"] == "tool"], ["written", "compact"])
+        self.assertFalse(session.recovery_operations())
+        info = outcome.details["error_info"]
+        self.assertEqual(info["code"], "summary_text_limit")
+        self.assertTrue((self.root / info["details"]["summary_ref"]).exists())
+        from homebrew_harness.api.runs import RunHandle
+        core = SimpleNamespace(run_store=self.store, requests=SimpleNamespace(list=lambda **kwargs: ()))
+        view = RunHandle(core, control.id).snapshot()
+        self.assertEqual(view.details["error_info"]["code"], "summary_text_limit")
+        self.assertTrue(view.details["required_host_actions"])
+        session.close()
+        self.assertTrue(session.wait_closed(5))
+        self.store.ended(control.header, cleanup=True)
+        self.store.control(control.id, "run")
+        resumed, restored, new_client, _ = self.controller([reply("Done; the result is retained.")], identity=control.id)
+        restored_outcome = resumed.execute()
+        self.assertEqual(restored_outcome.status, "completed")
+        self.assertEqual((self.root / "result.txt").read_text(), "kept")
+        self.assertEqual(new_client.chat.completions.create.call_count, 1)
+        self.assertEqual(restored.intent.original, control.spec.prompt)
 
     def test_expired_run_sends_no_model_request(self):
         control, session, client, _ = self.controller(

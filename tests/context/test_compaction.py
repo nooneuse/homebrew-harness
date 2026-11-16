@@ -252,14 +252,10 @@ class CompactionTests(unittest.TestCase):
         )
         self.assertEqual(messages, original)
         self.assertEqual(prepared[0], messages[0])
-        self.assertIn(
-            "ACTIVE: test before finishing.",
-            next(
-                message["content"]
-                for message in prepared
-                if message["role"] == "user" and message["content"].startswith("[")
-            ),
-        )
+        pinned = next(message for message in prepared if message.get("name") == "task_intent")
+        self.assertIn("ACTIVE: test before finishing.", pinned["content"])
+        marker = next(message for message in prepared if message.get("name") == "harness_compaction")
+        self.assertNotIn("ACTIVE: test before finishing.", marker["content"])
         self.assertIn(
             "[>] Verify",
             next(
@@ -336,8 +332,8 @@ class CompactionTests(unittest.TestCase):
         self.assertTrue(all("tools" not in request for request in requests))
         self.assertIn("Verified files", conversation(prepared)[0]["content"])
 
-    def test_still_oversized_summary_stops_instead_of_repeated_summaries(self):
-        client, requests = fake_client([reply("S" * 8000)])
+    def test_still_oversized_summary_stops_after_one_correction(self):
+        client, requests = fake_client([reply("S" * 8000), reply("S" * 8000)])
         compactor = self.compactor(client, context_chars=4000)
         messages = [
             {"role": "user", "content": "Task"},
@@ -347,7 +343,7 @@ class CompactionTests(unittest.TestCase):
         with self.assertRaisesRegex(CompactionError, "still exceeds"):
             compactor.prepare(messages, "Task")
         self.assertEqual(messages, original)
-        self.assertEqual(len(requests), 1)
+        self.assertEqual(len(requests), 2)
 
     def test_reactive_summary_keeps_recent_complete_batches(self):
         client, _ = fake_client([reply("Earlier state.")])
@@ -683,9 +679,8 @@ class CompactionTests(unittest.TestCase):
         self.assertEqual(
             ["tools" in request for request in requests], [True, False, True]
         )
-        self.assertIn(
-            "Original request", conversation(requests[2]["messages"])[1]["content"]
-        )
+        self.assertIn("Original request", next(m["content"] for m in requests[2]["messages"] if m.get("name") == "task_intent"))
+        self.assertNotIn("Original request", next(m["content"] for m in requests[2]["messages"] if m.get("name") == "harness_compaction"))
 
     def test_repeated_context_error_and_unrelated_errors_do_not_retry_forever(self):
         client, requests = fake_client(
