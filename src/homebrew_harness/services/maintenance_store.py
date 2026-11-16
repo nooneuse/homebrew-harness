@@ -531,7 +531,9 @@ class MaintenanceStore:
             authority=authority,
             state="approved",
             run_spec=spec.data(),
-            baseline=None,
+            # Unpublished outputs still belong to this Work after reauthorization.
+            # A prior delivery candidate establishes a separate revision baseline.
+            baseline=work.get("baseline") if not work.get("changeset_id") else None,
             repair_of=None,
             run_id=None,
             launch_id="service_"

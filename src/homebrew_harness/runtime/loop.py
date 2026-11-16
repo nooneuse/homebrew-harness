@@ -429,6 +429,11 @@ def _agent_loop(
             ):
                 steering.apply(messages, todo_manager, compactor)
                 continue
+            if components.run_control is not None:
+                # The durable control is authoritative even before its heartbeat
+                # observes cancellation. Preserve other managed cancellation causes.
+                components.run_control.safe_point()
+                raise
             raise homebrew_harness.runtime.errors.AgentError(
                 "Agent turn stopped before executing model actions."
             ) from error

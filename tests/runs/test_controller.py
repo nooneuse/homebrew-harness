@@ -284,6 +284,51 @@ class RunTests(unittest.TestCase):
         self.assertEqual(self.store.get(control.id)["deadline_at"], original_deadline)
         self.assertEqual((self.root / "a.txt").read_text(), "ok")
 
+    def check_model_cancellation(self, action):
+        from homebrew_harness.execution.model_gateway import ModelCancelled
+
+        control, session, client, _ = self.controller(
+            [], RunSpec("Write once, then finish", episode_model_calls=5)
+        )
+        path = action + ".txt"
+        count = 0
+
+        def respond(**kwargs):
+            nonlocal count
+            count += 1
+            if count == 1:
+                return self.write(action, path)
+            self.store.control(control.id, action)
+            raise ModelCancelled("Host interrupted the model request.")
+
+        client.chat.completions.create.side_effect = respond
+        outcome = control.execute()
+        self.assertEqual(outcome.status, "paused" if action == "pause" else "cancelled")
+        self.assertEqual(outcome.reason_code, action)
+        self.assertEqual((self.root / path).read_text(), "ok")
+        self.assertEqual(count, 2)
+        session.close()
+        self.assertTrue(session.wait_closed(5))
+        control.close_heartbeat()
+        self.store.ended(control.header, cleanup=True)
+        if action == "pause":
+            deadline = self.store.get(control.id)["deadline_at"]
+            self.store.control(control.id, "run")
+            resumed, next_session, resumed_client, _ = self.controller(
+                [reply("done")], identity=control.id
+            )
+            self.assertEqual(resumed.execute().status, "completed")
+            self.assertEqual(resumed_client.chat.completions.create.call_count, 1)
+            writes = [c for m in next_session.messages for c in m.get("tool_calls", []) if c.get("function", {}).get("name") == "write_file"]
+            self.assertEqual(len(writes), 1)
+            self.assertEqual(self.store.get(control.id)["deadline_at"], deadline)
+
+    def test_model_pause_preserves_completed_write_and_resumes(self):
+        self.check_model_cancellation("pause")
+
+    def test_model_cancel_keeps_completed_write_and_reports_cancelled(self):
+        self.check_model_cancellation("cancel")
+
     def test_heartbeat_does_not_mutate_context_or_core_run_revision(self):
         control, session, _, _ = self.controller([])
         control.prepare()
