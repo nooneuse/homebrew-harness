@@ -25,7 +25,7 @@ def define_tool(
     }
 
 
-NONEMPTY_STRING = {"type": "string", "minLength": 1, "pattern": r"\S"}
+NONEMPTY_STRING = {"type": "string", "minLength": 1, "pattern": r"^[\s\S]*\S[\s\S]*$"}
 
 
 SERVICE_TOOL_DEFINITIONS = [

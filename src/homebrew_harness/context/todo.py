@@ -20,7 +20,7 @@ TODO_INPUT_SCHEMA = {
     "items": {
         "type": "object",
         "properties": {
-            "content": {"type": "string", "minLength": 1, "pattern": r"\S"},
+            "content": {"type": "string", "minLength": 1, "pattern": r"^[\s\S]*\S[\s\S]*$"},
             "status": {"type": "string", "enum": list(STATUSES)},
         },
         "required": ["content", "status"],
