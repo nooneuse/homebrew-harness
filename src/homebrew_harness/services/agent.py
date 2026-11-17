@@ -111,8 +111,12 @@ class ServiceAgent:
             properties = function.get("parameters", {}).get("properties", {})
             # Keep validation in the dispatch contract; model-facing string schemas
             # need not rely on regex generation in compatible provider tool decoders.
-            for value in properties.values():
-                value.pop("pattern", None)
+            # Fields can share a template even after deepcopy. Detach each
+            # field before tailoring it, including across tool definitions.
+            for name, value in properties.items():
+                properties[name] = {
+                    key: item for key, item in value.items() if key != "pattern"
+                }
             if function.get("name") != "service_read" or not self.job or self.job["kind"] != "discussion":
                 continue
             properties["kind"]["enum"] = [

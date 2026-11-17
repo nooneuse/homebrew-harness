@@ -188,6 +188,13 @@ class ModelSelectionTests(unittest.TestCase):
             ],
             ["planner", "coder"],
         )
+        from jsonschema import Draft202012Validator
+        Draft202012Validator(schemas["task"]["function"]["parameters"]).validate(
+            {"prompt": "Write the declared output", "model_profile": "coder"}
+        )
+        self.assertNotIn(
+            "enum", schemas["task"]["function"]["parameters"]["properties"]["prompt"]
+        )
         self.assertEqual(session.gateway.summary()["by_role"]["subagent"]["calls"], 2)
         saved = session.runtime_store.items("checkpoints")
         child = next(v for k, v in saved.items() if k.startswith("sub:"))
@@ -417,7 +424,7 @@ class ModelSelectionTests(unittest.TestCase):
                                     )
                                 ]
                             ),
-                        )[1]
+                        )[2]
                     )
                 )
             ),
@@ -437,15 +444,20 @@ class ModelSelectionTests(unittest.TestCase):
         )
         try:
             with session.gateway.scope(deadline=Deadline.after(0.5)):
-                with self.assertRaises(ModelDeadlineExceeded):
-                    run_subagent(
-                        "Write",
-                        self.root,
-                        client=session.client,
-                        model=session.model,
-                        model_registry=registry,
-                        model_profile="coder",
-                    )
+                result = json.loads(run_subagent(
+                    "Write",
+                    self.root,
+                    client=session.client,
+                    model=session.model,
+                    model_registry=registry,
+                    model_profile="coder",
+                ))
+            # Expiry can also prevent checkpoint finalization. The parent gets
+            # an unfinished result; late provider output must never execute.
+            self.assertNotEqual(result["status"], "completed")
+            self.assertEqual(result["effects"], [])
+            self.assertFalse(result["cleanup_complete"])
+            self.assertIn("deadline", result["error"].lower())
             self.assertTrue(entered.is_set(), "The test must exercise an in-flight request, not pre-send expiry.")
             session.close()
             child.close.assert_not_called()

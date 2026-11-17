@@ -100,6 +100,11 @@ class ArtifactRuntimeTests(unittest.TestCase):
         self.assertEqual(
             bash["parameters"]["properties"]["artifact_profile"]["enum"], ["report"]
         )
+        from jsonschema import Draft202012Validator
+        Draft202012Validator(bash["parameters"]).validate(
+            {"command": "printf 'result' > report.txt", "artifact_profile": "report"}
+        )
+        self.assertNotIn("enum", bash["parameters"]["properties"]["command"])
         self.assertIs(session.artifacts, session.shell.artifact_store)
 
     def test_unregistered_rule_and_model_approval_field_are_rejected(self):

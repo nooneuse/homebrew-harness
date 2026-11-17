@@ -105,15 +105,19 @@ class ToolPool:
                 continue
             tool = copy.deepcopy(definition)
             function = tool["function"]
+            properties = function["parameters"]["properties"]
             name = function["name"]
             if name not in handlers or access is not None and name not in access:
                 continue
             if name in {"task", "spawn_teammate"}:
                 catalog_models = models.catalog() if models is not None else []
                 if catalog_models:
-                    function["parameters"]["properties"]["model_profile"]["enum"] = [
-                        m["name"] for m in catalog_models
-                    ]
+                    # deepcopy preserves aliases inside a definition. Replace
+                    # this field so shared string templates stay unchanged.
+                    properties["model_profile"] = {
+                        **properties["model_profile"],
+                        "enum": [m["name"] for m in catalog_models],
+                    }
                     function["description"] += (
                         " Optional model_profile selects a host model alias; omission inherits the caller model (teammates may use an exact host role default). Available models: "
                         + json.dumps(catalog_models, ensure_ascii=False)
@@ -128,9 +132,10 @@ class ToolPool:
             if name == "bash":
                 profiles = getattr(bash_policy, "outputs", ())
                 if profiles and artifacts is not None:
-                    function["parameters"]["properties"]["artifact_profile"]["enum"] = [
-                        p.name for p in profiles
-                    ]
+                    properties["artifact_profile"] = {
+                        **properties["artifact_profile"],
+                        "enum": [p.name for p in profiles],
+                    }
                     function["description"] += (
                         " Optional host output rules: "
                         + json.dumps([p.data() for p in profiles])
@@ -168,7 +173,7 @@ class ToolPool:
                 function["description"] += " Configured servers: " + ", ".join(
                     mcp.specs
                 )
-                function["parameters"]["properties"]["name"]["enum"] = list(mcp.specs)
+                properties["name"] = {**properties["name"], "enum": list(mcp.specs)}
             tools.append(tool)
         bindings = {}
         if capabilities.has("mcp") and mcp is not None:

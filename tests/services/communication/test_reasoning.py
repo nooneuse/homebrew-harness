@@ -201,6 +201,18 @@ class DiscussionReasoning(unittest.TestCase):
         self.assertNotIn('T', properties['identity']['enum'])
         self.assertIn('pattern', TOOL_SCHEMAS['service_read']['properties']['kind'])
         self.assertNotIn('pattern', properties['kind'])
+        proposal = next(t['function']['parameters'] for t in definitions
+                        if t['function']['name'] == 'service_propose')
+        self.assertNotIn('enum', proposal['properties']['proposal'])
+        from jsonschema import Draft202012Validator
+        Draft202012Validator(proposal).validate(
+            {'proposal': json.dumps(self.plan(), ensure_ascii=False)}
+        )
+        self.assertNotIn('enum', TOOL_SCHEMAS['service_propose']['properties']['proposal'])
+        agent.job = None
+        plain = agent.describe_tools(SERVICE_TOOL_DEFINITIONS)
+        self.assertNotIn('enum', plain[0]['function']['parameters']['properties']['kind'])
+        self.assertIn(job['target'], properties['identity']['enum'])
 
     def test_retry_reuses_lead_and_drafting_cannot_change_assessed_scope(self):
         self.models()
