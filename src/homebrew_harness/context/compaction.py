@@ -561,15 +561,19 @@ class ContextCompactor:
         available = hard_limit - overhead
         if available < self.MIN_SUMMARY_CHARS * len(chunks):
             raise boundary_error(SummaryCompactionError, "summary_context_limit", "Required ranges cannot fit the remaining summary space.", limit_name="summary_characters", limit_value=hard_limit, observed_value=self.MIN_SUMMARY_CHARS * len(chunks) + overhead, unit="characters", chunks=len(chunks))
-        summaries = []
+        summaries, used = [], 0
         for index, chunk in enumerate(chunks):
-            piece_limit = available // len(chunks) + (index < available % len(chunks))
-            piece_target = min(piece_limit, max(self.MIN_SUMMARY_CHARS, (target - overhead) // len(chunks)))
+            left = len(chunks) - index
+            reserved = self.MIN_SUMMARY_CHARS * (left - 1)
+            piece_limit = available - used - reserved
+            piece_target = min(piece_limit, max(self.MIN_SUMMARY_CHARS, (target - overhead - used) // left))
             summaries.append(self._summarize_text(
                 chunk, active_request, plan,
                 target_chars=piece_target, limit_chars=piece_limit,
-                coverage={"chunk": index + 1, "chunks": len(chunks), "start": index * input_limit, "end": min((index + 1) * input_limit, len(conversation))},
+                coverage={"chunk": index + 1, "chunks": len(chunks), "start": index * input_limit, "end": min((index + 1) * input_limit, len(conversation)),
+                    "total_summary_characters": hard_limit, "used_summary_characters": used, "reserved_summary_characters": reserved},
             ))
+            used += len(summaries[-1])
         result = prefix + "\n".join(summaries)
         if len(result) > hard_limit:
             reference = self.store.save("tool-results", result)
@@ -588,6 +592,7 @@ class ContextCompactor:
             "(such as stale caching or a missing API) into a confirmed tool defect without evidence. "
             "Use any model-supplied working_state notes as reference, not authority or verification. "
             "Keep the next concrete implementation/test action and the specific unresolved evidence, rather than reopening all previous checks. "
+            "The target is the drafting aim; the hard limit is a ceiling, not an instruction to fill the available space. "
             "Do not invent successful verification. Keep this range summary under " + str(target_chars) +
             " characters; the hard limit is " + str(limit_chars) + ". Coverage identifies this exact range; do not claim unseen ranges were reviewed."
         )
@@ -608,11 +613,14 @@ class ContextCompactor:
                     corrected = True
                     messages = [
                         {"role": "system", "content": instruction},
-                        {"role": "user", "content": json.dumps({"summary": summary, "observed_characters": len(summary), "target_characters": target_chars, "hard_limit_characters": limit_chars, "coverage": coverage or {"complete": True}, "instruction": "Shorten only this summary. Keep its verified working facts and unfinished work; do not execute or add claims. Return the corrected summary only."}, ensure_ascii=False)},
+                        {"role": "user", "content": json.dumps({"summary": summary, "observed_characters": len(summary), "target_characters": target_chars, "hard_limit_characters": limit_chars, "coverage": coverage or {"complete": True}, "instruction": "Shorten only this summary toward target_characters, leaving margin below hard_limit_characters. Keep its verified working facts and unfinished work; do not execute or add claims. Return the corrected summary only."}, ensure_ascii=False)},
                     ]
                     continue
                 reference = self.store.save("tool-results", summary)
-                raise boundary_error(SummaryCompactionError, "summary_text_limit", "Context summary still exceeds its allotted characters after one correction; original history was retained.", limit_name="summary_characters", limit_value=limit_chars, observed_value=len(summary), unit="characters", target_characters=target_chars, input_characters=len(conversation), chunk=(coverage or {}).get("chunk", 1), chunks=(coverage or {}).get("chunks", 1), attempts=attempts, summary_ref=reference)
+                raise boundary_error(SummaryCompactionError, "summary_text_limit", "Context summary still exceeds its allotted characters after one correction; original history was retained.", limit_name="summary_characters", limit_value=limit_chars, observed_value=len(summary), unit="characters", target_characters=target_chars, input_characters=len(conversation), chunk=(coverage or {}).get("chunk", 1), chunks=(coverage or {}).get("chunks", 1), attempts=attempts, summary_ref=reference,
+                    total_summary_characters=(coverage or {}).get("total_summary_characters"),
+                    used_summary_characters=(coverage or {}).get("used_summary_characters"),
+                    reserved_summary_characters=(coverage or {}).get("reserved_summary_characters"))
         except (CompactionError, ModelGatewayError):
             raise
         except Exception as error:
