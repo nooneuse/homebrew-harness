@@ -6,6 +6,7 @@ import json
 from contextlib import contextmanager
 from pathlib import Path
 
+from homebrew_harness.runtime.errors import boundary_error
 from homebrew_harness.execution.execution_control import check as execution_check
 from homebrew_harness.execution.execution_leases import file_update_lease
 from homebrew_harness.security.file_visibility import assert_visible, assert_model_write
@@ -31,12 +32,19 @@ def safe_path(path: str, workdir: Path) -> Path:
 
 
 def run_read(
-    path: str, workdir: Path, limit: int | None = None, offset: int = 0
+    path: str, workdir: Path, limit: int | None = None, offset: int = 0,
+    expected_version: str | None = None,
 ) -> str:
     assert_visible(workdir, path)
     with SafeFile(workdir, path) as target, target.open_read() as stream:
         import io
 
+        version = target.read_version(stream)
+        relative = "/".join(target.parts)
+        if expected_version is not None and expected_version != version:
+            raise boundary_error(ValueError, "file_read_version_changed",
+                "File changed since the previous read; discard old page offsets and read the current version.",
+                file_path=relative, expected_version=expected_version, observed_version=version, restart_offset=0)
         reader = io.TextIOWrapper(stream, encoding="utf-8", newline="")
         remaining = offset
         while remaining:
@@ -48,8 +56,11 @@ def run_read(
         execution_check()
         content = reader.read(OUTPUT_CHAR_LIMIT + 1)
         reader.detach()
-        target.verify_binding()
-        relative = "/".join(target.parts)
+        observed = target.read_version(stream)
+        if observed != version:
+            raise boundary_error(ValueError, "file_read_changed",
+                "File changed during reading; discard this page and read the current file.",
+                file_path=relative, expected_version=version, observed_version=observed, restart_offset=0)
         assert_visible(target.root, relative)
     selected = (
         content if limit is None else "".join(content.splitlines(keepends=True)[:limit])
@@ -59,6 +70,8 @@ def run_read(
     return json.dumps(
         {
             "path": relative,
+            "version": version,
+            "offset": offset,
             "content": shown,
             "truncated": truncated,
             "next_offset": offset + len(shown) if truncated else None,

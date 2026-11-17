@@ -24,6 +24,25 @@ The default model request deadline is 500 seconds. Session turns, Run episodes a
 
 Goal model checks default to 8,000 output tokens and 120 seconds. Context summaries allow 6,000 output tokens, with one 12,000-token retry for incomplete generation; their retained text and history coverage limits stay the same. Approval review has its own [configuration](APPROVALS.md).
 
+## Context windows and working state
+
+Set `context_chars` separately on each model profile. A profile value overrides the host setting; an omitted value inherits the host setting, whose default is 100,000. Valid profile values range from 10,000 to 2,000,000 serialized request characters. For example, these profiles can use the same configured connection with different windows:
+
+```json
+{
+  "profiles": {
+    "lead": {"connection": "compatible", "model_env": "LEAD_MODEL", "context_chars": 240000},
+    "coder": {"connection": "compatible", "model_env": "CODER_MODEL", "context_chars": 140000}
+  }
+}
+```
+
+Choose a character threshold appropriate to the provider's actual token window and output allowance. The harness does not infer capacity from model names or treat characters as tokens. Larger windows reduce compaction frequency and increase the history sent on each request. `/model` shows the effective context threshold and output limit; switching profiles adopts their settings. Saved Runs keep their model binding, so editing a catalog does not silently change an existing Run.
+
+Under history pressure, the harness creates a semantic working summary before replacing older messages with an archive reference. Summaries retain confirmed facts, decisions, hypotheses and pending actions, including relevant interfaces and file versions. They remain reference material; original constraints, permissions and verification receipts retain their own authority. The summary is saved in the ordinary conversation checkpoint and feeds later summaries.
+
+A model can pass optional `working_state` text to the `compact` tool to preserve its current decisions and next action; the limit is 8,000 characters. File reads return an opaque filesystem `version`. Subsequent pages can supply it as `expected_version` to detect edits; `offset` counts Unicode characters and `limit` counts lines. A changed version reports a restart offset instead of returning a page from a different snapshot.
+
 ## Connection policy
 
 The model catalog's `connections` entries accept `transport`:

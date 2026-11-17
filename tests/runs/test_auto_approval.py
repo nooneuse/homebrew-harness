@@ -37,7 +37,13 @@ class RunAutoApproval(unittest.TestCase):
         self.assertEqual(len(requests), 1)
         self.assertEqual(requests[0]["state"], "approved")
         self.assertEqual(requests[0]["arguments"], {"command": "printf ok"})
-        review_input = json.loads(payloads[1][-1]["content"])
+        review_input = next(
+            value for value in (
+                json.loads(message["content"])
+                for message in payloads[1] if message["role"] == "user"
+            ) if "host_context" in value
+        )
+        self.assertEqual(review_input["request"]["id"], requests[0]["id"])
         scope = review_input["host_context"]["host_scope"]
         self.assertEqual(scope["write_paths"], list(spec.write_paths))
         self.assertEqual(scope["bash_backend"]["mode"], "host")

@@ -88,6 +88,32 @@ class SlashTests(unittest.TestCase):
         self.assertEqual(payload['reasoning_effort'], 'high')
         self.assertEqual(session.intent.to_dict(), before)
 
+    def test_model_query_and_switch_use_each_profiles_effective_context(self):
+        client, _ = fake_client([])
+        from unittest.mock import Mock
+        client.close = Mock()
+        endpoint = "http://" + "model.invalid"
+        def registry():
+            return ModelRegistry([
+                ModelSpec('large', 'large-fixture', 'synthetic-credential', endpoint, context_chars=240000),
+                ModelSpec('small', 'small-fixture', 'synthetic-credential', endpoint, context_chars=40000),
+            ], lead_default='large', client_factory=Mock(return_value=client))
+        session = HarnessSession(None, '', self.root, model_registry=registry(), context_chars=100000)
+        session._ensure_runtime()
+        self.addCleanup(lambda: (session.close(), session.wait_closed(5)))
+        self.assertEqual(json.loads(session.run_user('/model'))['context_chars'], 240000)
+        self.assertEqual(session.compactor.context_chars, 240000)
+        self.assertEqual(json.loads(session.run_user('/model small'))['context_chars'], 40000)
+        self.assertEqual(session.compactor.context_chars, 40000)
+        sid = session.session_id
+        session.close(); self.assertTrue(session.wait_closed(5))
+        restored = HarnessSession(None, '', self.root, model_registry=registry(), resume_session=sid, context_chars=100000)
+        restored._ensure_runtime()
+        self.addCleanup(lambda: (restored.close(), restored.wait_closed(5)))
+        self.assertEqual(restored.compactor.context_chars, 40000)
+        self.assertEqual(json.loads(restored.run_user('/model'))['max_output_tokens'], 20000)
+        client.chat.completions.create.assert_not_called()
+
     def test_saved_model_choice_restores_without_changing_catalog(self):
         session, client, _ = self.session()
         session.run_user('/model other')

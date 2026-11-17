@@ -24,6 +24,25 @@ Session、Run、Service、Workflow、团队与 subagent 的常规模型生成，
 
 Goal 模型检查默认允许 8000 个输出 token、120 秒。上下文摘要首次允许 6000 个输出 token，生成不完整时仅重试一次，放宽到 12000；保留的摘要正文长度和历史覆盖边界保持原值。自动审批使用独立的[配置](APPROVALS.zh-CN.md)。
 
+## 上下文窗口与工作记录
+
+每个模型 profile 可独立设置 `context_chars`。profile 的值优先于宿主设置；省略时继承宿主值，宿主默认值为 100,000。profile 允许 10,000～2,000,000 个序列化请求字符。例如，同一个已配置连接可给两个模型分配不同窗口：
+
+```json
+{
+  "profiles": {
+    "lead": {"connection": "compatible", "model_env": "LEAD_MODEL", "context_chars": 240000},
+    "coder": {"connection": "compatible", "model_env": "CODER_MODEL", "context_chars": 140000}
+  }
+}
+```
+
+应根据提供商实际 token 窗口和输出余量选择字符阈值。harness 不根据模型名称推测容量，也不将字符等同于 token。较大的窗口降低压缩频率，同时增加每次请求携带的历史量。`/model` 显示实际上下文阈值和输出上限；切换 profile 会采用对应配置。保存的 Run 保持原模型绑定，修改目录不会隐式改变已有 Run。
+
+历史达到压力阈值时，harness 先生成语义工作摘要，再用归档引用替换较早消息。摘要保留有证据的事实、决定、假设和下一步动作，包括相关接口与文件版本。摘要属于参考材料；原始约束、权限及验证回执各自保持其权威性。摘要随普通对话 checkpoint 保存，并参与后续摘要。
+
+模型可向 `compact` 工具提供可选的 `working_state` 文本，保留当前决定和紧接着的动作，最多 8,000 字符。文件读取返回不透明的文件系统 `version`，后续页面可将其作为 `expected_version` 检测修改；`offset` 按 Unicode 字符计，`limit` 按行计。版本变化时返回重新读取的位置，不返回另一快照的页面。
+
 ## 连接策略
 
 模型目录的 `connections` 条目支持 `transport`：

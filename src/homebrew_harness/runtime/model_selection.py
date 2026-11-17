@@ -68,5 +68,6 @@ def model_status(registry, binding):
     adapter = binding.client._adapter if isinstance(binding.client, ModelGateway) else adapter_for(binding.client)
     options = json.loads(adapter.options_json)
     return redact({"profile": binding.profile, "model": binding.model, "protocol": adapter.protocol,
+        "context_chars": binding.context_chars, "max_output_tokens": binding.max_output_tokens,
         "reasoning": {name: options[name] for name in ("reasoning", "thinking") if name in options},
         "models": registry.catalog(), "selection": "profile_alias" if registry.specs else "same_connection_model_name"})

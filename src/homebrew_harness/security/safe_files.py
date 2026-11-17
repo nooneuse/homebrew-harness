@@ -3,6 +3,7 @@
 from homebrew_harness.runtime.errors import boundary_error
 
 import hashlib
+import json
 import os
 import stat
 import uuid
@@ -137,6 +138,22 @@ class SafeFile:
                 yield stream
         finally:
             os.close(fd)
+
+    def read_version(self, stream):
+        """Identify the opened regular-file snapshot and detect pathname replacement."""
+        self.verify_binding()
+        fields = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        opened = fields(os.fstat(stream.fileno()))
+        try:
+            current = fields(os.stat(self.parts[-1], dir_fd=self.fds[-1], follow_symlinks=False))
+        except FileNotFoundError:
+            current = None
+        version = hashlib.sha256(json.dumps(opened).encode()).hexdigest()
+        if current != opened:
+            raise boundary_error(ValueError, "file_read_changed",
+                "File was replaced during reading; discard this page and read the current file.",
+                file_path="/".join(self.parts), restart_offset=0)
+        return version
 
     def snapshot(self, *, max_bytes=64 * 1024 * 1024):
         try:

@@ -143,7 +143,8 @@ class CompactionTests(unittest.TestCase):
         ContextCompactor.groups(prepared)
 
     def test_snip_preserves_batch_boundaries_request_plan_and_system_policy(self):
-        compactor = self.compactor(context_chars=50000)
+        client, requests = fake_client([reply("Working facts; continue verification.") for _ in range(8)])
+        compactor = self.compactor(client, context_chars=50000)
         messages = [
             {"role": "system", "content": "Never bypass permissions."},
             {"role": "user", "content": "Initial request"},

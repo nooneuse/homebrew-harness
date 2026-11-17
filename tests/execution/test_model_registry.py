@@ -79,6 +79,21 @@ class ModelRegistryTests(unittest.TestCase):
         registry.close()
         a.client.client.close.assert_called_once()
 
+    def test_profile_windows_override_host_defaults_without_network_calls(self):
+        self.config['profiles']['lead'] = {'connection': 'provider', 'model_env': 'TEST_MODEL', 'context_chars': 240000}
+        self.config['profiles']['coder']['context_chars'] = 140000
+        self.config['defaults']['lead'] = 'lead'
+        registry = self.load()
+        factory = Mock(return_value=SimpleNamespace(close=Mock()))
+        registry.client_factory = factory
+        factory.assert_not_called()
+        lead = registry.select('lead', context_chars=100000)
+        coder = registry.select('coder', context_chars=240000)
+        self.assertEqual(lead.context_chars, 240000)
+        self.assertEqual(coder.context_chars, 140000)
+        self.assertNotEqual(lead.fingerprint, coder.fingerprint)
+        registry.close()
+
     def test_unknown_alias_never_creates_a_client(self):
         factory = Mock()
         registry = ModelRegistry([spec()], client_factory=factory)

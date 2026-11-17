@@ -1257,7 +1257,9 @@ class ModelGateway:
                 error.request_id = receipt.id if receipt else None
                 error.sent = bool(receipt and receipt.sent)
                 error.settled = receipt.done.is_set() if receipt else True
-            annotate_error(error, **metadata, elapsed_seconds=max(0, time.monotonic() - receipt.started) if receipt else None, queue_seconds=max(0, time.monotonic()-queue_started) if receipt is None else receipt.metadata.get("queue_seconds"))
+            annotate_error(error, **{**metadata,
+                "elapsed_seconds": max(0, time.monotonic() - receipt.started) if receipt else None,
+                "queue_seconds": max(0, time.monotonic() - queue_started) if receipt is None else receipt.metadata.get("queue_seconds")})
             if receipt is not None:
                 self._abandon(receipt, error)
             raise

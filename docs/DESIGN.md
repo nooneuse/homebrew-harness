@@ -70,7 +70,7 @@ Container outputs are collected into bundles using host-registered rules, then p
 
 Skills expose a short catalog first and load instructions on demand. Memory provides optional cross-session recall and maintenance.
 
-The compactor shortens older results under context pressure, archives full content, and can ask the model for a working summary. Tool batches remain complete message groups, and original records remain readable from archives.
+The compactor summarizes working state before archiving older history under context pressure. The model retains confirmed facts, decisions, hypotheses and pending actions, while original records remain readable from archives. Tool batches stay complete; summaries are checkpointed reference material. Each model profile can set its own context threshold.
 
 Task text and explicit Goal definitions bind independently and commit with the session checkpoint before model work.
 

@@ -1,4 +1,4 @@
-"""Short histories retain facts; pressured histories preserve protocol and pointers."""
+"""Short histories retain facts; pressured histories preserve protocol and working state."""
 
 import io
 import tempfile
@@ -8,7 +8,7 @@ from pathlib import Path
 
 from homebrew_harness.context.compaction import ContextCompactor
 from tests.context.test_compaction import batch
-from tests.support.clients import fake_client
+from tests.support.clients import fake_client, reply
 
 
 class PressureCompactionTests(unittest.TestCase):
@@ -37,6 +37,7 @@ class PressureCompactionTests(unittest.TestCase):
         self.assertFalse((self.root / ".harness/transcripts").exists())
 
     def test_pressure_snip_keeps_whole_tool_batches_and_index(self):
+        self.client, _ = fake_client([reply("Confirmed files; continue implementation.") for _ in range(8)])
         c = ContextCompactor(
             self.client,
             "fixture",
@@ -55,23 +56,24 @@ class PressureCompactionTests(unittest.TestCase):
         )
         self.assertIn("denials index:", marker["content"])
         self.assertLess(len(prepared), len(history))
-        self.client.chat.completions.create.assert_not_called()
+        self.assertGreater(self.client.chat.completions.create.call_count, 0)
 
     def test_tools_contribute_to_pressure_without_changing_permissions(self):
+        self.client, _ = fake_client([reply("Confirmed working facts.") for _ in range(8)])
         c = ContextCompactor(
             self.client,
             "fixture",
             self.root,
-            context_chars=10000,
+            context_chars=25000,
             trigger_messages=20,
             target_messages=10,
         )
         history = [
-            {"role": "user" if i % 2 == 0 else "assistant", "content": "message"}
+            {"role": "user" if i % 2 == 0 else "assistant", "content": "message" * 20}
             for i in range(30)
         ]
         self.assertEqual(len(c.snip_compact(history, "Continue")), 31)
-        tools = [{"description": "x" * 8000}]
+        tools = [{"description": "x" * 15000}]
         self.assertLess(
             len(c.snip_compact(history, "Continue", tools=tools)), len(history)
         )

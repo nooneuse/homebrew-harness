@@ -136,11 +136,12 @@ TOOLS = [
     ),
     define_tool(
         "read_file",
-        "Read a UTF-8 file using a real path; symlinks are rejected. Optionally limit lines; use the returned next_offset to page through longer files or archived tool outputs.",
+        "Read current UTF-8 source; symlinks are rejected. Use next_offset for pages and pass the returned version as expected_version to detect changes. The version is a filesystem snapshot marker, not a content hash.",
         {
             "path": NONEMPTY_STRING,
-            "limit": {"type": "integer", "minimum": 1},
-            "offset": {"type": "integer", "minimum": 0},
+            "limit": {"type": "integer", "minimum": 1, "description": "Maximum lines to return (also subject to the character output limit)."},
+            "offset": {"type": "integer", "minimum": 0, "description": "Start offset in Unicode characters, not bytes or lines; prefer next_offset."},
+            "expected_version": {"type": "string", "pattern": "^[a-f0-9]{64}$", "description": "Version from a previous page/read; a changed snapshot returns an error before content."},
         },
         ["path"],
     ),
@@ -205,8 +206,8 @@ TOOLS = [
     ),
     define_tool(
         "compact",
-        "Request a factual summary of earlier context after all tools in this batch finish. Original history is archived for later reading.",
-        {},
+        "Request a working summary after this tool batch. Optionally supply working_state notes with confirmed interfaces/versions, decisions, hypotheses and the next implementation/test action. Notes are reference only; original history is archived.",
+        {"working_state": {"type": "string", "maxLength": 8000}},
         [],
     ),
     define_tool(

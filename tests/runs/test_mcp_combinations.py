@@ -113,7 +113,10 @@ class RunMCPCombinations(unittest.TestCase):
                     shell_runner=session.shell,
                 )
             )
-        self.assertEqual(result["status"], "not_executed")
+        self.assertEqual(result["status"], "incomplete")
+        self.assertEqual(result["effect_state"], "none")
+        self.assertEqual(result["tools_executed"], 1)
+        self.assertTrue(result["cleanup_complete"])
         self.assertEqual(result["effects"], [])
         self.assertEqual(session.recovery_operations(), [])
         self.close(control, session)
