@@ -92,6 +92,7 @@ COMMAND_METHODS = {
     "stop": {"revision"},
     "work_pause": {"id", "revision"},
     "work_resume": {"id", "revision"},
+    "work_retry": {"id", "revision", "seconds"},
     "work_cancel": {"id", "revision"},
     "steer": {"id", "revision", "text"},
     "interrupt": {"id", "revision", "text"},

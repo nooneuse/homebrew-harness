@@ -446,6 +446,8 @@ def _agent_loop(
                 )
             raise
         except Exception as error:
+            if components.run_control is not None and not subagent and team_member is None and components.run_control.observe_model_failure(error, messages):
+                continue
             if is_context_overflow(error) and reactive_retries < 1:
                 messages[:] = compactor.compact_history(
                     messages, active_request, plan, keep_recent=5, tools=tools
@@ -457,8 +459,15 @@ def _agent_loop(
         if goal_controller is not None:
             goal_controller.worker_response(response)
         if response.finish not in {"completed", "tool_calls"}:
+            if response.finish == "invalid_output" and components.run_control is not None:
+                from homebrew_harness.execution.model_protocol import ModelOutputError
+                error = response.failure(ModelOutputError, "Model output did not match its response contract; no tools were executed.")
+                if components.run_control.observe_model_failure(error, messages):
+                    continue
             raise response.failure(homebrew_harness.runtime.errors.AgentError,
                 "No tools from this response were executed.")
+        if components.run_control is not None and not subagent and team_member is None:
+            components.run_control.model_response_received()
         calls = response.tool_calls
         if stop_event is not None and stop_event.is_set():
             raise homebrew_harness.runtime.errors.AgentError(
@@ -595,7 +604,7 @@ def _agent_loop(
             ):
                 output = json.dumps(
                     {
-                        "error": "Earlier call needs host authorization; this call was not executed.",
+                        "error": "Earlier call reported a Run blocker; this call was not executed." if components.run_control.permission_reason == "model_blocked" else "Earlier call needs host authorization; this call was not executed.",
                         "executed": False,
                     }
                 )
@@ -708,6 +717,9 @@ def _agent_loop(
             control_error = error
         if control_error is not None:
             if isinstance(control_error, ModelCancelled):
+                if components.run_control is not None:
+                    components.run_control.safe_point()
+                    raise control_error
                 raise homebrew_harness.runtime.errors.AgentError(
                     "Agent turn stopped after closing its tool batch."
                 ) from control_error

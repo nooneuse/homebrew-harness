@@ -66,6 +66,7 @@ TOOLS = [
     define_tool("git_status", "Inspect visible changes in the bound Git workspace with fixed host options.", {}, []),
     define_tool("git_diff", "Inspect tracked working changes against HEAD; optional literal relative paths narrow the result.", {"paths": {"type": "array", "items": NONEMPTY_STRING, "minItems": 1, "maxItems": 32}}, []),
 
+    define_tool("report_run_blocker", "Stop this Run without granting permission. Explain why you choose to block instead of continuing after an error or obstacle, and what is needed next.", {"reason": {**NONEMPTY_STRING, "maxLength": 2000}, "required_action": {"type": "string", "maxLength": 1000}}, ["reason"]),
     define_tool("wait_for_source", "Explicitly pause this Run until a new source event or a fresh healthy source observation. This grants no permission and preserves accepted requirements.", {"until": {"type": "string", "enum": ["event", "healthy"]}, "reason": {"type": "string", "maxLength": 1000}}, []),
     define_tool(
         "request_attention",

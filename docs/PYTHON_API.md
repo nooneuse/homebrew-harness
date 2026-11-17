@@ -221,3 +221,17 @@ Service community methods share the same Python/HTTP control boundary. See [Comm
 Maintenance decisions can be queried with `requests_page(cursor=0, limit=20, expired=False)`; items use the same HumanRequest DTO and decisions as `requests()`. Native Run requests remain available through `requests()`. `models()` exposes profile-bound error observations; historical errors do not prevent new model requests. `recover_model(profile, revision=..., request_id=...)` optionally clears observations without retrying jobs or resetting usage. `retry_approval_review(request, request_id=...)` explicitly retries a still-pending approval without granting it. Communication inspection also accepts a current revision and an explicit verified non-execution conclusion before renewed authorization.
 
 Repository delivery uses PRs. `service.plan_delivery(id, "merge_change_request")` prepares a fixed plan in service-approved mode; request approval remains separate. Default manual mode observes the maintainer merge. `service.delivery(id)` shows actual merge verification and synchronization; `refresh_delivery(id)` handles waiting observations or bounded baseline refresh, and `record("changesets", id)` reads full evidence in chunks.
+
+
+## Retry a stopped Run
+
+Ordinary `resume()` retains the existing deadline. An explicit `retry(seconds=600, request_id="retry-1")` gives a paused or blocked Run a new bounded execution window after cleanup. It retains Run identity, checkpoints, completed tool facts, and the original task. The window is capped by `RunSpec.total_seconds`; service-owned work also requires current work authority and remains within its expiry. Reusing the same request ID does not grant another window.
+
+```python
+run = harness.runs.get(run_id, control=True)
+print(run.retry(seconds=600, request_id="retry-1").data())
+# For service-owned work, renew its work authority first:
+print(service.work.get(work_id).retry(seconds=600, request_id="retry-1"))
+```
+
+Managed Leads receive output-inspection failures and malformed model responses as bounded error observations. They can continue or call `report_run_blocker` to explain why execution should stop. Consecutive feedback attempts use the existing Run retry limit, model-call limits, and deadline. Snapshot details expose `model_feedback`, the active `model_blocker`, and retry-window history.

@@ -26,6 +26,10 @@ def register(groups):
     resource.add_argument("revision", type=int)
     resource.add_argument("--token", required=True)
     resource.add_argument("--confirmed-stopped", action="store_true", required=True)
+    retry = commands.add_parser("retry", help="Explicitly grant a new bounded window to a stopped Run.")
+    retry.add_argument("run_id")
+    retry.add_argument("--seconds", type=float)
+    retry.add_argument("--request-id")
     for name in ("supervise", "status", "pause", "resume", "cancel", "recovery"):
         commands.add_parser(name).add_argument("run_id")
     for name in (
@@ -375,6 +379,8 @@ def execute(args, parser):
             return 0
         if args.command == "resume":
             store.control(identity, "run")
+        if args.command == "retry":
+            store.retry(identity, seconds=args.seconds, request_id=args.request_id)
         from .services import RunServices
 
         if args.control_config:
@@ -442,7 +448,7 @@ def execute(args, parser):
         if (
             "store" in locals()
             and "identity" in locals()
-            and args.command in {"start", "supervise", "resume"}
+            and args.command in {"start", "supervise", "resume", "retry"}
         ):
             try:
                 value = store.get(identity)

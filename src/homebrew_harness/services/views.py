@@ -84,6 +84,10 @@ class WorkHandle(Handle):
     def resume(self, **kw):
         return self._control("work_resume", **kw)
 
+    def retry(self, *, seconds=None, revision=None, request_id=None):
+        revision = self.snapshot().revision if revision is None else revision
+        return self.service.command("work_retry", {"id": self.id, "revision": revision, "seconds": seconds}, request_id)
+
     def cancel(self, **kw):
         return self._control("work_cancel", **kw)
 

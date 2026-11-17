@@ -352,6 +352,58 @@ class RunStore:
                 {**old, "pid": pid, "state": "running"},
             )
 
+    def retry(self, identity, *, seconds=None, request_id=None, expires_at=None):
+        """Explicitly grant a fresh bounded window to a quiescent blocked Run."""
+        import math
+        request_id = request_id or "retry_" + uuid.uuid4().hex
+        if not isinstance(request_id, str) or not 1 <= len(request_id) <= 200:
+            raise ValueError("Retry request_id must contain 1 to 200 characters.")
+        db = self.runtime.backend()
+        with cleanup_scope(), storage_gate(self.root), db.write() as conn:
+            value = db._get(conn, "runs", run_id(identity))
+            if value is None:
+                raise ValueError("Run is unavailable.")
+            limit = value["spec"]["total_seconds"]
+            duration = limit if seconds is None else seconds
+            if isinstance(duration, bool) or not isinstance(duration, (int, float)) or not math.isfinite(duration) or not 0 < duration <= limit:
+                raise ValueError("Retry seconds must be positive and no greater than the Run's configured total_seconds.")
+            if expires_at is not None and (isinstance(expires_at, bool) or not isinstance(expires_at, (int, float)) or not math.isfinite(expires_at)):
+                raise ValueError("Retry expiry must be a finite deadline.")
+            windows = value.get("retry_windows", [])
+            prior = next((w for w in windows if w["request_id"] == request_id), None)
+            if prior is not None:
+                if prior["requested_seconds"] != duration or prior["expires_at"] != expires_at:
+                    raise ValueError("Retry request_id has another duration.")
+                return value
+            if value["status"] not in {"blocked", "paused"} or not value.get("cleanup_complete") or value.get("finalized_at"):
+                raise ValueError("Retry requires a paused or blocked Run with completed execution cleanup.")
+            if len(windows) >= 32:
+                raise ValueError("Run retry-window limit reached; start a new Run.")
+            now = time.time()
+            if now < value.get("last_clock", value["created_at"]) - 1:
+                raise ValueError("Clock moved backwards; retry window was not granted.")
+            deadline = min(now + duration, expires_at) if expires_at is not None else now + duration
+            if deadline <= now:
+                raise ValueError("Retry authority has expired; no window was granted.")
+            old = db._get(conn, "run_controls", identity, {"revision": 0})
+            checkpoint = db._get(conn, "checkpoints", value.get("checkpoint"), {})
+            window = {"request_id": request_id, "at": now, "seconds": deadline - now,
+                      "requested_seconds": duration, "expires_at": expires_at,
+                      "previous_deadline_at": value["deadline_at"], "deadline_at": deadline,
+                      "previous_status": value["status"], "previous_reason": (value.get("last_outcome") or {}).get("reason_code")}
+            if value.get("model_feedback"):
+                value = {**value, "model_feedback": {**value["model_feedback"], "consecutive": 0}}
+            value = {**value, "deadline_at": window["deadline_at"], "last_clock": now,
+                     "retry_windows": [*windows, window], "status": "queued", "next_retry_at": None,
+                     "resume_request": {"id": "resume_" + uuid.uuid4().hex, "control_revision": old["revision"] + 1,
+                                        "faults": copy.deepcopy(checkpoint.get("usage", {}).get("connection_faults", {})), "at": now},
+                     "revision": value["revision"] + 1}
+            db._put(conn, "runs", identity, value)
+            db._put(conn, "run_controls", identity, {"revision": old["revision"] + 1, "action": "run"})
+            recipient = "user_" + identity
+            db._put(conn, "input_epochs", recipient, db._get(conn, "input_epochs", recipient, 0) + 1)
+        return self.get(identity)
+
     def control(self, identity, action):
         if action not in {"run", "pause", "cancel"}:
             raise ValueError("Invalid managed control.")

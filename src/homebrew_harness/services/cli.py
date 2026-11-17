@@ -309,6 +309,10 @@ def commands(parser, *, attach=True):
     listing.add_argument("--state")
     listing.add_argument("--cursor", type=int, default=0)
     listing.add_argument("--limit", type=int, default=20)
+    retry = tasks.add_parser("retry", help="Retry the current Run with renewed work authority.")
+    retry.add_argument("work_id")
+    retry.add_argument("--seconds", type=float)
+    retry.add_argument("--request-id")
     for name in ("show", "pause", "resume", "cancel", "revoke", "request-authority"):
         tasks.add_parser(name).add_argument("work_id")
     for name in ("steer", "interrupt", "revise"):
@@ -581,6 +585,8 @@ def operate(service, args):
         work = service.work.get(args.work_id)
         if args.work_command == "show":
             return work.snapshot()
+        if args.work_command == "retry":
+            return work.retry(seconds=args.seconds, request_id=args.request_id)
         if args.work_command in {"steer", "interrupt", "revise"}:
             return getattr(work, args.work_command)(
                 args.text, request_id=args.request_id

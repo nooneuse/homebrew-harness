@@ -92,6 +92,10 @@ class RunHandle(Handle):
             outcome.get("reason_code", ""),
             details={
                 "episode": value["episode"],
+                "deadline_at": value["deadline_at"],
+                "retry_windows": value.get("retry_windows", []),
+                "model_feedback": value.get("model_feedback"),
+                "model_blocker": value.get("model_blocker") if state == "blocked" and outcome.get("reason_code") == "model_blocked" else None,
                 "selected_model": value.get("selected_model"),
                 "member_outcomes": value.get("member_outcomes", {}),
                 "mcp_resources": value.get("mcp_resources", []),
@@ -243,6 +247,16 @@ class RunHandle(Handle):
     def resume(self):
         self._require_control()
         self.core.run_store.control(self.id, "run")
+        self.owned = self.lifetime != "detached"
+        if self.owned:
+            self.core.runs.owned[self.id] = self
+        self._ensure_started()
+        return self.snapshot()
+
+    @host_operation
+    def retry(self, *, seconds=None, request_id=None, expires_at=None):
+        self._require_control()
+        self.core.run_store.retry(self.id, seconds=seconds, request_id=request_id, expires_at=expires_at)
         self.owned = self.lifetime != "detached"
         if self.owned:
             self.core.runs.owned[self.id] = self

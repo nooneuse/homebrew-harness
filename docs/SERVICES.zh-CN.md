@@ -275,3 +275,10 @@ python examples/maintenance_demo.py --output /tmp/harness-maintenance-demo
 [Service 运维](SERVICE_OPERATIONS.zh-CN.md) 提供健康事实、原生写入者停靠、跨工作区保留、备份集合/恢复、固定仓库审查及明确的兼容版本接替。CLI、Text UI 和 Python 共用认证控制方法。
 
 可选社区沟通独立于代码交付，支持 Issue 多轮澄清和外部 PR 审查。详见[社区讨论](COMMUNICATION.zh-CN.md)。
+
+
+## 重试阻塞的开发 Run
+
+先续 Work 的当前授权，再执行 `homebrew-harness service work SERVICE_ID retry WORK_ID --request-id retry-1`；可用 `--seconds` 指定同一原生 Run/checkpoint 的有界重试窗口。Python 对应 `service.work.get(work_id).retry(...)`。
+
+预期可恢复的模型输出失败作为观察交给 Lead 判断；模型可继续调用普通工具，或报告 Run 阻塞原因。控制器保留错误事实并执行已有运行限额。权限、存储完整性和未查证工具结果仍使用原有恢复路径。

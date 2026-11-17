@@ -72,6 +72,42 @@ class ServiceRuntimeTests(unittest.TestCase):
         self.assertTrue(service.wait_closed(8))
         self.assertEqual(host.close().state, "closed")
 
+    def test_service_lead_can_recover_output_filter_with_model_feedback(self):
+        from tests.support.clients import namespace
+        host, model = self.host([
+            namespace({"error": {"code":"data_inspection_failed", "message":"Output data may contain inappropriate content."}}),
+            reply("Done after observing the recoverable error"),
+        ])
+        service = host.services.start(self.spec())
+        work = service.work.submit("Complete the scoped work")
+        eventually(lambda: work.snapshot().state == "review", 15)
+        self.assertEqual(len(model.requests), 2)
+        feedback = [m for m in model.requests[1]["messages"] if m.get("name") == "model_error_observation"]
+        self.assertEqual(len(feedback), 1)
+        self.assertEqual(work.snapshot().details["native_execution"]["details"]["model_feedback"]["consecutive"], 0)
+        service.stop()
+        self.assertTrue(service.wait_closed(8))
+
+    def test_explicit_retry_keeps_the_original_run_through_http_control(self):
+        from tests.support.clients import namespace
+        host, model = self.host([
+            namespace({"error": {"code": "invalid_parameter", "message": "Request parameter needs correction."}}),
+            reply("Done after explicit retry"),
+        ])
+        service = host.services.start(self.spec())
+        work = service.work.submit("Complete the scoped work")
+        eventually(lambda: work.snapshot().state == "blocked" and not work.snapshot().execution_pending, 15)
+        before = work.snapshot()
+        run_id = before.details["run_id"]
+        first = work.retry(seconds=15, revision=before.revision, request_id="retry-once")
+        eventually(lambda: work.snapshot().state == "review", 15)
+        replayed = work.retry(seconds=15, revision=before.revision, request_id="retry-once")
+        self.assertEqual(first, replayed)
+        self.assertEqual(work.snapshot().details["run_id"], run_id)
+        self.assertEqual(len(model.requests), 2)
+        service.stop()
+        self.assertTrue(service.wait_closed(8))
+
     def test_owner_only_control_reconnect_and_duplicate_submit(self):
         host, model = self.host([reply("Done")])
         service = host.services.start(self.spec())

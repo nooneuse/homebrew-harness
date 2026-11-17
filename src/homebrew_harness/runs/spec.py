@@ -24,7 +24,8 @@ RUN_CONTROL_TOOLS = frozenset(
     {"request_attention", "execute_approved", "read_run_event", "wait_for_source"}
 )
 RUN_STAGE_TOOLS = frozenset({"get_handoff", "integrate_stage", "publish_stage"})
-RUN_TOOLS = RUN_CONTROL_TOOLS | RUN_STAGE_TOOLS
+RUN_RECOVERY_TOOLS = frozenset({"report_run_blocker"})
+RUN_TOOLS = RUN_CONTROL_TOOLS | RUN_RECOVERY_TOOLS | RUN_STAGE_TOOLS
 DEFAULT_TOOLS = tuple(
     sorted(
         (CORE_TOOLS - {"bash", "list_artifacts", "get_artifact", "publish_artifacts"})
@@ -229,6 +230,7 @@ class RunSpec:
                 else set()
             )
             | RUN_CONTROL_TOOLS
+            | RUN_RECOVERY_TOOLS
             | stage_run_tools(self.stages)
             | ({"task"} if "subagents" in self.enabled else set())
             | ({"check_background"} if "background" in self.enabled else set())
@@ -320,7 +322,8 @@ class RunSpec:
     def effective_tools(self):
         from homebrew_harness.tools.mcp.selection import selected_names
 
-        return frozenset(self.tools) | selected_names(self.mcp)
+        controls = {"report_run_blocker"} if "request_attention" in self.tools else set()
+        return frozenset(self.tools) | selected_names(self.mcp) | controls
 
     def data(self):
         return copy.deepcopy(asdict(self))

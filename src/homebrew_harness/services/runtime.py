@@ -794,6 +794,14 @@ class ServiceRuntime:
                 if state not in {"completed", "cancelled", "failed", "paused"}:
                     handle.pause()
                 changes = {"pause_requested": True}
+            elif method == "work_retry":
+                if self.maintenance is not None and not self.maintenance.store.valid_authority(target):
+                    raise ValueError("Renew current work authority before retrying execution.")
+                if self.store.get(self.id)["state"] != "running":
+                    raise ValueError("Resume the service before retrying a Run.")
+                authority = target.get("authority") or {}
+                handle.retry(seconds=payload.get("seconds"), expires_at=authority.get("expires_at"), request_id="service-retry-" + key)
+                changes = {"pause_requested": False, "service_paused": False, "error": None}
             elif method == "work_resume":
                 if (
                     self.maintenance is not None

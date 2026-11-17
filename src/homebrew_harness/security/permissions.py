@@ -498,6 +498,7 @@ def check_permission(
         )
     if managed is not None and tool_name in {
         "request_attention",
+        "report_run_blocker",
         "read_run_event",
         "wait_for_source",
         "get_handoff",

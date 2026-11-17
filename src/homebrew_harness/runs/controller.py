@@ -166,6 +166,18 @@ class RunController:
         self.source_wait_requested = True
         return json.dumps({"waiting_for": "source", "until": until, "accepted": True, "permission_granted": False})
 
+    def observe_model_failure(self, error, messages):
+        from .model_recovery import observe
+        return observe(self, error, messages)
+
+    def model_response_received(self):
+        from .model_recovery import acknowledged
+        acknowledged(self)
+
+    def report_run_blocker(self, **arguments):
+        from .model_recovery import block
+        return block(self, **arguments)
+
     def request_attention(
         self, *, workdir, question, reason, impact, independent_work=""
     ):
@@ -203,6 +215,8 @@ class RunController:
         self.progress.observe(self, call, workdir, output)
 
     def before_model(self, messages, components):
+        from .model_recovery import context
+        context(self, messages)
         from homebrew_harness.context.tracked_history import set_context
 
         self.apply_references(messages)
@@ -1247,10 +1261,9 @@ class RunController:
                         ),
                         details={
                             "error_type": type(error).__name__,
-                            "message": redact(str(error)),
-                        }
-                        if isinstance(error, MCPError)
-                        else {},
+                            "message": error_message(error),
+                            "error_info": error_info(error),
+                        },
                     ).data(),
                 },
             )
@@ -1402,6 +1415,9 @@ class RunController:
                         )
                     if isinstance(error, RunStopped):
                         reason = error.reason_code
+                        if reason == "model_blocked":
+                            blocker = self.state.get("model_blocker") or {}
+                            return self.finish("blocked", reason, text=blocker.get("reason", ""), actions=(blocker.get("required_action") or "Inspect the model-reported blocker",))
                         if reason == "source_wait":
                             return self.finish("waiting", "source_wait", pending=("source",))
                         if (

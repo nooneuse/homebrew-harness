@@ -216,3 +216,17 @@ Service 社区沟通方法复用同一 Python/HTTP 控制边界，详见[社区�
 维护级决定通过 `requests_page(cursor=0, limit=20, expired=False)` 分页，使用相同 HumanRequest DTO 和决定入口；原生 Run 请求仍通过 `requests()` 取得。`models()` 显示按 profile 绑定的错误观察，历史错误不会阻止新请求；`recover_model(profile, revision=..., request_id=...)` 可清理当前观察，不重试 job 或清空用量。`retry_approval_review(request, request_id=...)` 显式重试一个仍待处理的审批，不授予权限。沟通查证支持按当前 revision 明确确认未执行，再申请新授权。
 
 仓库交付使用 PR。service_approved 下，`service.plan_delivery(id, "merge_change_request")` 准备固定计划，批准仍由请求接口单独完成；默认 manual 观察维护者合并。`service.delivery(id)` 显示实际合并核验与同步，`refresh_delivery(id)` 刷新等待观察或有界集成基线，`record("changesets", id)` 分页读取完整证据。
+
+
+## 重试已停止的 Run
+
+普通 `resume()` 保留原来的 deadline。显式 `retry(seconds=600, request_id="retry-1")` 在收尾完成后，给 paused/blocked Run 一个新的有界执行窗口；Run ID、checkpoint、已完成工具事实和原始任务保持。窗口不超过 `RunSpec.total_seconds`；Service Work 还需有效工作授权，窗口截止时间受授权期限限制。同一请求 ID 重复调用不重复续期。
+
+```python
+run = harness.runs.get(run_id, control=True)
+print(run.retry(seconds=600, request_id="retry-1").data())
+# Service Work 需先续工作授权：
+print(service.work.get(work_id).retry(seconds=600, request_id="retry-1"))
+```
+
+Managed Lead 会收到输出检查失败、模型响应形状错误的有界错误观察，可以继续处理，或调用 `report_run_blocker` 说明阻塞原因。连续反馈受现有 Run 重试次数、模型调用次数和 deadline 限制。snapshot details 中可以查看 `model_feedback`、当前 `model_blocker` 和重试窗口历史。

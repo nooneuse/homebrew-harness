@@ -277,12 +277,13 @@ def build_tool_pool(client, model, workdir, components: LoopComponents):
             else None
         )
         mcp_task = execution_context("lead", assignment).task_id
-    from homebrew_harness.runs.spec import RUN_CONTROL_TOOLS, stage_run_tools
+    from homebrew_harness.runs.spec import RUN_CONTROL_TOOLS, RUN_RECOVERY_TOOLS, stage_run_tools
 
     run_tools = member_run_tools
     if managed is not None:
         handlers.update(
             request_attention=managed.request_attention,
+            report_run_blocker=managed.report_run_blocker,
             wait_for_source=managed.wait_for_source,
             execute_approved=lambda **_kwargs: None,
             read_run_event=managed.read_event,
@@ -300,7 +301,7 @@ def build_tool_pool(client, model, workdir, components: LoopComponents):
         for name in available:
             if name == "get_handoff" or managed.transfers is not None:
                 handlers[name] = endpoints[name]
-        run_tools = RUN_CONTROL_TOOLS | frozenset(
+        run_tools = RUN_CONTROL_TOOLS | RUN_RECOVERY_TOOLS | frozenset(
             name for name in available if name in handlers
         )
 
