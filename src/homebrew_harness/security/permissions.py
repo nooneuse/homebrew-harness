@@ -249,6 +249,8 @@ def check_rules(tool_name: str, arguments: dict, workdir: Path) -> PermissionDec
         return PermissionDecision(
             "allow", "Read-only access to a registered skill snapshot."
         )
+    if tool_name == "read_subagent_result":
+        return PermissionDecision("allow", "Read only evidence from the owning parent checkpoint.")
     if tool_name == "task":
         return PermissionDecision(
             "allow",

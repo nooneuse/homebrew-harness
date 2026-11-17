@@ -41,7 +41,7 @@ from homebrew_harness.storage.durable_runtime import (
     save_boundary,
 )
 from homebrew_harness.tools.mcp.runtime import MCPRuntime
-from homebrew_harness.tools.tool_outcome import needs_inspection
+from homebrew_harness.tools.tool_outcome import needs_inspection, execution_pending, ExecutionPending
 from homebrew_harness.tools.tool_pool import ToolPool
 
 
@@ -328,6 +328,11 @@ def _agent_loop(
             raise homebrew_harness.runtime.errors.AgentError(
                 "Agent turn stopped because the session is closing."
             )
+        if subagent:
+            from homebrew_harness.context.tracked_history import set_context
+            remaining = max_turns - turns
+            if remaining <= 3:
+                set_context(messages, "subagent_remaining_calls", {"role": "user", "name": "subagent_remaining_calls", "content": f"This subtask has {max(0, remaining)} model calls remaining in its host limit. Choose whether to finish essential work or return a concise result with evidence and unfinished items. This adds no calls or permission."})
         if turns >= max_turns:
             if goal_controller is not None and goal_controller.pending:
                 return goal_controller.report(
@@ -585,6 +590,7 @@ def _agent_loop(
 
         revision_before = todo_manager.revision if todo_manager is not None else None
         batch_unknown = False
+        batch_pending = False
         guidance_stale = guidance.refresh(messages, guidance_cwd())
         for call in calls:
             from homebrew_harness.runtime.conversation_commands import active_evidence
@@ -616,6 +622,8 @@ def _agent_loop(
                         "executed": False,
                     }
                 )
+            elif batch_pending:
+                output = json.dumps({"error": "Earlier child execution is still active; this call was not executed.", "executed": False})
             elif batch_unknown:
                 output = json.dumps(
                     {
@@ -683,6 +691,7 @@ def _agent_loop(
                 writer.tool_messages.pop(call.id, None)
             try:
                 batch_unknown |= needs_inspection(output)
+                batch_pending |= execution_pending(output)
             except (ValueError, AttributeError):
                 pass
         changed_input = (
@@ -697,6 +706,11 @@ def _agent_loop(
             raise RecoveryRequired(
                 "Tool outcome unknown; inspect saved execution facts before continuing. Session hosts can use /recovery."
             )
+        if batch_pending:
+            if components.run_control is not None:
+                from homebrew_harness.runs.spec import RunStopped
+                raise RunStopped("execution_still_active")
+            raise ExecutionPending("Child execution is still active; wait for its owned resources before continuing.")
         if components.run_control is not None and getattr(components.run_control, "source_wait_requested", False):
             from homebrew_harness.runs.spec import RunStopped
             raise RunStopped("source_wait")

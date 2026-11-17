@@ -46,6 +46,7 @@ from homebrew_harness.security.permissions import (
 from homebrew_harness.storage.durable_runtime import active_writer
 from homebrew_harness.tools.mcp.runtime import MCPError, MCPRuntime
 from homebrew_harness.tools.tool_outcome import ToolExecutionError
+from homebrew_harness.tools.tool_effects import is_read_only
 
 
 def validate_arguments(arguments: dict, schema: dict) -> None:
@@ -583,11 +584,7 @@ def _execute_tool(
                 workdir,
                 track=True,
                 guard=getattr(before_start, "token", None),
-                **(
-                    {"read_only": True}
-                    if binding is not None and binding.policy.read_only is True
-                    else {}
-                ),
+                read_only=is_read_only(call.name, binding),
             )
             if writer
             else None

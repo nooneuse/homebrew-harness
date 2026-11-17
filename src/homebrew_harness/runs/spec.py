@@ -232,7 +232,7 @@ class RunSpec:
             | RUN_CONTROL_TOOLS
             | RUN_RECOVERY_TOOLS
             | stage_run_tools(self.stages)
-            | ({"task"} if "subagents" in self.enabled else set())
+            | ({"task", "read_subagent_result"} if "subagents" in self.enabled else set())
             | ({"check_background"} if "background" in self.enabled else set())
             | ({"workflow"} if "workflow" in self.enabled else set())
             | ({"connect_mcp"} if self.mcp else set())
@@ -323,6 +323,8 @@ class RunSpec:
         from homebrew_harness.tools.mcp.selection import selected_names
 
         controls = {"report_run_blocker"} if "request_attention" in self.tools else set()
+        if "task" in self.tools:
+            controls.add("read_subagent_result")
         return frozenset(self.tools) | selected_names(self.mcp) | controls
 
     def data(self):

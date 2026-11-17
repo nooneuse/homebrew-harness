@@ -293,7 +293,7 @@ with patch.object(GoalController,'accept_candidate',crash):
         member.thread.join(4)
         self.assertEqual(json.loads(outputs[0])["status"], "passed")
 
-    def test_child_partial_write_failure_blocks_parent_and_records_child(self):
+    def test_settled_child_write_failure_is_returned_to_parent_for_decision(self):
         s, c, _ = self.session()
         items = iter(
             [
@@ -321,6 +321,7 @@ with patch.object(GoalController,'accept_candidate',crash):
                     ]
                 ),
                 RuntimeError("fixture connection"),
+                reply("Parent continues with the known changes"),
             ]
         )
 
@@ -331,21 +332,21 @@ with patch.object(GoalController,'accept_candidate',crash):
             return response
 
         c.chat.completions.create.side_effect = create
-        with self.assertRaises(RecoveryRequired):
-            s.run_user("delegate")
+        self.assertIn("Parent continues", s.run_user("delegate"))
         self.assertTrue((self.root / "effect").exists())
-        self.assertFalse((self.root / "later").exists())
+        self.assertTrue((self.root / "later").exists())
         homebrew_harness.context.compaction.ContextCompactor.groups(s.messages)
         parent = next(m for m in s.messages if m.get("tool_call_id") == "delegate")
-        self.assertTrue(needs_inspection(parent["content"]))
+        self.assertFalse(needs_inspection(parent["content"]))
+        self.assertEqual(json.loads(parent["content"])["effect_state"], "settled")
         children = [
             v
             for k, v in s.runtime_store.read()["checkpoints"].items()
             if k.startswith("sub:")
         ]
-        self.assertEqual(children[0]["phase"], "partial")
+        self.assertEqual(children[0]["phase"], "failed")
         self.assertTrue(any(e["name"] == "write_file" for e in children[0]["effects"]))
-        self.assertTrue(json.loads(s.run_user("/recovery"))["blocked"])
+        self.assertFalse(json.loads(s.run_user("/recovery"))["blocked"])
 
     def test_child_failure_before_actions_is_not_reported_as_partial(self):
         c, _ = fake_client([])
@@ -355,7 +356,9 @@ with patch.object(GoalController,'accept_candidate',crash):
                 "read", self.root, client=c, model="fixture"
             )
         )
-        self.assertEqual(result["outcome"], "not_executed")
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["effect_state"], "none")
+        self.assertFalse(needs_inspection(result))
         self.assertFalse(result["executed"])
 
     def test_task_creation_deadline_includes_lock_and_prevents_side_effect(self):

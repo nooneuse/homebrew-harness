@@ -8,7 +8,7 @@ from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
 
 from homebrew_harness import HarnessSession, Capabilities
-from homebrew_harness.runs.spec import RunSpec, RUN_CONTROL_TOOLS, RUN_STAGE_TOOLS
+from homebrew_harness.runs.spec import RunSpec, RUN_CONTROL_TOOLS, RUN_RECOVERY_TOOLS, RUN_STAGE_TOOLS
 from homebrew_harness.runs.store import RunStore
 from homebrew_harness.runs.controller import RunController, run_scope
 from homebrew_harness.tools.dispatch import execute_tool
@@ -50,7 +50,7 @@ class EffectiveRunCapabilitiesTests(unittest.TestCase):
         self.assertTrue(RUN_CONTROL_TOOLS <= pool.names)
         self.assertTrue(RUN_STAGE_TOOLS.isdisjoint(pool.names))
         self.assertTrue(RUN_STAGE_TOOLS.isdisjoint(pool.handlers))
-        self.assertEqual(pool.names, RUN_CONTROL_TOOLS | {"read_file"})
+        self.assertEqual(pool.names, RUN_CONTROL_TOOLS | RUN_RECOVERY_TOOLS | {"read_file"})
         for name in RUN_STAGE_TOOLS:
             with run_scope(control), pool.scope():
                 result = json.loads(
@@ -105,4 +105,4 @@ class EffectiveRunCapabilitiesTests(unittest.TestCase):
             tools=("read_file",),
         )
         _, _, pool = self.pool(spec)
-        self.assertEqual(pool.names, RUN_CONTROL_TOOLS | {"read_file"})
+        self.assertEqual(pool.names, RUN_CONTROL_TOOLS | RUN_RECOVERY_TOOLS | {"read_file"})

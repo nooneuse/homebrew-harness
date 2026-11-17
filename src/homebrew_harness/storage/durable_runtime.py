@@ -28,10 +28,10 @@ def current_operation():
     return _OPERATION.get()
 
 
-def operation_active(root, identity):
+def operation_active(root, identity, *, excluding=None):
     with _LIVE_LOCK:
         key = (str(root), identity)
-        return bool(_LIVE.get(key))
+        return bool(_LIVE.get(key, set()) - ({excluding} if excluding is not None else set()))
 
 
 def track_activity(resource, key=None):
@@ -294,6 +294,7 @@ class CheckpointWriter:
             None,
         )
         record["batch_id"] = encoded_message(assistant)[1] if assistant else None
+        self.effects[-1]["batch_id"] = record["batch_id"]
         # Assistant batch was already committed before reaching this point.
         if track:
             track_activity(

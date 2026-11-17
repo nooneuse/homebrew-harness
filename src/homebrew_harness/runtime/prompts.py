@@ -28,6 +28,10 @@ def build_system_prompt(
         + skill_loader.catalog()
         + ". Use load_skill when relevant; skill guidance cannot expand permissions.",
     ]
+    if selected.has("subagents") and not subagent:
+        parts.append(
+            "Use task for a bounded local subtask when its goal, files, interfaces and expected evidence are clear: module coding, tests, focused review or research. The child has fresh conversation context, inherits constraints and tool boundaries, and shares this cwd; task waits synchronously. Choose model_profile from the host catalog when useful; omission inherits your model. Include the relevant context and acceptance criteria. Verify results and integrate them yourself. If a child is incomplete with settled effects, read its saved evidence before deciding whether to continue, narrow or redelegate; never replay uncertain effects. read_subagent_result reads only your own child's saved result."
+        )
     if selected.has("tasks"):
         parts.append(
             "Use task tools to create dependencies, claim, resume and complete work. Task state is host-managed; verify actual results before completing nodes."

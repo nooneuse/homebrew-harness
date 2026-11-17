@@ -199,7 +199,12 @@ class ContractTests(unittest.TestCase):
 
         client.chat.completions.create.side_effect = create
         messages = [{"role": "user", "content": "Delegate fixture"}]
-        with self.assertRaises(RecoveryRequired):
+        from unittest.mock import patch
+        from homebrew_harness.tools.tool_outcome import ToolExecutionError
+        def uncertain_write(**kw):
+            (self.root / "effect.txt").write_text("fixture")
+            raise ToolExecutionError("The write receipt is uncertain.", outcome="unknown", details={"operation":"write"})
+        with patch.dict("homebrew_harness.tools.registry.TOOL_HANDLERS", {"write_file": uncertain_write}), self.assertRaises(RecoveryRequired):
             homebrew_harness.runtime.loop.agent_loop(
                 client,
                 "fixture",
@@ -207,11 +212,11 @@ class ContractTests(unittest.TestCase):
                 self.root,
                 capabilities=Capabilities({"subagents"}),
             )
-        self.assertEqual(client.chat.completions.create.call_count, 3)
+        self.assertEqual(client.chat.completions.create.call_count, 2)
         self.assertTrue((self.root / "effect.txt").exists())
         self.assertFalse((self.root / "wrong.txt").exists())
         homebrew_harness.context.compaction.ContextCompactor.groups(messages)
-        self.assertEqual(json.loads(messages[-1]["content"])["outcome"], "partial")
+        self.assertEqual(json.loads(messages[-1]["content"])["outcome"], "unknown")
 
     def test_successful_child_json_is_data_not_execution_status(self):
         client, _ = fake_client(

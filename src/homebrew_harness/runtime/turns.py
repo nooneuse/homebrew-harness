@@ -49,6 +49,7 @@ from homebrew_harness.storage.durable_runtime import (
 )
 from homebrew_harness.tools.mcp.runtime import MCPRuntime
 from homebrew_harness.tools.tool_outcome import child_result
+from homebrew_harness.orchestration.subagent_results import result_for
 from homebrew_harness.tools.tool_pool import intersect_access, member_protocol_scope
 
 
@@ -131,6 +132,10 @@ def run_subagent(
     store = parent.store if parent else DurableStore(workdir)
     parent_key = parent.key if parent else None
     sid = parent.snapshot().get("session_id") if parent else identity
+    result_holder = {}
+    from homebrew_harness.storage.durable_runtime import current_operation
+    owner = current_operation()
+    owner_operation = owner[1] if owner else None
     writer = CheckpointWriter(
         store,
         "sub:" + str(sid) + ":" + identity,
@@ -142,64 +147,34 @@ def run_subagent(
             "intent": compactor.intent.to_dict(),
             "archives": compactor.store.checkpoint(),
             "model_binding": binding.identity(),
+            "subagent_result": result_holder.get("value"),
         },
     )
     writer.messages = messages
 
-    def failure(error):
-        # Even a completed child tool can have changed files; absence of final
-        # text is not proof that delegation had no effects.
-        readonly = {
-            "read_file",
-            "glob",
-            "list_tasks",
-            "get_task",
-            "list_tests",
-            "get_test_result",
-            "load_skill",
-        }
-        effects = [
-            e
-            for e in writer.effects
-            if e["name"] not in readonly and e.get("read_only") is not True
-        ]
-        status = (
-            "unknown"
-            if any(e["state"] == "started" or e["state"] == "unknown" for e in effects)
-            else "partial"
-            if effects
-            else "not_executed"
-        )
-        detail = (
-            str(error)
-            if isinstance(
-                error,
-                (
-                    homebrew_harness.runtime.errors.AgentError,
-                    HookError,
-                    CompactionError,
-                ),
-            )
-            else "(" + type(error).__name__ + ")"
-        )
-        output = child_result(
-            identity,
-            status,
-            error="Subagent stopped: "
-            + detail
-            + "; inspect its saved run before retrying.",
-            effects=effects,
-        )
+    def finish_child(status, *, result="", error=None):
+        import time
+        from homebrew_harness.orchestration.subagent_results import resources_pending, model_pending
+        from homebrew_harness.runtime.runtime_state import RecoveryRequired
+        end = time.monotonic() + 2
+        while (resources_pending(store, writer.effects, owner_operation) or model_pending(client, identity)) and time.monotonic() < end:
+            time.sleep(0.02)
+        value = result_for(writer, identity, status, result=result, error=error,
+                           owner_operation=owner_operation, force_uncertain=isinstance(error, RecoveryRequired), gateway=client)
+        result_holder["value"] = value
         try:
-            writer.save(status)
-        except Exception:
-            output = child_result(
-                identity,
-                "unknown",
-                error="Subagent result persistence failed; inspect current artifacts before retrying.",
-                effects=effects,
-            )
-        return output
+            writer.save(value["status"])
+        except Exception as persistence_error:
+            value = result_for(writer, identity, "failed", error=persistence_error,
+                               owner_operation=owner_operation, force_uncertain=True, gateway=client)
+            value["cleanup_complete"] = False
+        public = {k: v for k, v in value.items() if k not in {"tool_results", "owner_operation"}}
+        return json.dumps(public, ensure_ascii=False)
+
+    def failure(error):
+        from homebrew_harness.execution.model_gateway import ModelCancelled, ModelDeadlineExceeded
+        status = "cancelled" if isinstance(error, ModelCancelled) else "incomplete" if isinstance(error, (homebrew_harness.runtime.errors.AgentError, ModelDeadlineExceeded)) else "failed"
+        return finish_child(status, error=error)
 
     from homebrew_harness.runtime.activities import activity
     try:
@@ -236,23 +211,9 @@ def run_subagent(
                         "Subagent ended without final text."
                     )
                 )
-            writer.save("completed")
     except Exception as error:
-        if isinstance(error, ModelGatewayError) and not writer.effects:
-            writer.save("not_executed")
-            raise
         return failure(error)
-    finally:
-        if (
-            shell_runner is not None
-            and hasattr(shell_runner, "after_executions")
-            and not shell_runner.wait_closed(0)
-        ):
-            shell_runner.after_executions(lambda: None)
-    # Execution certainty is host metadata; the final answer is nested data.
-    return child_result(
-        identity, "completed", result=result, executed=bool(writer.effects)
-    )
+    return finish_child("completed", result=result)
 
 
 def set_memory_context(messages: list[dict], recalled: str) -> None:

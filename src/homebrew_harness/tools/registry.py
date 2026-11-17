@@ -52,7 +52,9 @@ def create_tool_handlers(
     if skill_loader is not None:
         handlers["load_skill"] = skill_loader.run_tool
     if task_runner is not None:
+        from homebrew_harness.orchestration.subagent_results import read_result
         handlers["task"] = task_runner
+        handlers["read_subagent_result"] = read_result
     if compactor is not None:
         handlers["compact"] = compactor.request_compact
         if handlers["bash"] is homebrew_harness.tools.shell.run_bash:

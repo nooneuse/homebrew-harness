@@ -39,7 +39,7 @@ CORE_TOOLS = frozenset(
     }
 )
 MODULE_TOOLS = {
-    "subagents": {"task"},
+    "subagents": {"task", "read_subagent_result"},
     "tasks": {
         "create_task",
         "update_task",

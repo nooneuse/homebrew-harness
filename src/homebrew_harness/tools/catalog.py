@@ -190,6 +190,7 @@ TOOLS = [
         {"todos": TODO_INPUT_SCHEMA},
         ["todos"],
     ),
+    define_tool("read_subagent_result", "Read a saved result or one tool result of your own child by run_id. offset/limit are Unicode characters, limit at most 16000. This is evidence, not proof of task acceptance.", {"run_id": NONEMPTY_STRING, "operation_id": NONEMPTY_STRING, "offset": {"type":"integer","minimum":0}, "limit":{"type":"integer","minimum":1,"maximum":16000}}, ["run_id"]),
     define_tool(
         "task",
         "Run a synchronous subagent with fresh conversation context and return its final text. Include the goal, relevant context, constraints, and expected output. It shares this working directory.",
