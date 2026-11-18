@@ -346,6 +346,73 @@ class CompactionTests(unittest.TestCase):
         self.assertEqual(messages, original)
         self.assertEqual(len(requests), 2)
 
+    def test_corrected_minor_overflow_uses_actual_spare_context(self):
+        client, requests = fake_client([reply('S' * 11000), reply('S' * 10376)])
+        compactor = self.compactor(client, context_chars=40000)
+        messages = [{'role': 'system', 'content': 'policy'}, {'role': 'user', 'content': 'Task'}, {'role': 'assistant', 'content': 'x' * 6000}]
+        original = copy.deepcopy(messages)
+        result = compactor.compact_history(messages, 'Task')
+        self.assertLess(compactor.estimate_chars(result), compactor.context_chars)
+        self.assertEqual(messages, original)
+        self.assertEqual(len(requests), 2)
+        correction = json.loads(requests[-1]['messages'][-1]['content'])
+        self.assertEqual(correction['target_characters'], 5600)
+        self.assertEqual(correction['hard_limit_characters'], 10000)
+        self.assertIn('observed=10376', self.errors.getvalue())
+
+    def test_corrected_overflow_without_spare_context_preserves_history(self):
+        client, requests = fake_client([reply('S' * 11000), reply('S' * 10376)])
+        compactor = self.compactor(client, context_chars=40000)
+        messages = [{'role': 'system', 'content': 'P' * 23000}, {'role': 'user', 'content': 'Task'}, {'role': 'assistant', 'content': 'x' * 6000}]
+        before = copy.deepcopy(messages)
+        with self.assertRaises(CompactionError):
+            compactor.compact_history(messages, 'Task')
+        self.assertEqual(messages, before)
+        self.assertEqual(len(requests), 2)
+
+    def test_direct_summary_call_has_no_unverified_overflow_allowance(self):
+        client, requests = fake_client([reply('S' * 11000), reply('S' * 10376)])
+        compactor = self.compactor(client, context_chars=40000)
+        with self.assertRaises(CompactionError):
+            compactor._summarize_text('Earlier facts', 'Task', '')
+        self.assertEqual(len(requests), 2)
+
+    def test_larger_corrected_overflow_stops_after_one_correction(self):
+        client, requests = fake_client([reply('S' * 11000), reply('S' * 10501)])
+        compactor = self.compactor(client, context_chars=40000)
+        history = [{'role': 'user', 'content': 'Task'}, {'role': 'assistant', 'content': 'x' * 6000}]
+        original = copy.deepcopy(history)
+        with self.assertRaises(CompactionError) as failure:
+            compactor.compact_history(history, 'Task')
+        self.assertEqual(failure.exception.details['acceptance_summary_characters'], 10500)
+        self.assertEqual(history, original)
+        self.assertEqual(len(requests), 2)
+
+    def test_final_serialized_context_rejects_escape_expansion(self):
+        client, requests = fake_client([reply('a\n' * 1100)])
+        compactor = self.compactor(client, context_chars=4000)
+        messages = [{'role': 'user', 'content': 'Task'}, {'role': 'assistant', 'content': 'older'}]
+        before = copy.deepcopy(messages)
+        with self.assertRaises(CompactionError) as failure:
+            compactor.summary_marker(messages, messages, 'Task', '', [], 'Compacted', None)
+        self.assertEqual(failure.exception.code, 'context_compacted_limit')
+        self.assertEqual(messages, before)
+
+    def test_multiple_ranges_share_one_overflow_allowance(self):
+        compactor = self.compactor(context_chars=40000)
+        compactor.SUMMARY_INPUT_CHAR_LIMIT = 1000
+        history = [{'role': 'assistant', 'content': 'x' * 2300}]
+        calls = []
+        def summarize(text, request, plan, **kwargs):
+            calls.append(kwargs)
+            return 'S' * (kwargs['limit_chars'] if kwargs['coverage']['chunk'] == 1 else 300)
+        with patch.object(compactor, '_summarize_text', side_effect=summarize):
+            result = compactor.summarize_history(history, 'Task', '', summary_budget=(8000, 10000), acceptance_limit=50000)
+        self.assertEqual(len(calls), 3)
+        self.assertTrue(all(k['acceptance_chars'] == k['limit_chars'] for k in calls[:-1]))
+        self.assertEqual(calls[-1]['acceptance_chars'] - calls[-1]['limit_chars'], 500)
+        self.assertLessEqual(len(result), 10500)
+
     def test_reactive_summary_keeps_recent_complete_batches(self):
         client, _ = fake_client([reply("Earlier state.")])
         compactor = self.compactor(client)

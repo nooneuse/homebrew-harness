@@ -141,3 +141,7 @@ The default resource-closing window is 60 seconds. Existing explicit values rema
 Automatic approval review and the Goal model checker default to a 500-second window. Fixed workspace Git queries allow up to 120 seconds. Explicit shorter settings and parent execution deadlines still apply.
 
 MCP connection setup and container management default to 90 seconds; container inspection allows 15 seconds. Service operations such as backup and audit have a 1500-second execution window. Status-query observation waits remain separate.
+
+## Working-state compaction
+
+Compaction preserves the complete task, accepted amendments and plan separately. Its working record prioritizes unfinished work, relevant contracts and evidence; the detailed transcript and operation index remain retrievable. The target is 8,000 characters and the normal ceiling is 10,000. An oversized result receives one focused shortening request with a lower drafting target. A corrected result may use at most 5% extra space, capped at 500 characters across the complete summary, when verified spare context is available. The complete serialized context is checked before installing the replacement. Missing space or larger overflow preserves the original history and reports the applicable limits.

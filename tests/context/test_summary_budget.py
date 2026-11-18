@@ -37,9 +37,9 @@ class SummaryBudgetTests(unittest.TestCase):
         self.assertEqual(history, before)
         self.assertEqual(sum(m.get('content', '').count(request) for m in prepared), 1)
         self.assertIn('S' * 4210, prepared[-1]['content'])
-        self.assertIn('under 8000 characters', calls[0]['messages'][0]['content'])
-        self.assertIn('target is the drafting aim', calls[0]['messages'][0]['content'])
-        self.assertIn('hard limit is 10000', calls[0]['messages'][0]['content'])
+        self.assertIn('below 8000 Unicode characters', calls[0]['messages'][0]['content'])
+        self.assertIn('do not fill the ceiling', calls[0]['messages'][0]['content'])
+        self.assertIn('normal ceiling is 10000', calls[0]['messages'][0]['content'])
         self.assertNotIn('tools', calls[0])
 
     def test_oversized_complete_summary_gets_one_small_correction(self):
@@ -49,7 +49,7 @@ class SummaryBudgetTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         correction = json.loads(calls[1]['messages'][-1]['content'])
         self.assertEqual(correction['observed_characters'], 10100)
-        self.assertEqual(correction['target_characters'], 8000)
+        self.assertEqual(correction['target_characters'], 5600)
         self.assertNotIn('conversation', correction)
         self.assertIn('toward target_characters', correction['instruction'])
         self.assertTrue(all('tools' not in call for call in calls))
@@ -83,7 +83,7 @@ class SummaryBudgetTests(unittest.TestCase):
         self.assertEqual(len(calls), 3)
         ranges = [json.loads(c['messages'][-1]['content'])['coverage'] for c in calls]
         self.assertEqual({v['chunk'] for v in ranges}, {1, 2, 3})
-        limits = [int(re.search(r'hard limit is (\d+)', c['messages'][0]['content'])[1]) for c in calls]
+        limits = [int(re.search(r'normal ceiling is (\d+)', c['messages'][0]['content'])[1]) for c in calls]
         self.assertEqual(limits, [available - 600, available - 3500 - 300, available - 5600])
         self.assertLessEqual(len(summary), 10000)
 
@@ -98,10 +98,10 @@ class SummaryBudgetTests(unittest.TestCase):
                 self.assertEqual(len(summary), first + 4500 + 38)
                 self.assertLessEqual(len(summary), 10000)
                 self.assertEqual(history, original)
-                self.assertIn('hard limit is 9662', calls[0]['messages'][0]['content'])
+                self.assertIn('normal ceiling is 9662', calls[0]['messages'][0]['content'])
                 second = json.loads(calls[1]['messages'][-1]['content'])
-                self.assertIn('hard limit is ' + str(9962 - first), calls[1]['messages'][0]['content'])
-                self.assertIn('under ' + str(7962 - first) + ' characters', calls[1]['messages'][0]['content'])
+                self.assertIn('normal ceiling is ' + str(9962 - first), calls[1]['messages'][0]['content'])
+                self.assertIn('below ' + str(7962 - first) + ' Unicode characters', calls[1]['messages'][0]['content'])
                 self.assertEqual(second['coverage']['start'], 80000)
 
     def test_true_remaining_budget_overflow_gets_one_local_correction(self):
@@ -112,13 +112,13 @@ class SummaryBudgetTests(unittest.TestCase):
         correction = json.loads(calls[2]['messages'][-1]['content'])
         self.assertEqual(correction['observed_characters'], 5000)
         self.assertEqual(correction['hard_limit_characters'], 3962)
-        self.assertEqual(correction['target_characters'], 1962)
+        self.assertEqual(correction['target_characters'], 1373)
         self.assertNotIn('conversation', correction)
         self.assertEqual(correction['coverage']['chunk'], 2)
         self.assertTrue(all('tools' not in c for c in calls))
 
     def test_exhausted_remaining_budget_retains_history_and_reports_total(self):
-        compactor, calls = self.compactor([reply('A' * 6000), reply('B' * 5000), reply('C' * 4100)], context_chars=240000)
+        compactor, calls = self.compactor([reply('A' * 6000), reply('B' * 5000), reply('C' * 4200)], context_chars=240000)
         history = [{'role': 'system', 'content': 'Keep permissions.'}, {'role': 'user', 'content': 'Never commit.'}, {'role': 'assistant', 'content': 'x' * 100000}]
         before = copy.deepcopy(history)
         with self.assertRaises(SummaryCompactionError) as failure:
@@ -128,12 +128,12 @@ class SummaryBudgetTests(unittest.TestCase):
         self.assertEqual(len(calls), 3)
         self.assertEqual(info['code'], 'summary_text_limit')
         self.assertEqual(info['details']['chunk'], 2)
-        self.assertEqual(info['details']['limit_value'], 3962)
-        self.assertEqual(info['details']['observed_value'], 4100)
+        self.assertEqual(info['details']['limit_value'], 4160)
+        self.assertEqual(info['details']['observed_value'], 4200)
         self.assertEqual(info['details']['total_summary_characters'], 10000)
         self.assertEqual(info['details']['used_summary_characters'], 6000)
         self.assertEqual(info['details']['reserved_summary_characters'], 0)
-        self.assertEqual((self.root / info['details']['summary_ref']).read_text(), 'C' * 4100)
+        self.assertEqual((self.root / info['details']['summary_ref']).read_text(), 'C' * 4200)
 
     def test_minimum_space_for_all_ranges_is_preserved(self):
         compactor, calls = self.compactor([reply('A' * 300), reply('B' * 300), reply('C' * 300)], context_chars=100000)
@@ -141,7 +141,7 @@ class SummaryBudgetTests(unittest.TestCase):
         overhead = len('[All 3 transcript ranges summarized]\n') + 2
         summary = compactor.summarize_history(history, '', '', summary_budget=(900, 900 + overhead))
         self.assertEqual(len(summary), 900 + overhead)
-        self.assertTrue(all('hard limit is 300' in c['messages'][0]['content'] for c in calls))
+        self.assertTrue(all('normal ceiling is 300' in c['messages'][0]['content'] for c in calls))
 
     def test_insufficient_total_for_all_ranges_stops_before_generation(self):
         compactor, calls = self.compactor([], context_chars=100000)
@@ -159,7 +159,7 @@ class SummaryBudgetTests(unittest.TestCase):
         self.assertEqual(len(calls), 2)
         compactor, calls = self.compactor([reply('A' * 9600), reply('Done.')], context_chars=240000)
         summary = compactor.summarize_history([{'role': 'assistant', 'content': 'x' * 100000}], '', '')
-        self.assertIn('hard limit is 362', calls[1]['messages'][0]['content'])
+        self.assertIn('normal ceiling is 362', calls[1]['messages'][0]['content'])
         self.assertTrue(summary.endswith('Done.'))
         self.assertLess(len(summary), 10000)
 
@@ -167,11 +167,11 @@ class SummaryBudgetTests(unittest.TestCase):
         compactor, calls = self.compactor([], context_chars=240000)
         history = [{'role': 'user', 'content': 'Original scope'}, {'role': 'assistant', 'content': 'x' * 100000}]
         before = copy.deepcopy(history)
-        with patch.object(compactor, '_summarize_text', side_effect=['A' * 5385, 'B' * 4578]):
+        with patch.object(compactor, '_summarize_text', side_effect=['A' * 5385, 'B' * 5078]):
             with self.assertRaises(SummaryCompactionError) as failure:
                 compactor.compact_history(history, 'Original scope')
         self.assertEqual(error_info(failure.exception)['code'], 'summary_text_limit')
-        self.assertEqual(error_info(failure.exception)['details']['observed_value'], 10001)
+        self.assertEqual(error_info(failure.exception)['details']['observed_value'], 10501)
         self.assertEqual(history, before)
         self.assertEqual(calls, [])
 

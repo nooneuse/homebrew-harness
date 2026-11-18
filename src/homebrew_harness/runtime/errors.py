@@ -55,7 +55,8 @@ def error_info(error):
                    "summary_ref", "target_characters", "input_characters", "chunk", "chunks",
                    "fixed_characters", "remaining_summary_characters", "archive_ref",
                    "file_path", "expected_version", "observed_version", "restart_offset",
-                   "total_summary_characters", "used_summary_characters", "reserved_summary_characters"}
+                   "total_summary_characters", "used_summary_characters", "reserved_summary_characters",
+                   "nominal_summary_characters", "acceptance_summary_characters"}
         allowed.update({"rollback_confirmed", "commit_state", "persistence_timeout_seconds"})
         if isinstance(value, dict):
             details.update({key: (item[:512] if isinstance(item, str) else None if isinstance(item, float) and not math.isfinite(item) else item)
@@ -107,7 +108,8 @@ def error_message(error):
               "summary_ref", "target_characters", "input_characters", "chunk", "chunks",
               "fixed_characters", "remaining_summary_characters", "archive_ref",
               "file_path", "expected_version", "observed_version", "restart_offset",
-              "total_summary_characters", "used_summary_characters", "reserved_summary_characters")
+              "total_summary_characters", "used_summary_characters", "reserved_summary_characters",
+              "nominal_summary_characters", "acceptance_summary_characters")
     facts = ", ".join(key+"="+str(info["details"][key]) for key in fields if key in info["details"] and key+"=" not in info["message"])
     return label + (": " + info["message"] if info["message"] != info["type"] else "") + (" ("+facts+")" if facts else "")
 
