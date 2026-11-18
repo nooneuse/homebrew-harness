@@ -2,6 +2,9 @@
 
 import json
 import unittest
+import threading
+import time
+from unittest.mock import patch
 
 from homebrew_harness.runs.spec import RunSpec, DEFAULT_TOOLS
 from tests.runs import test_controller as helpers
@@ -181,3 +184,112 @@ class MemberAutoApproval(unittest.TestCase):
         audit = next(iter(s.runtime_store.items("approval_reviews").values()))
         self.assertEqual(audit["reviewer_binding"], member.model_binding.identity())
         self.assertEqual(self.store.get(c.id)["test_grants"]["check"]["max_runs"], 1)
+
+
+class NativeReviewLifecycleTests(unittest.TestCase):
+    setUp = helpers.RunTests.setUp
+    controller = helpers.RunTests.controller
+
+    def delayed_review(self, *, verdict='approve', approval_seconds=60):
+        from homebrew_harness.execution.test_runner import TestRunner, TestRecipe
+        import sys
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        runner = TestRunner(self.root, [TestRecipe('quality', (sys.executable, '-I', '-c', 'print("ok")'))])
+        self.addCleanup(runner.close)
+        spec = RunSpec('Run the quality test', approval_review={'mode': 'auto_review', 'timeout_seconds': 5}, approval_seconds=approval_seconds)
+        control, session, client, payloads = self.controller([], spec=spec, test_runner=runner)
+        def respond(**kwargs):
+            if 'independent approval reviewer' in kwargs['messages'][0]['content']:
+                entered.set(); release.wait(5)
+                return reply(json.dumps({'decision': verdict, 'reason': 'Exact registered invocation.'}))
+            return reply(calls=[call('test', name='run_tests', arguments=json.dumps({'name': 'quality', 'execution': {'mode': 'interactive', 'wait_seconds': .02}}))])
+        client.chat.completions.create.side_effect = respond
+        outcomes = []
+        worker = threading.Thread(target=lambda: outcomes.append(control.execute()))
+        worker.start()
+        self.addCleanup(lambda: worker.join(5))
+        self.assertTrue(entered.wait(3))
+        return control, session, worker, outcomes, release, runner
+
+    def test_slow_auto_review_survives_short_observation_and_episode_return(self):
+        control, session, worker, outcomes, release, runner = self.delayed_review()
+        time.sleep(.1)
+        self.assertTrue(worker.is_alive(), 'Episode returned while native review was still active.')
+        self.assertFalse(session._closed)
+        request = control.requests.records(control.id)[0]
+        self.assertEqual(request['state'], 'pending')
+        release.set();worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(control.requests.get(control.id, request['id'])['state'], 'approved')
+        self.assertEqual(next(iter(session.runtime_store.items('approval_reviews').values()))['state'], 'approved')
+        self.assertEqual(runner.runs, 0, 'Review must not execute its own proposed test.')
+
+    def test_real_user_pause_cancels_review_and_preserves_pending_request(self):
+        control, session, worker, outcomes, release, runner = self.delayed_review()
+        control.store.control(control.id, 'pause')
+        worker.join(3);release.set();worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(outcomes[-1].status, 'paused')
+        self.assertNotEqual(control.requests.records(control.id)[0]['state'], 'approved')
+        self.assertEqual(runner.runs, 0)
+
+    def test_explicit_short_request_expiry_remains_effective(self):
+        control, session, worker, outcomes, release, runner = self.delayed_review(approval_seconds=1)
+        worker.join(2);release.set();worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertNotEqual(outcomes[-1].status, 'completed')
+        self.assertEqual(control.requests.records(control.id)[0]['state'], 'expired')
+        self.assertEqual(runner.runs, 0)
+
+    def test_human_override_supersedes_live_model_review_without_replaying_test(self):
+        control, session, worker, outcomes, release, runner = self.delayed_review()
+        request = control.requests.records(control.id)[0]
+        control.requests.decide(control.id, request['id'], request['revision'], 'deny')
+        worker.join(3);release.set();worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(control.requests.get(control.id, request['id'])['state'], 'denied')
+        self.assertNotEqual(next(iter(session.runtime_store.items('approval_reviews').values()))['state'], 'approved')
+        self.assertEqual(runner.runs, 0)
+
+    def test_default_request_window_covers_review_and_closing_allowance(self):
+        from homebrew_harness.security.approval_review import ReviewConfig
+        from homebrew_harness.configuration import DEFAULT_SHUTDOWN_SECONDS
+        self.assertGreater(RunSpec('Task').approval_seconds, ReviewConfig().timeout_seconds + DEFAULT_SHUTDOWN_SECONDS)
+
+    def test_request_publication_window_is_owned_before_request_row_exists(self):
+        control, session, client, payloads = self.controller([], spec=RunSpec('Task', approval_review={'mode': 'auto_review'}))
+        entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        def create():
+            with control.native_reviews.creating('tool'):
+                entered.set(); release.wait(3)
+        owner = threading.Thread(target=create);owner.start()
+        self.assertTrue(entered.wait(2))
+        waiter = threading.Thread(target=lambda: (control.native_reviews.wait(), finished.set()));waiter.start()
+        try:
+            self.assertFalse(finished.wait(.1))
+            self.assertEqual(control.requests.records(control.id), [])
+        finally:
+            release.set();owner.join(3);waiter.join(3)
+        self.assertTrue(finished.is_set())
+
+    def test_episode_timeout_does_not_cancel_a_still_valid_auto_review(self):
+        control, session, worker, outcomes, release, runner = self.delayed_review()
+        from homebrew_harness.execution.model_gateway import Deadline
+        control.episode_deadline = Deadline.after(0, source='episode')
+        time.sleep(.1)
+        self.assertTrue(worker.is_alive())
+        release.set();worker.join(5)
+        self.assertEqual(control.requests.records(control.id)[0]['state'], 'approved')
+        self.assertEqual(runner.runs, 0)
+
+    def test_another_pending_permission_does_not_abandon_active_auto_review(self):
+        control, session, worker, outcomes, release, runner = self.delayed_review()
+        control.permission_required = True
+        control.permission_reason = 'approval_required'
+        time.sleep(.1)
+        self.assertTrue(worker.is_alive())
+        release.set();worker.join(5)
+        self.assertEqual(control.requests.records(control.id)[0]['state'], 'approved')
+        self.assertEqual(runner.runs, 0)

@@ -222,13 +222,17 @@ class HumanRequests:
         independent_work="",
         grant_context=None,
     ):
-        request = self._create(control, kind, tool=tool, arguments=arguments, call_id=call_id, question=question,
-            reason=reason, impact=impact, independent_work=independent_work, grant_context=grant_context)
-        try:
-            from homebrew_harness.security.native_review import review_run
-            return review_run(control, request)
-        except Exception:
-            return self.get(control.id, request["id"])
+        with control.native_reviews.creating(kind) as activity:
+            request = self._create(control, kind, tool=tool, arguments=arguments, call_id=call_id, question=question,
+                reason=reason, impact=impact, independent_work=independent_work, grant_context=grant_context)
+            if activity is not None:
+                with control.native_reviews.changed:
+                    activity["request"] = request
+            try:
+                from homebrew_harness.security.native_review import review_run
+                return review_run(control, request, cancel_event=activity["cancel"] if activity else None)
+            except Exception:
+                return self.get(control.id, request["id"])
 
     def _create(
         self,

@@ -1,9 +1,70 @@
 """Adapt durable Run requests to the shared reviewer and original decision publisher."""
 
+import threading
+import time
+from contextlib import contextmanager
+from homebrew_harness.configuration import DEFAULT_PERSISTENCE_SECONDS
+from homebrew_harness.execution.execution_control import check
+from homebrew_harness.execution.model_gateway import Deadline
 from homebrew_harness.security.approval_review import requester_binding
 
 
-def review_run(control, request):
+class NativeReviewGate:
+    """Live native review ownership registered before its request is published."""
+
+    def __init__(self, control):
+        self.control = control
+        self.changed = threading.Condition()
+        self.active = {}
+
+    @contextmanager
+    def creating(self, kind):
+        session = self.control.session
+        reviewer = getattr(session, "approval_reviewer", None)
+        if reviewer is None or reviewer.config.mode != "auto_review" or kind not in reviewer.config.kinds:
+            yield None
+            return
+        token = object()
+        activity = {"request": None, "cancel": threading.Event(),
+                    "deadline": self.control.deadline().intersect(Deadline.after(
+                        reviewer.config.timeout_seconds + DEFAULT_PERSISTENCE_SECONDS, source="tool"))}
+        with self.changed:
+            self.active[token] = activity
+        try:
+            yield activity
+        finally:
+            with self.changed:
+                self.active.pop(token, None)
+                self.changed.notify_all()
+
+    def wait(self):
+        waited = False
+        while True:
+            with self.changed:
+                activities = list(self.active.values())
+            if not activities:
+                return waited
+            waited = True
+            self.control.safe_point(reviewing=True)
+            for activity in activities:
+                request = activity["request"]
+                if request is not None:
+                    latest = self.control.requests.get(self.control.id, request["id"])
+                    if latest["state"] != "pending" or latest["revision"] != request["revision"] or latest["expires_at"] <= time.time():
+                        activity["cancel"].set()
+                try:
+                    check(activity["deadline"], (self.control.cancel, self.control.session.stop_event),
+                          inherit=False, gateway=False)
+                except BaseException:
+                    activity["cancel"].set()
+                    raise
+            with self.changed:
+                if self.active:
+                    self.changed.wait(0.05)
+
+
+
+def review_run(control, request, *, cancel_event=None):
     session = control.session
     reviewer = getattr(session, "approval_reviewer", None)
     if reviewer is None:
@@ -72,5 +133,5 @@ def review_run(control, request):
             control.id, request["id"], request["revision"], decision
         )
 
-    reviewer.review(request, snapshot, current, publish, requester=requester)
+    reviewer.review(request, snapshot, current, publish, requester=requester, cancel_event=cancel_event)
     return control.requests.get(control.id, request["id"])

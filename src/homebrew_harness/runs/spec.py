@@ -63,7 +63,7 @@ class RunSpec:
     tools: tuple = DEFAULT_TOOLS
     allow_tests: tuple = ()
     write_paths: tuple = (".",)
-    approval_seconds: float = 300
+    approval_seconds: float = 900
     approval_review: dict | None = None
     repeat_limit: int = 3
     replan_limit: int = 1

@@ -73,6 +73,8 @@ class RunController:
             raise ValueError("Managed run owner changed.")
         self.spec = RunSpec.from_dict(self.state["spec"])
         self.session = None
+        from homebrew_harness.security.native_review import NativeReviewGate
+        self.native_reviews = NativeReviewGate(self)
         self.cancel = threading.Event()
         self.stop_heartbeat = threading.Event()
         self.heartbeat_thread = None
@@ -215,7 +217,19 @@ class RunController:
     def observe_tool(self, call, workdir, output):
         self.progress.observe(self, call, workdir, output)
 
+    def wait_review_boundary(self):
+        """Settle critical auto review before a normal segment releases its owner."""
+        try:
+            return self.native_reviews.wait()
+        except (RunStopped, ModelCancelled, ModelDeadlineExceeded) as error:
+            reason = error.reason_code if isinstance(error, RunStopped) else self.host_action or (
+                "deadline_reached" if self.deadline().remaining() == 0 else "approval_review_wait_timeout"
+                if isinstance(error, ModelDeadlineExceeded) else "approval_review_cancelled")
+            return self.finish("paused" if reason == "pause" else "cancelled" if reason == "cancel"
+                else "failed" if reason == "deadline_reached" else "blocked", reason)
+
     def before_model(self, messages, components):
+        self.native_reviews.wait()
         from .model_recovery import context
         context(self, messages)
         from homebrew_harness.context.tracked_history import set_context
@@ -470,7 +484,7 @@ class RunController:
 
         require_space(self.store.root, self.spec.min_free_bytes)
 
-    def safe_point(self, turns=None):
+    def safe_point(self, turns=None, *, reviewing=False):
         self.check_owner()
         if self.inspection_mode:
             return
@@ -483,7 +497,7 @@ class RunController:
             raise RunStopped(control["action"])
         if self.deadline().remaining() == 0:
             raise RunStopped("deadline_reached")
-        if self.permission_required:
+        if self.permission_required and not reviewing:
             raise RunStopped(getattr(self, "permission_reason", "approval_required"))
         progress = self.progress.get(self.id)
         if progress and progress["blocked"] and not self.session.inputs.pending():
@@ -1301,6 +1315,7 @@ class RunController:
                 )
                 try:
                     result = s.run_episode()
+                    self.native_reviews.wait()
                     self.refresh()
                     if (
                         self.state["last_outcome"]
@@ -1397,6 +1412,9 @@ class RunController:
                         continue
                     return outcome
                 except EpisodeYield:
+                    reviewed = self.wait_review_boundary()
+                    if isinstance(reviewed, RunOutcome):
+                        return reviewed
                     self.finish("yielded", "episode_boundary")
                     if not self.settle_requests() and self.deadline().remaining() > 0:
                         return self.finish(
@@ -1421,6 +1439,15 @@ class RunController:
                         )
                     if isinstance(error, RunStopped):
                         reason = error.reason_code
+                        if reason in {"approval_required", "attention_required"}:
+                            waited = self.wait_review_boundary()
+                            if isinstance(waited, RunOutcome):
+                                return waited
+                            if waited:
+                                latest = self.requests.reconcile(self)
+                                if not any(r["state"] == "pending" for r in latest):
+                                    self.finish("yielded", "approval_review_completed")
+                                    continue
                         if reason == "model_blocked":
                             blocker = self.state.get("model_blocker") or {}
                             return self.finish("blocked", reason, text=blocker.get("reason", ""), actions=(blocker.get("required_action") or "Inspect the model-reported blocker",))
