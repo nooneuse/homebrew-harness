@@ -285,3 +285,5 @@ python examples/maintenance_demo.py --output /tmp/harness-maintenance-demo
 
 
 [执行视图与控制](EXECUTION.zh-CN.md)
+
+Run 的原始需求、已接受补充与维护计划合计最多可包含 128,000 个字符。选择的模型 profile 仍需提供足够的上下文，正常的模型请求上下文检查继续生效。

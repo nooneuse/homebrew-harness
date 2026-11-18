@@ -30,6 +30,21 @@ class WorkRegrantTests(unittest.TestCase):
         self.assertEqual(set(candidate["delta"]), {"src/value.txt", "src/extra.txt"})
         self.assertEqual((Path(candidate["workspace"]) / "src/extra.txt").read_text(), "already implemented\n")
 
+    def test_regrant_preserves_many_accepted_amendments_in_combined_prompt(self):
+        service = self.start()
+        service.pause("all")
+        handle = service.work.submit("Complete the existing feature.")
+        directions = ['Preserved accepted direction. ' * 2500]
+        baseline = {"files": snapshot(self.workspace), "head": service.runtime.maintenance.delivery.git.head(self.workspace)}
+        work = service.store.update_work(service.runtime.header, handle.id, baseline=baseline, amendments=directions)
+        with service.store.db.write() as conn:
+            service.runtime.maintenance.store.grant(conn, work, {"scope": "code", "plan": "Continue the retained implementation."}, "operator:regrant")
+        updated = service.store.work(handle.id)
+        self.assertEqual(updated['baseline'], baseline)
+        self.assertGreater(len(updated['run_spec']['prompt']), 64000)
+        self.assertIn(directions[0], updated['run_spec']['prompt'])
+        self.assertEqual(updated['amendments'], directions)
+
     def test_prior_candidate_starts_a_new_baseline_instead_of_reusing_delivered_input(self):
         service = self.start()
         service.pause("all")

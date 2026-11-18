@@ -15,10 +15,13 @@ import re
 from pathlib import PurePosixPath
 from dataclasses import asdict, dataclass, field
 
+from homebrew_harness.runtime.errors import boundary_error
 from homebrew_harness.runtime.capabilities import CORE_TOOLS
 from homebrew_harness.orchestration.hard_conditions import validate_spec
 from homebrew_harness.security.data_boundary import redact
 from homebrew_harness.execution.model_gateway import ModelGatewayError
+
+MAX_RUN_PROMPT_CHARS = 128_000
 
 TERMINAL = {"completed", "failed", "cancelled"}
 RUN_CONTROL_TOOLS = frozenset(
@@ -124,15 +127,18 @@ class RunSpec:
             "auto",
         }:
             raise ValueError("Invalid managed memory mode.")
-        if (
-            not isinstance(self.prompt, str)
-            or not self.prompt.strip()
-            or len(self.prompt) > 64000
-            or redact(self.prompt) != self.prompt
-        ):
-            raise ValueError(
-                "Run prompt must be nonempty text without private connection values, within 64,000 characters."
+        if not isinstance(self.prompt, str) or not self.prompt.strip():
+            raise ValueError("Run prompt must be nonempty text.")
+        if len(self.prompt) > MAX_RUN_PROMPT_CHARS:
+            raise boundary_error(
+                ValueError, "run_prompt_limit",
+                "Combined Run prompt exceeds its character limit.",
+                source="run", phase="prepare", limit_name="run.prompt_characters",
+                limit_value=MAX_RUN_PROMPT_CHARS, observed_value=len(self.prompt),
+                unit="characters",
             )
+        if redact(self.prompt) != self.prompt:
+            raise ValueError("Run prompt contains private connection values.")
         from homebrew_harness.execution.source_snapshot import validate_limits
 
         object.__setattr__(

@@ -416,3 +416,34 @@ class RunTests(unittest.TestCase):
         ]:
             with self.assertRaises(ValueError):
                 RunSpec.from_dict(values)
+
+
+class LongRunPromptTests(unittest.TestCase):
+    setUp = RunTests.setUp
+    controller = RunTests.controller
+
+    def test_combined_long_prompt_reaches_model_and_intent_without_truncation(self):
+        prompt = 'Accepted requirement. ' + 'Preserved execution direction. ' * 2500
+        self.assertGreater(len(prompt), 64000)
+        control, session, client, requests = self.controller([reply('done')], spec=RunSpec(prompt, context_chars=240000), context_chars=240000)
+        outcome = control.execute()
+        self.assertEqual(outcome.status, 'completed', outcome)
+        self.assertEqual(session.intent.original, prompt)
+        self.assertTrue(any(m.get('content') == prompt for m in requests[0]))
+
+    def test_prompt_cap_reports_exact_size_before_any_execution(self):
+        from homebrew_harness.runs.spec import MAX_RUN_PROMPT_CHARS
+        from homebrew_harness.runtime.errors import error_info
+        with self.assertRaises(ValueError) as failure:
+            RunSpec('x' * (MAX_RUN_PROMPT_CHARS + 1))
+        info = error_info(failure.exception)
+        self.assertEqual(info['code'], 'run_prompt_limit')
+        self.assertEqual(info['details']['limit_value'], MAX_RUN_PROMPT_CHARS)
+        self.assertEqual(info['details']['observed_value'], MAX_RUN_PROMPT_CHARS + 1)
+
+    def test_small_context_is_still_enforced_for_long_prompt(self):
+        prompt = 'Accepted requirement. ' + 'Preserved direction. ' * 4000
+        control, session, client, requests = self.controller([reply('unused')], spec=RunSpec(prompt, context_chars=20000), context_chars=20000)
+        outcome = control.execute()
+        self.assertIn(outcome.status, {'failed', 'blocked'}, outcome)
+        self.assertEqual(requests, [])
