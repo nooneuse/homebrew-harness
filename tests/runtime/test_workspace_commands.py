@@ -191,7 +191,7 @@ class WorkspaceCommands(unittest.TestCase):
         self.assertTrue(session.runtime_store.get('session_meta',session.session_id)['execution_paused'])
         with self.assertRaises(ValueError):session.run_user('/resume')
         eventually(lambda: not worker.is_alive())
-        self.assertTrue(any(isinstance(e, ModelCancelled) for e in failures))
+        self.assertTrue(any(isinstance(e, ModelCancelled) or isinstance(e.__cause__, ModelCancelled) for e in failures), failures)
         rows = json.loads(session.run_user('/ps'))['ps']
         self.assertTrue(any(row['state'] == 'cleanup_pending' for row in rows))
         release.set();self.assertTrue(session.gateway.wait_idle(5));worker.join(5)

@@ -1,6 +1,7 @@
 """Host-selected execution backends. Container requests never fall back to native."""
 
 from homebrew_harness.runtime.errors import boundary_error
+from homebrew_harness.configuration import DEFAULT_CONTAINER_CONTROL_SECONDS, DEFAULT_CONTAINER_INSPECT_SECONDS, DEFAULT_SHUTDOWN_SECONDS
 import hashlib
 import json
 import os
@@ -27,7 +28,7 @@ def _control(argv, timeout, cancel_events=(), retain=None):
 
     runner = ShellRunner()
     try:
-        with cleanup_scope():
+        with cleanup_scope(timeout):
             return runner.run(
                 argv,
                 Path("/"),
@@ -165,7 +166,7 @@ class ContainerBackend:
             ).encode()
         ).hexdigest()
 
-    def probe(self, timeout=2, cancel_events=()):
+    def probe(self, timeout=DEFAULT_CONTAINER_INSPECT_SECONDS, cancel_events=()):
         if self.cli_identity is None:
             return {
                 "available": False,
@@ -183,7 +184,7 @@ class ContainerBackend:
         try:
             result = self._control(
                 [self.policy.cli, "info", "--format", "{{.OSType}}"],
-                max(0.001, min(2, timeout)),
+                max(0.001, min(DEFAULT_CONTAINER_INSPECT_SECONDS, timeout)),
                 cancel_events,
             )
             available = result.returncode == 0 and result.stdout.strip() == "linux"
@@ -195,7 +196,7 @@ class ContainerBackend:
             "os_isolation_verified": False,
         }
 
-    def _inspect(self, name, timeout=1):
+    def _inspect(self, name, timeout=DEFAULT_CONTAINER_INSPECT_SECONDS):
         try:
             result = self._control(
                 [self.policy.cli, "inspect", name], max(0.001, timeout)
@@ -326,7 +327,7 @@ class ContainerBackend:
             raise BackendUnavailable(
                 "Container command is not bound to this host recipe."
             )
-        if not self.probe(min(30, request.deadline.remaining()) if request.deadline.remaining() is not None else 30, request.cancel_events)[
+        if not self.probe(min(DEFAULT_CONTAINER_CONTROL_SECONDS, request.deadline.remaining()) if request.deadline.remaining() is not None else DEFAULT_CONTAINER_CONTROL_SECONDS, request.cancel_events)[
             "available"
         ]:
             raise BackendUnavailable(
@@ -377,7 +378,7 @@ class ContainerBackend:
             remaining = request.deadline.remaining()
             image_result = self._control(
                 [policy.cli, "image", "inspect", policy.image, "--format", "{{.Id}}"],
-                max(0.001, min(2, remaining if remaining is not None else 2)),
+                max(0.001, min(DEFAULT_CONTAINER_INSPECT_SECONDS, remaining if remaining is not None else DEFAULT_CONTAINER_INSPECT_SECONDS)),
                 request.cancel_events,
             )
             if image_result.returncode != 0:
@@ -463,7 +464,7 @@ class ContainerBackend:
             check(request.deadline, request.cancel_events)
             create_started = True
             creation = self._control(
-                command, min(30, request.deadline.remaining()) if request.deadline.remaining() is not None else 30, request.cancel_events
+                command, min(DEFAULT_CONTAINER_CONTROL_SECONDS, request.deadline.remaining()) if request.deadline.remaining() is not None else DEFAULT_CONTAINER_CONTROL_SECONDS, request.cancel_events
             )
             if creation.returncode != 0:
                 if self._precreation_rejection(creation):
@@ -474,7 +475,7 @@ class ContainerBackend:
             created = True
             check(request.deadline, request.cancel_events)
             configuration = self._inspect(
-                name, min(2, min(30, request.deadline.remaining()) if request.deadline.remaining() is not None else 30)
+                name, min(DEFAULT_CONTAINER_INSPECT_SECONDS, request.deadline.remaining()) if request.deadline.remaining() is not None else DEFAULT_CONTAINER_INSPECT_SECONDS
             )
             if not self._verified(configuration, name, temporary, request, image):
                 raise BackendUnavailable(
@@ -563,45 +564,47 @@ class ContainerBackend:
             and name not in listing.stdout.splitlines()
         )
 
-    def _remove(self, name, temporary, root, timeout=1):
-        deadline = Deadline.after(timeout)
-        absent = False
-        try:
-            if name in self.unknown_create:
-                observed = self._inspect(name, deadline.remaining() or 0.001)
-                if observed is None:
-                    if (
-                        name not in self.rejected_create
-                        or deadline.remaining() == 0
-                        or not self._absent(name, deadline.remaining())
-                    ):
-                        return False
-                    absent = True
-                else:
-                    labels = observed.get("Config", {}).get("Labels") or {}
-                    if labels.get("homebrew-harness.run") != name:
-                        return False
-                self.unknown_create.discard(name)
-                self.rejected_create.discard(name)
-            if not absent:
-                result = self._control(
-                    [self.policy.cli, "rm", "-f", name],
-                    max(0.001, deadline.remaining() or 0.001),
-                )
-                if result.returncode != 0:
-                    if deadline.remaining() == 0 or not self._absent(
-                        name, deadline.remaining()
-                    ):
-                        return False
-        except (OSError, ValueError, subprocess.TimeoutExpired):
-            return False
+    def _remove(self, name, temporary, root, timeout=DEFAULT_SHUTDOWN_SECONDS):
         from homebrew_harness.execution.execution_control import cleanup_scope
-        from homebrew_harness.storage.storage_admin import publish
 
-        try:
-            with cleanup_scope():
+        with cleanup_scope(timeout) as deadline:
+            absent = False
+            try:
+                if name in self.unknown_create:
+                    observed = self._inspect(name, deadline.remaining() or 0.001)
+                    if observed is None:
+                        if (
+                            name not in self.rejected_create
+                            or deadline.remaining() == 0
+                            or not self._absent(name, deadline.remaining())
+                        ):
+                            return False
+                        absent = True
+                    else:
+                        labels = observed.get("Config", {}).get("Labels") or {}
+                        if labels.get("homebrew-harness.run") != name:
+                            return False
+                    self.unknown_create.discard(name)
+                    self.rejected_create.discard(name)
+                if not absent:
+                    result = self._control(
+                        [self.policy.cli, "rm", "-f", name],
+                        max(0.001, deadline.remaining() or 0.001),
+                    )
+                    if result.returncode != 0:
+                        if deadline.remaining() == 0 or not self._absent(
+                            name, deadline.remaining()
+                        ):
+                            return False
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                return False
+            from homebrew_harness.storage.storage_admin import publish
+
+            try:
+                check(deadline)
                 if temporary.exists():
                     shutil.rmtree(temporary)
+                check(deadline)
                 publish(
                     root,
                     ".harness/containers/" + name + ".json",
@@ -612,9 +615,9 @@ class ContainerBackend:
                         "phase": "removed",
                     },
                 )
-        except (OSError, ValueError):
-            return False
-        return True
+            except (OSError, ValueError):
+                return False
+            return True
 
     def finish(self, process):
         with self.lock:
@@ -680,7 +683,7 @@ class ContainerBackend:
                     name,
                     temporary,
                     root,
-                    deadline.remaining() if deadline.remaining() is not None else 1,
+                    deadline.remaining() if deadline.remaining() is not None else DEFAULT_SHUTDOWN_SECONDS,
                 ):
                     with self.lock:
                         self.pending.pop(name, None)

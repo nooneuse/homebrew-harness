@@ -1,8 +1,10 @@
 """One monotonic deadline/cancellation contract for host tools and transports."""
 
 import threading
+import time
 from contextlib import contextmanager
 from contextvars import ContextVar
+from homebrew_harness.configuration import DEFAULT_PERSISTENCE_SECONDS, DEFAULT_SHUTDOWN_SECONDS
 
 from homebrew_harness.execution.model_gateway import (
     Deadline,
@@ -15,15 +17,44 @@ from homebrew_harness.execution.model_gateway import (
 _CLEANUP = ContextVar("execution_cleanup", default=None)
 _CONTROL = ContextVar("execution_host_control", default=None)
 _CONTROL_CANCEL = ContextVar("execution_control_cancel", default=())
+_PERSISTENCE = ContextVar("execution_persistence", default=None)
 
 
 @contextmanager
-def cleanup_scope(seconds=2):
-    token = _CLEANUP.set(_CLEANUP.get() or Deadline.after(seconds, source="cleanup"))
+def cleanup_scope(seconds=DEFAULT_SHUTDOWN_SECONDS):
+    deadline = Deadline.after(seconds, source="cleanup")
+    if _CLEANUP.get() is not None:
+        deadline = deadline.intersect(_CLEANUP.get())
+    token = _CLEANUP.set(deadline)
     try:
-        yield
+        yield deadline
     finally:
         _CLEANUP.reset(token)
+
+
+def current_persistence():
+    return _PERSISTENCE.get()
+
+
+@contextmanager
+def persistence_scope(seconds=DEFAULT_PERSISTENCE_SECONDS, *, operation="state_commit", context_id=None):
+    previous = _PERSISTENCE.get()
+    deadline = Deadline.after(seconds, source="persistence")
+    started = time.monotonic()
+    if previous is not None:
+        selected = previous["deadline"].intersect(deadline)
+        if selected is previous["deadline"]:
+            seconds, started = previous["seconds"], previous["started"]
+        deadline = selected
+        context_id = context_id or previous.get("context_id")
+    if _CLEANUP.get() is not None:
+        deadline = deadline.intersect(_CLEANUP.get())
+    token = _PERSISTENCE.set({"deadline": deadline, "seconds": seconds,
+                              "operation": operation, "context_id": context_id, "started": started})
+    try:
+        yield deadline
+    finally:
+        _PERSISTENCE.reset(token)
 
 
 @contextmanager
@@ -38,7 +69,11 @@ def control_scope(deadline, *, cancel_events=()):
 
 
 def operation_deadline(timeout=None):
-    independent = _CLEANUP.get() or _CONTROL.get()
+    persistence = _PERSISTENCE.get()
+    independent = _CLEANUP.get()
+    if persistence is not None:
+        independent = persistence["deadline"].intersect(independent) if independent else persistence["deadline"]
+    independent = independent or _CONTROL.get()
     scope = current_scope()
     parent = independent or (
         scope.gateway.operation_deadline() if scope.gateway else scope.deadline
@@ -47,15 +82,16 @@ def operation_deadline(timeout=None):
 
 
 def check(deadline=None, cancel_events=(), *, inherit=True, gateway=True):
-    scope = current_scope() if inherit and not _CLEANUP.get() else RequestScope()
-    if _CONTROL.get() and not _CLEANUP.get():
+    independent = _CLEANUP.get() is not None or _PERSISTENCE.get() is not None
+    scope = current_scope() if inherit and not independent else RequestScope()
+    if _CONTROL.get() and not independent:
         scope = RequestScope(deadline=_CONTROL.get(), cancel_events=scope.cancel_events)
     if any(
         event.is_set()
         for event in (
             *scope.cancel_events,
             *cancel_events,
-            *(_CONTROL_CANCEL.get() if not _CLEANUP.get() else ()),
+            *(_CONTROL_CANCEL.get() if not independent else ()),
         )
     ):
         raise ModelCancelled("Execution cancelled; inspect any action already started.")

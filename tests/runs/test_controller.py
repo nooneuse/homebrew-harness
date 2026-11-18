@@ -87,6 +87,30 @@ class RunTests(unittest.TestCase):
         self.assertEqual((self.root / "b.txt").read_text(), "ok")
         self.assertEqual(len(self.store.runtime.items("run_episodes")), 3)
 
+    def test_episode_checkpoint_timeout_retries_without_repeating_tools(self):
+        control, session, client, _ = self.controller([
+            self.write('write', 'saved.txt'), reply('done')
+        ])
+        db = session.runtime_store.backend()
+        original = db._save_doc
+        timed = []
+        phases = []
+        def delayed(conn, doc, value, *args, **kwargs):
+            phases.append(value.get('phase'))
+            result = original(conn, doc, value, *args, **kwargs)
+            if value.get('phase') == 'yielded' and not timed:
+                timed.append(True)
+                time.sleep(.04)
+            return result
+        db.transaction_timeout = .02
+        with patch.object(db, '_save_doc', side_effect=delayed):
+            outcome = control.execute()
+        self.assertEqual(outcome.status, 'completed', outcome)
+        self.assertEqual(timed, [True], phases)
+        self.assertEqual((self.root / 'saved.txt').read_text(), 'ok')
+        self.assertEqual(client.chat.completions.create.call_count, 2)
+        self.assertEqual(len(self.store.runtime.items('run_episodes')), 2)
+
     def test_goal_completion_uses_latest_user_revision_and_atomic_run_state(self):
         spec = RunSpec(
             "Create result.txt",

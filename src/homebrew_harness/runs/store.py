@@ -9,6 +9,7 @@ import time
 import uuid
 import sqlite3
 
+from homebrew_harness.configuration import DEFAULT_STORAGE_OPEN_SECONDS
 from homebrew_harness.execution.execution_control import cleanup_scope
 from homebrew_harness.security.safe_files import canonical_root
 from homebrew_harness.storage.durable_runtime import DurableStore
@@ -182,7 +183,7 @@ class RunStore:
                 uri=True,
                 isolation_level=None,
                 check_same_thread=False,
-                timeout=2,
+                timeout=DEFAULT_STORAGE_OPEN_SECONDS,
             )
             try:
                 connection.execute("PRAGMA journal_mode").fetchone()

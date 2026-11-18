@@ -20,7 +20,10 @@ class BackupTests(unittest.TestCase):
         service = host.services.start(
             self.spec(operations={"mode": "local", "backup_directory": str(folder)})
         )
-        self.addCleanup(lambda: (service.close(), service.wait_closed(10)))
+        def close():
+            service.close()
+            self.assertTrue(service.wait_closed(60), service.snapshot().data())
+        self.addCleanup(close)
         return service, folder
 
     def test_backup_verify_and_restore_keep_http_and_current_receipts(self):

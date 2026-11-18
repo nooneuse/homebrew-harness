@@ -73,6 +73,13 @@ class UnifiedCLITests(unittest.TestCase):
         self.assertEqual(args.prompt, "task")
         self.assertEqual(args.max_turns, 3)
 
+    def test_shutdown_default_and_explicit_short_value(self):
+        from homebrew_harness.configuration import DEFAULT_SHUTDOWN_SECONDS
+        args = parser().parse_args(['session'])
+        self.assertEqual(args.shutdown_timeout, DEFAULT_SHUTDOWN_SECONDS)
+        args = parser().parse_args(['session', '--shutdown-timeout', '.03'])
+        self.assertEqual(args.shutdown_timeout, .03)
+
     def test_common_locations_survive_each_subparser_default(self):
         for operation in (
             ["session"],

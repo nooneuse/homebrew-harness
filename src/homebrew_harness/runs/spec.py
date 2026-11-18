@@ -1,6 +1,7 @@
 """Host-selected managed execution settings and structured results."""
 
 from homebrew_harness.configuration import (
+    DEFAULT_SHUTDOWN_SECONDS,
     DEFAULT_CONTEXT_CHARS,
     DEFAULT_MAX_OUTPUT_TOKENS,
     DEFAULT_MODEL_REQUEST_SECONDS,
@@ -80,7 +81,7 @@ class RunSpec:
     retry_delay: float = 2
     heartbeat_seconds: float = 2
     heartbeat_timeout: float = 30
-    shutdown_seconds: float = 5
+    shutdown_seconds: float = DEFAULT_SHUTDOWN_SECONDS
     snapshot_limits: dict = field(
         default_factory=lambda: {
             "max_files": 5000,

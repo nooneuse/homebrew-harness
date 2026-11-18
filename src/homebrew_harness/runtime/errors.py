@@ -56,6 +56,7 @@ def error_info(error):
                    "fixed_characters", "remaining_summary_characters", "archive_ref",
                    "file_path", "expected_version", "observed_version", "restart_offset",
                    "total_summary_characters", "used_summary_characters", "reserved_summary_characters"}
+        allowed.update({"rollback_confirmed", "commit_state", "persistence_timeout_seconds"})
         if isinstance(value, dict):
             details.update({key: (item[:512] if isinstance(item, str) else None if isinstance(item, float) and not math.isfinite(item) else item)
                             for key, item in value.items() if key in allowed
@@ -96,7 +97,7 @@ def error_message(error):
     if info is None:
         return ""
     label = info["type"] + ("[" + info["code"] + "]" if info["code"] else "")
-    fields = ("limit_name", "limit_value", "observed_value", "unit", "source", "phase",
+    fields = ("limit_name", "limit_value", "observed_value", "unit", "source", "phase", "rollback_confirmed", "commit_state", "persistence_timeout_seconds",
               "gateway_request_timeout_seconds", "client_timeout_seconds", "request_timeout_seconds", "effective_timeout_seconds", "workflow_timeout_seconds", "output_limit", "max_output_tokens",
               "output_tokens", "reasoning_tokens", "provider_finish_reason", "provider_incomplete_reason",
               "job_seconds", "job_turns", "elapsed_seconds", "preparation_seconds", "queue_seconds",

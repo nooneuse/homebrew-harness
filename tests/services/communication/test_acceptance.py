@@ -233,9 +233,8 @@ class CommunicationAcceptance(unittest.TestCase):
                 for p in manifest["files"]
             )
         )
-        self.assertEqual(
-            wait_operation(service.retention_preview())["state"], "completed"
-        )
+        preview = wait_operation(service.retention_preview())
+        self.assertEqual(preview["state"], "completed", preview)
         restored = wait_operation(service.restore_backup(backup["id"]))
         self.assertEqual(restored["state"], "completed", restored)
         self.assertTrue((Path(review["root"]) / "head/src/value.py").is_file())

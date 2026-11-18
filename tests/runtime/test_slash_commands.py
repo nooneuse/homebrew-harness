@@ -287,7 +287,12 @@ class HostSlashTests(unittest.TestCase):
         eventually(lambda:host.state.get(task['task_id'])['state']=='finished')
         result=host.submit('/compact')
         self.assertIn('command_id',result)
-        eventually(lambda:not host._busy and host.session is None)
+        try:
+            eventually(lambda:not host._busy and host.session is None)
+        except AssertionError:
+            self.fail(str({"busy": host._busy,
+                           "session": host.session.shutdown_status() if host.session else None,
+                           "receipt": host.state.runtime.get('input_receipts', result['command_id'])}))
         sid=host.state.get(task['task_id'])['target']['id']
         snapshot=host.state.runtime.get('checkpoints','lead:'+sid)
         self.assertEqual(snapshot['intent']['original'],'Keep the requirement')

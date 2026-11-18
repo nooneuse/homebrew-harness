@@ -1,5 +1,7 @@
 """Host-selected operations policies; no executable or connection supplied by models."""
 
+from homebrew_harness.configuration import DEFAULT_TASK_SECONDS
+
 import json
 import re
 from pathlib import Path
@@ -10,7 +12,7 @@ from homebrew_harness.services.maintenance_spec import number
 def validate(raw):
     defaults = {
         "mode": "isolated",
-        "operation_seconds": 120,
+        "operation_seconds": DEFAULT_TASK_SECONDS,
         "health_seconds": 1,
         "stale_seconds": 30,
         "min_free_bytes": 16_000_000,

@@ -6,6 +6,8 @@ from homebrew_harness.configuration import (
     DEFAULT_MODEL_REQUEST_SECONDS,
     DEFAULT_RUN_SECONDS,
     DEFAULT_TASK_SECONDS,
+    DEFAULT_SHUTDOWN_SECONDS,
+    DEFAULT_GIT_QUERY_SECONDS,
 )
 
 import json
@@ -45,7 +47,7 @@ class InteractionConfig:
     total_seconds: float = DEFAULT_RUN_SECONDS
     turn_seconds: float = DEFAULT_TASK_SECONDS
     request_seconds: float = DEFAULT_MODEL_REQUEST_SECONDS
-    shutdown_seconds: float = 5
+    shutdown_seconds: float = DEFAULT_SHUTDOWN_SECONDS
     context_chars: int = DEFAULT_CONTEXT_CHARS
     output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
     max_turns: int = 20
@@ -534,7 +536,7 @@ class InteractionAssembler:
                     ["git", "status", "--porcelain"],
                     cwd=self.workdir,
                     capture_output=True,
-                    timeout=5,
+                    timeout=DEFAULT_GIT_QUERY_SECONDS,
                     check=True,
                 )
                 if result.stdout:

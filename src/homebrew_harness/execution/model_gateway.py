@@ -105,6 +105,7 @@ class Deadline:
             "session",
             "tool",
             "cleanup",
+            "persistence",
         }:
             raise ValueError("Invalid deadline source.")
         if self.expires_at is not None and (
@@ -132,7 +133,7 @@ class Deadline:
         priorities = {
             name: n
             for n, name in enumerate(
-                ("run", "session", "episode", "caller", "request", "tool", "cleanup")
+                ("run", "session", "episode", "caller", "request", "tool", "cleanup", "persistence")
             )
         }
         return (

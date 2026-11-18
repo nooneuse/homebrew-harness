@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from homebrew_harness.configuration import DEFAULT_SHUTDOWN_SECONDS, DEFAULT_LOCAL_CONTROL_SECONDS
+
 from homebrew_harness.runtime.errors import error_info, error_message
 
 from homebrew_harness.configuration import (
@@ -42,6 +44,7 @@ from homebrew_harness.context.tracked_history import ConversationHistory
 from homebrew_harness.execution.execution_control import (
     acquired,
     cleanup_scope,
+    persistence_scope,
     control_scope,
     operation_deadline,
 )
@@ -117,7 +120,7 @@ class HarnessSession:
         goal_input_chars=12000,
         stop_block_cap=8,
         mode="interactive",
-        shutdown_timeout=5,
+        shutdown_timeout=DEFAULT_SHUTDOWN_SECONDS,
         gateway=None,
         gateway_limits=None,
         test_runner=None,
@@ -953,6 +956,7 @@ class HarnessSession:
         self.runtime_store.set_meta("latest_session", self.session_id)
         self._save_checkpoint()
 
+    @persistence_scope(operation="session_checkpoint_prepare")
     def _save_checkpoint(self, phase="idle", *, ack=()):
         if self._runtime_started:
             operations = self.runtime_store.items(
@@ -985,7 +989,7 @@ class HarnessSession:
                 else None
             )
             try:
-                with cleanup_scope():
+                with persistence_scope(operation="checkpoint", context_id=self.checkpoint_key):
                     self.runtime_store.checkpoint(
                         self.checkpoint_key,
                         snapshot,
@@ -1684,7 +1688,7 @@ class HarnessSession:
                 "Managed task input uses submit_user_input; execution uses run_episode."
             )
         if command.name == "inputs":
-            with control_scope(Deadline.after(2)):
+            with control_scope(Deadline.after(DEFAULT_LOCAL_CONTROL_SECONDS)):
                 if self._closed:
                     raise ValueError("Harness session is closed.")
                 self._ensure_runtime()
@@ -1697,7 +1701,7 @@ class HarnessSession:
         deadline = (
             operation_deadline(self.turn_timeout)
             if command.mode == "context"
-            else Deadline.after(2)
+            else Deadline.after(DEFAULT_LOCAL_CONTROL_SECONDS)
             if command.local
             else operation_deadline(self.turn_timeout)
         )
@@ -1727,7 +1731,7 @@ class HarnessSession:
             return json.dumps(self.conversation if command.name == "plan" else {"file": self.project_guidance.snapshot(), "draft": self.conversation["init"]}, ensure_ascii=False, indent=2)
         from homebrew_harness.runtime.local_commands import QUERY_NAMES, run as local_run
         if command.mode == "read" and command.name in QUERY_NAMES:
-            with control_scope(Deadline.after(2)):
+            with control_scope(Deadline.after(DEFAULT_LOCAL_CONTROL_SECONDS)):
                 if not self._runtime_started:
                     self._ensure_runtime()
                 return local_run(self, command)
@@ -1740,7 +1744,7 @@ class HarnessSession:
         direct = self._independent_control(command)
         if direct is not None:
             return direct
-        deadline = Deadline.after(2)
+        deadline = Deadline.after(DEFAULT_LOCAL_CONTROL_SECONDS)
         with (
             control_scope(deadline),
             acquired(self._runtime_init_lock, deadline, inherit=False),
@@ -2409,7 +2413,7 @@ class HarnessSession:
     def request_stop(self, identity=None):
         if self._closed:
             return self.shutdown_status()
-        with control_scope(Deadline.after(2)):
+        with control_scope(Deadline.after(DEFAULT_LOCAL_CONTROL_SECONDS)):
             if not self._runtime_started:
                 self._ensure_runtime()
             if self.run_control:
@@ -2441,7 +2445,7 @@ class HarnessSession:
     def resume_execution(self):
         if self._closed:
             raise ValueError("Restore the closed Session by ID before continuing.")
-        with control_scope(Deadline.after(2)):
+        with control_scope(Deadline.after(DEFAULT_LOCAL_CONTROL_SECONDS)):
             if not self._runtime_started:
                 self._ensure_runtime()
             if self.run_control:

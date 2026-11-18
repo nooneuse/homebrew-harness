@@ -86,8 +86,8 @@ class GoalGenerationLimitTests(unittest.TestCase):
             self.assertFalse(result.ok)
             arguments = client.chat.completions.create.call_args.kwargs
             self.assertEqual(arguments["max_tokens"], 8000)
-            self.assertGreater(arguments["timeout"], 110)
-            self.assertLessEqual(arguments["timeout"], 120)
+            self.assertGreater(arguments["timeout"], 490)
+            self.assertLessEqual(arguments["timeout"], 500)
         finally:
             gateway.close()
             gateway.wait_idle(5)
@@ -801,7 +801,7 @@ class GoalTests(unittest.TestCase):
         )
         client = SimpleNamespace(with_options=Mock(return_value=api))
         evaluator = PromptGoalEvaluator(client, "checker", max_tokens=1024)
-        client.with_options.assert_called_once_with(max_retries=0, timeout=120)
+        client.with_options.assert_called_once_with(max_retries=0, timeout=500)
         goal = GoalController(self.root, evaluator)
         self.addCleanup(goal.close)
         goal.set_goal("check the answer")

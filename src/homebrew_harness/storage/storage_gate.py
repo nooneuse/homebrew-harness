@@ -9,16 +9,21 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
 
-from homebrew_harness.execution.execution_control import check, operation_deadline
+from homebrew_harness.execution.execution_control import operation_deadline
 from homebrew_harness.security.safe_files import SafeFile, canonical_root
+from homebrew_harness.configuration import DEFAULT_STORAGE_LOCK_SECONDS
+from homebrew_harness.storage.persistence import storage_check
 
 _HELD = ContextVar("storage_gates", default={})
 
 
 @contextmanager
 def storage_gate(root, *, exclusive=False):
-    deadline = operation_deadline(2)
-    check(deadline, gateway=False)
+    started = time.monotonic()
+    deadline = operation_deadline(DEFAULT_STORAGE_LOCK_SECONDS)
+    def checked():
+        storage_check(deadline, phase="maintenance_lock", limit=DEFAULT_STORAGE_LOCK_SECONDS, started=started)
+    checked()
     root = canonical_root(root)
     held = _HELD.get()
     key = str(root)
@@ -34,7 +39,7 @@ def storage_gate(root, *, exclusive=False):
         root, ".harness/runtime/maintenance.lock", create_parents=True
     ) as target:
         while True:
-            check(deadline, gateway=False)
+            checked()
             try:
                 fd = os.open(
                     target.parts[-1],
@@ -57,9 +62,7 @@ def storage_gate(root, *, exclusive=False):
                     break
                 except (FileExistsError, FileNotFoundError):
                     if deadline.remaining() == 0:
-                        raise ValueError(
-                            "Storage gate could not be created before its deadline."
-                        ) from None
+                        checked()
         try:
             info = os.fstat(fd)
             if (
@@ -71,7 +74,7 @@ def storage_gate(root, *, exclusive=False):
                     "Storage maintenance lock must be a private regular file."
                 )
             while True:
-                check(deadline, gateway=False)
+                checked()
                 try:
                     fcntl.flock(
                         fd,
@@ -80,11 +83,9 @@ def storage_gate(root, *, exclusive=False):
                     break
                 except BlockingIOError:
                     if deadline.remaining() == 0:
-                        raise ValueError(
-                            "Storage maintenance gate is busy; no operation was started."
-                        ) from None
+                        checked()
                     time.sleep(min(0.02, deadline.remaining()))
-            check(deadline, gateway=False)
+            checked()
             target.verify_binding()
             token = _HELD.set({**held, key: (exclusive, identity)})
             try:

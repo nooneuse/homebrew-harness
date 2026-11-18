@@ -1,5 +1,7 @@
 """Host declarations for one serial workspace and fixed service schedules."""
 
+from homebrew_harness.configuration import DEFAULT_SHUTDOWN_SECONDS
+
 import hashlib
 import json
 import math
@@ -52,7 +54,7 @@ class ServiceSpec:
     schedules: tuple = ()
     profile: str = "manual"
     poll_seconds: float = 0.1
-    shutdown_seconds: float = 5
+    shutdown_seconds: float = DEFAULT_SHUTDOWN_SECONDS
     queue_limit: int = 1024
     control_port: int = 0
     sources: tuple = ()

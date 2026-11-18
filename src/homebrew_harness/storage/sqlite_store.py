@@ -10,11 +10,14 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from homebrew_harness.execution.execution_control import check, operation_deadline
+from homebrew_harness.execution.execution_control import operation_deadline
 from homebrew_harness.runtime.runtime_state import RecoveryRequired
 from homebrew_harness.security.data_boundary import redact
 from homebrew_harness.security.safe_files import SafeFile, canonical_root
 from homebrew_harness.storage.storage_metrics import metrics_for
+from homebrew_harness.configuration import DEFAULT_STORAGE_OPEN_SECONDS, DEFAULT_STORAGE_LOCK_SECONDS, DEFAULT_STORAGE_TRANSACTION_SECONDS
+from homebrew_harness.storage.persistence import StorageTimeout, storage_check
+from homebrew_harness.runtime.errors import boundary_error
 
 SECTIONS = ("checkpoints", "operations", "background", "team", "cron")
 RECORD_SECTIONS = (
@@ -123,6 +126,9 @@ class SQLiteDatabase:
         self.workdir = canonical_root(Path(workdir))
         self.path = self.workdir / DB_PATH
         self.metrics = metrics_for(self.workdir)
+        self.open_timeout = DEFAULT_STORAGE_OPEN_SECONDS
+        self.lock_timeout = DEFAULT_STORAGE_LOCK_SECONDS
+        self.transaction_timeout = DEFAULT_STORAGE_TRANSACTION_SECONDS
 
     def exists(self):
         for reference in (
@@ -161,9 +167,10 @@ class SQLiteDatabase:
         )
 
     @staticmethod
-    def begin(connection, deadline):
+    def begin(connection, deadline, *, limit=DEFAULT_STORAGE_LOCK_SECONDS):
+        started = time.monotonic()
         while True:
-            check(deadline, gateway=False)
+            storage_check(deadline, phase="lock", limit=limit, started=started)
             try:
                 connection.execute("BEGIN IMMEDIATE")
                 return
@@ -171,11 +178,53 @@ class SQLiteDatabase:
                 if not any(word in str(error).lower() for word in ("locked", "busy")):
                     raise
                 if deadline.remaining() == 0:
-                    raise RecoveryRequired("Runtime writer deadline reached.") from None
+                    storage_check(deadline, phase="lock", limit=limit, started=started)
                 time.sleep(min(0.02, deadline.remaining()))
+
+    @staticmethod
+    def commit(connection, deadline, limit, started):
+        while True:
+            storage_check(deadline, phase="commit", limit=limit, started=started)
+            try:
+                connection.execute("COMMIT")
+                return
+            except Exception as error:
+                if not connection.in_transaction:
+                    raise boundary_error(
+                        RecoveryRequired, "storage_commit_unknown",
+                        "Database commit confirmation failed; inspect the stored result before repeating work.",
+                        source="storage", phase="commit", commit_state="unknown",
+                        rollback_confirmed=False,
+                    ) from error
+                if not isinstance(error, sqlite3.OperationalError) or not any(
+                    word in str(error).lower() for word in ("locked", "busy")
+                ):
+                    raise
+                time.sleep(min(0.02, deadline.remaining()))
+
+    @staticmethod
+    def rollback(connection, error):
+        if connection.in_transaction:
+            try:
+                connection.execute("ROLLBACK")
+            except BaseException as rollback_error:
+                details = dict(getattr(error, "details", {}))
+                details.update(source="storage", phase="rollback", commit_state="unknown",
+                               rollback_confirmed=False)
+                raise boundary_error(
+                    RecoveryRequired, "storage_rollback_failed",
+                    "Database rollback could not be confirmed; inspect transaction state before repeating work.",
+                    **details,
+                ) from rollback_error
+            if isinstance(error, StorageTimeout):
+                error.rolled_back()
+        elif isinstance(error, StorageTimeout):
+            error.retryable = False
 
     @contextmanager
     def connection(self, *, initialize=False):
+        opened = time.monotonic()
+        deadline = operation_deadline(self.open_timeout)
         self.exists()
         with SafeFile(self.workdir, DB_PATH, create_parents=initialize) as target:
             if initialize:
@@ -237,9 +286,8 @@ class SQLiteDatabase:
             connection.binding = binding
             try:
                 binding()
-                deadline = operation_deadline(2)
                 while True:
-                    check(deadline, gateway=False)
+                    storage_check(deadline, phase="open", limit=self.open_timeout, started=opened)
                     try:
                         connection.execute("PRAGMA foreign_keys=ON")
                         connection.execute("PRAGMA trusted_schema=OFF")
@@ -261,12 +309,12 @@ class SQLiteDatabase:
                         ):
                             raise
                         if deadline.remaining() == 0:
-                            raise RecoveryRequired(
-                                "Runtime database open deadline reached."
-                            ) from None
+                            storage_check(deadline, phase="open", limit=self.open_timeout, started=opened)
                         time.sleep(min(0.02, deadline.remaining()))
                 if schema == 0 and initialize:
-                    self.begin(connection, deadline)
+                    self.begin(connection, operation_deadline(self.lock_timeout), limit=self.lock_timeout)
+                    transaction_started = time.monotonic()
+                    transaction_deadline = operation_deadline(self.transaction_timeout)
                     try:
                         schema = connection.execute("PRAGMA user_version").fetchone()[0]
                         if schema == 0:
@@ -280,10 +328,9 @@ class SQLiteDatabase:
                                 connection.execute(statement)
                             connection.execute("PRAGMA user_version=1")
                             schema = 1
-                        connection.execute("COMMIT")
-                    except BaseException:
-                        if connection.in_transaction:
-                            connection.execute("ROLLBACK")
+                        self.commit(connection, transaction_deadline, self.transaction_timeout, transaction_started)
+                    except BaseException as error:
+                        self.rollback(connection, error)
                         raise
                 while schema == 0 and not initialize and deadline.remaining() != 0:
                     # Another process can have published the new file before its
@@ -321,34 +368,18 @@ class SQLiteDatabase:
     @contextmanager
     def write(self):
         with self.metrics.transaction(), self.connection(initialize=True) as conn:
-            deadline = operation_deadline(2)
-            while True:
-                check(deadline, gateway=False)
-                try:
-                    conn.execute("BEGIN IMMEDIATE")
-                    break
-                except sqlite3.OperationalError as error:
-                    if (
-                        "locked" not in str(error).lower()
-                        and "busy" not in str(error).lower()
-                    ):
-                        raise
-                    if deadline.remaining() == 0:
-                        raise RecoveryRequired(
-                            "Runtime database busy; transaction deadline reached."
-                        ) from None
-                    time.sleep(min(0.02, deadline.remaining()))
+            self.begin(conn, operation_deadline(self.lock_timeout), limit=self.lock_timeout)
             changed = conn.total_changes
+            transaction_started = time.monotonic()
+            deadline = operation_deadline(self.transaction_timeout)
             try:
                 yield conn
-                check(deadline, gateway=False)
-                conn.execute("COMMIT")
+                self.commit(conn, deadline, self.transaction_timeout, transaction_started)
                 self.metrics.add(
                     **({"commits": 1} if conn.total_changes > changed else {"noops": 1})
                 )
-            except BaseException:
-                if conn.in_transaction:
-                    conn.execute("ROLLBACK")
+            except BaseException as error:
+                self.rollback(conn, error)
                 raise
 
     def _get(self, conn, section, key, default=None):

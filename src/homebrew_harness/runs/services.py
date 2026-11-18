@@ -1,5 +1,7 @@
 """Small host service loop for durable wakeups, PR input and notifications."""
 
+from homebrew_harness.configuration import DEFAULT_LOCAL_CONTROL_SECONDS
+
 import json
 import os
 import re
@@ -347,7 +349,7 @@ class RunServices:
         effects = self.store.runtime.items(
             "run_outbox", owner="lead:" + run["session_id"]
         )
-        delivery_deadline = Deadline.after(2)
+        delivery_deadline = Deadline.after(DEFAULT_LOCAL_CONTROL_SECONDS)
         if run["status"] not in TERMINAL:
             delivery_deadline = delivery_deadline.intersect(self.deadline(run))
         # An abandoned started notification is uncertain, never an automatic resend.

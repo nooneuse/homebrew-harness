@@ -192,14 +192,16 @@ class Operations:
                     raise
 
     def _save(self, row):
-        row['revision'] += 1
-        row['persistence_confirmed'] = True
-        try:
-            with cleanup_scope():
-                self.store.put('executions', row['id'], row)
-        except BaseException:
-            row['persistence_confirmed'] = False
-            raise
+        from homebrew_harness.storage.persistence import persist
+        with self.lock:
+            row['revision'] += 1
+            row['persistence_confirmed'] = True
+            saved = copy.deepcopy(row)
+            try:
+                persist("execution_state", lambda: self.store.put('executions', row['id'], saved), context_id=self.owner)
+            except BaseException:
+                row['persistence_confirmed'] = False
+                raise
         self.changed.set()
 
     def recover(self):

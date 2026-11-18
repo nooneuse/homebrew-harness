@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from homebrew_harness.configuration import DEFAULT_MCP_CONNECT_SECONDS, DEFAULT_LOCAL_CONTROL_SECONDS
+
 import asyncio
 import copy
 import math
@@ -87,7 +89,7 @@ class ServerSpec:
     headers: dict = field(default_factory=dict)
     tools: dict[str, ToolPolicy] = field(default_factory=dict)
     timeout_seconds: float | None = None
-    connect_timeout_seconds: float = 30
+    connect_timeout_seconds: float = DEFAULT_MCP_CONNECT_SECONDS
     execution: MCPExecutionPolicy = field(default_factory=MCPExecutionPolicy)
     revision: str = "1"
     concurrency: int = 4
@@ -187,7 +189,7 @@ def load_specs(path: Path, *, missing_ok: bool = False) -> dict[str, ServerSpec]
             raise MCPError(
                 "MCP timeout_seconds must be a positive finite number or null."
             )
-        connect_timeout = data.get("connect_timeout_seconds", 30)
+        connect_timeout = data.get("connect_timeout_seconds", DEFAULT_MCP_CONNECT_SECONDS)
         if type(connect_timeout) not in (int, float) or not 0 < connect_timeout <= 120:
             raise MCPError(
                 "MCP connect_timeout_seconds must be greater than zero and at most 120."
@@ -1408,7 +1410,7 @@ class MCPRuntime:
             r"mcp_[0-9a-f]{32}", identity
         ):
             raise MCPError("Use a connection ID from /mcp.")
-        with acquired(self._connect_lock, operation_deadline(2)):
+        with acquired(self._connect_lock, operation_deadline(DEFAULT_LOCAL_CONTROL_SECONDS)):
             with self._lock:
                 connection = next(
                     (c for c in self._actors if c.identity == identity), None

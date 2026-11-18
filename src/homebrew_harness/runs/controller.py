@@ -14,7 +14,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import replace
 
-from homebrew_harness.execution.execution_control import cleanup_scope
+from homebrew_harness.configuration import DEFAULT_GIT_QUERY_SECONDS
+from homebrew_harness.execution.execution_control import cleanup_scope, persistence_scope
 from homebrew_harness.execution.model_gateway import (
     Deadline,
     ModelDeadlineExceeded,
@@ -53,7 +54,7 @@ def git_head(root):
         cwd=root,
         capture_output=True,
         text=True,
-        timeout=2,
+        timeout=DEFAULT_GIT_QUERY_SECONDS,
     )
     if result.returncode:
         raise ValueError("Cannot resolve managed workspace Git HEAD.")
@@ -1145,7 +1146,7 @@ class RunController:
                     "error_info": error_info(error),
                 },
             )
-        with cleanup_scope():
+        with persistence_scope(operation="run_boundary", context_id=self.id):
             self.pending_update = {
                 "status": "running" if status == "yielded" else status,
                 "next_retry_at": retry_at,
@@ -1516,6 +1517,8 @@ class RunController:
                         if self.deadline().remaining() == 0
                         else error.reason_code
                         if isinstance(error, ModelDeadlineExceeded)
+                        else getattr(error, "reason_code", None) or error.code
+                        if isinstance(error, RecoveryRequired) and (getattr(error, "reason_code", None) or getattr(error, "code", None))
                         else "provider_" + error.kind
                         if isinstance(error, ProviderError)
                         else "execution_failed"

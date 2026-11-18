@@ -98,7 +98,7 @@ class ApprovalReviewTests(unittest.TestCase):
                 ReviewConfig.parse(config)
 
     def test_review_has_room_for_slow_models_but_keeps_a_deadline_bound(self):
-        self.assertEqual(ReviewConfig.parse(None).timeout_seconds, 120)
+        self.assertEqual(ReviewConfig.parse(None).timeout_seconds, 500)
         self.assertEqual(ReviewConfig.parse(None).max_turns, 6)
         for seconds in (300, 500):
             self.assertEqual(ReviewConfig.parse({"timeout_seconds": seconds}).timeout_seconds, seconds)

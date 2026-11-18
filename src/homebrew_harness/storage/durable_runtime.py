@@ -9,11 +9,11 @@ import json
 import threading
 import time
 import uuid
-from contextlib import contextmanager, nullcontext
+from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 
-from homebrew_harness.execution.execution_control import cleanup_scope
+from homebrew_harness.execution.execution_control import persistence_scope
 from homebrew_harness.security.safe_files import canonical_root
 from homebrew_harness.storage.storage_gate import storage_operation
 from homebrew_harness.tools.tool_outcome import needs_inspection
@@ -84,26 +84,29 @@ class DurableStore:
     def transaction(self, update):
         return self._store.transaction(update)
 
-    @storage_operation
+    @persistence_scope(operation="checkpoint_prepare")
     def checkpoint(
         self, key, snapshot, *, ack=(), expected_revision=None, boundary=None
     ):
-        return self._store.checkpoint(
-            key,
-            snapshot,
-            ack=ack,
-            expected_revision=expected_revision,
-            boundary=boundary,
-        )
+        from homebrew_harness.storage.persistence import persist
+        from homebrew_harness.storage.storage_gate import storage_gate
+        ack = tuple((name, owner, tuple(ids)) for name, owner, ids in ack)
+        def commit():
+            with storage_gate(self.workdir):
+                return self._store.checkpoint(key, snapshot, ack=ack,
+                    expected_revision=expected_revision, boundary=boundary)
+        return persist("checkpoint", commit, context_id=key)
 
     def checkpoint_revision(self, key):
         return self._store.revision(key)
 
     def record_result(self, key, operation_id, output, snapshot):
         from homebrew_harness.storage.storage_gate import storage_gate
-
-        with cleanup_scope(), storage_gate(self.workdir):
-            self._store.record_result(key, operation_id, output, snapshot)
+        from homebrew_harness.storage.persistence import persist
+        def commit():
+            with storage_gate(self.workdir):
+                return self._store.record_result(key, operation_id, output, snapshot)
+        return persist("tool_result", commit, context_id=key)
 
     @storage_operation
     def start_session(self, sid, instance):
@@ -221,6 +224,7 @@ class CheckpointWriter:
         value["phase"] = phase
         return value
 
+    @persistence_scope(operation="checkpoint_prepare")
     def save(self, phase="running", *, ack=(), boundary=None, overrides=None):
         expected = self.store.checkpoint_revision(self.key)
         value = self.value(phase)
@@ -232,7 +236,7 @@ class CheckpointWriter:
             value["pending_team"] = []
             value["pending_background"] = []
             ack = [*ack, *self.completion_ack]
-        with cleanup_scope() if phase != "running" else nullcontext():
+        with persistence_scope(operation="checkpoint", context_id=self.key):
             self.store.checkpoint(
                 self.key, value, ack=ack, expected_revision=expected, boundary=boundary
             )

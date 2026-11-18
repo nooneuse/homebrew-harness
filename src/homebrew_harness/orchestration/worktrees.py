@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from homebrew_harness.configuration import DEFAULT_GIT_QUERY_SECONDS
+
 import json
 import os
 import re
@@ -96,7 +98,7 @@ class WorktreeManager:
                     ],
                     cwd or self.workdir,
                     env,
-                    30,
+                    DEFAULT_GIT_QUERY_SECONDS,
                 )
                 if (
                     config.returncode not in {0, 1}
@@ -135,7 +137,7 @@ class WorktreeManager:
                 [*prefix, *args],
                 cwd or self.workdir,
                 env,
-                30,
+                DEFAULT_GIT_QUERY_SECONDS,
                 output_bytes=output_bytes,
                 **({"on_started": on_started} if on_started is not None else {}),
             )

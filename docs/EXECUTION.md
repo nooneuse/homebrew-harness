@@ -131,3 +131,13 @@ hooks.register_hook("PreToolUse", assess_request, execution="process")
 ```
 
 Process hooks retain the normal Hook contract and can be cancelled with their owning operation. Their source identity is checked before execution. Closures and objects requiring live host state should use the existing cooperative runtime facilities rather than being presented as independently killable processes. Pending cleanup remains visible until the real execution ends.
+
+## Persistence and closing windows
+
+State persistence has a separate 180-second window. Database connection preparation defaults to 15 seconds and write-lock waiting to 30 seconds; after acquiring the write lock, the transaction has a 60-second window. Checkpoint and tool-result writes can retry up to three times when no write started or rollback was confirmed, within the original persistence deadline. Retries preserve the result and execution identity. A commit with uncertain confirmation retains its inspection contract.
+
+The default resource-closing window is 60 seconds. Existing explicit values remain effective. Persistence can save completed facts after a model or Episode deadline, and stays within an enclosing resource-closing window. Storage timeout diagnostics identify the operation, phase, limit, elapsed time and commit/rollback state. A caller's observation wait remains separate from these windows.
+
+Automatic approval review and the Goal model checker default to a 500-second window. Fixed workspace Git queries allow up to 120 seconds. Explicit shorter settings and parent execution deadlines still apply.
+
+MCP connection setup and container management default to 90 seconds; container inspection allows 15 seconds. Service operations such as backup and audit have a 1500-second execution window. Status-query observation waits remain separate.

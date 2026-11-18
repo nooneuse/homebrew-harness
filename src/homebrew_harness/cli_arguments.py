@@ -4,6 +4,7 @@ from homebrew_harness.configuration import (
     DEFAULT_CONTEXT_CHARS,
     DEFAULT_TASK_SECONDS,
     DEFAULT_GOAL_OUTPUT_TOKENS,
+    DEFAULT_SHUTDOWN_SECONDS,
 )
 
 import argparse
@@ -157,8 +158,8 @@ def add_session_arguments(parser):
     parser.add_argument(
         "--shutdown-timeout",
         type=float,
-        default=5,
-        help="Bounded local shutdown wait in seconds (default: 5).",
+        default=DEFAULT_SHUTDOWN_SECONDS,
+        help="Bounded local shutdown wait in seconds (default: 60).",
     )
     parser.add_argument(
         "--allow-tests",

@@ -398,7 +398,7 @@ class FlowTests(unittest.TestCase):
         except InvalidInput:
             # Observation can invalidate this exact request before approval;
             # the accepted-action path must also preserve the changed target.
-            saved = service.runtime.maintenance.store.get("decisions", request.id)
+            saved = service.runtime.maintenance.store.get("decisions", request.ref.id)
             self.assertEqual(saved["state"], "superseded")
             self.assertGreater(saved["revision"], request.revision)
         eventually(

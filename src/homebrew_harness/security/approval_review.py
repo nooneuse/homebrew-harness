@@ -2,6 +2,8 @@
 
 from homebrew_harness.runtime.errors import boundary_error, error_info, error_message
 
+from homebrew_harness.configuration import DEFAULT_MODEL_REQUEST_SECONDS
+
 import hashlib
 import copy
 import json
@@ -52,7 +54,7 @@ class ReviewConfig:
     model_profile: str | None = None
     requester_fallback: str | None = None
     kinds: tuple = ("tool", "test_grant")
-    timeout_seconds: float = 120
+    timeout_seconds: float = DEFAULT_MODEL_REQUEST_SECONDS
     max_turns: int = 6
 
     def __post_init__(self):
