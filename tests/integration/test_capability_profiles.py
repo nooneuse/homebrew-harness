@@ -325,6 +325,8 @@ class ConvergenceTests(unittest.TestCase):
         self.assertEqual(
             names,
             {
+                *(__import__('homebrew_harness.execution.operations', fromlist=['CONTROL_TOOLS']).CONTROL_TOOLS),
+                "invoke_tool",
                 "bash",
                 "read_file",
                 "write_file",

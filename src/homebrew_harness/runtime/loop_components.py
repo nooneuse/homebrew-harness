@@ -9,6 +9,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class LoopComponents:
+    operations: object = None
     hooks: object = None
     todo_manager: object = None
     skill_loader: object = None

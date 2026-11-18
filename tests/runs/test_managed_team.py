@@ -27,7 +27,7 @@ def team_spec():
         "Implement alpha and beta in owned files, integrate and publish the verified result.",
         context_chars=80000,
         episode_model_calls=3,
-        total_seconds=30,
+        total_seconds=60,
         shutdown_seconds=3,
         write_paths=("alpha.txt", "beta.txt"),
         members=(

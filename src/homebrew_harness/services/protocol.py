@@ -49,6 +49,9 @@ QUERY_METHODS = {
     "snapshot": set(),
     "focus_get": {"context"},
     "work_get": {"id"},
+    "work_executions": {"id"},
+    "work_execution_get": {"id", "execution_id"},
+    "work_execution_output": {"id", "execution_id", "cursor", "limit", "stream"},
     "work_input": {"id", "offset", "limit", "amendment"},
     "work_list": {"state", "cursor", "limit"},
     "schedules": {"cursor", "limit"},
@@ -82,6 +85,8 @@ MAINTENANCE_COMMANDS = {
     "authority_revoke": {"id", "revision"},
 }
 COMMAND_METHODS = {
+    "work_execution_stop": {"id", "revision", "execution_id", "execution_revision"},
+    "work_execution_input": {"id", "revision", "execution_id", "text"},
     **OPERATIONS_COMMANDS,
     **MAINTENANCE_COMMANDS,
     "focus": {"context", "id", "revision"},

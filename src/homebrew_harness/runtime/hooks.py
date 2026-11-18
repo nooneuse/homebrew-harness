@@ -41,6 +41,15 @@ def freeze_value(value):
     return value
 
 
+def thaw_value(value):
+    """Copy frozen Hook data back to JSON values for an exact permission request."""
+    if isinstance(value, Mapping):
+        return {key: thaw_value(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [thaw_value(item) for item in value]
+    return value
+
+
 @dataclass(frozen=True)
 class ToolEvent:
     name: str
@@ -59,11 +68,16 @@ class HookRegistry:
         self._failures = []
         self._callbacks: dict[str, list[Callable]] = {event: [] for event in EVENTS}
 
-    def register_hook(self, event: str, callback: Callable) -> None:
+    def register_hook(self, event: str, callback: Callable, *, execution="inline") -> None:
         if event not in self._callbacks:
             raise ValueError(f"Unknown hook event: {event}")
         if not callable(callback):
             raise TypeError("A hook callback must be callable.")
+        if execution not in {'inline', 'process'}:
+            raise ValueError('Hook execution must be inline or process.')
+        if execution == 'process':
+            from homebrew_harness.execution.hook_process import ProcessHook
+            callback = ProcessHook(callback)
         self._callbacks[event].append(callback)
 
     def snapshot(self, event=None):
@@ -116,15 +130,16 @@ class HookRegistry:
 
 def permission_hook(event: ToolEvent) -> str | None:
     """Adapt the unchanged s03 policy to PreToolUse's blocking-result contract."""
+    arguments = thaw_value(event.arguments)
     with approval_call_scope(event.call_id):
-        decision = check_permission(event.name, dict(event.arguments), event.workdir)
+        decision = check_permission(event.name, arguments, event.workdir)
     if decision.action == "allow":
         if event.name == "run_tests" and test_approval_needed():
-            record_test_approval(event.arguments, event.workdir)
+            record_test_approval(arguments, event.workdir)
         if event.name == "publish_artifacts":
-            record_artifact_approval(event.arguments, event.workdir)
+            record_artifact_approval(arguments, event.workdir)
         if event.name == "spawn_teammate":
-            record_spawn_approval(event.arguments, event.workdir)
+            record_spawn_approval(arguments, event.workdir)
         return None
     result = json.dumps(
         {

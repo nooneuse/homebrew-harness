@@ -298,7 +298,39 @@ def _agent_loop(
     def guidance_cwd():
         return team_member.cwd() if team_member and team_member.assignment is not None else team_manager.lead_cwd() if team_manager else workdir
 
+    def observe_executions():
+        manager = components.operations
+        if manager is None:
+            return False
+        from homebrew_harness.context.tracked_history import set_context
+        rows = manager.snapshots()
+        active = [{k: r[k] for k in ("id", "name", "state", "capabilities", "execution_pending")} for r in rows if r["execution_pending"]]
+        if active:
+            set_context(messages, "active_executions", {"role": "system", "name": "active_executions", "content": json.dumps({"executions": active, "guidance": "Choose whether to observe, wait, send supported input or stop. Wait expiry and no output are not failures."})}, position=1)
+        else:
+            messages[:] = [m for m in messages if m.get("name") != "active_executions"]
+        delivered = []
+        for row in rows:
+            if not row["execution_pending"] and not row["delivered"]:
+                event_id = "execution:" + row["id"]
+                if not any(m.get("execution_event") == event_id for m in messages):
+                    result = json.dumps(row["result"], ensure_ascii=False)
+                    messages.append({"role": "user", "name": "execution_result", "execution_event": event_id,
+                                     "content": json.dumps({"execution_id": row["id"], "tool": row["name"], "state": row["state"], "effect_state": row["effect_state"], "result": result[:16000], "result_truncated": len(result)>16000})})
+                delivered.append(row["id"])
+        if delivered:
+            save_boundary(messages, todo_manager, compactor.intent)
+            for identity in delivered:
+                manager.rows[identity]["delivered"] = True
+                manager._save(manager.rows[identity])
+        return bool(delivered)
+
     while True:
+        if components.operations is not None:
+            components.operations.service_approvals()
+        from homebrew_harness.execution.operations import apply_agent_inputs
+        apply_agent_inputs(messages, lambda: save_boundary(messages, todo_manager, compactor.intent))
+        observe_executions()
         if components.run_control is not None:
             components.run_control.safe_point(turns)
         pool = (
@@ -485,6 +517,8 @@ def _agent_loop(
 
         assistant = {"role": "assistant", "content": redact(response.text)}
         if calls:
+            import uuid
+            assistant["execution_batch"] = uuid.uuid4().hex
             assistant["tool_calls"] = [call.history() for call in calls]
         if response.replay:
             assistant["_protocol_state"] = response.replay
@@ -492,7 +526,10 @@ def _agent_loop(
         save_boundary(messages, todo_manager, compactor.intent)
 
         if team_member is not None and not calls:
+            message_count = len(messages)
             team_member.before_model()
+            if len(messages) != message_count:
+                continue
         superseded = (
             steering is not None
             and steering.superseded()
@@ -507,6 +544,23 @@ def _agent_loop(
         if not calls and guidance.refresh(messages, guidance_cwd()):
             continue
         if not calls:
+            if observe_executions():
+                continue
+            if components.operations is not None and components.operations.pending():
+                # A text answer cannot finalize required live work. Park without
+                # consuming model calls until execution changes or host input arrives.
+                while components.operations.pending():
+                    components.operations.service_approvals()
+                    client.checkpoint()
+                    from homebrew_harness.execution.operations import agent_input_pending
+                    if agent_input_pending() or team_member is not None and team_member.manager.bus.peek(team_member.name):
+                        break
+                    if steering is not None and steering.session.inputs.pending():
+                        break
+                    components.operations.changed.wait(0.1)
+                    components.operations.changed.clear()
+                observe_executions()
+                continue
             if components.completion_check is not None:
                 if components.completion_check((), messages):
                     return ""
@@ -670,6 +724,8 @@ def _agent_loop(
                         test_runner=test_runner,
                         artifact_store=components.artifact_store,
                         before_start=proposal,
+                        operations=components.operations,
+                        execution_request_id=assistant.get("execution_batch", "") + ":" + call.id,
                     )
             from homebrew_harness.runtime.conversation_commands import active_evidence
             observer = components.plan_observer or (active_evidence().observe if active_evidence() else None)
@@ -742,7 +798,7 @@ def _agent_loop(
             raise homebrew_harness.runtime.errors.AgentError(
                 "Agent turn stopped after closing its tool batch."
             )
-        if not changed_input and components.completion_check is not None:
+        if not changed_input and components.completion_check is not None and not (components.operations and components.operations.pending()):
             if components.completion_check(calls, messages):
                 save_boundary(messages, todo_manager, compactor.intent)
                 return ""

@@ -19,6 +19,7 @@ from homebrew_harness.execution.background import (
 from homebrew_harness.execution.execution_leases import lease_scope
 from homebrew_harness.execution.model_gateway import ModelGatewayError, current_scope
 from homebrew_harness.execution.model_gateway import checkpoint as model_checkpoint
+from homebrew_harness.execution.operations import CONTROL_TOOLS
 from homebrew_harness.execution.test_runner import (
     TestRunner,
     TestRunnerError,
@@ -58,25 +59,35 @@ def validate_arguments(arguments: dict, schema: dict) -> None:
             properties = rule["properties"]
             missing = set(rule["required"]) - value.keys()
             unknown = value.keys() - properties.keys()
-            if missing or unknown:
+            if missing or unknown and not rule.get("additionalProperties", False):
                 raise ValueError(
                     f"{name}: missing={sorted(missing)}, unknown={sorted(unknown)}."
                 )
             for key, item in value.items():
-                check(item, properties[key], f"{name}.{key}")
+                if key in properties:
+                    check(item, properties[key], f"{name}.{key}")
         elif isinstance(value, list) and "array" in kinds:
+            if len(value) < rule.get("minItems", 0):
+                raise ValueError(f"{name} has too few items.")
             if len(value) > rule.get("maxItems", len(value)):
                 raise ValueError(f"{name} allows at most {rule['maxItems']} items.")
             for index, item in enumerate(value):
                 check(item, rule["items"], f"{name}[{index}]")
         elif isinstance(value, str) and "string" in kinds:
+            if len(value) > rule.get("maxLength", len(value)):
+                raise ValueError(f"{name} allows at most {rule['maxLength']} characters.")
             if len(value) < rule.get("minLength", 0):
                 raise ValueError(
                     f"{name} must be a string with the required minimum length."
                 )
             if "pattern" in rule and not re.search(rule["pattern"], value):
                 raise ValueError(f"{name} must contain non-whitespace characters.")
-        elif type(value) is int and "integer" in kinds:
+        elif value is None and "null" in kinds:
+            pass
+        elif type(value) in (int, float) and ("number" in kinds or type(value) is int and "integer" in kinds):
+            import math
+            if not math.isfinite(value) or value > rule.get("maximum", value) or value <= rule.get("exclusiveMinimum", float("-inf")):
+                raise ValueError(f"{name} is outside the supported numeric bounds.")
             if value < rule.get("minimum", value):
                 raise ValueError(
                     f"{name} must be an integer at least {rule.get('minimum', 0)}."
@@ -125,6 +136,9 @@ def execute_tool(
     test_runner: TestRunner | None = None,
     artifact_store=None,
     before_start=None,
+    operations=None,
+    execution_request_id=None,
+    execution_override=None,
 ) -> str:
     if mcp_bindings is None:
         if getattr(mcp_runtime, "workspace_scoped", False) is True:
@@ -150,6 +164,79 @@ def execute_tool(
             )[1]
         else:
             mcp_bindings = mcp_runtime.snapshot()[1] if mcp_runtime else {}
+    if call.name == 'invoke_tool':
+        from homebrew_harness.execution.model_protocol import ToolInvocation
+        from homebrew_harness.runtime.execution_options import options, SLOW_TOOLS
+        try:
+            raw = json.loads(call.arguments)
+            validate_arguments(raw, homebrew_harness.tools.catalog.TOOL_SCHEMAS['invoke_tool'])
+            settings = raw.get('execution')
+            options(settings)
+            if call.name not in handlers or raw['tool'] not in handlers or raw['tool'] not in SLOW_TOOLS:
+                raise ValueError('Execution wrapper can invoke only an available registered tool.')
+            original = ToolInvocation(call.id, raw['tool'], json.dumps(raw['arguments']))
+        except Exception as error:
+            return tool_error(error)
+        return execute_tool(original, workdir, hooks=hooks, handlers=handlers,
+                            background_manager=background_manager, team_member=team_member,
+                            team_manager=team_manager, mcp_runtime=mcp_runtime, mcp_bindings=mcp_bindings,
+                            archive_store=archive_store, restrict_archives=restrict_archives,
+                            workflow_runtime=workflow_runtime, goal_controller=goal_controller,
+                            test_runner=test_runner, artifact_store=artifact_store, before_start=before_start,
+                            operations=operations, execution_request_id=execution_request_id,
+                            execution_override=settings)
+    from homebrew_harness.execution.operations import SLOW_TOOLS, options, CURRENT
+    binding = (mcp_bindings or {}).get(call.name)
+    try:
+        raw = json.loads(call.arguments)
+        slow = call.name in SLOW_TOOLS or binding is not None or call.name == "invoke_mcp_tool"
+        if not isinstance(raw, dict):
+            raise ValueError("Tool arguments must be an object.")
+        if operations is not None and slow and not raw.get("run_in_background") and (call.name in handlers or binding is not None):
+            settings = options(execution_override if execution_override is not None else raw.get("execution") if binding is None else None)
+            from homebrew_harness.storage.durable_runtime import CheckpointWriter, checkpoint_scope
+            from homebrew_harness.runs.controller import current_run
+            writer = active_writer()
+            child_writer = None
+            run = current_run()
+            def execute():
+                nonlocal child_writer
+                from homebrew_harness.storage.durable_runtime import ExecutionWriter
+                child_writer = ExecutionWriter(writer, CURRENT.get()[1]) if writer else None
+                with checkpoint_scope(child_writer):
+                    return execute_tool(call, workdir, hooks=hooks, handlers=handlers,
+                                        background_manager=background_manager, team_member=team_member,
+                                        team_manager=team_manager, mcp_runtime=mcp_runtime, mcp_bindings=mcp_bindings,
+                                        archive_store=archive_store, restrict_archives=restrict_archives,
+                                        workflow_runtime=workflow_runtime, goal_controller=goal_controller,
+                                        test_runner=test_runner, artifact_store=artifact_store,
+                                        before_start=before_start)
+            def resources_settled():
+                if child_writer is None or call.name == 'connect_mcp':
+                    return True
+                from homebrew_harness.storage.durable_runtime import operation_active
+                import threading
+                return all(not operation_active(child_writer.store.workdir, effect['operation_id'],
+                                                excluding=threading.current_thread()) for effect in child_writer.effects)
+            handle = operations.start(call.name, raw, execute,
+                                      execution={k:v for k,v in settings.items() if k != "wait_seconds" or settings["mode"] == "interactive"},
+                                      request_id=execution_request_id, deadline=run.deadline() if run is not None else None,
+                                      read_only=is_read_only(call.name, binding), checkpoint=writer.key if writer else None,
+                                      settled=resources_settled if writer is not None else None)
+            seconds = settings['wait_seconds'] if settings['mode'] == 'interactive' else None
+            row = operations.wait_for(handle.id, seconds)
+            if row['result'] is not None and (not row['execution_pending'] or row.get('effect_state') == 'unknown'):
+                operations.rows[handle.id]['delivered'] = True
+                operations._save(operations.rows[handle.id])
+                return row['result'] if isinstance(row['result'], str) else json.dumps(row['result'], ensure_ascii=False)
+            return json.dumps({'execution_id': handle.id, 'state': row['state'], 'mode': settings['mode'],
+                               'execution_pending': True, 'capabilities': row['capabilities'],
+                               'next_action': 'Observe, wait, send supported input, or stop this execution.'})
+    except Exception as error:
+        result = json.loads(tool_error(error))
+        result["executed"] = False
+        return json.dumps(result)
+
     from homebrew_harness.security.file_visibility import file_access_scope
 
     from homebrew_harness.security.review_context import permission_scope
@@ -161,7 +248,7 @@ def execute_tool(
         spawn_approval_scope(),
         mcp_policies({name: binding.policy for name, binding in mcp_bindings.items()}),
     ):
-        if team_member is not None:
+        if team_member is not None and call.name not in CONTROL_TOOLS:
             # Plan changes, task changes and one tool invocation form one step.
             # Model calls remain concurrent; short workspace operations serialize.
             with team_member.tool_step(call.name):
@@ -181,6 +268,7 @@ def execute_tool(
                     test_runner=test_runner,
                     artifact_store=artifact_store,
                     before_start=before_start,
+                    operations=operations,
                 )
         return _execute_tool(
             call,
@@ -189,6 +277,7 @@ def execute_tool(
             handlers=handlers,
             background_manager=background_manager,
             team_manager=team_manager,
+            team_member=team_member,
             mcp_runtime=mcp_runtime,
             mcp_bindings=mcp_bindings,
             archive_store=archive_store,
@@ -198,6 +287,7 @@ def execute_tool(
             test_runner=test_runner,
             artifact_store=artifact_store,
             before_start=before_start,
+            operations=operations,
         )
 
 
@@ -219,6 +309,8 @@ def _execute_tool(
     test_runner: TestRunner | None = None,
     artifact_store=None,
     before_start=None,
+    operations=None,
+    execution_override=None,
 ) -> str:
     """Validate, trigger pre hooks, execute, and trigger post hooks for this call."""
 
@@ -266,6 +358,26 @@ def _execute_tool(
             output,
         )
 
+    if call.name == "invoke_mcp_tool":
+        from homebrew_harness.execution.model_protocol import ToolInvocation
+        from homebrew_harness.execution.operations import options
+        try:
+            raw = json.loads(call.arguments)
+            validate_arguments(raw, homebrew_harness.tools.catalog.TOOL_SCHEMAS[call.name])
+            options(raw.get("execution"))
+            if call.name not in handlers or raw["tool"] not in (mcp_bindings or {}):
+                raise ValueError("MCP wrapper can invoke only tools visible to this context.")
+            original = ToolInvocation(call.id, raw["tool"], json.dumps(raw["arguments"]))
+        except Exception as error:
+            return finish(tool_error(error))
+        return _execute_tool(original, workdir, hooks=hooks, handlers=handlers,
+                             background_manager=background_manager, team_member=team_member,
+                             team_manager=team_manager, mcp_runtime=mcp_runtime, mcp_bindings=mcp_bindings,
+                             archive_store=archive_store, restrict_archives=restrict_archives,
+                             workflow_runtime=workflow_runtime, goal_controller=goal_controller,
+                             test_runner=test_runner, artifact_store=artifact_store, before_start=before_start,
+                             operations=operations, execution_override=raw.get("execution"))
+
     if call.name == "execute_approved":
         from homebrew_harness.runs.controller import current_run
         from homebrew_harness.runs.requests import approval_scope
@@ -294,7 +406,7 @@ def _execute_tool(
         except Exception as error:
             return finish(tool_error(error))
         with approval_scope(request):
-            return _execute_tool(
+            return execute_tool(
                 original,
                 workdir,
                 hooks=hooks,
@@ -311,6 +423,7 @@ def _execute_tool(
                 test_runner=test_runner,
                 artifact_store=artifact_store,
                 before_start=before_start,
+                operations=operations,
             )
 
     if call.kind != "function":
@@ -326,6 +439,10 @@ def _execute_tool(
         return finish(json.dumps({"error": "Unknown tool."}))
     try:
         arguments = json.loads(call.arguments)
+        execution = None
+        from homebrew_harness.execution.operations import SLOW_TOOLS, CONTROL_TOOLS, options
+        if not binding and call.name in SLOW_TOOLS:
+            execution = options(arguments.get("execution"))
         if binding:
             binding.validate(arguments)
         elif call.name == "workflow":
@@ -460,7 +577,7 @@ def _execute_tool(
             else None
         )
         with test_policy(policy), artifact_approval_scope(approval_identity):
-            blocked = hooks.trigger_hooks("PreToolUse", event)
+            blocked = None if call.name in CONTROL_TOOLS else hooks.trigger_hooks("PreToolUse", event)
             artifact_approval = consume_artifact_approval(arguments, workdir)
         if blocked is not None:
             if (
@@ -519,6 +636,7 @@ def _execute_tool(
                 task_id=test_call_context.task_id,
                 max_runs=1,
                 expected=test_approval_identity,
+                private=True,
             )
         if call.name == "spawn_teammate":
             if team_manager is None or not consume_spawn_approval(arguments, workdir):
@@ -613,7 +731,7 @@ def _execute_tool(
                 }
             )
         )
-    try:
+    def invoke_native():
         try:
             if binding is not None:
                 if mcp_runtime is None:
@@ -650,6 +768,7 @@ def _execute_tool(
             else:
                 # The flag selects dispatch only; synchronous/custom Bash handlers
                 # retain their original command + workdir contract.
+                arguments.pop("execution", None)
                 if event.name == "bash":
                     arguments.pop("run_in_background", None)
                 leases = (
@@ -683,9 +802,13 @@ def _execute_tool(
             ):
                 output = json.dumps({"error": error_message(error), "error_info": error_info(error), "outcome": "unknown"})
         output = redact(output)
+        hooks.trigger_hooks("PostToolUse", event, output)
+        return output
+
+    try:
+        output = invoke_native()
         if writer:
             writer.tool_finished(operation_id, output)
-        hooks.trigger_hooks("PostToolUse", event, output)
         return finish(output)
     finally:
         if writer:

@@ -175,7 +175,28 @@ def prepare_core(client, model, workdir, components: LoopComponents, owned):
         if tests is None:
             tests = TestRunner.default(workdir)
             owned.append(("tests", tests.close))
-    return replace(components, test_runner=tests)
+    operations = components.operations
+    if operations is None:
+        from homebrew_harness.execution.operations import Operations, CURRENT
+        from homebrew_harness.storage.durable_runtime import active_writer
+        import uuid
+        writer = active_writer()
+        member = components.team_member
+        operations = getattr(member, "operations", None) if member is not None else None
+        if operations is None:
+            parent = CURRENT.get()
+            operations = Operations(workdir, writer.key if writer else "loop:" + uuid.uuid4().hex,
+                                    leases=getattr(getattr(member, "manager", None), "leases", None) or getattr(components.task_store, "leases", None) or getattr(components.team_manager, "leases", None) or (parent[0].leases if parent else None),
+                                    parent=parent[0] if parent else None)
+            operations.recover()
+            if member is not None:
+                member.operations = operations
+                session = getattr(member.manager, "session_owner", None)
+                if session is not None:
+                    session.operations.children.append(operations)
+            else:
+                owned.append(("operations", operations.close))
+    return replace(components, test_runner=tests, operations=operations)
 
 
 @contextmanager

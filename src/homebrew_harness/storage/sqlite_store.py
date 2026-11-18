@@ -19,6 +19,8 @@ from homebrew_harness.storage.storage_metrics import metrics_for
 SECTIONS = ("checkpoints", "operations", "background", "team", "cron")
 RECORD_SECTIONS = (
     *SECTIONS,
+    "executions",
+    "execution_controls",
     "artifacts",
     "session_meta",
     "artifact_bundles",

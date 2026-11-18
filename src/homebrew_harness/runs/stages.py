@@ -386,8 +386,9 @@ class StageController:
         outer = self
 
         class Tests:
-            def verify(self, name, cwd, **_kwargs):
-                return outer.session.tests.verify(name, cwd, task_id=task.id)
+            def verify(self, name, cwd, **kwargs):
+                return outer.session.tests.verify(name, cwd, task_id=task.id,
+                    **({"selection": kwargs["selection"]} if "selection" in kwargs else {}))
 
             def authorization_available(self, name, cwd, _task=None):
                 return outer.session.tests.authorization_available(name, cwd, task.id)

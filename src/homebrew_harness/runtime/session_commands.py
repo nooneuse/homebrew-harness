@@ -68,7 +68,13 @@ def select(session, choice, *, restore=False):
     compactor = copy.copy(session.compactor)
     compactor.client, compactor.model, compactor.context_chars = client, binding.model, binding.context_chars
     tools = session.tool_pool().tools
-    compactor.validate_fixed_budget(proposed, session.user_request, session.todo.render(), tools)
+    try:
+        compactor.validate_fixed_budget(proposed, session.user_request, session.todo.render(), tools)
+    except __import__('homebrew_harness.context.compaction', fromlist=['CompactionError']).CompactionError as error:
+        invalid = ValueError(str(error))
+        invalid.code = getattr(error, 'code', None)
+        invalid.details = getattr(error, 'details', {})
+        raise invalid from error
     if not restore and compactor.estimate_chars(proposed, tools) >= binding.context_chars:
         raise ValueError("The target context is too small; use /compact or /new first.")
     if restore:

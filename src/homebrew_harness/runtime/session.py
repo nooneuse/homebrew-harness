@@ -520,6 +520,10 @@ class HarnessSession:
             self._goal_observer = self.goal.on_event
             bind(self.goal, "on_event", self._goal_event)
             bind(self.goal, "pending_work", self._goal_pending_work)
+            self.session_id = uuid.uuid4().hex
+            self.checkpoint_key = "lead:" + self.session_id
+            from homebrew_harness.execution.operations import Operations
+            self.operations = Operations(self.workdir, self.checkpoint_key, leases=self.workspace.leases)
             self.messages = ConversationHistory(
                 [
                     {
@@ -569,8 +573,6 @@ class HarnessSession:
             self._runtime_init_lock = threading.RLock()
             self._quota_blocked = False
             self.runtime_store = self.workspace.bus.store
-            self.session_id = uuid.uuid4().hex
-            self.checkpoint_key = "lead:" + self.session_id
             self.resume_session = resume_session
             self._runtime_started = False
             from homebrew_harness.runtime.user_input import UserInputController
@@ -693,6 +695,7 @@ class HarnessSession:
     def loop_components(self):
         from homebrew_harness.runtime.conversation_commands import PLAN_TOOLS
         return LoopComponents(
+            operations=self.operations,
             hooks=self.hooks,
             todo_manager=self.todo,
             skill_loader=self.skills,
@@ -925,6 +928,8 @@ class HarnessSession:
             self.runtime_store, self.checkpoint_key, lambda: self._snapshot(borrow=True)
         )
         self._checkpoint_writer.run_control = self.run_control
+        self.operations.owner = self.checkpoint_key
+        self.operations.recover()
         self.workspace.runtime_session_id = self.session_id
         self.workspace.bus.recover("lead")
         self._pending_team.clear()  # Durable claims reappear once, after the lease is acquired.
@@ -1248,6 +1253,10 @@ class HarnessSession:
 
     def pending_work(self, deadline=None, *, for_goal=False, include_dispatch=True):
         pending = ["recovery"] if self._recovery_blocked else []
+        if self.operations.pending():
+            pending.append("executions")
+        if self.operations.ready():
+            pending.append("execution_events")
         if (
             include_dispatch and not for_goal and (self._input_dispatching.is_set() or self._pending_user or self._user_waiting.is_set())
         ) or (
@@ -2483,6 +2492,7 @@ class HarnessSession:
         self._drain_changed.set()
         remaining = lambda: max(0, deadline - time.monotonic())
         actions = [
+            ("operations", lambda: self.operations.close(timeout=remaining())),
             ("approval_reviewer", self.approval_reviewer.close),
             ("tests", lambda: self.tests.close(timeout=remaining())),
             ("shell", lambda: self.shell.close(timeout=remaining())),
@@ -2552,6 +2562,7 @@ class HarnessSession:
             ("wait_gateway", lambda: self.gateway.wait_idle(None)),
         ]
         for label, component in (
+            ("operations", self.operations),
             ("tests", self.tests),
             ("shell", self.shell),
             ("background", self.background),

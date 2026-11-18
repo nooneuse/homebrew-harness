@@ -203,6 +203,23 @@ class RunMCPFailures(unittest.TestCase):
         )
         self.close(control, session)
 
+    def test_slow_local_preparation_still_revalidates_mcp_before_model_work(self):
+        import time
+        previous, request = self.proposed()
+        HumanRequests(self.store).decide(previous.id, request['id'], request['revision'], 'approve')
+        (self.base / 'service/schema.txt').write_text('New external schema release')
+        control, session, requests = self.controller([], identity=previous.id)
+        original = session._ensure_runtime
+        def delayed(deadline=None):
+            time.sleep(2.1)
+            return original(deadline)
+        with patch.object(session, '_ensure_runtime', side_effect=delayed):
+            outcome = control.execute()
+        self.assertEqual(outcome.status, 'blocked', outcome.data())
+        self.assertEqual(requests, [])
+        self.assertEqual(HumanRequests(self.store).get(control.id, request['id'])['state'], 'stale', outcome.data())
+        self.close(control, session)
+
     def test_host_revision_change_invalidates_approval(self):
         previous, request = self.proposed()
         self.store.runtime.update_fields(

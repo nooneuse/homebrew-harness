@@ -791,6 +791,7 @@ class DeadlineTests(unittest.TestCase):
             self.root,
             env={"MCP_DEMO_STATE_DIR": str(self.root)},
             timeout_seconds=10,
+            concurrency=1,
         )
         runtime = MCPRuntime({"fixture": spec}, workdir=self.root)
         self.addCleanup(lambda: runtime.wait_closed(5))

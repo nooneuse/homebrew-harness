@@ -67,6 +67,12 @@ class RunHandle(Handle):
             else "accepted",
         )
 
+    @property
+    def executions(self):
+        from .executions import Executions
+        state = self.core.run_store.get(self.id)
+        return Executions(self.core, self.core.run_store.runtime, state['checkpoint'], control=self.control_enabled)
+
     def snapshot(self):
         value = self.core.run_store.status(self.id)
         outcome = value.get("last_outcome") or {}

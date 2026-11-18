@@ -19,9 +19,14 @@
         "conftest.py",
         "pytest.ini"
       ],
-      "timeout": 120,
+      "timeout": null,
       "max_runs": 10,
-      "authorization": "confirm"
+      "authorization": "confirm",
+      "cpu_seconds": null
     }
-  ]
+  ],
+  "limits": {
+    "max_runs": 20,
+    "total_seconds": null
+  }
 }

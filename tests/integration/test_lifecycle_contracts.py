@@ -435,14 +435,14 @@ class FollowupTests(unittest.TestCase):
                     "--profile",
                     "core",
                     "--context-chars",
-                    "12000",
+                    "24000",
                     "--cwd",
                     str(self.root),
                     "/usage",
                 ]
             )
         self.assertEqual(result, 0)
-        self.assertEqual(instances[0].compactor.context_chars, 12000)
+        self.assertEqual(instances[0].compactor.context_chars, 24000)
         self.assertTrue(instances[0].wait_closed(3))
 
     def test_standalone_core_does_not_construct_task_store(self):
@@ -514,7 +514,7 @@ class FollowupTests(unittest.TestCase):
                 reply("Child explanation"),
                 reply("Final explanation"),
             ],
-            context_chars=12000,
+            context_chars=24000,
             capabilities=Capabilities({"subagents"}),
         )
         limits = []
@@ -528,7 +528,7 @@ class FollowupTests(unittest.TestCase):
             homebrew_harness.context.compaction.ContextCompactor, "prepare", prepare
         ):
             session.run_user("Delegate a local explanation")
-        self.assertEqual(limits, [12000, 12000, 12000])
+        self.assertEqual(limits, [24000, 24000, 24000])
         self.assertEqual(session.gateway.summary()["by_role"]["subagent"]["calls"], 1)
 
     def test_real_session_append_work_is_independent_of_retained_history_length(self):

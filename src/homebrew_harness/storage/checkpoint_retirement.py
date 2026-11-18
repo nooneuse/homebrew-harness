@@ -31,7 +31,7 @@ DEFAULT_DAYS = 15
 DEFAULT_KEEP = 10
 GRACE_DAYS = 7
 MAX_BYTES = 64 * 1024 * 1024
-SESSION_API_SECTIONS = ("api_sessions", "api_turns", "api_decisions", "approval_reviews")
+SESSION_API_SECTIONS = ("api_sessions", "api_turns", "api_decisions", "approval_reviews", "executions", "execution_controls")
 _COLD = re.compile(r"\.harness/checkpoint-retirement/[0-9a-f]{32}\.json\.gz\Z")
 
 
@@ -94,6 +94,8 @@ def bundle(state, sid):
 
 def workspace_blockers(state, external, sid):
     reasons = []
+    if any(owns(sid, row.get("checkpoint", "")) and (row.get("execution_pending") or not row.get("cleanup", {}).get("complete") or not row.get("delivered")) for row in state.get("executions", {}).values()):
+        reasons.append("owned_execution_unsettled")
     if sid in external["records"].get(".harness/service-retention.json", {}).get(
         "sessions", []
     ):

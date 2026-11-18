@@ -19,7 +19,7 @@ from homebrew_harness.tools.tool_outcome import ToolExecutionError
 def run_bash(
     command: str,
     workdir: Path,
-    timeout: float = 120,
+    timeout: float | None = None,
     *,
     runner: ShellRunner | None = None,
     archive_store: ArchiveStore | None = None,
@@ -47,7 +47,7 @@ def run_bash(
     except subprocess.TimeoutExpired as error:
         return json.dumps(
             {
-                "error": f"Command timed out after {timeout:g} seconds; inspect effects before retrying.",
+                "error": f"Command timed out at its effective deadline (requested timeout={timeout}); inspect effects before retrying.",
                 "outcome": "unknown",
                 **(
                     {"execution": error.bash_execution}

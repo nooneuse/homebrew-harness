@@ -121,6 +121,18 @@ class StageTests(unittest.TestCase):
         tasks.assert_execution(first.id)
         tasks.complete(first.id)
 
+    def test_stage_test_predicate_preserves_explicit_selection_and_owner(self):
+        (self.root / "tests").mkdir()
+        selection = {"targets": ["tests.test_example.Sample.test_ok"]}
+        data = stage_spec().data()
+        data["stages"][0]["acceptance"]["predicates"] = [{
+            "id": "test", "type": "tests_passed", "recipe": "unit-tests", "selection": selection
+        }]
+        control, session, (first, _) = self.prepared(RunSpec.from_dict(data))
+        with patch.object(session.tests, "verify", return_value={"ok": True}) as verify:
+            self.assertTrue(control.stages._check(first)["ok"])
+        verify.assert_called_once_with("unit-tests", self.root, task_id=first.id, selection=selection)
+
     def test_changed_inputs_invalidate_stage_and_active_descendants(self):
         control, session, (first, report) = self.prepared()
         tasks = session.workspace.store

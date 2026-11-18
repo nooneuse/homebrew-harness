@@ -104,7 +104,7 @@ class ContractTests(unittest.TestCase):
                 t["function"]["name"]
                 for t in snapshots
                 and client.chat.completions.create.call_args_list[1].kwargs["tools"]
-            },
+            } - (__import__('homebrew_harness.execution.operations', fromlist=['CONTROL_TOOLS']).CONTROL_TOOLS | {'invoke_tool'}),
             {"read_file"},
         )
         self.assertFalse((self.root / "wrong.txt").exists())

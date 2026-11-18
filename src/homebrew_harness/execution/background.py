@@ -36,6 +36,7 @@ class ShellRunner:
         self._lock = threading.RLock()
         self._processes: set[subprocess.Popen] = set()
         self._closed = False
+        self.stdin_pipe = False
         self._cancel = threading.Event()
         self._launching = 0
         self._cleanup_workers = Workers()
@@ -79,6 +80,7 @@ class ShellRunner:
         output_bytes=8 * 1024 * 1024,
         cancel_events=(),
         on_started=None,
+        allow_input=True,
     ):
         deadline = operation_deadline(timeout)
         check(deadline, cancel_events)
@@ -93,6 +95,7 @@ class ShellRunner:
             with self._lock:
                 self._launching -= 1
             raise
+        input_callback = None
         with self._lock:
             self._launching -= 1
             self._processes.add(process)
@@ -102,10 +105,34 @@ class ShellRunner:
             )
 
             operation = track_process(process)
+            if process.stdin is not None and allow_input:
+                def write_input(value):
+                    if process.poll() is not None:
+                        raise ValueError("Process has already exited.")
+                    payload = value.encode()
+                    fd = process.stdin.fileno()
+                    os.set_blocking(fd, False)
+                    expires = time.monotonic() + 2
+                    sent = 0
+                    with selectors.DefaultSelector() as writable:
+                        writable.register(fd, selectors.EVENT_WRITE)
+                        while sent < len(payload):
+                            check(deadline, cancel_events)
+                            if time.monotonic() >= expires or process.poll() is not None:
+                                raise ValueError(f"Input write stopped after {sent} bytes; inspect before retrying.")
+                            if writable.select(min(.05, max(0, expires-time.monotonic()))):
+                                try:
+                                    sent += os.write(fd, payload[sent:])
+                                except BlockingIOError:
+                                    pass
+                input_callback = write_input
         result = None
         failure = None
         streams = {"stdout": bytearray(), "stderr": bytearray()}
         try:
+            if input_callback is not None:
+                from homebrew_harness.execution.operations import bind_input
+                bind_input(input_callback, workdir=workdir)
             if on_started is not None:
                 on_started(process)
             with selectors.DefaultSelector() as selector:
@@ -131,6 +158,8 @@ class ShellRunner:
                         min(0.05, remaining) if remaining is not None else 0.05
                     ):
                         chunk = os.read(key.fileobj.fileno(), 65536)
+                        from homebrew_harness.execution.operations import emit_output
+                        emit_output(key.data, chunk)
                         if not chunk:
                             selector.unregister(key.fileobj)
                         else:
@@ -205,6 +234,8 @@ class ShellRunner:
                 self._defer(settle)
             else:
                 settle()
+            if process.stdin is not None and not process.stdin.closed:
+                process.stdin.close()
             if cleanup_error is not None:
                 if failure is None:
                     raise cleanup_error
@@ -215,10 +246,12 @@ class ShellRunner:
             if self._closed:
                 raise OSError("Shell runner is closed")
             check(deadline, cancel_events)
+            from homebrew_harness.execution.operations import CURRENT
             return subprocess.Popen(
                 ["bash", "-c", command] if isinstance(command, str) else command,
                 cwd=workdir,
                 env=env,
+                stdin=subprocess.PIPE if CURRENT.get() is not None or self.stdin_pipe else subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 start_new_session=True,

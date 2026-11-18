@@ -940,7 +940,7 @@ class ServiceRuntime:
         with self.lock:
             if (
                 method not in QUERY_METHODS
-                and method != "stop"
+                and method not in {"stop", "work_execution_stop"}
                 and self.store.get(self.id).get("operations_phase", "active")
                 != "active"
             ):
@@ -953,6 +953,26 @@ class ServiceRuntime:
                 return self.store.runtime.get(
                     "service_focus", self.id + ":" + payload["context"]
                 )
+            if method in {"work_executions", "work_execution_get", "work_execution_output", "work_execution_stop", "work_execution_input"}:
+                work = self.store.work(payload["id"], self.id)
+                if not work.get("run_id"):
+                    if method == "work_executions":
+                        return {"executions": []}
+                    raise ValueError("Work has no execution yet.")
+                handle = self.child_for(work).runs.get(work['run_id'], control=method in {'work_execution_stop', 'work_execution_input'})
+                views = handle.executions
+                if method == 'work_executions':
+                    return {'executions': [row.data() for row in views.list()]}
+                execution = views.get(payload['execution_id'])
+                if method == 'work_execution_get':
+                    return execution.snapshot().data()
+                if method == 'work_execution_output':
+                    return execution.output(payload.get('cursor', 0), payload.get('limit', 16000), stream=payload.get('stream', 'output'))
+                if work['revision'] != payload.get('revision'):
+                    raise ValueError('Work revision changed.')
+                if method == 'work_execution_input':
+                    return execution.input(payload['text'], request_id=request_id)
+                return execution.stop(revision=payload.get('execution_revision'), request_id=request_id)
             if method == "work_get":
                 return self.work_snapshot(payload["id"])
             if method == "work_input":

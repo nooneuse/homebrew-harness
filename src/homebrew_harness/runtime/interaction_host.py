@@ -212,17 +212,17 @@ class InteractionHost:
         return binding
 
     def _sync_model_preference(self, session=None):
-        if session is not None and session is not self.session:
-            return
-        session = session or self.session
-        if session is not None:
-            self._sync_conversation(session)
-        if session is None or not getattr(session, "_committed_model_revision", 0):
-            return
-        marker = (session.session_id, session._committed_model_revision)
-        if marker == getattr(self, "_seen_model_revision", None):
-            return
         with self.lock:
+            if session is not None and session is not self.session:
+                return
+            session = session or self.session
+            if session is not None:
+                self._sync_conversation(session)
+            if session is None or not getattr(session, "_committed_model_revision", 0):
+                return
+            marker = (session.session_id, session._committed_model_revision)
+            if marker == getattr(self, "_seen_model_revision", None):
+                return
             choice = session._committed_model_selection
             if choice != self.config.model_selection:
                 self._set_model_preference(choice)

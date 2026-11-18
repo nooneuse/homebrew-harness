@@ -818,7 +818,7 @@ class RunController:
         s.tests.max_runs = max(
             0, limits["max_runs"] - sum(self.state.get("test_attempts", {}).values())
         )
-        s.tests.total_seconds = max(0, limits["seconds"] - self.test_seconds_offset)
+        s.tests.total_seconds = None if limits["seconds"] is None else max(0, limits["seconds"] - self.test_seconds_offset)
         targets = [(None, s.workdir, "lead")]
         if self.stages:
             targets += [
@@ -918,7 +918,7 @@ class RunController:
                     + json.dumps(self.state["routing_plan"], ensure_ascii=False),
                 }
             )
-        s._ensure_runtime(self.deadline().intersect(Deadline.after(2)))
+        s._ensure_runtime(self.deadline())
         if self.spec.mcp:
             from homebrew_harness.tools.mcp.selection import prepare_runtime
 
@@ -1341,6 +1341,8 @@ class RunController:
                             )
                         if set(outcome.pending_work) - {
                             "background",
+                            "executions",
+                            "execution_events",
                             "tests",
                             "workflow",
                             "goal",
@@ -1358,6 +1360,7 @@ class RunController:
                             )
                         self.episode_deadline = Deadline()
                         if set(outcome.pending_work) & {
+                            "execution_events",
                             "user_input",
                             "reference",
                             "approved_action",
@@ -1385,6 +1388,8 @@ class RunController:
                                     break
                                 if s.workspace.bus.peek("lead"):
                                     break
+                            if s.operations.ready():
+                                break
                             if s.background and s.background.has_ready():
                                 break
                             self.cancel.wait(min(0.1, self.deadline().remaining()))

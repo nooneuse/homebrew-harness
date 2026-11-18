@@ -31,12 +31,12 @@ class BashPolicy:
     cpus: float = 1
     memory_mb: int = 512
     pids: int = 64
-    timeout: float = 120
+    timeout: float | None = None
     output_bytes: int = 8 * 1024 * 1024
     workspace_bytes: int = 128 * 1024 * 1024
     max_files: int = 5000
     max_input_bytes: int = 64 * 1024 * 1024
-    cpu_seconds: int = 120
+    cpu_seconds: int | None = None
     file_bytes: int = 64 * 1024 * 1024
     open_files: int = 256
     outputs: tuple = ()
@@ -101,10 +101,14 @@ class BashPolicy:
             ("open_files", 32, 1024),
         ):
             value = getattr(self, name)
+            if name == "cpu_seconds" and value is None:
+                continue
             if type(value) is not int or not lower <= value <= upper:
                 raise BashPolicyError("Invalid container Bash limit: " + name)
         for name, lower, upper in (("cpus", 0.1, 8), ("timeout", 0.01, 600)):
             value = getattr(self, name)
+            if name == "timeout" and value is None:
+                continue
             if (
                 type(value) not in (int, float)
                 or not math.isfinite(value)
@@ -150,7 +154,7 @@ class BashPolicy:
         return (
             output_access
             and all(getattr(child, k) == getattr(self, k) for k in fixed)
-            and all(getattr(child, k) <= getattr(self, k) for k in limits)
+            and all(getattr(self, k) is None or getattr(child, k) is not None and getattr(child, k) <= getattr(self, k) for k in limits)
         )
 
 

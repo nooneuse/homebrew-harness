@@ -21,7 +21,7 @@ class MCPRecoveryContractTests(unittest.TestCase):
     runtime = fixture.MCPContainerTests.runtime
     binding = fixture.MCPContainerTests.binding
 
-    def test_sent_timeout_blocks_inspection_until_actual_cleanup(self):
+    def test_sent_timeout_preserves_shared_connection_and_request_facts(self):
         server = self.root / "server.py"
         server.write_text(
             "import asyncio\nfrom mcp.server.fastmcp import FastMCP\ns=FastMCP('fixture',log_level='WARNING')\n@s.tool()\nasync def slow(seconds:float)->str:\n await asyncio.sleep(seconds);return 'done'\ns.run(transport='stdio')\n"
@@ -60,16 +60,13 @@ class MCPRecoveryContractTests(unittest.TestCase):
             ):
                 session.run_user("Call slow service")
             row = session.recovery_operations()[0]
-            self.assertTrue(row["active"])
+            self.assertFalse(row["active"])
             self.assertTrue(next(iter(runtime._actors)).owner._leased)
-            with self.assertRaises(RecoveryRequired):
-                session.inspect_operation(row["operation_id"], row["revision"])
+            session.inspect_operation(row["operation_id"], row["revision"])
+            self.assertEqual(session.recovery_operations(), [])
             gate.set()
             runtime.close(0.02)
             self.assertTrue(runtime.wait_closed(5))
-            row = session.recovery_operations()[0]
-            self.assertFalse(row["active"])
-            session.inspect_operation(row["operation_id"], row["revision"])
             self.assertEqual(session.recovery_operations(), [])
         finally:
             gate.set()

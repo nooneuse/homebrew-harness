@@ -154,6 +154,7 @@ def processes(session):
     if session is None:
         return []
     rows = session.gateway.active_requests() + session.activities.snapshot()
+    rows.extend({**{k: row[k] for k in ("id", "name", "state", "elapsed_seconds", "capabilities")}, "kind": "execution", "stoppable": row["execution_pending"]} for row in session.operations.snapshots())
     if session.inputs.active_id:
         rows.insert(0, {"id": session.inputs.active_id, "kind": "foreground", "role": "lead", "cwd": str(session.workspace.lead_cwd()),
             "state": "stopping" if session._execution_paused else session.inputs.phase, "stoppable": True})
@@ -202,6 +203,8 @@ def managed_view(store, run, *, agent_only=False, worker=None):
 
 
 def stop_target(session, identity):
+    if identity.startswith("exec_"):
+        return session.operations.stop(identity)
     row = next((r for r in processes(session) if r["id"] == identity), None)
     if not row or not row.get("stoppable"):
         raise ValueError("Unknown or inactive stoppable operation; use /ps.")

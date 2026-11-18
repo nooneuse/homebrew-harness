@@ -156,7 +156,7 @@ class PreparedLoopTests(unittest.TestCase):
             result, _, compactor = self.user(client)
         self.assertEqual(result, "done")
         self.assertEqual(len(self.pools), 1)
-        self.assertEqual(len(self.pools[0].tools), 19)
+        self.assertEqual(len(self.pools[0].tools), 26)
         self.assertTrue(
             set(homebrew_harness.orchestration.task_store.TASK_TOOL_NAMES)
             <= self.pools[0].names
@@ -181,7 +181,7 @@ class PreparedLoopTests(unittest.TestCase):
         ):
             result, _, compactor = self.user(client)
         self.assertEqual(result, "done")
-        self.assertEqual(len(self.pools[0].tools), 11)
+        self.assertEqual(len(self.pools[0].tools), 18)
         self.assertEqual(set(created), {"tests", "shell"})
         self.assert_recall_matches(client, compactor, "Read fixture")
         self.assert_closed(created)

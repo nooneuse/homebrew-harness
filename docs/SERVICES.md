@@ -297,3 +297,6 @@ Optional community communication preserves multi-round issues and external PR re
 After renewing the Work's current authority, use `homebrew-harness service work SERVICE_ID retry WORK_ID --request-id retry-1`. Optional `--seconds` selects a bounded window for the same native Run and checkpoint. The Python equivalent is `service.work.get(work_id).retry(...)`.
 
 Expected model-output failures become observations for the Lead to assess. It may continue with ordinary tools or report a Run blocker; the controller retains the error and enforces the existing execution limits. Permission, storage-integrity, and unknown tool-outcome checks keep their ordinary recovery paths.
+
+
+[Execution views and controls](EXECUTION.md)

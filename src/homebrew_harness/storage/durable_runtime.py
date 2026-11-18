@@ -31,7 +31,7 @@ def current_operation():
 def operation_active(root, identity, *, excluding=None):
     with _LIVE_LOCK:
         key = (str(root), identity)
-        return bool(_LIVE.get(key, set()) - ({excluding} if excluding is not None else set()))
+        return bool(_LIVE.get(key, set()) - (set(excluding) if isinstance(excluding, (tuple, list, set, frozenset)) else {excluding} if excluding is not None else set()))
 
 
 def track_activity(resource, key=None):
@@ -135,7 +135,7 @@ class DurableStore:
             return self._store.checkpoint(key, value)
         checkpoint = (
             value.get("checkpoint")
-            if section in {"operations", "approval_reviews"} and isinstance(value, dict)
+            if section in {"operations", "approval_reviews", "executions"} and isinstance(value, dict)
             else None
         )
         if checkpoint is not None:
@@ -202,6 +202,7 @@ class CheckpointWriter:
         self.effects = []
         self.tool_messages = {}
         self._operation_tokens = {}
+        self.effect_parent = None
 
     def value(self, phase="running"):
         value = self.snapshot()
@@ -247,6 +248,8 @@ class CheckpointWriter:
                 **({"read_only": True} if read_only else {}),
             }
         )
+        if self.effect_parent is not None:
+            self.effect_parent.effects.append(self.effects[-1])
         record = {
             "checkpoint": self.key,
             "state": "started",
@@ -306,7 +309,9 @@ class CheckpointWriter:
         try:
             self.store.accept_operation(operation_id, record, guard)
         except BaseException:
-            self.effects.pop()
+            effect = self.effects.pop()
+            if self.effect_parent is not None and effect in self.effect_parent.effects:
+                self.effect_parent.effects.remove(effect)
             self.end_operation(operation_id)
             raise
         return operation_id
@@ -370,6 +375,34 @@ class CheckpointWriter:
                 "output": output,
             },
         )
+
+
+class ExecutionWriter(CheckpointWriter):
+    """Accepted worker effects, without writing the model's live conversation."""
+    def __init__(self, parent, execution_id):
+        snapshot = parent.snapshot()
+        super().__init__(parent.store, parent.key,
+                         lambda: {"session_id": snapshot.get("session_id")})
+        self.run_control = getattr(parent, 'run_control', None)
+        self.messages = copy.deepcopy(list(parent.messages or []))
+        self.effect_parent = parent
+        self.execution_id = execution_id
+
+    def tool_started(self, *args, **kwargs):
+        identity = super().tool_started(*args, **kwargs)
+        self.effects[-1]['execution_id'] = self.execution_id
+        self.store.update_fields('operations', identity, {'execution_id': self.execution_id})
+        return identity
+
+    def tool_finished(self, operation_id, output):
+        messages = self.messages
+        self.messages = []
+        try:
+            # Preserve the existing result-commit instrumentation; an execution
+            # writer publishes only effects and never replaces its parent's chat.
+            return super().tool_finished(operation_id, output)
+        finally:
+            self.messages = messages
 
 
 @contextmanager

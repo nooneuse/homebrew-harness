@@ -128,10 +128,14 @@ def run_subagent(
         inherited = parent_intent.message()
         inherited["name"] = "inherited_task_constraints"
         messages.insert(1, inherited)
+    from homebrew_harness.execution.operations import bind_agent_input
+    bind_agent_input()
     parent = active_writer()
-    store = parent.store if parent else DurableStore(workdir)
-    parent_key = parent.key if parent else None
-    sid = parent.snapshot().get("session_id") if parent else identity
+    from homebrew_harness.execution.operations import PARENT_CHECKPOINT
+    inherited = PARENT_CHECKPOINT.get()
+    store = parent.store if parent else inherited["store"] if inherited else DurableStore(workdir)
+    parent_key = parent.key if parent else inherited["key"] if inherited else None
+    sid = parent.snapshot().get("session_id") if parent else inherited["session_id"] if inherited else identity
     result_holder = {}
     from homebrew_harness.storage.durable_runtime import current_operation
     owner = current_operation()

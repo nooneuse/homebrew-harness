@@ -90,13 +90,15 @@ class TestRecipe:
     name: str
     argv: tuple[str, ...]
     description: str = "Registered test suite"
+    selector: str | None = None
+    test_roots: tuple[str, ...] = ("tests",)
     roles: tuple[str, ...] = ("lead",)
     input_globs: tuple[str, ...] = ("**/*",)
     locked_globs: tuple[str, ...] = ()
     env: tuple[tuple[str, str], ...] = ()
-    timeout: float = 120
+    timeout: float | None = None
     output_bytes: int = 1_000_000
-    cpu_seconds: int = 120
+    cpu_seconds: int | None = None
     file_bytes: int = 64_000_000
     open_files: int = 256
     memory_mb: int | None = None
@@ -110,7 +112,7 @@ class TestRecipe:
         object.__setattr__(
             self, "snapshot_limits", validate_limits(self.snapshot_limits)
         )
-        for name in ("argv", "roles", "input_globs", "locked_globs", "env"):
+        for name in ("argv", "roles", "input_globs", "locked_globs", "env", "test_roots"):
             object.__setattr__(self, name, tuple(getattr(self, name)))
         if not isinstance(self.name, str) or not _ID.fullmatch(self.name):
             raise TestRunnerError("Invalid registered test name.")
@@ -142,16 +144,29 @@ class TestRecipe:
             raise TestRunnerError("A recipe must declare watched inputs.")
         for name in (
             "output_bytes",
-            "cpu_seconds",
             "file_bytes",
             "open_files",
             "max_runs",
         ):
             if type(getattr(self, name)) is not int or getattr(self, name) < 1:
                 raise TestRunnerError("Test resource limits must be positive integers.")
-        for value in (self.timeout, self.approval_seconds):
+        if self.cpu_seconds is not None and (type(self.cpu_seconds) is not int or self.cpu_seconds < 1):
+            raise TestRunnerError("CPU seconds must be a positive integer or None.")
+        if self.selector is not None:
+            from .test_selection import LAUNCHER
+            if self.argv[1:] != ("-I", "-c", LAUNCHER):
+                raise TestRunnerError("Selection requires the fixed builtin test launcher.")
+        if self.selector not in {None, "unittest", "pytest"}:
+            raise TestRunnerError("Unknown test selection adapter.")
+        if not self.test_roots or any(not isinstance(root, str) or not re.fullmatch(r"[A-Za-z_][\w/-]*", root) or ".." in root for root in self.test_roots):
+            raise TestRunnerError("Test roots must be relative directories.")
+        for key in ("timeout", "approval_seconds"):
+            value = getattr(self, key)
+            if value is None and key == "timeout":
+                continue
             if (
                 isinstance(value, bool)
+                or type(value) not in (int, float)
                 or not math.isfinite(value)
                 or not 0 < value <= 3600
             ):
@@ -210,6 +225,8 @@ class TestRecipe:
                 "inputs": self.input_globs,
                 "locked": self.locked_globs,
                 "roles": self.roles,
+                "selector": self.selector,
+                "test_roots": self.test_roots,
                 "timeout": self.timeout,
                 "output": self.output_bytes,
                 "cpu": self.cpu_seconds,
@@ -256,7 +273,8 @@ import json, os, resource, sys
 spec = json.load(sys.stdin)
 os.fchdir(spec["cwd_fd"])
 os.close(spec["cwd_fd"])
-resource.setrlimit(resource.RLIMIT_CPU, (spec["cpu"], spec["cpu"] + 1))
+if spec["cpu"] is not None:
+    resource.setrlimit(resource.RLIMIT_CPU, (spec["cpu"], spec["cpu"] + 1))
 resource.setrlimit(resource.RLIMIT_FSIZE, (spec["file"], spec["file"]))
 resource.setrlimit(resource.RLIMIT_NOFILE, (spec["fds"], spec["fds"]))
 if spec["memory"] is not None:
@@ -269,25 +287,13 @@ os.execve(spec["argv"][0], spec["argv"], spec["env"])
 """
 
 
-_UNITTEST = """import os, sys, unittest
-from pathlib import Path
-project = Path.cwd()
-sys.path.insert(0, str(project))
-if (project / 'src').is_dir():
-    sys.path.insert(0, str(project / 'src'))
-top = str(project) if (project / 'tests' / '__init__.py').is_file() else None
-suite = unittest.defaultTestLoader.discover('tests', top_level_dir=top)
-result = unittest.TextTestRunner(verbosity=1).run(suite)
-if result.testsRun == 0:
-    print('No tests were collected.', file=sys.stderr)
-    sys.exit(3)
-sys.exit(0 if result.wasSuccessful() else 1)
-"""
+from .test_selection import LAUNCHER as _UNITTEST, validate_selection, selection_environment
+
 
 
 class TestRunner:
     def __init__(
-        self, workdir, recipes=(), *, max_runs=20, total_seconds=600, backend=None
+        self, workdir, recipes=(), *, max_runs=20, total_seconds=None, backend=None
     ):
         from homebrew_harness.execution.execution_backend import NativeBackend
 
@@ -301,6 +307,7 @@ class TestRunner:
         self.lock = threading.RLock()
         self._account_lock = threading.RLock()
         self.grants = []
+        self._private_grants = {}
         self._handoff_expiry = {}
         self._receipts = {}
         self.receipt_scope = None
@@ -316,8 +323,7 @@ class TestRunner:
         if (
             type(max_runs) is not int
             or max_runs < 1
-            or not math.isfinite(total_seconds)
-            or total_seconds <= 0
+            or total_seconds is not None and (type(total_seconds) not in (int, float) or not math.isfinite(total_seconds) or total_seconds <= 0)
         ):
             raise TestRunnerError("Invalid shared TestRunner limits.")
         self.runs = 0
@@ -336,6 +342,8 @@ class TestRunner:
         with self._account_lock:
             grants = []
             for grant in self.grants:
+                if grant.id in self._private_grants:
+                    continue
                 expires = self._handoff_expiry.setdefault(
                     grant.id, time.time() + grant.expires - time.monotonic()
                 )
@@ -425,6 +433,7 @@ class TestRunner:
                     "unit-tests",
                     (sys.executable, "-I", "-c", _UNITTEST),
                     "Run the project unittest suite",
+                    selector="unittest",
                     locked_globs=(
                         "tests/**",
                         "tests/*",
@@ -453,7 +462,8 @@ class TestRunner:
         return cwd
 
     def approve(
-        self, name, *, cwd=None, role=None, task_id=None, max_runs=None, expected=None
+        self, name, *, cwd=None, role=None, task_id=None, max_runs=None, expected=None,
+        private=False
     ):
         recipe = self._recipe(name)
         target = self._cwd(cwd or self.workdir, recipe)
@@ -496,13 +506,22 @@ class TestRunner:
             time.monotonic() + recipe.approval_seconds,
             runs,
         )
-        with self.lock, self._account_lock:
+        if type(private) is not bool:
+            raise TestRunnerError("Private approval must be an explicit boolean.")
+        from homebrew_harness.execution.execution_control import acquired
+        with acquired(self._account_lock):
+            if private:
+                self._private_grants[grant.id] = threading.current_thread()
             self.grants.append(grant)
         return grant
 
     def revoke(self, name):
-        with self.lock, self._account_lock:
+        with self._account_lock:
             self.grants[:] = [grant for grant in self.grants if grant.recipe != name]
+
+    def _visible_grant(self, grant):
+        owner = self._private_grants.get(grant.id)
+        return owner is None or owner is threading.current_thread()
 
     def _grant(self, recipe, cwd, context):
         if self.authorizations:
@@ -525,6 +544,7 @@ class TestRunner:
                 grant
                 for grant in reversed(self.grants)
                 if grant.recipe == recipe.name
+                and self._visible_grant(grant)
                 and grant.fingerprint == self._fingerprint(recipe)
                 and grant.remaining > 0
                 and grant.expires > time.monotonic()
@@ -610,6 +630,7 @@ class TestRunner:
             )
             return any(
                 grant.recipe == name
+                and self._visible_grant(grant)
                 and grant.remaining > 0
                 and grant.expires > time.monotonic()
                 and grant.fingerprint == self._fingerprint(recipe)
@@ -630,6 +651,8 @@ class TestRunner:
                 "description": recipe.description,
                 "roles": list(recipe.roles),
                 "timeout": recipe.timeout,
+                "selector": recipe.selector,
+                "test_roots": list(recipe.test_roots),
                 "input_globs": list(recipe.input_globs),
                 "locked_globs": list(recipe.locked_globs),
             }
@@ -661,22 +684,25 @@ class TestRunner:
         except subprocess.TimeoutExpired:
             pass
 
-    def run(self, name, *, workdir=None, context=None):
+    def run(self, name, *, workdir=None, context=None, selection=None):
         recipe = self._recipe(name)
+        selection = validate_selection(selection, recipe.selector, recipe.test_roots)
         cwd = self._cwd(workdir or self.workdir, recipe)
+        from .test_selection import validate_target_paths
+        validate_target_paths(cwd, recipe.selector, selection)
         scope = current_scope()
         context = (
             context or _CONTEXT.get() or TestContext(scope.role, scope.task_id or None)
         )
-        deadline = Deadline.after(
-            min(recipe.timeout, max(0, self.total_seconds - self.seconds))
-        ).intersect(scope.deadline)
+        deadline = Deadline.after(recipe.timeout, source="tool").intersect(scope.deadline)
+        if self.total_seconds is not None:
+            deadline = deadline.intersect(Deadline.after(max(0, self.total_seconds - self.seconds), source="tool"))
         if scope.gateway is not None:
             deadline = deadline.intersect(scope.gateway.operation_deadline())
-        if not self.lock.acquire(blocking=False):
-            raise TestRunnerError(
-                "A registered test is already running; wait for its result."
-            )
+        while not self.lock.acquire(timeout=0.05):
+            check(deadline, scope.cancel_events)
+            if self.closed.is_set():
+                raise TestRunnerError("TestRunner is closed.")
         self._run_cancel = threading.Event()
         scope = replace(scope, cancel_events=(*scope.cancel_events, self._run_cancel))
         self.active.set()
@@ -688,7 +714,7 @@ class TestRunner:
                 raise TestRunnerError("TestRunner is closed.")
             if self.runs >= self.max_runs:
                 raise boundary_error(TestRunnerError, "test_run_limit", "TestRunner shared run limit is exhausted.", limit_name="test_runner.max_runs", limit_value=self.max_runs, observed_value=self.runs, unit="test_runs")
-            if self.seconds >= self.total_seconds:
+            if self.total_seconds is not None and self.seconds >= self.total_seconds:
                 raise boundary_error(TestRunnerError, "test_time_limit", "TestRunner shared time limit is exhausted.", limit_name="test_runner.total_seconds", limit_value=self.total_seconds, observed_value=self.seconds, unit="seconds")
             grant = self._grant(recipe, cwd, context)
             if grant is None:
@@ -739,6 +765,7 @@ class TestRunner:
                 "PYTHONDONTWRITEBYTECODE": "1",
                 "PYTHONNOUSERSITE": "1",
                 **dict(recipe.env),
+                **selection_environment(recipe.selector, recipe.test_roots, selection),
                 "HOME": str(self.workdir / prefix / "home"),
                 "TMPDIR": str(self.workdir / prefix / "tmp"),
             }
@@ -820,8 +847,10 @@ class TestRunner:
                         if deadline.remaining() == 0:
                             status = "timeout"
                             break
-                        for key, _ in selector.select(min(0.05, deadline.remaining())):
+                        for key, _ in selector.select(min(0.05, deadline.remaining()) if deadline.remaining() is not None else 0.05):
                             chunk = os.read(key.fileobj.fileno(), 65536)
+                            from homebrew_harness.execution.operations import emit_output
+                            emit_output(key.data, chunk)
                             if not chunk:
                                 selector.unregister(key.fileobj)
                             else:
@@ -889,6 +918,8 @@ class TestRunner:
                 "task_id": context.task_id,
                 "cwd": cwd.relative_to(self.workdir).as_posix(),
                 "status": status,
+                "selection": selection,
+                "test_scope": "selected" if selection is not None else "full",
                 "exit_code": process.returncode if process is not None else None,
                 "started": started,
                 "completed": time.monotonic(),
@@ -901,7 +932,7 @@ class TestRunner:
                 "stderr": prefix + "/stderr.txt",
             }
             receipt["limits"] = {"timeout_seconds": recipe.timeout, "deadline_source": deadline.source,
-                "effective_timeout_seconds": max(0, deadline.expires_at-started),
+                "effective_timeout_seconds": max(0, deadline.expires_at-started) if deadline.expires_at is not None else None,
                 "output_bytes": recipe.output_bytes, "cpu_seconds": recipe.cpu_seconds,
                 "memory_mb": recipe.memory_mb, "shared_max_runs": self.max_runs,
                 "shared_total_seconds": self.total_seconds}
@@ -979,8 +1010,9 @@ class TestRunner:
             self.active.clear()
             self.lock.release()
 
-    def verify(self, name, cwd, *, since=0, task_id=None):
+    def verify(self, name, cwd, *, since=0, task_id=None, selection=None):
         recipe = self._recipe(name)
+        selection = validate_selection(selection, recipe.selector, recipe.test_roots)
         cwd = self._cwd(cwd, recipe)
         if self.active.is_set():
             return {
@@ -1016,6 +1048,11 @@ class TestRunner:
             )
             and (task_id is None or record["task_id"] == task_id)
         ]
+        ordered = sorted(records, key=lambda record: record['started'])
+        if selection is None and ordered and ordered[-1].get('test_scope', 'full') == 'selected' and ordered[-1]['status'] != 'passed':
+            return {'ok': False, 'reason': 'Later selected verification failed; fresh full verification is required.', 'run_id': ordered[-1]['run_id']}
+        records = [record for record in records if record.get('selection') == selection
+                   and (selection is not None or record.get('test_scope', 'full') == 'full')]
         latest = (
             (records[-1] if records else None)
             if durable_scope is not None
@@ -1069,7 +1106,7 @@ class TestRunner:
         if tool_name == "list_tests":
             result = {"tests": self.catalog()}
         elif tool_name == "run_tests":
-            result = self.run(arguments["name"], workdir=workdir)
+            result = self.run(arguments["name"], workdir=workdir, selection=arguments.get("selection"))
         elif tool_name == "get_test_result":
             result = self.get(arguments["run_id"])
         else:
@@ -1133,7 +1170,7 @@ def load_test_runner(path, workdir, *, missing_ok=False):
         raw = json.loads(path.read_text())
         if (
             not isinstance(raw, dict)
-            or set(raw) - {"version", "recipes", "execution"}
+            or set(raw) - {"version", "recipes", "execution", "limits"}
             or raw.get("version") != 1
             or not isinstance(raw.get("recipes"), list)
         ):
@@ -1156,9 +1193,10 @@ def load_test_runner(path, workdir, *, missing_ok=False):
                 raise ValueError()
             builtin = values.pop("builtin", None)
             if builtin is not None:
-                if builtin != "unittest" or "argv" in values:
+                if builtin not in {"unittest", "pytest"} or "argv" in values:
                     raise ValueError()
                 values["argv"] = [sys.executable, "-I", "-c", _UNITTEST]
+                values["selector"] = builtin
                 values.setdefault(
                     "locked_globs",
                     ["tests/**", "pyproject.toml", "conftest.py", "pytest.ini"],
@@ -1167,7 +1205,7 @@ def load_test_runner(path, workdir, *, missing_ok=False):
             if argv[0] == "{python}":
                 argv[0] = sys.executable
             values["argv"] = tuple(argv)
-            for name in ("roles", "input_globs", "locked_globs"):
+            for name in ("roles", "input_globs", "locked_globs", "test_roots"):
                 if name in values:
                     values[name] = tuple(values[name])
             values["env"] = tuple(values.get("env", {}).items())
@@ -1201,7 +1239,10 @@ def load_test_runner(path, workdir, *, missing_ok=False):
                 raise ValueError(
                     "A container registry binds only its exact declared native recipe."
                 )
-        runner = TestRunner(workdir, recipes, backend=backend)
+        limits = raw.get("limits", {})
+        if not isinstance(limits, dict) or set(limits) - {"max_runs", "total_seconds"}:
+            raise ValueError("Invalid test limits.")
+        runner = TestRunner(workdir, recipes, backend=backend, **limits)
         for name in approvals:
             runner.approve(name)
         return runner

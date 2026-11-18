@@ -565,7 +565,7 @@ class ModelSelectionTests(unittest.TestCase):
         self.assertEqual(json.loads(result)["status"], "completed")
         self.assertFalse((self.root / "forbidden.txt").exists())
         self.assertEqual(
-            [t["function"]["name"] for t in worker.requests[0]["tools"]], ["read_file"]
+            [t["function"]["name"] for t in worker.requests[0]["tools"] if t["function"]["name"] not in (__import__("homebrew_harness.execution.operations", fromlist=["CONTROL_TOOLS"]).CONTROL_TOOLS | {"invoke_tool"})], ["read_file"]
         )
 
     def test_provider_failure_never_falls_back_or_replays_child(self):

@@ -317,6 +317,11 @@ def build_tool_pool(client, model, workdir, components: LoopComponents):
         describe = getattr(components.service_control, "describe_tools", None)
         if describe is not None:
             tools = describe(tools)
+    if components.operations is not None:
+        from homebrew_harness.execution.operations import CONTROL_TOOLS
+        tools = [*tools, *[d for d in homebrew_harness.tools.catalog.EXECUTION_TOOL_DEFINITIONS
+                          if d["function"]["name"] not in {t["function"]["name"] for t in tools}]]
+        handlers.update({name: partial(components.operations.run_tool, name) for name in CONTROL_TOOLS})
     return ToolPool.build(
         tools,
         handlers,

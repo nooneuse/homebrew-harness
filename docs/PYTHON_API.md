@@ -235,3 +235,6 @@ print(service.work.get(work_id).retry(seconds=600, request_id="retry-1"))
 ```
 
 Managed Leads receive output-inspection failures and malformed model responses as bounded error observations. They can continue or call `report_run_blocker` to explain why execution should stop. Consecutive feedback attempts use the existing Run retry limit, model-call limits, and deadline. Snapshot details expose `model_feedback`, the active `model_blocker`, and retry-window history.
+
+
+[Execution views and controls](EXECUTION.md)

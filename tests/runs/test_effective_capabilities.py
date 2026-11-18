@@ -50,7 +50,7 @@ class EffectiveRunCapabilitiesTests(unittest.TestCase):
         self.assertTrue(RUN_CONTROL_TOOLS <= pool.names)
         self.assertTrue(RUN_STAGE_TOOLS.isdisjoint(pool.names))
         self.assertTrue(RUN_STAGE_TOOLS.isdisjoint(pool.handlers))
-        self.assertEqual(pool.names, RUN_CONTROL_TOOLS | RUN_RECOVERY_TOOLS | {"read_file"})
+        self.assertEqual(pool.names, RUN_CONTROL_TOOLS | RUN_RECOVERY_TOOLS | {"read_file", "invoke_tool"} | __import__("homebrew_harness.execution.operations", fromlist=["CONTROL_TOOLS"]).CONTROL_TOOLS)
         for name in RUN_STAGE_TOOLS:
             with run_scope(control), pool.scope():
                 result = json.loads(
@@ -105,4 +105,4 @@ class EffectiveRunCapabilitiesTests(unittest.TestCase):
             tools=("read_file",),
         )
         _, _, pool = self.pool(spec)
-        self.assertEqual(pool.names, RUN_CONTROL_TOOLS | RUN_RECOVERY_TOOLS | {"read_file"})
+        self.assertEqual(pool.names, RUN_CONTROL_TOOLS | RUN_RECOVERY_TOOLS | {"read_file", "invoke_tool"} | __import__("homebrew_harness.execution.operations", fromlist=["CONTROL_TOOLS"]).CONTROL_TOOLS)

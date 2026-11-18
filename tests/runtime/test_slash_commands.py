@@ -222,6 +222,42 @@ class HostSlashTests(unittest.TestCase):
         self.addCleanup(resumed.close)
         self.assertEqual(json.loads(resumed.submit('/model')['result'])['model'],'other')
 
+    def test_retiring_command_session_cannot_overwrite_new_planning_choice(self):
+        host, server = self.host([])
+        session = host._command_session()
+        session.close()
+        self.assertTrue(session.wait_closed(5))
+        entered, release, changed = threading.Event(), threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        original = host._sync_conversation
+        errors = []
+        def blocked(value):
+            entered.set()
+            release.wait(3)
+            original(value)
+        def change():
+            try:
+                host.submit('/plan')
+                changed.set()
+            except Exception as error:
+                errors.append(error)
+        with patch.object(host, '_sync_conversation', side_effect=blocked):
+            watcher = threading.Thread(target=lambda: host._sync_model_preference(session), daemon=True)
+            watcher.start()
+            self.assertTrue(entered.wait(2))
+            setter = threading.Thread(target=change, daemon=True)
+            setter.start()
+            try:
+                self.assertFalse(changed.wait(.05))
+            finally:
+                release.set()
+                watcher.join(3)
+                setter.join(3)
+        self.assertEqual(errors, [])
+        self.assertTrue(changed.is_set())
+        self.assertEqual(host.conversation_mode, 'plan')
+        self.assertEqual(len(server.requests), 0)
+
     def test_busy_model_command_is_queued_and_next_task_uses_it(self):
         host,server=self.host([chat('first'),chat('second')])
         entered, release = threading.Event(), threading.Event()

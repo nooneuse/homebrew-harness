@@ -16,7 +16,9 @@ def resources_pending(store, effects, owner_operation=None):
     keys = [e["operation_id"] for e in effects]
     if owner_operation:
         keys.append(owner_operation)
-    return any(operation_active(store.workdir, key, excluding=caller) for key in keys)
+    from homebrew_harness.execution.operations import ACCEPTING_THREAD
+    excluded = (caller, ACCEPTING_THREAD.get())
+    return any(operation_active(store.workdir, key, excluding=excluded) for key in keys)
 
 
 def model_pending(gateway, identity):
@@ -74,6 +76,13 @@ def read_result(*, workdir, run_id, operation_id=None, offset=0, limit=4000):
         if record and record.get("checkpoint") != key:
             raise ValueError("Tool result belongs to another context.")
         output = record.get("output")
+        execution_id = effect.get('execution_id')
+        if output is None and execution_id is not None:
+            execution = parent.store.get('executions', execution_id, {})
+            if execution.get('checkpoint') != key:
+                raise ValueError('Execution result belongs to another context.')
+            if not execution.get('execution_pending') and execution.get('result') is not None:
+                output = json.dumps(execution['result'], ensure_ascii=False)
         if output is None:
             from homebrew_harness.context.tracked_history import encoded_message
             from homebrew_harness.security.safe_files import SafeFile

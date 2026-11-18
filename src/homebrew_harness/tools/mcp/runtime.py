@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import math
 import json
 import logging
 import os
@@ -85,12 +86,15 @@ class ServerSpec:
     env: dict = field(default_factory=dict)
     headers: dict = field(default_factory=dict)
     tools: dict[str, ToolPolicy] = field(default_factory=dict)
-    timeout_seconds: float = 20
+    timeout_seconds: float | None = None
     connect_timeout_seconds: float = 30
     execution: MCPExecutionPolicy = field(default_factory=MCPExecutionPolicy)
     revision: str = "1"
+    concurrency: int = 4
 
     def __post_init__(self):
+        if type(self.concurrency) is not int or not 1 <= self.concurrency <= 32:
+            raise MCPError("MCP concurrency must be between 1 and 32.")
         if not isinstance(self.execution, MCPExecutionPolicy):
             raise MCPError("MCP execution must be a host policy object.")
         if self.execution.mode == "container":
@@ -165,6 +169,7 @@ def load_specs(path: Path, *, missing_ok: bool = False) -> dict[str, ServerSpec]
             "connect_timeout_seconds",
             "execution",
             "revision",
+            "concurrency",
         }:
             raise MCPError("Unknown MCP server configuration fields.")
         try:
@@ -177,10 +182,10 @@ def load_specs(path: Path, *, missing_ok: bool = False) -> dict[str, ServerSpec]
             "streamable_http",
         }:
             raise MCPError("MCP transport must be stdio or streamable_http.")
-        timeout = data.get("timeout_seconds", 20)
-        if type(timeout) not in (int, float) or not 0 < timeout <= 120:
+        timeout = data.get("timeout_seconds")
+        if timeout is not None and (type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0):
             raise MCPError(
-                "MCP timeout_seconds must be greater than zero and at most 120."
+                "MCP timeout_seconds must be a positive finite number or null."
             )
         connect_timeout = data.get("connect_timeout_seconds", 30)
         if type(connect_timeout) not in (int, float) or not 0 < connect_timeout <= 120:
@@ -298,10 +303,11 @@ def load_specs(path: Path, *, missing_ok: bool = False) -> dict[str, ServerSpec]
             copy.deepcopy(env),
             copy.deepcopy(headers),
             policies,
-            float(timeout),
+            float(timeout) if timeout is not None else None,
             float(connect_timeout),
             execution,
             data.get("revision", "1"),
+            data.get("concurrency", 4),
         )
         if (
             not isinstance(specs[name].revision, str)
@@ -458,6 +464,8 @@ class _Connection:
         self.tools = []
         self.secrets = []
         self.active_waiter = None
+        self.calls = {}
+        self.slots = asyncio.Semaphore(spec.concurrency)
         self.requests = set()
         self.cancel_requested = False
         self.used_at = time.monotonic()
@@ -558,7 +566,7 @@ class _Connection:
                         httpx.AsyncClient(
                             headers=headers,
                             timeout=httpx.Timeout(
-                                spec.connect_timeout_seconds, read=300
+                                spec.connect_timeout_seconds, read=None
                             ),
                             follow_redirects=False,
                         )
@@ -570,86 +578,75 @@ class _Connection:
                     ClientSession(
                         streams[0],
                         streams[1],
-                        read_timeout_seconds=timedelta(
-                            seconds=spec.connect_timeout_seconds
-                        ),
+                        read_timeout_seconds=None,
                     )
                 )
-                initialized = await session.initialize()
+                initialized = await asyncio.wait_for(session.initialize(), spec.connect_timeout_seconds)
                 self.info = initialized.protocolVersion
-                self.tools = await self._list_tools(session)
+                self.tools = await asyncio.wait_for(self._list_tools(session), spec.connect_timeout_seconds)
                 if self.ready.cancelled():
                     return
                 self.ready.set_result(None)
-                while True:
-                    operation, payload, pending, deadline = await self.queue.get()
-                    if operation == "close":
-                        break
-                    if pending.cancelled():
-                        continue
-                    if self.stopping:
-                        pending.set_exception(
-                            MCPError("MCP session is closing; request was not sent.")
-                        )
-                        continue
+                async def progress(value, total=None, message=None):
+                    from homebrew_harness.execution.operations import emit_output
+                    emit_output('progress', json.dumps({'progress': value, 'total': total, 'message': message}, ensure_ascii=False) + '\n')
+
+                async def perform(operation, payload, waiter, deadline):
+                    ticket = getattr(waiter, "_mcp_ticket", None)
+                    acquired = False
                     try:
-                        if deadline.remaining() == 0:
-                            pending.set_exception(
-                                MCPError(
-                                    "MCP queue deadline expired; request was not sent."
-                                )
-                            )
-                            pending = None
-                            continue
-                        self.active_waiter = pending
-                        ticket = getattr(pending, "_mcp_ticket", None)
+                        await asyncio.wait_for(self.slots.acquire(), deadline.remaining())
+                        acquired = True
+                        if waiter.cancelled() or deadline.remaining() == 0 or ticket is not None and not ticket.start():
+                            if not waiter.done():
+                                waiter.set_exception(MCPError("MCP request cancelled or expired before dispatch."))
+                            return
                         if ticket is not None:
-                            if not ticket.start():
-                                self.active_waiter = None
-                                if not pending.done():
-                                    pending.set_exception(
-                                        MCPError(
-                                            "MCP request cancelled before dispatch."
-                                        )
-                                    )
-                                pending = None
-                                continue
                             self.requests.add(ticket)
                         if operation == "list":
-                            result = await asyncio.wait_for(
-                                self._list_tools(session), timeout=deadline.remaining()
-                            )
+                            result = await asyncio.wait_for(self._list_tools(session), deadline.remaining())
                         else:
-                            result = await asyncio.wait_for(
-                                session.call_tool(
-                                    payload[0],
-                                    arguments=payload[1],
-                                    read_timeout_seconds=timedelta(
-                                        seconds=spec.timeout_seconds
-                                    ),
-                                ),
-                                timeout=deadline.remaining(),
-                            )
-                            result = result.model_dump(
-                                mode="json", by_alias=True, exclude_none=True
-                            )
+                            result = await asyncio.wait_for(session.call_tool(
+                                payload[0], arguments=payload[1], progress_callback=progress,
+                                read_timeout_seconds=timedelta(seconds=spec.timeout_seconds) if spec.timeout_seconds is not None else None,
+                            ), deadline.remaining())
+                            result = result.model_dump(mode="json", by_alias=True, exclude_none=True)
+                        if not waiter.done():
+                            waiter.set_result(result)
+                    except asyncio.CancelledError:
+                        if not waiter.done():
+                            waiter.cancel()
+                        raise
+                    except Exception as error:
+                        if not waiter.done():
+                            failure = MCPError("MCP request failed (" + type(error).__name__ + "); no automatic retry was made.")
+                            failure.__cause__ = error
+                            waiter.set_exception(failure)
+                    finally:
+                        if acquired:
+                            self.slots.release()
                         if ticket is not None:
                             ticket.finish()
                             self.requests.discard(ticket)
-                        if not pending.done():
-                            pending.set_result(result)
-                    except Exception as error:
-                        if not pending.done():
-                            pending.set_exception(
-                                MCPError(
-                                    f"MCP request failed ({type(error).__name__}); outcome may be unknown. It was not retried."
-                                )
-                            )
-                        self.stopping = True
+                        self.calls.pop(waiter, None)
+                try:
+                    while True:
+                        operation, payload, pending, deadline = await self.queue.get()
+                        if operation == "close":
+                            break
+                        if pending.cancelled():
+                            continue
+                        if self.stopping:
+                            pending.set_exception(MCPError("MCP session is closing; request was not sent."))
+                            continue
+                        self.calls[pending] = pending._execution_context.run(asyncio.create_task, perform(operation, payload, pending, deadline))
                         pending = None
-                        break  # Reconnect explicitly after protocol/transport failure.
-                    self.active_waiter = None
-                    pending = None
+                finally:
+                    tasks = list(self.calls.values())
+                    for task in tasks:
+                        task.cancel()
+                    if tasks:
+                        await asyncio.gather(*tasks, return_exceptions=True)
         except BaseException as error:
             safe = MCPError(f"MCP transport stopped ({type(error).__name__}).")
             safe.__cause__ = error
@@ -677,14 +674,18 @@ class _Connection:
         self.used_at = time.monotonic()
         waiter = asyncio.get_running_loop().create_future()
         waiter._mcp_ticket = ticket
+        from contextvars import copy_context
+        waiter._execution_context = copy_context()
         deadline = deadline or Deadline.after(self.spec.timeout_seconds)
         await self.queue.put((operation, payload, waiter, deadline))
         try:
             return await waiter
         except asyncio.CancelledError:
-            # A timed-out queued call is skipped. An active call invalidates its transport.
-            if self.active_waiter is waiter:
-                self.abort()
+            # Cancellation is request-scoped; peers keep their connection.
+            task = self.calls.get(waiter)
+            if task is not None:
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
             raise
 
     async def close(self):
@@ -703,7 +704,7 @@ class _Connection:
         if (
             self.closed
             or self.stopping
-            or self.active_waiter is not None
+            or self.calls
             or not self.queue.empty()
         ):
             return False
@@ -1325,7 +1326,7 @@ class MCPRuntime:
             error.outcome = "unknown" if ticket.started else "not_executed"
             # Publish invalidation before the caller can explicitly reconnect.
             # A cancelled queued request never invalidates a peer's active call.
-            if ticket.started:
+            if ticket.started and getattr(error, "code", None) not in {"mcp_cancelled", "mcp_operation_timeout"}:
                 binding.connection.stopping = True
                 if self._loop is not None:
                     self._loop.call_soon_threadsafe(binding.connection.abort)

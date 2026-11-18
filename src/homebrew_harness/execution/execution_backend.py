@@ -35,6 +35,7 @@ def _control(argv, timeout, cancel_events=(), retain=None):
                 max(0.001, timeout),
                 output_bytes=65536,
                 cancel_events=cancel_events,
+                allow_input=False,
             )
     finally:
         runner.close(0.2)
@@ -50,7 +51,7 @@ class ExecutionRequest:
     deadline: Deadline
     pass_fds: tuple[int, ...] = ()
     recipe_argv: tuple[str, ...] = ()
-    cpu_seconds: int = 120
+    cpu_seconds: int | None = None
     file_bytes: int = 64000000
     open_files: int = 256
     input_globs: tuple[str, ...] = ("**/*",)
@@ -296,6 +297,7 @@ class ContainerBackend:
                     ("fsize", request.file_bytes),
                     ("nofile", request.open_files),
                 )
+                if limit is not None
             )
         )
 
@@ -324,7 +326,7 @@ class ContainerBackend:
             raise BackendUnavailable(
                 "Container command is not bound to this host recipe."
             )
-        if not self.probe(request.deadline.remaining() or 0.001, request.cancel_events)[
+        if not self.probe(min(30, request.deadline.remaining()) if request.deadline.remaining() is not None else 30, request.cancel_events)[
             "available"
         ]:
             raise BackendUnavailable(
@@ -406,8 +408,6 @@ class ContainerBackend:
                 "--ulimit",
                 "nofile=" + str(request.open_files) + ":" + str(request.open_files),
                 "--ulimit",
-                "cpu=" + str(request.cpu_seconds) + ":" + str(request.cpu_seconds),
-                "--ulimit",
                 "fsize=" + str(request.file_bytes) + ":" + str(request.file_bytes),
                 "--log-driver=none",
                 "--tmpfs",
@@ -435,6 +435,8 @@ class ContainerBackend:
                 "--env",
                 "PYTHONNOUSERSITE=1",
             ]
+            if request.cpu_seconds is not None:
+                command.extend(["--ulimit", "cpu=" + str(request.cpu_seconds) + ":" + str(request.cpu_seconds)])
             command.extend(self._create_options(request))
             if policy.workspace_writable:
                 command.extend(
@@ -461,7 +463,7 @@ class ContainerBackend:
             check(request.deadline, request.cancel_events)
             create_started = True
             creation = self._control(
-                command, request.deadline.remaining() or 0.001, request.cancel_events
+                command, min(30, request.deadline.remaining()) if request.deadline.remaining() is not None else 30, request.cancel_events
             )
             if creation.returncode != 0:
                 if self._precreation_rejection(creation):
@@ -472,7 +474,7 @@ class ContainerBackend:
             created = True
             check(request.deadline, request.cancel_events)
             configuration = self._inspect(
-                name, min(2, request.deadline.remaining() or 0.001)
+                name, min(2, min(30, request.deadline.remaining()) if request.deadline.remaining() is not None else 30)
             )
             if not self._verified(configuration, name, temporary, request, image):
                 raise BackendUnavailable(

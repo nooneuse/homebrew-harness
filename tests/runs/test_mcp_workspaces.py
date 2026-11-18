@@ -82,7 +82,7 @@ class RunMCPWorkspaces(unittest.TestCase):
                 mcp_workdir=cwd,
                 mcp_task_id=task.id,
             )
-            self.assertEqual(pool.names, {"mcp__docs__read_text"})
+            self.assertEqual(pool.names, {"mcp__docs__read_text", "invoke_mcp_tool"})
             binding = pool.bindings["mcp__docs__read_text"]
             result = json.loads(
                 runtime.call(

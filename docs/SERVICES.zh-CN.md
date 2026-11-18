@@ -282,3 +282,6 @@ python examples/maintenance_demo.py --output /tmp/harness-maintenance-demo
 先续 Work 的当前授权，再执行 `homebrew-harness service work SERVICE_ID retry WORK_ID --request-id retry-1`；可用 `--seconds` 指定同一原生 Run/checkpoint 的有界重试窗口。Python 对应 `service.work.get(work_id).retry(...)`。
 
 预期可恢复的模型输出失败作为观察交给 Lead 判断；模型可继续调用普通工具，或报告 Run 阻塞原因。控制器保留错误事实并执行已有运行限额。权限、存储完整性和未查证工具结果仍使用原有恢复路径。
+
+
+[执行视图与控制](EXECUTION.zh-CN.md)

@@ -38,6 +38,9 @@ CORE_TOOLS = frozenset(
         "publish_artifacts",
     }
 )
+from homebrew_harness.runtime.execution_options import CONTROL_TOOLS
+CORE_TOOLS = CORE_TOOLS | CONTROL_TOOLS | {"invoke_tool"}
+
 MODULE_TOOLS = {
     "subagents": {"task", "read_subagent_result"},
     "tasks": {

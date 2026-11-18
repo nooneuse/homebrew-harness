@@ -994,6 +994,11 @@ def run_demo(base, *, timeout=360):
         ):
             raise RuntimeError("A-E demo took an unexpected model/tool path.")
         for index, messages in enumerate(server.messages):
+            if messages and str(messages[0].get('content', '')).startswith('Summarize the supplied conversation'):
+                payload = json.loads(messages[-1]['content'])
+                if payload.get('current_request') != PROMPT:
+                    raise RuntimeError('Compaction lost the original task scope.')
+                continue
             constraints = [
                 m
                 for m in messages
@@ -1159,21 +1164,19 @@ def run_demo(base, *, timeout=360):
         wait_for(lambda: resumed.poll() is not None)
         follow_final = store.get(follow_run["id"])
         steering = store.runtime.get("input_receipts", server.steering_id)
-        if (
-            cancelled_task["status"] != "abandoned"
-            or not cancel_final["finalized_at"]
-            or follow_final["status"] != "completed"
-            or not follow_final["finalized_at"]
-            or follow_final["session_id"] != follow_run["session_id"]
-            or not follow_final.get("resume_applied")
-            or not server.dependent_input_seen
-            or not (server.cooperative_wait_seen or server.steering_rejection_seen)
-            or not steering
-            or steering["state"] != "applied"
-        ):
-            raise RuntimeError(
-                "P1 lifecycle, input or cooperative waiting scenario did not verify"
-            )
+        lifecycle_checks = {
+            'cancelled_task_abandoned': cancelled_task['status'] == 'abandoned',
+            'cancelled_run_finalized': bool(cancel_final['finalized_at']),
+            'followup_completed': follow_final['status'] == 'completed',
+            'followup_finalized': bool(follow_final['finalized_at']),
+            'followup_same_session': follow_final['session_id'] == follow_run['session_id'],
+            'resume_applied': bool(follow_final.get('resume_applied')),
+            'dependent_input_seen': server.dependent_input_seen,
+            'cooperative_input_seen': server.cooperative_wait_seen or server.steering_rejection_seen,
+            'steering_applied': bool(steering and steering['state'] == 'applied'),
+        }
+        if not all(lifecycle_checks.values()):
+            raise RuntimeError('P1 lifecycle verification failed: ' + json.dumps({key:value for key,value in lifecycle_checks.items() if not value}))
         timeout_recorded = False
         for log in (workspace / ".harness/runs" / identity).glob("*.log"):
             for line in log.read_text().splitlines():

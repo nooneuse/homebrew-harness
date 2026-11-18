@@ -73,3 +73,6 @@ __all__ += [
     "WorkflowSpec",
     "WorkflowRegistry",
 ]
+
+from .executions import ExecutionHandle
+__all__.append("ExecutionHandle")

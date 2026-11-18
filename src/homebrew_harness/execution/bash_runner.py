@@ -71,14 +71,22 @@ class BashContainerBackend(ContainerBackend):
         )
         return values
 
+    def _create_options(self, request):
+        return ["--interactive"]
+
+    def _verified(self, value, *args):
+        return super()._verified(value, *args) and value["Config"].get("OpenStdin") is True and not value["Config"].get("Tty")
+
     def _start_process(self, name, staging, request):
         if self.profile is None:
-            return super()._start_process(name, staging, request)
+            return subprocess.Popen([self.policy.cli, "start", "--attach", "--interactive", name],
+                                    cwd=staging, env={"PATH": os.defpath}, stdin=subprocess.PIPE,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         from homebrew_harness.execution.execution_control import check
 
         start = self._control(
             [self.policy.cli, "start", name],
-            request.deadline.remaining() or 0.001,
+            min(30, request.deadline.remaining()) if request.deadline.remaining() is not None else 30,
             request.cancel_events,
         )
         if start.returncode != 0:
@@ -88,6 +96,7 @@ class BashContainerBackend(ContainerBackend):
             [
                 self.policy.cli,
                 "exec",
+                "--interactive",
                 "--workdir",
                 "/workspace",
                 name,
@@ -95,7 +104,7 @@ class BashContainerBackend(ContainerBackend):
             ],
             cwd=staging,
             env={"PATH": os.defpath},
-            stdin=subprocess.DEVNULL,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
@@ -124,7 +133,7 @@ class BashContainerBackend(ContainerBackend):
                 ],
                 request.cwd,
                 {"PATH": os.defpath},
-                request.deadline.remaining() or 0.001,
+                min(30, request.deadline.remaining()) if request.deadline.remaining() is not None else 30,
                 output_bytes=self.profile.max_bytes * 2 + 65536,
                 cancel_events=request.cancel_events,
             )
@@ -198,7 +207,7 @@ class ContainerShellRunner(ShellRunner):
                 command,
                 workdir,
                 {},
-                min(timeout, self.bash_policy.timeout),
+                min([v for v in (timeout, self.bash_policy.timeout) if v is not None], default=None),
                 output_bytes=min(output_bytes, self.bash_policy.output_bytes),
                 cancel_events=cancel_events,
                 on_started=on_started,

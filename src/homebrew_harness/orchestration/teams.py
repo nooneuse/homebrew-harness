@@ -187,8 +187,6 @@ class TeammateRuntime:
         with self.manager.lock:
             if name in WORKSPACE_TOOLS or external_mutating:
                 self.cwd()
-            if name == "bash" and arguments.get("run_in_background"):
-                return json.dumps({"error": "Teammates use synchronous Bash only."})
             if (name in MODIFY_TOOLS or external_mutating) and self.gate not in {
                 "not_required",
                 "approved",
@@ -628,6 +626,10 @@ class TeammateRuntime:
                         }
                     )
                 finally:
+                    operations = getattr(self, 'operations', None)
+                    if operations is not None:
+                        operations.close(0)
+                        operations.wait_closed(None)
                     self.store.close()
                 self.assignment, self.assignment_path, self.plan_request = (
                     None,
@@ -1226,6 +1228,9 @@ class TeamManager(WorkspaceRuntime):
                 )
                 if member.thread.is_alive():
                     return False
+            operations = getattr(member, 'operations', None)
+            if operations is not None and not operations.wait_closed(None if deadline is None else max(0, deadline-time.monotonic())):
+                return False
         return True
 
     def close(self, timeout: float = 2) -> None:
@@ -1244,16 +1249,20 @@ class TeamManager(WorkspaceRuntime):
         for member in members:
             if member.thread and member.thread is not threading.current_thread():
                 member.thread.join(timeout=max(0, deadline - time.monotonic()))
-            if member.thread is None or not member.thread.is_alive():
+            operations = getattr(member, 'operations', None)
+            if operations is not None:
+                operations.close(max(0, deadline-time.monotonic()))
+            if (member.thread is None or not member.thread.is_alive()) and (operations is None or operations.wait_closed(0)):
                 member.store.close()
         if self.lead_busy == 0 and not self.model_pending():
-            self.store.close()
+            if not any(getattr(member, "operations", None) and not member.operations.wait_closed(0) for member in members):
+                self.store.close()
         # Live workers retain their task/session locks until their finally block.
         if (
             self.session_owner is None
             and self.lead_busy == 0
             and not any(
-                member.thread and member.thread.is_alive() for member in members
+                member.thread and member.thread.is_alive() or getattr(member, "operations", None) and not member.operations.wait_closed(0) for member in members
             )
         ):
             self.release_session()

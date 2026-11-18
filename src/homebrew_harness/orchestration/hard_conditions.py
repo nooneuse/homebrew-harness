@@ -105,7 +105,11 @@ def validate_spec(spec):
                         "file_sha256 requires a lowercase SHA-256 value."
                     )
         elif kind == "tests_passed":
-            fields.add("recipe")
+            fields.update({'recipe', 'selection'})
+            if 'selection' in raw:
+                selection = raw['selection']
+                if not isinstance(selection, dict) or set(selection)-{'targets','filter'} or not isinstance(selection.get('targets'), list) or not 1 <= len(selection['targets']) <= 100 or any(not isinstance(target,str) or not target.strip() for target in selection['targets']) or 'filter' in selection and (not isinstance(selection['filter'],str) or not selection['filter'].strip()):
+                    raise ConditionError('Test Goal selection requires bounded nonempty targets and an optional filter.')
             if not isinstance(raw.get("recipe"), str) or not re.fullmatch(
                 r"[a-z][a-z0-9_-]{0,63}", raw["recipe"]
             ):
@@ -161,7 +165,8 @@ class HardVerifier:
                     )
                     result.update(
                         self.test_runner.verify(
-                            predicate["recipe"], cwd, since=since, task_id=task_id
+                            predicate["recipe"], cwd, since=since, task_id=task_id,
+                            **({"selection": predicate["selection"]} if "selection" in predicate else {})
                         )
                     )
                     if not result["ok"]:

@@ -4,6 +4,7 @@ import copy
 import json
 from contextlib import contextmanager
 from contextvars import ContextVar
+from homebrew_harness.runtime.execution_options import CONTROL_TOOLS
 from dataclasses import dataclass
 
 _ACCESS = ContextVar("effective_tool_access", default=None)
@@ -98,6 +99,8 @@ class ToolPool:
             ):
                 raise ValueError("Invalid service tool scope.")
         for definition in definitions:
+            if definition["function"]["name"] in {"invoke_tool", "invoke_mcp_tool"}:
+                continue  # Wrappers are derived once from the final visible targets.
             if (
                 definition["function"]["name"]
                 not in capabilities.tools() | run_tools | service_tools
@@ -107,7 +110,7 @@ class ToolPool:
             function = tool["function"]
             properties = function["parameters"]["properties"]
             name = function["name"]
-            if name not in handlers or access is not None and name not in access:
+            if name not in handlers or access is not None and name not in access and (name not in CONTROL_TOOLS or not access):
                 continue
             if name in {"task", "spawn_teammate"}:
                 catalog_models = models.catalog() if models is not None else []
@@ -164,9 +167,7 @@ class ToolPool:
                 )
             if name == "bash" and (background is None or not background.allow_async):
                 function["parameters"]["properties"].pop("run_in_background", None)
-                function["description"] += (
-                    " This loop supports synchronous execution only."
-                )
+
             if name == "connect_mcp":
                 if mcp is None or not mcp.specs or not allow_connect:
                     continue
@@ -198,6 +199,22 @@ class ToolPool:
                 ):
                     tools.append(copy.deepcopy(tool))
                     bindings[name] = candidates[name]
+        from homebrew_harness.runtime.execution_options import SLOW_TOOLS
+        targets = [tool['function']['name'] for tool in tools if tool['function']['name'] in SLOW_TOOLS]
+        if targets:
+            from homebrew_harness.tools.catalog import INVOKE_TOOL
+            wrapper = copy.deepcopy(INVOKE_TOOL)
+            wrapper['function']['parameters']['properties']['tool'] = {'type': 'string', 'enum': targets}
+            tools.append(wrapper)
+            handlers = {**handlers, 'invoke_tool': lambda **kw: None}
+        if bindings:
+            from homebrew_harness.tools.catalog import INVOKE_MCP_TOOL
+            wrapper = copy.deepcopy(INVOKE_MCP_TOOL)
+            wrapper["function"]["parameters"]["properties"]["tool"] = {"type": "string", "enum": list(bindings)}
+            tools.append(wrapper)
+            handlers = {**handlers, "invoke_mcp_tool": lambda **_kw: None}
+        if not any(t["function"]["name"] not in CONTROL_TOOLS for t in tools):
+            tools = [t for t in tools if t["function"]["name"] not in CONTROL_TOOLS]
         names = [tool["function"]["name"] for tool in tools]
         if len(names) != len(set(names)) or len(names) > 128:
             raise ValueError("Effective tool pool collides or exceeds 128 tools.")

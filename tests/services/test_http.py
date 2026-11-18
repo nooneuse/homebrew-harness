@@ -519,6 +519,42 @@ class HTTPControl(unittest.TestCase):
             )
             eventually(lambda: work.snapshot().state == "review", 20)
 
+    def test_work_execution_controls_cross_http_while_test_keeps_running(self):
+        from tests.runtime.test_interaction import eventually
+        tests = self.workspace / "tests"
+        tests.mkdir()
+        (tests / "__init__.py").write_text("")
+        (tests / "test_long.py").write_text(
+            'import time,unittest\nclass Long(unittest.TestCase):\n'
+            ' def test_wait(self):\n  print("test ready",flush=True)\n  time.sleep(20)\n'
+        )
+        host, _ = self.host([
+            reply(calls=[call("test", name="run_tests", arguments=json.dumps({
+                "name": "unit-tests", "execution": {"wait_seconds": 0}
+            }))]), reply("Waiting for the test."), reply("Test cancellation observed.")
+        ], allow_tests=("unit-tests",))
+        owner = host.services.start(self.spec(run_defaults={
+            "tools": ["run_tests"], "allow_tests": ["unit-tests"], "episode_model_calls": 5
+        }))
+        self.addCleanup(owner.close)
+        with RemoteService.from_root(self.control, control=True) as service:
+            work = service.work.submit("Run and observe the registered test")
+            rows = eventually(lambda: work.executions()["executions"], 15)
+            identity = rows[0]["ref"]["id"]
+            eventually(lambda: "test ready" in work.execution_output(identity)["content"], 10)
+            self.assertTrue(work.execution(identity)["execution_pending"])
+            with RemoteService.from_root(self.control, control=False) as observer:
+                with self.assertRaises(SDKError):
+                    observer.work.get(work.id).stop_execution(identity)
+            accepted = work.stop_execution(identity, request_id="stop-long-test")
+            self.assertEqual(accepted["state"], "accepted")
+            settled = eventually(lambda: (row if not row["execution_pending"] else None)
+                                 if (row := work.execution(identity)) else None, 10)
+            self.assertEqual(settled["state"], "cancelled")
+            self.assertTrue(settled["cleanup"]["complete"])
+            result = work.execution_output(identity, stream="result")["content"]
+            self.assertNotEqual(json.loads(result).get("status"), "passed")
+
     def test_connection_config_has_no_inline_secret_and_rejects_remote_plain_http(self):
         with self.assertRaises(ValueError):
             ControlConnection(

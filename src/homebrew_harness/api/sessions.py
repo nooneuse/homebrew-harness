@@ -211,6 +211,11 @@ class SessionHandle(Handle):
     def execute(self, text, *, timeout=None, request_id=None, goal=None):
         return self.submit(text, request_id=request_id, goal=goal).wait(timeout)
 
+    @property
+    def executions(self):
+        from .executions import Executions
+        return Executions(self.core, self.runtime.runtime_store, self.runtime.checkpoint_key)
+
     @host_operation
     def approve_test(self, name):
         return self._test_control("approve", name)

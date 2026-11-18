@@ -19,6 +19,8 @@ def collect(runtime, work):
     fields = (
         "run_id",
         "recipe",
+        "selection",
+        "test_scope",
         "status",
         "exit_code",
         "source_stable",

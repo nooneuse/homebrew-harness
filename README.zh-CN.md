@@ -324,6 +324,8 @@ python examples/managed_run_demo.py --output /tmp/harness-ae-demo
 
 可选 `auto_review` 使用当前 Lead、实际请求者或专用模型目录别名进行独立审批审核。不确定的请求使用原人工入口，默认仍为手动审批。配置和示例参见[自动审批审核](docs/APPROVALS.zh-CN.md)。
 
+交互／一次性执行、局部测试、输出、输入与取消见[耗时操作控制](docs/EXECUTION.zh-CN.md)。
+
 ## Goal 与测试
 
 `/goal CONDITION` 设置完成目标，`/goal` 查看状态，`/goal resume` 接续，`/goal clear` 清除。

@@ -325,6 +325,8 @@ Host Bash requests approval per call by default. Explicit Session mode uses exac
 
 Optional `auto_review` adds an independent model approval responder using the current Lead, actual requester or a dedicated catalog profile. Uncertain requests use the existing human interface; the default remains manual. See [Approval review](docs/APPROVALS.md) for configuration and examples.
 
+See [Long operation control](docs/EXECUTION.md) for interactive/one-shot modes, selected tests, execution output, input and cancellation.
+
 ## Goals and tests
 
 `/goal CONDITION` sets a completion goal, `/goal` shows its state, `/goal resume` continues it, and `/goal clear` removes it.

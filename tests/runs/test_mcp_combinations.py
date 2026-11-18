@@ -61,7 +61,7 @@ class RunMCPCombinations(unittest.TestCase):
             pool = ToolPool.build(
                 [], {}, Capabilities(("mcp",)), mcp=session.mcp, mcp_role=role
             )
-            self.assertEqual(pool.names, {"mcp__docs__search"})
+            self.assertEqual(pool.names, {"mcp__docs__search", "invoke_mcp_tool"})
         self.close(control, session)
 
     def test_default_delegation_does_not_expose_external_tools_to_children(self):

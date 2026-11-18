@@ -413,3 +413,55 @@ TEAMMATE_TOOLS = [
 
 
 SUBAGENT_MAX_TURNS = 30
+
+
+# Execution controls do not grant the underlying tool permission.
+from homebrew_harness.runtime.execution_options import CONTROL_TOOLS, SLOW_TOOLS
+EXECUTION_SCHEMA = {
+    "type": "object", "properties": {
+        "mode": {"type": "string", "enum": ["interactive", "one_shot"]},
+        "wait_seconds": {"type": "number", "minimum": 0, "maximum": 60},
+        "timeout_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0},
+    }, "required": [], "additionalProperties": False,
+}
+SELECTION_SCHEMA = {"type": "object", "properties": {
+    "targets": {"type": "array", "items": NONEMPTY_STRING, "minItems": 1, "maxItems": 100},
+    "filter": NONEMPTY_STRING,
+}, "required": ["targets"], "additionalProperties": False}
+EXECUTION_TOOL_DEFINITIONS = [
+    define_tool("list_executions", "List executions owned by this context. Inspect a running execution before starting it again.", {}, []),
+    define_tool("get_execution", "Inspect an owned execution's state, available controls and final result.", {"execution_id": NONEMPTY_STRING}, ["execution_id"]),
+    define_tool("read_execution_output", "Read bounded incremental execution output. Silence is an observation, not failure.", {"execution_id": NONEMPTY_STRING, "stream": {"type": "string", "enum": ["output", "result"]}, "cursor": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 16000}}, ["execution_id"]),
+    define_tool("wait_execution", "Wait for an owned execution. Wait expiry returns its status without stopping it. Wait rather than repeatedly polling unchanged state.", {"execution_id": NONEMPTY_STRING, "wait_seconds": {"type": "number", "minimum": 0, "maximum": 60}}, ["execution_id"]),
+    define_tool("stop_execution", "Request cancellation of an owned execution; observe cleanup before restarting or editing conflicting work.", {"execution_id": NONEMPTY_STRING, "revision": {"type": "integer", "minimum": 0}, "request_id": {**NONEMPTY_STRING, "maxLength": 200}}, ["execution_id"]),
+    define_tool("send_execution_input", "Send input only when the execution advertises can_send_input. Unsupported commands must be stopped and restarted with revised arguments.", {"execution_id": NONEMPTY_STRING, "input": {"type": "string", "maxLength": 16000}, "request_id": {**NONEMPTY_STRING, "maxLength": 200}}, ["execution_id", "input", "request_id"]),
+]
+for definition in [*TOOLS, *SERVICE_TOOL_DEFINITIONS]:
+    function = definition["function"]
+    if function["name"] in {"bash", "run_tests", "task", "workflow"}:
+        import copy
+        function["parameters"]["properties"]["execution"] = copy.deepcopy(EXECUTION_SCHEMA)
+        function["description"] += " Choose execution.mode=interactive (default) to yield with an execution ID, or one_shot to await completion. wait_seconds only controls observation; timeout_seconds is an optional hard limit within the parent deadline."
+    if function["name"] == "run_tests":
+        function["parameters"]["properties"]["selection"] = SELECTION_SCHEMA
+        function["description"] = "Run a registered recipe with an optional supported test selection. Omit selection for full verification. Execution mode controls waiting, not permission. Selected test results cannot satisfy full-suite verification."
+TOOLS.extend(EXECUTION_TOOL_DEFINITIONS)
+TOOL_SCHEMAS.update({tool["function"]["name"]: tool["function"]["parameters"] for tool in TOOLS})
+
+SUB_TOOL_NAMES = (*SUB_TOOL_NAMES, *sorted(CONTROL_TOOLS))
+SUB_TOOLS.extend(EXECUTION_TOOL_DEFINITIONS)
+TEAMMATE_TOOL_NAMES = TEAMMATE_TOOL_NAMES | CONTROL_TOOLS
+TEAMMATE_TOOLS.extend(EXECUTION_TOOL_DEFINITIONS)
+
+INVOKE_MCP_TOOL = define_tool("invoke_mcp_tool", "Invoke a visible MCP tool using its unchanged arguments and explicit execution mode. Original MCP permissions and validation still apply.", {"tool": NONEMPTY_STRING, "arguments": {"type": "object", "properties": {}, "required": [], "additionalProperties": True}, "execution": EXECUTION_SCHEMA}, ["tool", "arguments"])
+TOOL_SCHEMAS["invoke_mcp_tool"] = INVOKE_MCP_TOOL["function"]["parameters"]
+
+INVOKE_TOOL = define_tool("invoke_tool", "Execute a visible registered tool with explicit interactive or one-shot options. Original arguments and permissions still apply.", {"tool": NONEMPTY_STRING, "arguments": {"type": "object", "properties": {}, "required": [], "additionalProperties": True}, "execution": EXECUTION_SCHEMA}, ["tool", "arguments"])
+TOOL_SCHEMAS["invoke_tool"] = INVOKE_TOOL["function"]["parameters"]
+
+SUB_TOOL_NAMES = (*SUB_TOOL_NAMES, "invoke_tool")
+TEAMMATE_TOOL_NAMES = TEAMMATE_TOOL_NAMES | {"invoke_tool"}
+
+TOOLS.append(INVOKE_TOOL)
+SUB_TOOLS.append(INVOKE_TOOL)
+TEAMMATE_TOOLS.append(INVOKE_TOOL)

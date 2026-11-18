@@ -230,3 +230,6 @@ print(service.work.get(work_id).retry(seconds=600, request_id="retry-1"))
 ```
 
 Managed Lead 会收到输出检查失败、模型响应形状错误的有界错误观察，可以继续处理，或调用 `report_run_blocker` 说明阻塞原因。连续反馈受现有 Run 重试次数、模型调用次数和 deadline 限制。snapshot details 中可以查看 `model_feedback`、当前 `model_blocker` 和重试窗口历史。
+
+
+[执行视图与控制](EXECUTION.zh-CN.md)

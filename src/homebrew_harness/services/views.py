@@ -97,6 +97,23 @@ class WorkHandle(Handle):
     def revise(self, text, **kw):
         return self._control("work_revise", text=text, **kw)
 
+    def executions(self):
+        return self.service.query('work_executions', {'id': self.id})
+
+    def execution(self, identity):
+        return self.service.query('work_execution_get', {'id': self.id, 'execution_id': identity})
+
+    def execution_output(self, identity, *, cursor=0, limit=16000, stream="output"):
+        return self.service.query('work_execution_output', {'id': self.id, 'execution_id': identity, 'cursor': cursor, 'limit': limit, 'stream': stream})
+
+    def stop_execution(self, identity, *, revision=None, execution_revision=None, request_id=None):
+        revision = self.snapshot().revision if revision is None else revision
+        return self.service.command('work_execution_stop', {'id': self.id, 'revision': revision, 'execution_id': identity, 'execution_revision': execution_revision}, request_id)
+
+    def send_execution_input(self, identity, text, *, revision=None, request_id=None):
+        revision = self.snapshot().revision if revision is None else revision
+        return self.service.command('work_execution_input', {'id': self.id, 'revision': revision, 'execution_id': identity, 'text': text}, request_id)
+
     def request_authority(self, **kw):
         return self._control("work_request_authority", **kw)
 
