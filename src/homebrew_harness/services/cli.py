@@ -311,7 +311,6 @@ def commands(parser, *, attach=True):
     listing.add_argument("--state")
     listing.add_argument("--cursor", type=int, default=0)
     listing.add_argument("--limit", type=int, default=20)
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
     retry = tasks.add_parser(
         "retry", help="Retry the current Run with renewed work authority."
     )
@@ -327,13 +326,6 @@ def commands(parser, *, attach=True):
         "revoke",
         "request-authority",
     ):
-=======
-    retry = tasks.add_parser("retry", help="Retry the current Run with renewed work authority.")
-    retry.add_argument("work_id")
-    retry.add_argument("--seconds", type=float)
-    retry.add_argument("--request-id")
-    for name in ("show", "pause", "resume", "cancel", "revoke", "request-authority"):
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
         tasks.add_parser(name).add_argument("work_id")
     for name in ("steer", "interrupt", "revise", "context"):
         item = tasks.add_parser(name)
@@ -608,11 +600,7 @@ def operate(service, args):
             return work.snapshot()
         if args.work_command == "retry":
             return work.retry(seconds=args.seconds, request_id=args.request_id)
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
         if args.work_command in {"steer", "interrupt", "revise", "context"}:
-=======
-        if args.work_command in {"steer", "interrupt", "revise"}:
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
             return getattr(work, args.work_command)(
                 args.text, request_id=args.request_id
             )

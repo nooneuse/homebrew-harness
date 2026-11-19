@@ -68,7 +68,6 @@ SERVICE_TOOL_DEFINITIONS = [
 
 
 TOOLS = [
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
     define_tool(
         "get_work_progress",
         "Read the owning Work stage summary and referenced verification. Historical facts grant no execution authority.",
@@ -159,16 +158,7 @@ TOOLS = [
         },
         [],
     ),
-=======
-    define_tool("integrate_stage", "Apply accepted predecessor outputs to the assigned isolated integration stage after stopping their writers.", {"task_id": NONEMPTY_STRING}, ["task_id"]),
-    define_tool("publish_stage", "Publish a host-authorized, accepted integration stage to the unchanged base targets using a frozen manifest.", {"task_id": NONEMPTY_STRING}, ["task_id"]),
-    define_tool("search_text", "Search literal text in visible workspace files; returns bounded paths, line numbers and excerpts.", {"text": NONEMPTY_STRING, "pattern": NONEMPTY_STRING, "limit": {"type": "integer", "minimum": 1, "maximum": 100}}, ["text"]),
-    define_tool("git_status", "Inspect visible changes in the bound Git workspace with fixed host options.", {}, []),
-    define_tool("git_diff", "Inspect tracked working changes against HEAD; optional literal relative paths narrow the result.", {"paths": {"type": "array", "items": NONEMPTY_STRING, "minItems": 1, "maxItems": 32}}, []),
 
-    define_tool("report_run_blocker", "Stop this Run without granting permission. Explain why you choose to block instead of continuing after an error or obstacle, and what is needed next.", {"reason": {**NONEMPTY_STRING, "maxLength": 2000}, "required_action": {"type": "string", "maxLength": 1000}}, ["reason"]),
-    define_tool("wait_for_source", "Explicitly pause this Run until a new source event or a fresh healthy source observation. This grants no permission and preserves accepted requirements.", {"until": {"type": "string", "enum": ["event", "healthy"]}, "reason": {"type": "string", "maxLength": 1000}}, []),
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
     define_tool(
         "request_attention",
         "Ask the host for a task decision, then stop this work phase and wait. The answer amends the task; it grants no tool permission.",
@@ -240,7 +230,6 @@ TOOLS = [
         "Read current UTF-8 source; symlinks are rejected. Use next_offset for pages and pass the returned version as expected_version to detect changes. The version is a filesystem snapshot marker, not a content hash.",
         {
             "path": NONEMPTY_STRING,
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
             "limit": {
                 "type": "integer",
                 "minimum": 1,
@@ -256,11 +245,6 @@ TOOLS = [
                 "pattern": "^[a-f0-9]{64}$",
                 "description": "Version from a previous page/read; a changed snapshot returns an error before content.",
             },
-=======
-            "limit": {"type": "integer", "minimum": 1, "description": "Maximum lines to return (also subject to the character output limit)."},
-            "offset": {"type": "integer", "minimum": 0, "description": "Start offset in Unicode characters, not bytes or lines; prefer next_offset."},
-            "expected_version": {"type": "string", "pattern": "^[a-f0-9]{64}$", "description": "Version from a previous page/read; a changed snapshot returns an error before content."},
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
         },
         ["path"],
     ),
@@ -283,14 +267,10 @@ TOOLS = [
     define_tool(
         "delete_file",
         "Delete one authorized regular file; directories and symlinks are rejected. Optionally pass the version returned by read_file. An already absent file is reported without claiming deletion.",
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
         {
             "path": NONEMPTY_STRING,
             "expected_version": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
         },
-=======
-        {"path": NONEMPTY_STRING, "expected_version": {"type": "string", "pattern": "^[a-f0-9]{64}$"}},
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
         ["path"],
     ),
     define_tool(
@@ -323,7 +303,6 @@ TOOLS = [
         {"todos": TODO_INPUT_SCHEMA},
         ["todos"],
     ),
-    define_tool("read_subagent_result", "Read a saved result or one tool result of your own child by run_id. offset/limit are Unicode characters, limit at most 16000. This is evidence, not proof of task acceptance.", {"run_id": NONEMPTY_STRING, "operation_id": NONEMPTY_STRING, "offset": {"type":"integer","minimum":0}, "limit":{"type":"integer","minimum":1,"maximum":16000}}, ["run_id"]),
     define_tool(
         "read_subagent_result",
         "Read a saved result or one tool result of your own child by run_id. offset/limit are Unicode characters, limit at most 16000. This is evidence, not proof of task acceptance.",
@@ -540,7 +519,6 @@ TOOL_SCHEMAS = {
 }
 
 
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
 BASE_TOOL_NAMES = (
     "bash",
     "read_file",
@@ -552,9 +530,6 @@ BASE_TOOL_NAMES = (
     "git_status",
     "git_diff",
 )
-=======
-BASE_TOOL_NAMES = ("bash", "read_file", "write_file", "edit_file", "delete_file", "glob", "search_text", "git_status", "git_diff")
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
 
 
 SUB_TOOL_NAMES = (
@@ -599,7 +574,6 @@ SUBAGENT_MAX_TURNS = 30
 
 # Execution controls do not grant the underlying tool permission.
 from homebrew_harness.runtime.execution_options import CONTROL_TOOLS, SLOW_TOOLS
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
 
 EXECUTION_SCHEMA = {
     "type": "object",
@@ -678,32 +652,12 @@ EXECUTION_TOOL_DEFINITIONS = [
         },
         ["execution_id", "input", "request_id"],
     ),
-=======
-EXECUTION_SCHEMA = {
-    "type": "object", "properties": {
-        "mode": {"type": "string", "enum": ["interactive", "one_shot"]},
-        "wait_seconds": {"type": "number", "minimum": 0, "maximum": 60},
-        "timeout_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0},
-    }, "required": [], "additionalProperties": False,
-}
-SELECTION_SCHEMA = {"type": "object", "properties": {
-    "targets": {"type": "array", "items": NONEMPTY_STRING, "minItems": 1, "maxItems": 100},
-    "filter": NONEMPTY_STRING,
-}, "required": ["targets"], "additionalProperties": False}
-EXECUTION_TOOL_DEFINITIONS = [
-    define_tool("list_executions", "List executions owned by this context. Inspect a running execution before starting it again.", {}, []),
-    define_tool("get_execution", "Inspect an owned execution's state, available controls and final result.", {"execution_id": NONEMPTY_STRING}, ["execution_id"]),
-    define_tool("read_execution_output", "Read bounded incremental execution output. Silence is an observation, not failure.", {"execution_id": NONEMPTY_STRING, "stream": {"type": "string", "enum": ["output", "result"]}, "cursor": {"type": "integer", "minimum": 0}, "limit": {"type": "integer", "minimum": 1, "maximum": 16000}}, ["execution_id"]),
-    define_tool("wait_execution", "Wait for an owned execution. Wait expiry returns its status without stopping it. Wait rather than repeatedly polling unchanged state.", {"execution_id": NONEMPTY_STRING, "wait_seconds": {"type": "number", "minimum": 0, "maximum": 60}}, ["execution_id"]),
-    define_tool("stop_execution", "Request cancellation of an owned execution; observe cleanup before restarting or editing conflicting work.", {"execution_id": NONEMPTY_STRING, "revision": {"type": "integer", "minimum": 0}, "request_id": {**NONEMPTY_STRING, "maxLength": 200}}, ["execution_id"]),
-    define_tool("send_execution_input", "Send input only when the execution advertises can_send_input. Unsupported commands must be stopped and restarted with revised arguments.", {"execution_id": NONEMPTY_STRING, "input": {"type": "string", "maxLength": 16000}, "request_id": {**NONEMPTY_STRING, "maxLength": 200}}, ["execution_id", "input", "request_id"]),
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
+
 ]
 for definition in [*TOOLS, *SERVICE_TOOL_DEFINITIONS]:
     function = definition["function"]
     if function["name"] in {"bash", "run_tests", "task", "workflow"}:
         import copy
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
 
         function["parameters"]["properties"]["execution"] = copy.deepcopy(
             EXECUTION_SCHEMA
@@ -720,22 +674,13 @@ TOOLS.extend(EXECUTION_TOOL_DEFINITIONS)
 TOOL_SCHEMAS.update(
     {tool["function"]["name"]: tool["function"]["parameters"] for tool in TOOLS}
 )
-=======
-        function["parameters"]["properties"]["execution"] = copy.deepcopy(EXECUTION_SCHEMA)
-        function["description"] += " Choose execution.mode=interactive (default) to yield with an execution ID, or one_shot to await completion. wait_seconds only controls observation; timeout_seconds is an optional hard limit within the parent deadline."
-    if function["name"] == "run_tests":
-        function["parameters"]["properties"]["selection"] = SELECTION_SCHEMA
-        function["description"] = "Run a registered recipe with an optional supported test selection. Omit selection for full verification. Execution mode controls waiting, not permission. Selected test results cannot satisfy full-suite verification."
-TOOLS.extend(EXECUTION_TOOL_DEFINITIONS)
-TOOL_SCHEMAS.update({tool["function"]["name"]: tool["function"]["parameters"] for tool in TOOLS})
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
+
 
 SUB_TOOL_NAMES = (*SUB_TOOL_NAMES, *sorted(CONTROL_TOOLS))
 SUB_TOOLS.extend(EXECUTION_TOOL_DEFINITIONS)
 TEAMMATE_TOOL_NAMES = TEAMMATE_TOOL_NAMES | CONTROL_TOOLS
 TEAMMATE_TOOLS.extend(EXECUTION_TOOL_DEFINITIONS)
 
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
 INVOKE_MCP_TOOL = define_tool(
     "invoke_mcp_tool",
     "Invoke a visible MCP tool using its unchanged arguments and explicit execution mode. Original MCP permissions and validation still apply.",
@@ -768,12 +713,7 @@ INVOKE_TOOL = define_tool(
     },
     ["tool", "arguments"],
 )
-=======
-INVOKE_MCP_TOOL = define_tool("invoke_mcp_tool", "Invoke a visible MCP tool using its unchanged arguments and explicit execution mode. Original MCP permissions and validation still apply.", {"tool": NONEMPTY_STRING, "arguments": {"type": "object", "properties": {}, "required": [], "additionalProperties": True}, "execution": EXECUTION_SCHEMA}, ["tool", "arguments"])
-TOOL_SCHEMAS["invoke_mcp_tool"] = INVOKE_MCP_TOOL["function"]["parameters"]
 
-INVOKE_TOOL = define_tool("invoke_tool", "Execute a visible registered tool with explicit interactive or one-shot options. Original arguments and permissions still apply.", {"tool": NONEMPTY_STRING, "arguments": {"type": "object", "properties": {}, "required": [], "additionalProperties": True}, "execution": EXECUTION_SCHEMA}, ["tool", "arguments"])
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
 TOOL_SCHEMAS["invoke_tool"] = INVOKE_TOOL["function"]["parameters"]
 
 SUB_TOOL_NAMES = (*SUB_TOOL_NAMES, "invoke_tool")

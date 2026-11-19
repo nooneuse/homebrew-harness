@@ -237,7 +237,6 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(self.peer.writes, [])
 
     def test_development_finishes_before_service_opens_pr_without_attention(self):
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
         baseline = (
             self.run_git("--git-dir=" + str(self.remote), "rev-parse", "main")
             .decode()
@@ -310,24 +309,6 @@ class FlowTests(unittest.TestCase):
         )
         self.assertEqual(after["changeset_id"], before["changeset_id"])
         self.assertIn("runtime was restarted", after["execution_context"][-1])
-=======
-        baseline=self.run_git('--git-dir='+str(self.remote),'rev-parse','main').decode().strip()
-        service=self.start(merge={'mode':'manual','poll_seconds':.1})
-        work=service.work.submit('Fix the value and hand off its verified result.')
-        eventually(lambda:self.peer.pulls,30)
-        saved=service.store.work(work.id)
-        self.assertIn('Service development-to-delivery handoff:',saved['run_spec']['prompt'])
-        self.assertIn('Do not wait for a PR URL',saved['run_spec']['prompt'])
-        self.assertTrue(any('Service development-to-delivery handoff:' in m.get('content','')
-                            for request in self.peer.model_requests for m in request['messages']))
-        self.assertNotIn('bash',saved['run_spec']['tools'])
-        child=service.runtime.child_for(saved);run=child.run_store.get(saved['run_id'])
-        self.assertEqual(run['status'],'completed')
-        self.assertFalse(any(r['kind']=='attention' for r in child.store.items('run_requests').values()))
-        self.assertEqual(len(self.peer.pulls),1)
-        self.assertEqual(self.run_git('--git-dir='+str(self.remote),'rev-parse','main').decode().strip(),baseline)
-        self.assertIsNotNone(saved['changeset_id'])
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
 
     def test_restart_retains_candidate_and_target_request(self):
         service = self.start()

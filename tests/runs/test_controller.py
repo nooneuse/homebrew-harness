@@ -88,28 +88,30 @@ class RunTests(unittest.TestCase):
         self.assertEqual(len(self.store.runtime.items("run_episodes")), 3)
 
     def test_episode_checkpoint_timeout_retries_without_repeating_tools(self):
-        control, session, client, _ = self.controller([
-            self.write('write', 'saved.txt'), reply('done')
-        ])
+        control, session, client, _ = self.controller(
+            [self.write("write", "saved.txt"), reply("done")]
+        )
         db = session.runtime_store.backend()
         original = db._save_doc
         timed = []
         phases = []
+
         def delayed(conn, doc, value, *args, **kwargs):
-            phases.append(value.get('phase'))
+            phases.append(value.get("phase"))
             result = original(conn, doc, value, *args, **kwargs)
-            if value.get('phase') == 'yielded' and not timed:
+            if value.get("phase") == "yielded" and not timed:
                 timed.append(True)
-                time.sleep(.04)
+                time.sleep(0.04)
             return result
-        db.transaction_timeout = .02
-        with patch.object(db, '_save_doc', side_effect=delayed):
+
+        db.transaction_timeout = 0.02
+        with patch.object(db, "_save_doc", side_effect=delayed):
             outcome = control.execute()
-        self.assertEqual(outcome.status, 'completed', outcome)
+        self.assertEqual(outcome.status, "completed", outcome)
         self.assertEqual(timed, [True], phases)
-        self.assertEqual((self.root / 'saved.txt').read_text(), 'ok')
+        self.assertEqual((self.root / "saved.txt").read_text(), "ok")
         self.assertEqual(client.chat.completions.create.call_count, 2)
-        self.assertEqual(len(self.store.runtime.items('run_episodes')), 2)
+        self.assertEqual(len(self.store.runtime.items("run_episodes")), 2)
 
     def test_goal_completion_uses_latest_user_revision_and_atomic_run_state(self):
         spec = RunSpec(
@@ -217,33 +219,101 @@ class RunTests(unittest.TestCase):
         self.assertFalse((self.root / "b.txt").exists())
         self.assertTrue(session.recovery_operations())
 
+    def test_soft_summary_overflow_keeps_run_moving_after_one_write(self):
+        control, session, client, _ = self.controller(
+            [
+                reply(
+                    calls=[
+                        call(
+                            "write",
+                            name="write_file",
+                            arguments='{"path":"once.txt","content":"kept"}',
+                        ),
+                        call("compact", name="compact", arguments="{}"),
+                    ]
+                ),
+                reply("S" * 11000),
+                reply("Verified and complete."),
+            ],
+            RunSpec("Write once and report actual results.", episode_model_calls=3),
+        )
+        outcome = control.execute()
+        self.assertEqual(outcome.status, "completed", outcome)
+        self.assertEqual((self.root / "once.txt").read_text(), "kept")
+        self.assertEqual(client.chat.completions.create.call_count, 3)
+        self.assertEqual(
+            [m["tool_call_id"] for m in session.messages if m["role"] == "tool"],
+            ["write", "compact"],
+        )
+
     def test_summary_failure_is_resumable_and_never_repeats_completed_write(self):
-        control, session, client, _ = self.controller([
-            reply(calls=[
-                call("written", name="write_file", arguments='{"path":"result.txt","content":"kept"}'),
-                call("compact", name="compact", arguments="{}"),
-            ]),
-            reply("S" * 10100), reply("S" * 11000),
-        ], RunSpec("Create result.txt and retain the original constraints", episode_model_calls=3))
+        from tests.context.test_compaction import ContextFailure
+
+        control, session, client, _ = self.controller(
+            [
+                reply(
+                    calls=[
+                        call(
+                            "written",
+                            name="write_file",
+                            arguments='{"path":"result.txt","content":"kept"}',
+                        ),
+                    ]
+                ),
+                ContextFailure(),
+                reply("S" * 30000),
+                reply("S" * 30000),
+                reply("S" * 30000),
+            ],
+            RunSpec(
+                "Create result.txt and retain the original constraints",
+                context_chars=20000,
+                episode_model_calls=3,
+            ),
+            context_chars=20000,
+        )
+        client.chat.completions.create.side_effect = [
+            reply(
+                calls=[
+                    call(
+                        "written",
+                        name="write_file",
+                        arguments='{"path":"result.txt","content":"kept"}',
+                    )
+                ]
+            ),
+            ContextFailure(),
+            reply("S" * 30000),
+            reply("S" * 30000),
+            reply("S" * 30000),
+        ]
         outcome = control.execute()
         self.assertEqual(outcome.status, "blocked")
         self.assertEqual(outcome.reason_code, "context_compaction_required")
         self.assertEqual((self.root / "result.txt").read_text(), "kept")
-        self.assertEqual([m["tool_call_id"] for m in session.messages if m["role"] == "tool"], ["written", "compact"])
+        self.assertEqual(
+            [m["tool_call_id"] for m in session.messages if m["role"] == "tool"],
+            ["written"],
+        )
         self.assertFalse(session.recovery_operations())
         info = outcome.details["error_info"]
-        self.assertEqual(info["code"], "summary_text_limit")
+        self.assertEqual(info["code"], "context_compacted_limit")
         self.assertTrue((self.root / info["details"]["summary_ref"]).exists())
         from homebrew_harness.api.runs import RunHandle
-        core = SimpleNamespace(run_store=self.store, requests=SimpleNamespace(list=lambda **kwargs: ()))
+
+        core = SimpleNamespace(
+            run_store=self.store, requests=SimpleNamespace(list=lambda **kwargs: ())
+        )
         view = RunHandle(core, control.id).snapshot()
-        self.assertEqual(view.details["error_info"]["code"], "summary_text_limit")
+        self.assertEqual(view.details["error_info"]["code"], "context_compacted_limit")
         self.assertTrue(view.details["required_host_actions"])
         session.close()
         self.assertTrue(session.wait_closed(5))
         self.store.ended(control.header, cleanup=True)
         self.store.control(control.id, "run")
-        resumed, restored, new_client, _ = self.controller([reply("Done; the result is retained.")], identity=control.id)
+        resumed, restored, new_client, _ = self.controller(
+            [reply("Done; the result is retained.")], identity=control.id, context_chars=20000
+        )
         restored_outcome = resumed.execute()
         self.assertEqual(restored_outcome.status, "completed")
         self.assertEqual((self.root / "result.txt").read_text(), "kept")
@@ -343,7 +413,12 @@ class RunTests(unittest.TestCase):
             )
             self.assertEqual(resumed.execute().status, "completed")
             self.assertEqual(resumed_client.chat.completions.create.call_count, 1)
-            writes = [c for m in next_session.messages for c in m.get("tool_calls", []) if c.get("function", {}).get("name") == "write_file"]
+            writes = [
+                c
+                for m in next_session.messages
+                for c in m.get("tool_calls", [])
+                if c.get("function", {}).get("name") == "write_file"
+            ]
             self.assertEqual(len(writes), 1)
             self.assertEqual(self.store.get(control.id)["deadline_at"], deadline)
 
@@ -423,27 +498,36 @@ class LongRunPromptTests(unittest.TestCase):
     controller = RunTests.controller
 
     def test_combined_long_prompt_reaches_model_and_intent_without_truncation(self):
-        prompt = 'Accepted requirement. ' + 'Preserved execution direction. ' * 2500
+        prompt = "Accepted requirement. " + "Preserved execution direction. " * 2500
         self.assertGreater(len(prompt), 64000)
-        control, session, client, requests = self.controller([reply('done')], spec=RunSpec(prompt, context_chars=240000), context_chars=240000)
+        control, session, client, requests = self.controller(
+            [reply("done")],
+            spec=RunSpec(prompt, context_chars=240000),
+            context_chars=240000,
+        )
         outcome = control.execute()
-        self.assertEqual(outcome.status, 'completed', outcome)
+        self.assertEqual(outcome.status, "completed", outcome)
         self.assertEqual(session.intent.original, prompt)
-        self.assertTrue(any(m.get('content') == prompt for m in requests[0]))
+        self.assertTrue(any(m.get("content") == prompt for m in requests[0]))
 
     def test_prompt_cap_reports_exact_size_before_any_execution(self):
         from homebrew_harness.runs.spec import MAX_RUN_PROMPT_CHARS
         from homebrew_harness.runtime.errors import error_info
+
         with self.assertRaises(ValueError) as failure:
-            RunSpec('x' * (MAX_RUN_PROMPT_CHARS + 1))
+            RunSpec("x" * (MAX_RUN_PROMPT_CHARS + 1))
         info = error_info(failure.exception)
-        self.assertEqual(info['code'], 'run_prompt_limit')
-        self.assertEqual(info['details']['limit_value'], MAX_RUN_PROMPT_CHARS)
-        self.assertEqual(info['details']['observed_value'], MAX_RUN_PROMPT_CHARS + 1)
+        self.assertEqual(info["code"], "run_prompt_limit")
+        self.assertEqual(info["details"]["limit_value"], MAX_RUN_PROMPT_CHARS)
+        self.assertEqual(info["details"]["observed_value"], MAX_RUN_PROMPT_CHARS + 1)
 
     def test_small_context_is_still_enforced_for_long_prompt(self):
-        prompt = 'Accepted requirement. ' + 'Preserved direction. ' * 4000
-        control, session, client, requests = self.controller([reply('unused')], spec=RunSpec(prompt, context_chars=20000), context_chars=20000)
+        prompt = "Accepted requirement. " + "Preserved direction. " * 4000
+        control, session, client, requests = self.controller(
+            [reply("unused")],
+            spec=RunSpec(prompt, context_chars=20000),
+            context_chars=20000,
+        )
         outcome = control.execute()
-        self.assertIn(outcome.status, {'failed', 'blocked'}, outcome)
+        self.assertIn(outcome.status, {"failed", "blocked"}, outcome)
         self.assertEqual(requests, [])

@@ -1,4 +1,4 @@
-"""Summary capacity, bounded correction, preserved intent and diagnostic archives."""
+"""Soft summary goals, complete request capacity and bounded recovery."""
 
 import copy
 import io
@@ -8,204 +8,308 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
+from unittest.mock import patch
 
 from homebrew_harness.context.compaction import ContextCompactor, SummaryCompactionError
 from homebrew_harness.runtime.errors import error_info
-from tests.context.test_compaction import fake_client, reply
-from unittest.mock import patch
+from tests.context.test_compaction import fake_client, reply, batch
+from tests.support.clients import call
 
 
 class SummaryBudgetTests(unittest.TestCase):
     def setUp(self):
-        temporary = tempfile.TemporaryDirectory()
-        self.addCleanup(temporary.cleanup)
-        self.root = Path(temporary.name).resolve()
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name).resolve()
         capture = redirect_stderr(io.StringIO())
         capture.__enter__()
         self.addCleanup(capture.__exit__, None, None, None)
 
     def compactor(self, responses, **kwargs):
         client, calls = fake_client(responses)
-        return ContextCompactor(client, 'fixture', self.root, **kwargs), calls
+        return ContextCompactor(client, "fixture", self.root, **kwargs), calls
 
-    def test_4210_character_summary_fits_current_window_and_retains_task_once(self):
-        compactor, calls = self.compactor([reply('S' * 4210)], context_chars=100000)
-        request = 'Preserve the original constraints and verify the result.'
-        history = [{'role': 'user', 'content': request}, {'role': 'assistant', 'content': 'Previous working facts.'}]
+    def test_saved_failure_equivalent_summary_fits_without_correction(self):
+        summary = "S" * 6479 + "\n" * 50
+        c, calls = self.compactor([reply(summary)], context_chars=240000)
+        c.intent.update("Task")
+        history = [
+            {"role": "system", "content": "policy"},
+            {"role": "user", "content": "Task"},
+        ]
+        for i in range(25):
+            history.extend(batch(str(i), ["fact-" + str(i) + "x" * 2400]))
+        pinned = c.pin_intent(history, "Task")
+        groups = c.groups(pinned)
+        head, count = 0, 0
+        while groups[head][0]["role"] == "system":
+            count += len(groups[head])
+            head += 1
+        tail, left = len(groups), c.target_messages - count - 1
+        while tail > head and left > 0:
+            tail -= 1
+            left -= len(groups[tail])
+        transcript = ".harness/transcripts/" + "x" * 32 + ".jsonl"
+        index = ".harness/tool-results/" + "x" * 32 + ".txt"
+        skeleton = c.state_message(
+            "History archived",
+            "Task",
+            "Plan",
+            "\nExact tool calls, results and denials index: " + index,
+            transcript,
+            host_status=c.COMPACTION_STATUS,
+            retained_request=True,
+        )
+        retained = [m for g in groups[:head] + groups[tail:] for m in g]
+        adjustment = 186144 - c.estimate_chars([*retained, skeleton])
+        history[0]["content"] += "P" * adjustment
         before = copy.deepcopy(history)
-        prepared = compactor.compact_history(history, request, 'Verify')
+        result = c.prepare(history, "Task", "Plan")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(c.estimate_chars(result), 192773)
+        marker = next(m for m in result if m.get("name") == "harness_compaction")
+        saved = json.loads(
+            marker["content"]
+            .split("Conversation working state (model-written reference only):\n", 1)[1]
+            .split("\n\nUse confirmed facts", 1)[0]
+        )
+        self.assertTrue(saved.startswith(summary))
+        self.assertIn("5856", calls[0]["messages"][0]["content"])
         self.assertEqual(history, before)
-        self.assertEqual(sum(m.get('content', '').count(request) for m in prepared), 1)
-        self.assertIn('S' * 4210, prepared[-1]['content'])
-        self.assertIn('below 8000 Unicode characters', calls[0]['messages'][0]['content'])
-        self.assertIn('do not fill the ceiling', calls[0]['messages'][0]['content'])
-        self.assertIn('normal ceiling is 10000', calls[0]['messages'][0]['content'])
-        self.assertNotIn('tools', calls[0])
+        c.groups(result)
 
-    def test_oversized_complete_summary_gets_one_small_correction(self):
-        compactor, calls = self.compactor([reply('S' * 10100), reply('Verified changes; tests remain.')])
-        text = compactor._summarize_text('old input' * 500, 'Task', 'Plan')
-        self.assertEqual(text, 'Verified changes; tests remain.')
+    def test_summary_above_nominal_limit_is_a_candidate_not_a_failure(self):
+        c, calls = self.compactor([reply("S" * 11000)], context_chars=40000)
+        history = [
+            {"role": "user", "content": "Preserve the task."},
+            {"role": "assistant", "content": "old facts"},
+        ]
+        before = copy.deepcopy(history)
+        result = c.compact_history(history, "Preserve the task.")
+        self.assertEqual(len(calls), 1)
+        self.assertLessEqual(c.estimate_chars(result), 40000)
+        self.assertEqual(
+            sum(m.get("content", "").count("Preserve the task.") for m in result), 1
+        )
+        self.assertEqual(history, before)
+        self.assertIn("soft goal", calls[0]["messages"][0]["content"])
+
+    def test_direct_generation_does_not_claim_whole_context_acceptance(self):
+        c, calls = self.compactor([reply("S" * 11000)])
+        self.assertEqual(len(c._summarize_text("old facts", "Task", "")), 11000)
+        self.assertEqual(len(calls), 1)
+        self.assertNotIn("tools", calls[0])
+
+    def test_actual_overflow_rewrites_only_existing_summary(self):
+        c, calls = self.compactor(
+            [reply("S" * 8000), reply("Verified changes; tests remain.")],
+            context_chars=4000,
+        )
+        history = [
+            {"role": "user", "content": "Task"},
+            {"role": "assistant", "content": "prior working record"},
+        ]
+        before = copy.deepcopy(history)
+        result = c.compact_history(history, "Task", required=True)
+        self.assertLessEqual(c.estimate_chars(result), 4000)
         self.assertEqual(len(calls), 2)
-        correction = json.loads(calls[1]['messages'][-1]['content'])
-        self.assertEqual(correction['observed_characters'], 10100)
-        self.assertEqual(correction['target_characters'], 5600)
-        self.assertNotIn('conversation', correction)
-        self.assertIn('toward target_characters', correction['instruction'])
-        self.assertTrue(all('tools' not in call for call in calls))
+        correction = json.loads(calls[1]["messages"][-1]["content"])
+        self.assertEqual(correction["observed_characters"], 8000)
+        self.assertGreater(correction["excess_context_characters"], 0)
+        self.assertNotIn("conversation", correction)
+        self.assertNotIn("current_request", correction)
+        self.assertEqual(history, before)
 
-    def test_exhausted_correction_archives_rejected_summary_and_keeps_history(self):
-        compactor, calls = self.compactor([reply('S' * 10100), reply('Z' * 11000)])
-        history = [{'role': 'user', 'content': 'Task'}, {'role': 'assistant', 'content': 'Old facts'}]
+    def test_exhausted_actual_overflow_preserves_history_and_diagnostics(self):
+        c, calls = self.compactor([reply("S" * 8000)] * 3, context_chars=4000)
+        history = [
+            {"role": "user", "content": "Task"},
+            {"role": "assistant", "content": "prior facts"},
+        ]
         before = copy.deepcopy(history)
         with self.assertRaises(SummaryCompactionError) as failure:
-            compactor.compact_history(history, 'Task')
+            c.compact_history(history, "Task", required=True)
         info = error_info(failure.exception)
-        self.assertEqual(info['code'], 'summary_text_limit')
-        self.assertEqual(info['details']['attempts'], 2)
-        self.assertEqual(info['details']['observed_value'], 11000)
-        reference = info['details']['summary_ref']
-        self.assertEqual((self.root / reference).read_text(), 'Z' * 11000)
+        self.assertEqual(info["code"], "context_compacted_limit")
+        self.assertEqual(info["details"]["limit_value"], 4000)
+        self.assertGreater(info["details"]["observed_value"], 4000)
+        self.assertEqual(info["details"]["rewrite_attempts"], 2)
+        self.assertEqual(info["details"]["attempts"], 3)
+        self.assertEqual(
+            (self.root / info["details"]["summary_ref"]).read_text(), "S" * 8000
+        )
         self.assertEqual(history, before)
+        self.assertEqual(len(calls), 3)
+
+    def test_invalid_summary_is_repaired_without_executing_tools(self):
+        c, calls = self.compactor(
+            [
+                reply(None),
+                reply(calls=[call("bad", name="write_file", arguments="{}")]),
+                reply("Complete working facts."),
+            ]
+        )
+        history = [
+            {"role": "user", "content": "Task"},
+            {"role": "assistant", "content": "prior facts"},
+        ]
+        result = c.compact_history(history, "Task", required=True)
+        self.assertEqual(len(calls), 3)
+        self.assertIn("Complete working facts", json.dumps(result))
+        self.assertFalse(list(self.root.glob("*.txt")))
+        self.assertTrue(all("tools" not in r for r in calls))
+
+    def test_invalid_output_and_capacity_recovery_share_one_counter(self):
+        c, calls = self.compactor(
+            [reply(None), reply("S" * 8000), reply("S" * 8000)], context_chars=4000
+        )
+        with self.assertRaises(SummaryCompactionError) as failure:
+            c.compact_history(
+                [{"role": "user", "content": "Task"}], "Task", required=True
+            )
+        self.assertEqual(failure.exception.details["rewrite_attempts"], 2)
+        self.assertEqual(len(calls), 3)
+
+    def test_truncation_recovers_once_and_does_not_execute_partial_output(self):
+        c, calls = self.compactor(
+            [reply("partial", finish_reason="length"), reply("S" * 10100)],
+            context_chars=40000,
+        )
+        result = c.compact_history([{"role": "user", "content": "Task"}], "Task")
+        self.assertIn("S" * 10100, json.dumps(result))
+        self.assertEqual([r["max_tokens"] for r in calls], [6000, 12000])
+
+    def test_multiple_ranges_keep_full_coverage_above_nominal_total(self):
+        c, calls = self.compactor(
+            [reply("A" * 11000), reply("B" * 2100), reply("C" * 2100)],
+            context_chars=100000,
+        )
+        history = [{"role": "assistant", "content": "x" * 110000}]
+        before = copy.deepcopy(history)
+        result = c.compact_history(history, "Task")
+        self.assertEqual(len(calls), 3)
+        self.assertLess(c.estimate_chars(result), 100000)
+        ranges = [json.loads(r["messages"][-1]["content"])["coverage"] for r in calls]
+        self.assertEqual([r["chunk"] for r in ranges], [1, 2, 3])
+        self.assertEqual(ranges[0]["start"], 0)
+        self.assertEqual(
+            ranges[-1]["end"],
+            len(json.dumps(c.summary_source(history, "Task"), ensure_ascii=False)),
+        )
+        self.assertEqual(history, before)
+        self.assertIn("A" * 11000, json.dumps(result))
+
+    def test_unicode_and_low_nominal_space_do_not_create_extra_hard_limits(self):
+        c, calls = self.compactor(
+            [reply("词" * 5385), reply("语" * 4500)], context_chars=240000
+        )
+        text = c.summarize_history(
+            [{"role": "assistant", "content": "x" * 100000}],
+            "",
+            "",
+            summary_budget=(800, 900),
+        )
         self.assertEqual(len(calls), 2)
+        self.assertEqual(len(text), 9923)
+        self.assertGreater(len(text.encode()), 10000)
 
-    def test_truncation_and_length_recovery_are_bounded_together(self):
-        compactor, calls = self.compactor([reply(None, finish_reason='length'), reply('S' * 10100), reply('Confirmed state.')])
-        self.assertEqual(compactor._summarize_text('history', 'Task', ''), 'Confirmed state.')
-        self.assertEqual([c['max_tokens'] for c in calls], [6000, 12000, 12000])
-
-    def test_multiple_ranges_share_remaining_space_instead_of_equal_quotas(self):
-        compactor, calls = self.compactor([reply('A' * 3500), reply('B' * 2100), reply('C' * 2100)], context_chars=100000)
-        summary = compactor.summarize_history([{'role': 'assistant', 'content': 'x' * 110000}], '', '')
-        prefix = '[All 3 transcript ranges summarized]\n'
-        available = 10000 - len(prefix) - 2
-        self.assertEqual(summary, prefix + 'A' * 3500 + '\n' + 'B' * 2100 + '\n' + 'C' * 2100)
-        self.assertEqual(len(calls), 3)
-        ranges = [json.loads(c['messages'][-1]['content'])['coverage'] for c in calls]
-        self.assertEqual({v['chunk'] for v in ranges}, {1, 2, 3})
-        limits = [int(re.search(r'normal ceiling is (\d+)', c['messages'][0]['content'])[1]) for c in calls]
-        self.assertEqual(limits, [available - 600, available - 3500 - 300, available - 5600])
-        self.assertLessEqual(len(summary), 10000)
-
-    def test_observed_4986_and_5385_ranges_fit_total_without_extra_correction(self):
-        for first in (4986, 5385):
-            with self.subTest(first=first):
-                compactor, calls = self.compactor([reply('A' * first), reply('B' * 4500)], context_chars=240000)
-                history = [{'role': 'assistant', 'content': 'x' * 100000}]
-                original = copy.deepcopy(history)
-                summary = compactor.summarize_history(history, '', '')
-                self.assertEqual(len(calls), 2)
-                self.assertEqual(len(summary), first + 4500 + 38)
-                self.assertLessEqual(len(summary), 10000)
-                self.assertEqual(history, original)
-                self.assertIn('normal ceiling is 9662', calls[0]['messages'][0]['content'])
-                second = json.loads(calls[1]['messages'][-1]['content'])
-                self.assertIn('normal ceiling is ' + str(9962 - first), calls[1]['messages'][0]['content'])
-                self.assertIn('below ' + str(7962 - first) + ' Unicode characters', calls[1]['messages'][0]['content'])
-                self.assertEqual(second['coverage']['start'], 80000)
-
-    def test_true_remaining_budget_overflow_gets_one_local_correction(self):
-        compactor, calls = self.compactor([reply('A' * 6000), reply('B' * 5000), reply('C' * 3800)], context_chars=240000)
-        summary = compactor.summarize_history([{'role': 'assistant', 'content': 'x' * 100000}], '', '')
-        self.assertEqual(len(calls), 3)
-        self.assertEqual(len(summary), 9838)
-        correction = json.loads(calls[2]['messages'][-1]['content'])
-        self.assertEqual(correction['observed_characters'], 5000)
-        self.assertEqual(correction['hard_limit_characters'], 3962)
-        self.assertEqual(correction['target_characters'], 1373)
-        self.assertNotIn('conversation', correction)
-        self.assertEqual(correction['coverage']['chunk'], 2)
-        self.assertTrue(all('tools' not in c for c in calls))
-
-    def test_exhausted_remaining_budget_retains_history_and_reports_total(self):
-        compactor, calls = self.compactor([reply('A' * 6000), reply('B' * 5000), reply('C' * 4200)], context_chars=240000)
-        history = [{'role': 'system', 'content': 'Keep permissions.'}, {'role': 'user', 'content': 'Never commit.'}, {'role': 'assistant', 'content': 'x' * 100000}]
+    def test_retained_history_is_resummarized_when_it_blocks_actual_capacity(self):
+        c, calls = self.compactor(
+            [reply("OLDER_FACT " + "S" * 14490)]
+            + [reply("OLDER_FACT and MOVED_FACT retained.")] * 4,
+            context_chars=20000,
+        )
+        history = [
+            {"role": "user", "content": "Task"},
+            {"role": "assistant", "content": "OLDER_FACT"},
+            {"role": "assistant", "content": "MOVED_FACT " + "X" * 8000},
+            *batch("unread", ["UNREAD_ONE", "UNREAD_TWO"]),
+        ]
         before = copy.deepcopy(history)
-        with self.assertRaises(SummaryCompactionError) as failure:
-            compactor.compact_history(history, 'Never commit.')
-        info = error_info(failure.exception)
+        result = c.compact_history(history, "Task", keep_recent=5, required=True)
+        self.assertLess(c.estimate_chars(result), 20000)
+        self.assertEqual(result[-3:], history[-3:])
+        self.assertIn(
+            "MOVED_FACT", "".join(r["messages"][-1]["content"] for r in calls[1:])
+        )
+        self.assertIn(
+            "OLDER_FACT", "".join(r["messages"][-1]["content"] for r in calls[1:])
+        )
         self.assertEqual(history, before)
+        c.groups(result)
+
+    def test_sendable_history_survives_proactive_failure_without_repeating_same_attempt(
+        self,
+    ):
+        c, calls = self.compactor(
+            [reply(None)] * 3 + [reply("Recovered facts")],
+            context_chars=4000,
+            trigger_messages=20,
+            target_messages=8,
+        )
+        c.intent.update("Task")
+        history = [
+            {"role": "system", "content": "policy"},
+            {"role": "user", "content": "Task"},
+        ]
+        history.extend(
+            {"role": "assistant", "content": "working fact"} for _ in range(22)
+        )
+        history[0]["content"] += "P" * (
+            3600 - c.estimate_chars(c.pin_intent(history, "Task"))
+        )
+        before = copy.deepcopy(history)
+        result = c.prepare(history, "Task")
         self.assertEqual(len(calls), 3)
-        self.assertEqual(info['code'], 'summary_text_limit')
-        self.assertEqual(info['details']['chunk'], 2)
-        self.assertEqual(info['details']['limit_value'], 4160)
-        self.assertEqual(info['details']['observed_value'], 4200)
-        self.assertEqual(info['details']['total_summary_characters'], 10000)
-        self.assertEqual(info['details']['used_summary_characters'], 6000)
-        self.assertEqual(info['details']['reserved_summary_characters'], 0)
-        self.assertEqual((self.root / info['details']['summary_ref']).read_text(), 'C' * 4200)
+        self.assertEqual(history, before)
+        self.assertFalse(any(m.get("name") == "harness_compaction" for m in result))
+        self.assertEqual(c.prepare(result, "Task"), result)
+        self.assertEqual(len(calls), 3)
+        result.append({"role": "user", "content": "New relevant fact"})
+        recovered = c.prepare(result, "Task")
+        self.assertEqual(len(calls), 4)
+        self.assertTrue(any(m.get("name") == "harness_compaction" for m in recovered))
 
-    def test_minimum_space_for_all_ranges_is_preserved(self):
-        compactor, calls = self.compactor([reply('A' * 300), reply('B' * 300), reply('C' * 300)], context_chars=100000)
-        history = [{'role': 'assistant', 'content': 'x' * 110000}]
-        overhead = len('[All 3 transcript ranges summarized]\n') + 2
-        summary = compactor.summarize_history(history, '', '', summary_budget=(900, 900 + overhead))
-        self.assertEqual(len(summary), 900 + overhead)
-        self.assertTrue(all('normal ceiling is 300' in c['messages'][0]['content'] for c in calls))
-
-    def test_insufficient_total_for_all_ranges_stops_before_generation(self):
-        compactor, calls = self.compactor([], context_chars=100000)
-        overhead = len('[All 3 transcript ranges summarized]\n') + 2
+    def test_fixed_scope_and_tools_really_exceed_window_before_generation(self):
+        c, calls = self.compactor([], context_chars=10000)
         with self.assertRaises(SummaryCompactionError) as failure:
-            compactor.summarize_history([{'role': 'assistant', 'content': 'x' * 110000}], '', '', summary_budget=(800, 899 + overhead))
-        self.assertEqual(error_info(failure.exception)['code'], 'summary_context_limit')
+            c.compact_history(
+                [{"role": "user", "content": "Task"}],
+                "Task",
+                tools=[{"description": "x" * 10000}],
+            )
+        self.assertEqual(failure.exception.code, "context_fixed_limit")
         self.assertEqual(calls, [])
 
-    def test_unicode_uses_characters_and_unused_last_space_is_not_padded(self):
-        compactor, calls = self.compactor([reply('词' * 5385), reply('语' * 4500)], context_chars=240000)
-        summary = compactor.summarize_history([{'role': 'assistant', 'content': 'x' * 100000}], '', '')
-        self.assertEqual(len(summary), 9923)
-        self.assertGreater(len(summary.encode('utf-8')), 10000)
+    def test_json_escape_expansion_triggers_actual_request_recovery(self):
+        c, calls = self.compactor(
+            [reply('"\\\n' * 1500), reply("Complete smaller state.")],
+            context_chars=10000,
+        )
+        result = c.compact_history(
+            [{"role": "user", "content": "Task"}], "Task", required=True
+        )
+        self.assertLess(c.estimate_chars(result), 10000)
         self.assertEqual(len(calls), 2)
-        compactor, calls = self.compactor([reply('A' * 9600), reply('Done.')], context_chars=240000)
-        summary = compactor.summarize_history([{'role': 'assistant', 'content': 'x' * 100000}], '', '')
-        self.assertIn('normal ceiling is 362', calls[1]['messages'][0]['content'])
-        self.assertTrue(summary.endswith('Done.'))
-        self.assertLess(len(summary), 10000)
+        self.assertGreater(
+            json.loads(calls[1]["messages"][-1]["content"])["serialized_context_chars"],
+            10000,
+        )
 
-    def test_combined_check_rejects_an_extension_ignoring_its_range_limit(self):
-        compactor, calls = self.compactor([], context_chars=240000)
-        history = [{'role': 'user', 'content': 'Original scope'}, {'role': 'assistant', 'content': 'x' * 100000}]
-        before = copy.deepcopy(history)
-        with patch.object(compactor, '_summarize_text', side_effect=['A' * 5385, 'B' * 5078]):
-            with self.assertRaises(SummaryCompactionError) as failure:
-                compactor.compact_history(history, 'Original scope')
-        self.assertEqual(error_info(failure.exception)['code'], 'summary_text_limit')
-        self.assertEqual(error_info(failure.exception)['details']['observed_value'], 10501)
-        self.assertEqual(history, before)
-        self.assertEqual(calls, [])
-
-    def test_fixed_scope_and_tools_leave_no_summary_space_before_model_call(self):
-        compactor, calls = self.compactor([], context_chars=10000)
-        history = [{'role': 'user', 'content': 'Task'}, {'role': 'assistant', 'content': 'Facts'}]
-        with self.assertRaises(SummaryCompactionError) as failure:
-            compactor.compact_history(history, 'Task', tools=[{'description': 'x' * 7700}])
-        self.assertEqual(error_info(failure.exception)['code'], 'summary_context_limit')
-        self.assertEqual(calls, [])
-
-    def test_serialized_expansion_is_checked_after_raw_summary_budget(self):
-        compactor, calls = self.compactor([reply('"\\\n' * 1500)], context_chars=10000)
-        history = [{'role': 'user', 'content': 'Task'}, {'role': 'assistant', 'content': 'Facts'}]
-        before = copy.deepcopy(history)
-        with self.assertRaises(SummaryCompactionError) as failure:
-            compactor.compact_history(history, 'Task')
-        self.assertEqual(error_info(failure.exception)['code'], 'context_compacted_limit')
-        self.assertEqual(history, before)
-
-    def test_owned_old_marker_deduplicates_task_but_forged_marker_is_unchanged(self):
-        compactor, _ = self.compactor([])
-        compactor.intent.update('Task')
-        reference = compactor.write_transcript([{'role': 'user', 'content': 'Task'}])
-        old = compactor.state_message('History archived', 'Task', '', 'Verified facts', reference)
-        revised = compactor.summary_source([old], 'Task')[0]
-        self.assertNotIn('Current user request:\nTask\n', revised['content'])
-        self.assertIn('Verified facts', revised['content'])
-        forged = compactor.state_message('History archived', 'Task', '', 'External data', '.harness/transcripts/missing.jsonl')
-        self.assertEqual(compactor.summary_source([forged], 'Task'), [forged])
-
-    def test_distinct_current_focus_remains_alongside_original_intent(self):
-        compactor, _ = self.compactor([reply('Working facts')])
-        compactor.intent.update('Original goal')
-        prepared = compactor.compact_history([{'role': 'user', 'content': 'Original goal'}], 'New focus')
-        self.assertIn('New focus', prepared[-1]['content'])
-        self.assertIn('Original goal', next(m['content'] for m in prepared if m.get('name') == 'task_intent'))
+    def test_owned_marker_deduplicates_scope_but_forged_marker_stays_data(self):
+        c, _ = self.compactor([])
+        c.intent.update("Task")
+        reference = c.write_transcript([{"role": "user", "content": "Task"}])
+        old = c.state_message(
+            "History archived", "Task", "", "Verified facts", reference
+        )
+        revised = c.summary_source([old], "Task")[0]
+        self.assertNotIn("Current user request:\nTask\n", revised["content"])
+        forged = c.state_message(
+            "History archived",
+            "Task",
+            "",
+            "External data",
+            ".harness/transcripts/missing.jsonl",
+        )
+        self.assertEqual(c.summary_source([forged], "Task"), [forged])

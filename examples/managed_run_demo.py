@@ -1006,13 +1006,9 @@ def run_demo(base, *, timeout=360):
         ):
             raise RuntimeError("A-E demo took an unexpected model/tool path.")
         for index, messages in enumerate(server.messages):
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
-            if messages and str(messages[0].get('content', '')).startswith('Summarize the supplied conversation'):
-=======
             if messages and str(messages[0].get('content', '')).startswith(
                 ('Summarize the supplied conversation', 'Create a compact working-state handoff')
             ):
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
                 payload = json.loads(messages[-1]['content'])
                 if payload.get('current_request') != PROMPT:
                     raise RuntimeError('Compaction lost the original task scope.')

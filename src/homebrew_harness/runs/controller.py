@@ -15,14 +15,10 @@ from contextvars import ContextVar
 from dataclasses import replace
 
 from homebrew_harness.configuration import DEFAULT_GIT_QUERY_SECONDS
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
 from homebrew_harness.execution.execution_control import (
     cleanup_scope,
     persistence_scope,
 )
-=======
-from homebrew_harness.execution.execution_control import cleanup_scope, persistence_scope
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
 from homebrew_harness.execution.model_gateway import (
     Deadline,
     ModelDeadlineExceeded,
@@ -81,10 +77,7 @@ class RunController:
         self.spec = RunSpec.from_dict(self.state["spec"])
         self.session = None
         from homebrew_harness.security.native_review import NativeReviewGate
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
 
-=======
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
         self.native_reviews = NativeReviewGate(self)
         self.cancel = threading.Event()
         self.stop_heartbeat = threading.Event()
@@ -286,7 +279,6 @@ class RunController:
         try:
             return self.native_reviews.wait()
         except (RunStopped, ModelCancelled, ModelDeadlineExceeded) as error:
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
             reason = (
                 error.reason_code
                 if isinstance(error, RunStopped)
@@ -313,21 +305,11 @@ class RunController:
                 ),
                 reason,
             )
-=======
-            reason = error.reason_code if isinstance(error, RunStopped) else self.host_action or (
-                "deadline_reached" if self.deadline().remaining() == 0 else "approval_review_wait_timeout"
-                if isinstance(error, ModelDeadlineExceeded) else "approval_review_cancelled")
-            return self.finish("paused" if reason == "pause" else "cancelled" if reason == "cancel"
-                else "failed" if reason == "deadline_reached" else "blocked", reason)
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
 
     def before_model(self, messages, components):
         self.native_reviews.wait()
         from .model_recovery import context
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
 
-=======
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
         context(self, messages)
         from homebrew_harness.context.tracked_history import set_context
 
@@ -966,15 +948,11 @@ class RunController:
         s.tests.max_runs = max(
             0, limits["max_runs"] - sum(self.state.get("test_attempts", {}).values())
         )
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
         s.tests.total_seconds = (
             None
             if limits["seconds"] is None
             else max(0, limits["seconds"] - self.test_seconds_offset)
         )
-=======
-        s.tests.total_seconds = None if limits["seconds"] is None else max(0, limits["seconds"] - self.test_seconds_offset)
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
         targets = [(None, s.workdir, "lead")]
         if self.stages:
             targets += [
@@ -1612,7 +1590,6 @@ class RunController:
                                     continue
                         if reason == "model_blocked":
                             blocker = self.state.get("model_blocker") or {}
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
                             return self.finish(
                                 "blocked",
                                 reason,
@@ -1622,9 +1599,6 @@ class RunController:
                                     or "Inspect the model-reported blocker",
                                 ),
                             )
-=======
-                            return self.finish("blocked", reason, text=blocker.get("reason", ""), actions=(blocker.get("required_action") or "Inspect the model-reported blocker",))
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
                         if reason == "source_wait":
                             return self.finish(
                                 "waiting", "source_wait", pending=("source",)
@@ -1724,7 +1698,6 @@ class RunController:
                     reason = (
                         "deadline_reached"
                         if self.deadline().remaining() == 0
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
                         else (
                             "context_compaction_required"
                             if isinstance(error, SummaryCompactionError)
@@ -1758,24 +1731,6 @@ class RunController:
                                 )
                             )
                         )
-=======
-                        else "context_compaction_required"
-                        if isinstance(error, SummaryCompactionError)
-                        else "provider_blocked"
-                        if isinstance(error, ModelGatewayError)
-                        and not isinstance(error, ModelDeadlineExceeded)
-                        and s.gateway.blocked
-                        and self.deadline().remaining() > 0
-                        else "deadline_reached"
-                        if self.deadline().remaining() == 0
-                        else error.reason_code
-                        if isinstance(error, ModelDeadlineExceeded)
-                        else getattr(error, "reason_code", None) or error.code
-                        if isinstance(error, RecoveryRequired) and (getattr(error, "reason_code", None) or getattr(error, "code", None))
-                        else "provider_" + error.kind
-                        if isinstance(error, ProviderError)
-                        else "execution_failed"
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
                     )
                     return self.finish(
                         (

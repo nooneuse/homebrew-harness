@@ -60,11 +60,14 @@ def fake_client(responses):
             raise response
         return response
 
-    return SimpleNamespace(
-        chat=SimpleNamespace(
-            completions=SimpleNamespace(create=Mock(side_effect=create))
-        )
-    ), requests
+    return (
+        SimpleNamespace(
+            chat=SimpleNamespace(
+                completions=SimpleNamespace(create=Mock(side_effect=create))
+            )
+        ),
+        requests,
+    )
 
 
 class ContextFailure(Exception):
@@ -143,7 +146,9 @@ class CompactionTests(unittest.TestCase):
         ContextCompactor.groups(prepared)
 
     def test_snip_preserves_batch_boundaries_request_plan_and_system_policy(self):
-        client, requests = fake_client([reply("Working facts; continue verification.") for _ in range(8)])
+        client, requests = fake_client(
+            [reply("Working facts; continue verification.") for _ in range(8)]
+        )
         compactor = self.compactor(client, context_chars=50000)
         messages = [
             {"role": "system", "content": "Never bypass permissions."},
@@ -253,9 +258,15 @@ class CompactionTests(unittest.TestCase):
         )
         self.assertEqual(messages, original)
         self.assertEqual(prepared[0], messages[0])
-        pinned = next(message for message in prepared if message.get("name") == "task_intent")
+        pinned = next(
+            message for message in prepared if message.get("name") == "task_intent"
+        )
         self.assertIn("ACTIVE: test before finishing.", pinned["content"])
-        marker = next(message for message in prepared if message.get("name") == "harness_compaction")
+        marker = next(
+            message
+            for message in prepared
+            if message.get("name") == "harness_compaction"
+        )
         self.assertNotIn("ACTIVE: test before finishing.", marker["content"])
         self.assertIn(
             "[>] Verify",
@@ -333,85 +344,19 @@ class CompactionTests(unittest.TestCase):
         self.assertTrue(all("tools" not in request for request in requests))
         self.assertIn("Verified files", conversation(prepared)[0]["content"])
 
-    def test_still_oversized_summary_stops_after_one_correction(self):
-        client, requests = fake_client([reply("S" * 8000), reply("S" * 8000)])
-        compactor = self.compactor(client, context_chars=4000)
-        messages = [
+    def test_real_window_overflow_exhausts_bounded_rewrites(self):
+        client, requests = fake_client([reply("S" * 8000)] * 3)
+        c = self.compactor(client, context_chars=4000)
+        history = [
             {"role": "user", "content": "Task"},
-            {"role": "assistant", "content": "x" * 8000},
+            {"role": "assistant", "content": "prior facts"},
         ]
-        original = copy.deepcopy(messages)
-        with self.assertRaisesRegex(CompactionError, "still exceeds"):
-            compactor.prepare(messages, "Task")
-        self.assertEqual(messages, original)
-        self.assertEqual(len(requests), 2)
-
-    def test_corrected_minor_overflow_uses_actual_spare_context(self):
-        client, requests = fake_client([reply('S' * 11000), reply('S' * 10376)])
-        compactor = self.compactor(client, context_chars=40000)
-        messages = [{'role': 'system', 'content': 'policy'}, {'role': 'user', 'content': 'Task'}, {'role': 'assistant', 'content': 'x' * 6000}]
-        original = copy.deepcopy(messages)
-        result = compactor.compact_history(messages, 'Task')
-        self.assertLess(compactor.estimate_chars(result), compactor.context_chars)
-        self.assertEqual(messages, original)
-        self.assertEqual(len(requests), 2)
-        correction = json.loads(requests[-1]['messages'][-1]['content'])
-        self.assertEqual(correction['target_characters'], 5600)
-        self.assertEqual(correction['hard_limit_characters'], 10000)
-        self.assertIn('observed=10376', self.errors.getvalue())
-
-    def test_corrected_overflow_without_spare_context_preserves_history(self):
-        client, requests = fake_client([reply('S' * 11000), reply('S' * 10376)])
-        compactor = self.compactor(client, context_chars=40000)
-        messages = [{'role': 'system', 'content': 'P' * 23000}, {'role': 'user', 'content': 'Task'}, {'role': 'assistant', 'content': 'x' * 6000}]
-        before = copy.deepcopy(messages)
-        with self.assertRaises(CompactionError):
-            compactor.compact_history(messages, 'Task')
-        self.assertEqual(messages, before)
-        self.assertEqual(len(requests), 2)
-
-    def test_direct_summary_call_has_no_unverified_overflow_allowance(self):
-        client, requests = fake_client([reply('S' * 11000), reply('S' * 10376)])
-        compactor = self.compactor(client, context_chars=40000)
-        with self.assertRaises(CompactionError):
-            compactor._summarize_text('Earlier facts', 'Task', '')
-        self.assertEqual(len(requests), 2)
-
-    def test_larger_corrected_overflow_stops_after_one_correction(self):
-        client, requests = fake_client([reply('S' * 11000), reply('S' * 10501)])
-        compactor = self.compactor(client, context_chars=40000)
-        history = [{'role': 'user', 'content': 'Task'}, {'role': 'assistant', 'content': 'x' * 6000}]
-        original = copy.deepcopy(history)
+        before = copy.deepcopy(history)
         with self.assertRaises(CompactionError) as failure:
-            compactor.compact_history(history, 'Task')
-        self.assertEqual(failure.exception.details['acceptance_summary_characters'], 10500)
-        self.assertEqual(history, original)
-        self.assertEqual(len(requests), 2)
-
-    def test_final_serialized_context_rejects_escape_expansion(self):
-        client, requests = fake_client([reply('a\n' * 1100)])
-        compactor = self.compactor(client, context_chars=4000)
-        messages = [{'role': 'user', 'content': 'Task'}, {'role': 'assistant', 'content': 'older'}]
-        before = copy.deepcopy(messages)
-        with self.assertRaises(CompactionError) as failure:
-            compactor.summary_marker(messages, messages, 'Task', '', [], 'Compacted', None)
-        self.assertEqual(failure.exception.code, 'context_compacted_limit')
-        self.assertEqual(messages, before)
-
-    def test_multiple_ranges_share_one_overflow_allowance(self):
-        compactor = self.compactor(context_chars=40000)
-        compactor.SUMMARY_INPUT_CHAR_LIMIT = 1000
-        history = [{'role': 'assistant', 'content': 'x' * 2300}]
-        calls = []
-        def summarize(text, request, plan, **kwargs):
-            calls.append(kwargs)
-            return 'S' * (kwargs['limit_chars'] if kwargs['coverage']['chunk'] == 1 else 300)
-        with patch.object(compactor, '_summarize_text', side_effect=summarize):
-            result = compactor.summarize_history(history, 'Task', '', summary_budget=(8000, 10000), acceptance_limit=50000)
-        self.assertEqual(len(calls), 3)
-        self.assertTrue(all(k['acceptance_chars'] == k['limit_chars'] for k in calls[:-1]))
-        self.assertEqual(calls[-1]['acceptance_chars'] - calls[-1]['limit_chars'], 500)
-        self.assertLessEqual(len(result), 10500)
+            c.compact_history(history, "Task", required=True)
+        self.assertEqual(failure.exception.code, "context_compacted_limit")
+        self.assertEqual(len(requests), 3)
+        self.assertEqual(history, before)
 
     def test_reactive_summary_keeps_recent_complete_batches(self):
         client, _ = fake_client([reply("Earlier state.")])
@@ -601,8 +546,14 @@ class CompactionTests(unittest.TestCase):
             )
         self.assertEqual(result, "Verified.")
         writer.assert_called_once()
-        self.assertIn("write-after", requests[1]["messages"][-1]["content"])
-        self.assertIn("bytes_written", requests[1]["messages"][-1]["content"])
+        self.assertNotIn("write-after", requests[1]["messages"][-1]["content"])
+        self.assertTrue(
+            any(
+                m.get("tool_call_id") == "write-after"
+                and "bytes_written" in m.get("content", "")
+                for m in requests[2]["messages"]
+            )
+        )
         self.assertIn(
             "[>] Verify once.txt", conversation(requests[2]["messages"])[1]["content"]
         )
@@ -747,8 +698,22 @@ class CompactionTests(unittest.TestCase):
         self.assertEqual(
             ["tools" in request for request in requests], [True, False, True]
         )
-        self.assertIn("Original request", next(m["content"] for m in requests[2]["messages"] if m.get("name") == "task_intent"))
-        self.assertNotIn("Original request", next(m["content"] for m in requests[2]["messages"] if m.get("name") == "harness_compaction"))
+        self.assertIn(
+            "Original request",
+            next(
+                m["content"]
+                for m in requests[2]["messages"]
+                if m.get("name") == "task_intent"
+            ),
+        )
+        self.assertNotIn(
+            "Original request",
+            next(
+                m["content"]
+                for m in requests[2]["messages"]
+                if m.get("name") == "harness_compaction"
+            ),
+        )
 
     def test_repeated_context_error_and_unrelated_errors_do_not_retry_forever(self):
         client, requests = fake_client(

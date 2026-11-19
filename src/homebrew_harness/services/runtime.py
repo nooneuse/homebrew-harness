@@ -857,17 +857,6 @@ class ServiceRuntime:
                     handle.pause()
                 changes = {"pause_requested": True}
             elif method == "work_retry":
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
-=======
-                if self.maintenance is not None and not self.maintenance.store.valid_authority(target):
-                    raise ValueError("Renew current work authority before retrying execution.")
-                if self.store.get(self.id)["state"] != "running":
-                    raise ValueError("Resume the service before retrying a Run.")
-                authority = target.get("authority") or {}
-                handle.retry(seconds=payload.get("seconds"), expires_at=authority.get("expires_at"), request_id="service-retry-" + key)
-                changes = {"pause_requested": False, "service_paused": False, "error": None}
-            elif method == "work_resume":
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
                 if (
                     self.maintenance is not None
                     and not self.maintenance.store.valid_authority(target)
@@ -1068,7 +1057,6 @@ class ServiceRuntime:
                 return self.store.runtime.get(
                     "service_focus", self.id + ":" + payload["context"]
                 )
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
             if method in {
                 "work_executions",
                 "work_execution_get",
@@ -1076,15 +1064,11 @@ class ServiceRuntime:
                 "work_execution_stop",
                 "work_execution_input",
             }:
-=======
-            if method in {"work_executions", "work_execution_get", "work_execution_output", "work_execution_stop", "work_execution_input"}:
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
                 work = self.store.work(payload["id"], self.id)
                 if not work.get("run_id"):
                     if method == "work_executions":
                         return {"executions": []}
                     raise ValueError("Work has no execution yet.")
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
                 handle = self.child_for(work).runs.get(
                     work["run_id"],
                     control=method in {"work_execution_stop", "work_execution_input"},
@@ -1108,22 +1092,6 @@ class ServiceRuntime:
                 return execution.stop(
                     revision=payload.get("execution_revision"), request_id=request_id
                 )
-=======
-                handle = self.child_for(work).runs.get(work['run_id'], control=method in {'work_execution_stop', 'work_execution_input'})
-                views = handle.executions
-                if method == 'work_executions':
-                    return {'executions': [row.data() for row in views.list()]}
-                execution = views.get(payload['execution_id'])
-                if method == 'work_execution_get':
-                    return execution.snapshot().data()
-                if method == 'work_execution_output':
-                    return execution.output(payload.get('cursor', 0), payload.get('limit', 16000), stream=payload.get('stream', 'output'))
-                if work['revision'] != payload.get('revision'):
-                    raise ValueError('Work revision changed.')
-                if method == 'work_execution_input':
-                    return execution.input(payload['text'], request_id=request_id)
-                return execution.stop(revision=payload.get('execution_revision'), request_id=request_id)
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
             if method == "work_get":
                 return self.work_snapshot(payload["id"])
             if method == "work_progress":

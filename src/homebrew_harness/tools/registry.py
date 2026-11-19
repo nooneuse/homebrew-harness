@@ -56,10 +56,7 @@ def create_tool_handlers(
         handlers["load_skill"] = skill_loader.run_tool
     if task_runner is not None:
         from homebrew_harness.orchestration.subagent_results import read_result
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
 
-=======
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
         handlers["task"] = task_runner
         handlers["read_subagent_result"] = read_result
     if compactor is not None:
@@ -286,22 +283,17 @@ def build_tool_pool(client, model, workdir, components: LoopComponents):
             else team_manager.lead_assignment if team_manager else None
         )
         mcp_task = execution_context("lead", assignment).task_id
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
     from homebrew_harness.runs.spec import (
         RUN_CONTROL_TOOLS,
         RUN_RECOVERY_TOOLS,
         stage_run_tools,
     )
-=======
-    from homebrew_harness.runs.spec import RUN_CONTROL_TOOLS, RUN_RECOVERY_TOOLS, stage_run_tools
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
 
     run_tools = member_run_tools
     if managed is not None:
         handlers.update(
             request_attention=managed.request_attention,
             report_run_blocker=managed.report_run_blocker,
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
             **(
                 {
                     "submit_work_progress": managed.submit_work_progress,
@@ -310,8 +302,6 @@ def build_tool_pool(client, model, workdir, components: LoopComponents):
                 if managed.spec.work_context
                 else {}
             ),
-=======
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
             wait_for_source=managed.wait_for_source,
             execute_approved=lambda **_kwargs: None,
             read_run_event=managed.read_event,
@@ -329,7 +319,6 @@ def build_tool_pool(client, model, workdir, components: LoopComponents):
         for name in available:
             if name == "get_handoff" or managed.transfers is not None:
                 handlers[name] = endpoints[name]
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
         run_tools = (
             RUN_CONTROL_TOOLS
             | RUN_RECOVERY_TOOLS
@@ -339,10 +328,6 @@ def build_tool_pool(client, model, workdir, components: LoopComponents):
                 if managed.spec.work_context
                 else set()
             )
-=======
-        run_tools = RUN_CONTROL_TOOLS | RUN_RECOVERY_TOOLS | frozenset(
-            name for name in available if name in handlers
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
         )
 
     service_tools = frozenset()
@@ -357,8 +342,6 @@ def build_tool_pool(client, model, workdir, components: LoopComponents):
             tools = describe(tools)
     if components.operations is not None:
         from homebrew_harness.execution.operations import CONTROL_TOOLS
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
-
         tools = [
             *tools,
             *[
@@ -373,11 +356,6 @@ def build_tool_pool(client, model, workdir, components: LoopComponents):
                 for name in CONTROL_TOOLS
             }
         )
-=======
-        tools = [*tools, *[d for d in homebrew_harness.tools.catalog.EXECUTION_TOOL_DEFINITIONS
-                          if d["function"]["name"] not in {t["function"]["name"] for t in tools}]]
-        handlers.update({name: partial(components.operations.run_tool, name) for name in CONTROL_TOOLS})
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
     return ToolPool.build(
         tools,
         handlers,

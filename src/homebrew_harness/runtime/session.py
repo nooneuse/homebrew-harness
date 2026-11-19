@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
 from homebrew_harness.configuration import (
     DEFAULT_SHUTDOWN_SECONDS,
     DEFAULT_LOCAL_CONTROL_SECONDS,
 )
-=======
-from homebrew_harness.configuration import DEFAULT_SHUTDOWN_SECONDS, DEFAULT_LOCAL_CONTROL_SECONDS
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
 
 from homebrew_harness.runtime.errors import error_info, error_message
 
@@ -580,14 +576,10 @@ class HarnessSession:
             self.session_id = uuid.uuid4().hex
             self.checkpoint_key = "lead:" + self.session_id
             from homebrew_harness.execution.operations import Operations
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
 
             self.operations = Operations(
                 self.workdir, self.checkpoint_key, leases=self.workspace.leases
             )
-=======
-            self.operations = Operations(self.workdir, self.checkpoint_key, leases=self.workspace.leases)
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
             self.messages = ConversationHistory(
                 [
                     {
@@ -1104,13 +1096,9 @@ class HarnessSession:
                 else None
             )
             try:
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
                 with persistence_scope(
                     operation="checkpoint", context_id=self.checkpoint_key
                 ):
-=======
-                with persistence_scope(operation="checkpoint", context_id=self.checkpoint_key):
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
                     self.runtime_store.checkpoint(
                         self.checkpoint_key,
                         snapshot,
@@ -1885,17 +1873,11 @@ class HarnessSession:
         deadline = (
             operation_deadline(self.turn_timeout)
             if command.mode == "context"
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
             else (
                 Deadline.after(DEFAULT_LOCAL_CONTROL_SECONDS)
                 if command.local
                 else operation_deadline(self.turn_timeout)
             )
-=======
-            else Deadline.after(DEFAULT_LOCAL_CONTROL_SECONDS)
-            if command.local
-            else operation_deadline(self.turn_timeout)
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
         )
         with (
             control_scope(deadline) if command.local else nullcontext(),

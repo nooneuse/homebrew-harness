@@ -212,7 +212,6 @@ def check_rules(tool_name: str, arguments: dict, workdir: Path) -> PermissionDec
                 "deny", "No host TestRunner policy is bound to this call."
             )
         )
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
     if tool_name in {
         "list_executions",
         "get_execution",
@@ -225,10 +224,6 @@ def check_rules(tool_name: str, arguments: dict, workdir: Path) -> PermissionDec
             "allow",
             "Control only executions owned by the current context; input has its own permission check.",
         )
-=======
-    if tool_name in {"list_executions", "get_execution", "read_execution_output", "wait_execution", "stop_execution", "send_execution_input"}:
-        return PermissionDecision("allow", "Control only executions owned by the current context; input has its own permission check.")
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
     if tool_name in {"list_tests", "get_test_result"}:
         return PermissionDecision(
             "allow", "Read host-registered test names and current-session receipts."
@@ -269,13 +264,9 @@ def check_rules(tool_name: str, arguments: dict, workdir: Path) -> PermissionDec
             "allow", "Read-only access to a registered skill snapshot."
         )
     if tool_name == "read_subagent_result":
-<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
         return PermissionDecision(
             "allow", "Read only evidence from the owning parent checkpoint."
         )
-=======
-        return PermissionDecision("allow", "Read only evidence from the owning parent checkpoint.")
->>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
     if tool_name == "task":
         return PermissionDecision(
             "allow",
