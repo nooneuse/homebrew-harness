@@ -116,9 +116,11 @@ class Delivery:
                     + (
                         " AND coalesce(json_extract(value,'$.observation_terminal'),0)=0 AND json_extract(value,'$.state') IN ('queued','preparing','validating','reviewing','review_branch_ready','ci_waiting','review_waiting','repair_approved','merge_ready','merge_pending','merged_verifying','integration_required','closed_unmerged','verification_blocked','superseded','ci_diagnosing','repairing','repair_waiting','repair_waiting_authority','quality_failed','blocked')"
                         if active and kind == "changesets"
-                        else " AND json_extract(value,'$.state') IN ('queued','started')"
-                        if active
-                        else ""
+                        else (
+                            " AND json_extract(value,'$.state') IN ('queued','started')"
+                            if active
+                            else ""
+                        )
                     )
                     + " ORDER BY rowid",
                     ("service_" + kind, "service:" + self.ms.id),
@@ -141,6 +143,8 @@ class Delivery:
                     return
                 if meta["state"] != "running":
                     continue
+                with control_scope(Deadline.after(self.spec["gate_seconds"])):
+                    self.ensure_handoffs()
                 for row in self.rows("changesets", active=True):
                     if self.stop.is_set():
                         break
@@ -182,6 +186,53 @@ class Delivery:
             self.runtime.report_failure("delivery", error)
         finally:
             self.finished.set()
+
+    def ensure_handoffs(self):
+        from homebrew_harness.services.work_progress import import_run, route, current
+
+        with self.ms.db.connection() as conn:
+            rows = conn.execute(
+                "SELECT value FROM records WHERE section='service_work' AND owner=? AND json_extract(value,'$.state')='review'",
+                ("service:" + self.ms.id,),
+            ).fetchall()
+        for (raw,) in rows:
+            work = json.loads(raw)
+            if not work.get("run_id"):
+                continue
+            previous = (
+                self.store.get("changesets", work["changeset_id"])
+                if work.get("changeset_id")
+                else None
+            )
+            if previous and previous.get("candidate"):
+                continue
+            native = self.runtime.child_for(work).run_store.get(work["run_id"])
+            import_run(self.runtime, work, native, completed_only=True)
+            latest = self.runtime.store.work(work["id"], self.ms.id)
+            progress = current(self.runtime, latest)
+            if (
+                progress
+                and progress["complete"]
+                and (not previous or previous.get("handoff_ref") != progress["id"])
+            ):
+                route(self.runtime, latest)
+
+    def included_inputs(self, work):
+        from homebrew_harness.services.work_progress import current
+
+        progress = current(self.runtime, work)
+        return progress.get("included_inputs", []) if progress else []
+
+    def source_for(self, work, fallback):
+        from homebrew_harness.services.work_progress import current
+        from homebrew_harness.storage.work_snapshot import verify
+
+        progress = current(self.runtime, work)
+        return (
+            Path(verify(progress["source"])["workspace"])
+            if progress and progress["complete"]
+            else fallback
+        )
 
     def advance(self, row):
         from .merge_flow import OBSERVING, PASSIVE, observe, verify_result
@@ -236,17 +287,23 @@ class Delivery:
                     / str(row["attempts"])
                 )
                 candidate = self.git.prepare(
-                    work, workspace, work["baseline"], directory, previous=previous
+                    {**work, "included_inputs": self.included_inputs(work)},
+                    self.source_for(work, workspace),
+                    work["baseline"],
+                    directory,
+                    previous=previous,
                 )
                 expected = (
                     self.store.get("changesets", row["previous"]).get(
                         "primary_expected"
                     )
                     if row.get("previous")
-                    else candidate["files"]
-                    if row.get("source_workspace", self.runtime.spec.workspace)
-                    == self.runtime.spec.workspace
-                    else work["baseline"]["files"]
+                    else (
+                        candidate["files"]
+                        if row.get("source_workspace", self.runtime.spec.workspace)
+                        == self.runtime.spec.workspace
+                        else work["baseline"]["files"]
+                    )
                 )
                 with self.runtime.lock:
                     self.store.current(row)
@@ -254,9 +311,33 @@ class Delivery:
                         "changesets",
                         row["id"],
                         candidate=candidate,
-                        state="validating",
+                        state=(
+                            "ci_diagnosing"
+                            if candidate.get("conflicts")
+                            else "validating"
+                        ),
                         primary_expected=expected,
+                        ci=(
+                            {
+                                "kind": "candidate_merge_conflict",
+                                "head": candidate["commit"],
+                                "conflicts": candidate.get("conflicts", []),
+                            }
+                            if candidate.get("conflicts")
+                            else row.get("ci")
+                        ),
                     )
+                    if candidate.get("conflicts"):
+                        conflict = self.store.get("changesets", row["id"])
+                        with self.ms.db.write() as conn:
+                            self.ms.job(
+                                conn,
+                                "ci_triage",
+                                row["id"],
+                                conflict["revision"],
+                                {},
+                                row["id"] + ":merge:" + candidate["commit"],
+                            )
             finally:
                 with self.runtime.lock:
                     self.preparing = False
@@ -280,12 +361,16 @@ class Delivery:
                 row["id"],
                 quality=checked["quality"],
                 goal_evidence=checked["goal_evidence"],
-                state="reviewing"
-                if self.spec["require_review"]
-                else "review_branch_ready",
-                review=None
-                if self.spec["require_review"]
-                else {"text": "Host did not require model review.", "findings": []},
+                state=(
+                    "reviewing"
+                    if self.spec["require_review"]
+                    else "review_branch_ready"
+                ),
+                review=(
+                    None
+                    if self.spec["require_review"]
+                    else {"text": "Host did not require model review.", "findings": []}
+                ),
             )
             with self.ms.db.write() as conn:
                 if self.spec["require_review"]:
@@ -497,9 +582,7 @@ class Delivery:
         except Exception as error:
             from homebrew_harness.services.action_runtime import failed_state
 
-            self.store.settle_action(
-                accepted, failed_state(error), error=error
-            )
+            self.store.settle_action(accepted, failed_state(error), error=error)
 
     def reconcile(self, action):
         from .spec import ACTIONS
@@ -536,6 +619,7 @@ class Delivery:
             )
         except Exception as error:
             from homebrew_harness.runtime.errors import annotate_error
+
             annotate_error(error, phase="inspect")
             return self.store.settle_action(action, "unknown", error=error)
 
@@ -604,6 +688,14 @@ class Delivery:
                 "prompt": work["run_spec"]["prompt"]
                 + "\n\nConfirmed CI repair plan:\n"
                 + row["ci_diagnosis"]["plan"],
+                "work_context": {
+                    **work["run_spec"].get("work_context", {}),
+                    "progress": {
+                        "summary": "The existing candidate requires only the confirmed repair.",
+                        "remaining": [row["ci_diagnosis"]["plan"]],
+                        "complete": False,
+                    },
+                },
                 "total_seconds": min(
                     work["run_spec"]["total_seconds"],
                     work["authority"]["expires_at"] - time.time(),
@@ -629,6 +721,7 @@ class Delivery:
                 + request_key("ci-run", self.ms.id, work["id"] + ":" + str(count)),
                 ci_fix_attempts=count,
                 repair_of=row["id"],
+                progress_ref=None,
                 baseline=None,
                 pause_requested=False,
                 revision=current["revision"] + 1,

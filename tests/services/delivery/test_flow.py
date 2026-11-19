@@ -237,22 +237,78 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(self.peer.writes, [])
 
     def test_development_finishes_before_service_opens_pr_without_attention(self):
-        baseline=self.run_git('--git-dir='+str(self.remote),'rev-parse','main').decode().strip()
-        service=self.start(merge={'mode':'manual','poll_seconds':.1})
-        work=service.work.submit('Fix the value and hand off its verified result.')
-        eventually(lambda:self.peer.pulls,30)
-        saved=service.store.work(work.id)
-        self.assertIn('Service development-to-delivery handoff:',saved['run_spec']['prompt'])
-        self.assertIn('Do not wait for a PR URL',saved['run_spec']['prompt'])
-        self.assertTrue(any('Service development-to-delivery handoff:' in m.get('content','')
-                            for request in self.peer.model_requests for m in request['messages']))
-        self.assertNotIn('bash',saved['run_spec']['tools'])
-        child=service.runtime.child_for(saved);run=child.run_store.get(saved['run_id'])
-        self.assertEqual(run['status'],'completed')
-        self.assertFalse(any(r['kind']=='attention' for r in child.store.items('run_requests').values()))
-        self.assertEqual(len(self.peer.pulls),1)
-        self.assertEqual(self.run_git('--git-dir='+str(self.remote),'rev-parse','main').decode().strip(),baseline)
-        self.assertIsNotNone(saved['changeset_id'])
+        baseline = (
+            self.run_git("--git-dir=" + str(self.remote), "rev-parse", "main")
+            .decode()
+            .strip()
+        )
+        service = self.start(merge={"mode": "manual", "poll_seconds": 0.1})
+        work = service.work.submit("Fix the value and hand off its verified result.")
+        eventually(lambda: self.peer.pulls, 30)
+        saved = service.store.work(work.id)
+        self.assertIn(
+            "Service development-to-delivery handoff:", saved["run_spec"]["prompt"]
+        )
+        self.assertIn("Do not wait for a PR URL", saved["run_spec"]["prompt"])
+        self.assertTrue(
+            any(
+                "Service development-to-delivery handoff:" in m.get("content", "")
+                for request in self.peer.model_requests
+                for m in request["messages"]
+            )
+        )
+        self.assertNotIn("bash", saved["run_spec"]["tools"])
+        child = service.runtime.child_for(saved)
+        run = child.run_store.get(saved["run_id"])
+        self.assertEqual(run["status"], "completed")
+        self.assertFalse(
+            any(
+                r["kind"] == "attention"
+                for r in child.store.items("run_requests").values()
+            )
+        )
+        self.assertEqual(len(self.peer.pulls), 1)
+        self.assertEqual(
+            self.run_git("--git-dir=" + str(self.remote), "rev-parse", "main")
+            .decode()
+            .strip(),
+            baseline,
+        )
+        self.assertIsNotNone(saved["changeset_id"])
+
+    def test_delivery_resume_keeps_handoff_run_and_candidate_identity(self):
+        service = self.start(merge={"mode": "manual", "poll_seconds": 0.1})
+        work = service.work.submit("Fix and hand off the scoped source.")
+        eventually(lambda: self.peer.pulls, 30)
+        before = service.store.work(work.id)
+        progress = work.progress()
+        self.assertEqual(progress["phase"], "delivery")
+        self.assertIsNotNone(progress["handoff_ref"])
+        work.pause()
+        work.resume()
+        after = service.store.work(work.id)
+        self.assertEqual(after["run_id"], before["run_id"])
+        self.assertEqual(after["changeset_id"], before["changeset_id"])
+        self.assertEqual(after["progress_ref"], before["progress_ref"])
+        self.assertEqual(len(self.peer.pulls), 1)
+
+    def test_execution_context_does_not_revise_requirements_or_candidate(self):
+        service = self.start(merge={"mode": "manual", "poll_seconds": 0.1})
+        work = service.work.submit("Complete the source change.")
+        eventually(lambda: self.peer.pulls, 30)
+        before = service.store.work(work.id)
+        work.context("The runtime was restarted; keep the current delivery stage.")
+        after = service.store.work(work.id)
+        self.assertEqual(
+            after["requirements_revision"], before["requirements_revision"]
+        )
+        (
+            self.assertEqual(after["amendments"], before.get("amendments", []))
+            if "amendments" in after
+            else None
+        )
+        self.assertEqual(after["changeset_id"], before["changeset_id"])
+        self.assertIn("runtime was restarted", after["execution_context"][-1])
 
     def test_restart_retains_candidate_and_target_request(self):
         service = self.start()
@@ -312,6 +368,14 @@ class FlowTests(unittest.TestCase):
         )
         value = service.store.work(work.id)
         self.assertEqual(value["ci_fix_attempts"], 1)
+        original = service.runtime.maintenance.store.get(
+            "work_progress", value["original_baseline_ref"]
+        )
+        self.assertNotEqual(original["run_id"], value["run_id"])
+        self.assertEqual(
+            original["original_baseline"]["head"],
+            service.delivery(value["changeset_id"])["candidate"]["target_base"],
+        )
         self.assertTrue(value["run_workspace"].startswith(str(self.control)))
         self.assertEqual(value["run_spec"]["write_paths"], ["src"])
         self.assertEqual(
@@ -522,6 +586,9 @@ class FlowTests(unittest.TestCase):
         }
         with service.store.db.write() as conn:
             current = service.store.work(work.id)
+            # A genuinely new accepted requirement version replaces this work;
+            # a same-version authorization renewal now preserves its handoff.
+            current["requirements_revision"] += 1
             service.runtime.maintenance.store.grant(
                 conn, current, current["triage"], "operator:renewal"
             )
@@ -533,6 +600,22 @@ class FlowTests(unittest.TestCase):
         saved = delivery.store.get("changesets", row["id"])
         self.assertEqual(saved["state"], "merged_verifying")
         self.assertEqual(saved["merge"]["result_commit"], merged)
+        self.assertEqual(service.snapshot().state, "paused")
+
+    def test_same_version_authority_renewal_keeps_delivery_and_pause(self):
+        service = self.start(merge={"mode": "manual", "poll_seconds": 0.1})
+        work = service.work.submit("Complete the source change.")
+        eventually(lambda: self.peer.pulls, 30)
+        service.pause("all")
+        before = service.store.work(work.id)
+        with service.store.db.write() as conn:
+            service.runtime.maintenance.store.grant(
+                conn, service.store.work(work.id), before["triage"], "operator:renewal"
+            )
+        after = service.store.work(work.id)
+        self.assertEqual(after["run_id"], before["run_id"])
+        self.assertEqual(after["changeset_id"], before["changeset_id"])
+        self.assertEqual(after["progress_ref"], before["progress_ref"])
         self.assertEqual(service.snapshot().state, "paused")
 
     def test_lost_git_push_ack_is_checked_without_repeating_push(self):

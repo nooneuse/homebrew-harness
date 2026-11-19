@@ -1,5 +1,7 @@
 # Python API
 
+仓库 Work 句柄通过 `work.progress()` 查询当前阶段、交接与证据引用。`work.context(text, request_id=...)` 添加运行说明而不修改已接受需求；`work.steer(...)` 继续表达需求补充。恢复时优先继续有效交接或交付候选，再考虑新开发 Run。这些控制与 Text UI 共用已认证的 HTTP 接口。
+
 [English](PYTHON_API.md)
 
 应用程序通过 `Harness` 创建执行、查询状态和处理审批。它复用 CLI 使用的配置装配与控制器；`AsyncHarness` 提供对应的异步视图。

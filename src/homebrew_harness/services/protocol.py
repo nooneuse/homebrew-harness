@@ -49,6 +49,7 @@ QUERY_METHODS = {
     "snapshot": set(),
     "focus_get": {"context"},
     "work_get": {"id"},
+    "work_progress": {"id"},
     "work_executions": {"id"},
     "work_execution_get": {"id", "execution_id"},
     "work_execution_output": {"id", "execution_id", "cursor", "limit", "stream"},
@@ -100,6 +101,7 @@ COMMAND_METHODS = {
     "work_retry": {"id", "revision", "seconds"},
     "work_cancel": {"id", "revision"},
     "steer": {"id", "revision", "text"},
+    "work_context": {"id", "revision", "text"},
     "interrupt": {"id", "revision", "text"},
     "decide": {"ref", "decision", "text", "runs", "seconds"},
 }

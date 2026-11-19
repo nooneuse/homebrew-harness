@@ -1,6 +1,11 @@
 """Service-owned events, proposals, decisions, conversations and report windows."""
 
-from homebrew_harness.runtime.errors import annotate_error, error_info, error_message, failure_signature
+from homebrew_harness.runtime.errors import (
+    annotate_error,
+    error_info,
+    error_message,
+    failure_signature,
+)
 
 import json
 import time
@@ -11,6 +16,7 @@ from .protocol import request_key, fingerprint
 from .maintenance_spec import text, number
 
 SECTIONS = {
+    "work_progress",
     "events",
     "sources",
     "jobs",
@@ -43,7 +49,9 @@ class MaintenanceStore:
 
     @cached_property
     def development_handoff(self):
-        return (Path(__file__).parent / "prompts" / "development-handoff.md").read_text(encoding="utf-8")
+        return (Path(__file__).parent / "prompts" / "development-handoff.md").read_text(
+            encoding="utf-8"
+        )
 
     def get(self, kind, identity, conn=None):
         if kind not in SECTIONS:
@@ -276,7 +284,9 @@ class MaintenanceStore:
         with self.db.write() as conn:
             self.store.guard(conn, self.header)
             diagnostic = error_info(error)
-            if failure_signature(old.get("error_info")) != failure_signature(diagnostic):
+            if failure_signature(old.get("error_info")) != failure_signature(
+                diagnostic
+            ):
                 self.changed(
                     conn, detail={"source": name, "error": type(error).__name__}
                 )
@@ -290,7 +300,8 @@ class MaintenanceStore:
                     "state": "retrying",
                     "error": type(error).__name__,
                     "error_detail": error_message(error),
-                    "error_info": error_info(error),                    "attempts": old.get("attempts", 0) + 1,
+                    "error_info": error_info(error),
+                    "attempts": old.get("attempts", 0) + 1,
                     "next_poll": time.time() + delay,
                 },
             )
@@ -298,8 +309,12 @@ class MaintenanceStore:
     def fail_target(self, conn, job):
         if job["kind"] == "discussion" and self.communication is not None:
             row = self.communication.get("discussions", job["target"], conn)
-            row.update(state="blocked", error=job.get("error", "model_job_failed"),
-                       error_detail=job.get("error_detail"), error_info=job.get("error_info"))
+            row.update(
+                state="blocked",
+                error=job.get("error", "model_job_failed"),
+                error_detail=job.get("error_detail"),
+                error_info=job.get("error_info"),
+            )
             self.communication.put(conn, "discussions", row)
             return
         if job["kind"] in {"audit", "incident", "upgrade_assessment"}:
@@ -324,7 +339,12 @@ class MaintenanceStore:
         elif job["kind"] in {"conversation", "report"}:
             kind = "messages" if job["kind"] == "conversation" else "reports"
             target = self.get(kind, job["target"], conn)
-            target.update(state="failed", error=job["error"], error_detail=job.get("error_detail"), error_info=job.get("error_info"))
+            target.update(
+                state="failed",
+                error=job["error"],
+                error_detail=job.get("error_detail"),
+                error_info=job.get("error_info"),
+            )
             self.put(conn, kind, target)
         elif job["kind"] == "triage":
             work = self.db._get(conn, "service_work", job["target"])
@@ -409,9 +429,11 @@ class MaintenanceStore:
             "work_id": work["id"],
             "requirements_revision": work["requirements_revision"],
             "revision": 0,
-            "kind": "work_information"
-            if proposal["disposition"] == "needs_info"
-            else "work_authority",
+            "kind": (
+                "work_information"
+                if proposal["disposition"] == "needs_info"
+                else "work_authority"
+            ),
             "state": "pending",
             "candidate": proposal,
             "created_at": time.time(),
@@ -460,6 +482,33 @@ class MaintenanceStore:
             self.changed(conn, work["id"])
             return
         compiled = self.store.get(self.id)["spec"]["run_defaults"]
+        progress = (
+            self.get("work_progress", work["progress_ref"], conn)
+            if work.get("progress_ref")
+            else None
+        )
+        if (
+            progress
+            and progress["complete"]
+            and progress["requirements_revision"] == work["requirements_revision"]
+            and progress.get("write_paths")
+            == list(self.policy["scopes"][scope]["write_paths"])
+        ):
+            work.update(
+                authority={
+                    "requirements_revision": work["requirements_revision"],
+                    "policy": fingerprint(self.policy),
+                    "scope": scope,
+                    "expires_at": time.time() + self.policy["authority_seconds"],
+                    "origin": origin,
+                    "revoked": False,
+                },
+                state="review",
+                revision=work["revision"] + 1,
+            )
+            self.db._put(conn, "service_work", work["id"], work)
+            self.changed(conn, work["id"])
+            return
         from homebrew_harness.runs.spec import RunSpec
 
         supplemental = []
@@ -514,12 +563,31 @@ class MaintenanceStore:
         )
         from .maintenance_spec import instructions_for
 
+        if work.get("execution_context"):
+            prompt += (
+                "\n\nOperator execution context (not a requirements amendment):\n"
+                + "\n".join(work["execution_context"])
+            )
         if self.delivery is not None:
-            prompt += "\n\nService development-to-delivery handoff:\n" + self.development_handoff
+            prompt += (
+                "\n\nService development-to-delivery handoff:\n"
+                + self.development_handoff
+            )
         guidance = instructions_for(self.policy, "development")
         if guidance:
-            prompt += "\n\nConfigured development guidance:\n" + "\n\n".join(guidance.values())
+            prompt += "\n\nConfigured development guidance:\n" + "\n\n".join(
+                guidance.values()
+            )
         settings = {**compiled, **self.policy["scopes"][scope]}
+        from .work_progress import seed
+
+        settings["work_context"] = {
+            "service_id": self.id,
+            "work_id": work["id"],
+            "requirements_revision": work["requirements_revision"],
+            "progress": seed(self.store.runtime, work),
+            "verification": [],
+        }
         if work.get("goal") is not None:
             settings["goal"] = work["goal"]
         spec = RunSpec(prompt, **settings)
@@ -563,14 +631,21 @@ class MaintenanceStore:
         self.db._put(conn, "service_work", work["id"], work)
 
     def prepare_job(self, job, **values):
-        if set(values) - {"project_context", "discussion_assessment", "discussion_prompts", "phase_outputs"}:
+        if set(values) - {
+            "project_context",
+            "discussion_assessment",
+            "discussion_prompts",
+            "phase_outputs",
+        }:
             raise ValueError("Unknown service preparation field.")
         with self.db.write() as conn:
             self.store.guard(conn, self.header)
             current = self.get("jobs", job["id"], conn)
-            if (current["state"] != "running"
-                    or current["generation"] != self.header["generation"]
-                    or current["input"] != job["input"]):
+            if (
+                current["state"] != "running"
+                or current["generation"] != self.header["generation"]
+                or current["input"] != job["input"]
+            ):
                 raise ValueError("Job preparation ownership or input changed.")
             current.update(values)
             self.put(conn, "jobs", current)
@@ -591,15 +666,27 @@ class MaintenanceStore:
             if error is not None:
                 from homebrew_harness.security.data_boundary import redact
 
-                annotate_error(error, job_id=current["id"], job_kind=current["kind"],
-                               job_seconds=self.policy["job_seconds"], job_turns=self.policy["job_turns"])
+                annotate_error(
+                    error,
+                    job_id=current["id"],
+                    job_kind=current["kind"],
+                    job_seconds=self.policy["job_seconds"],
+                    job_turns=self.policy["job_turns"],
+                )
                 current.update(
-                    state="queued"
-                    if current["attempts"]
-                    < current.get("attempt_limit", self.policy["job_attempts"])
-                    else "failed",
+                    state=(
+                        "queued"
+                        if current["attempts"]
+                        < current.get("attempt_limit", self.policy["job_attempts"])
+                        else "failed"
+                    ),
                     error=type(error).__name__,
-                    error_detail=(error_message(error) if error_info(error)["code"] or "request_timeout_seconds" in error_info(error)["details"] else redact(str(error)))[:4000],
+                    error_detail=(
+                        error_message(error)
+                        if error_info(error)["code"]
+                        or "request_timeout_seconds" in error_info(error)["details"]
+                        else redact(str(error))
+                    )[:4000],
                     error_info=error_info(error),
                     error_code=error_info(error)["code"],
                     error_stage="apply" if result is not None else "reasoning",
@@ -611,7 +698,12 @@ class MaintenanceStore:
                     self.fail_target(conn, current)
                 elif job["kind"] == "conversation":
                     message = self.get("messages", job["target"], conn)
-                    message.update(state=current["state"], error=current["error"], error_detail=current.get("error_detail"), error_info=current.get("error_info"))
+                    message.update(
+                        state=current["state"],
+                        error=current["error"],
+                        error_detail=current.get("error_detail"),
+                        error_info=current.get("error_info"),
+                    )
                     self.put(conn, "messages", message)
             else:
                 from .job_contracts import JobContract

@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from homebrew_harness.configuration import DEFAULT_SHUTDOWN_SECONDS, DEFAULT_LOCAL_CONTROL_SECONDS
+from homebrew_harness.configuration import (
+    DEFAULT_SHUTDOWN_SECONDS,
+    DEFAULT_LOCAL_CONTROL_SECONDS,
+)
 
 from homebrew_harness.runtime.errors import error_info, error_message
 
@@ -12,7 +15,6 @@ from homebrew_harness.configuration import (
     DEFAULT_MAX_OUTPUT_TOKENS,
     DEFAULT_TASK_SECONDS,
 )
-
 
 
 from homebrew_harness.runtime.output import print
@@ -140,8 +142,12 @@ class HarnessSession:
     ):
         created, bindings = [], []
         self.run_control = run_control
-        from homebrew_harness.runtime.conversation_commands import initial_state, validate_state
+        from homebrew_harness.runtime.conversation_commands import (
+            initial_state,
+            validate_state,
+        )
         from homebrew_harness.context.project_guidance import ProjectGuidance
+
         self.conversation = initial_state()
         if conversation_mode is not None:
             if conversation_mode not in {"normal", "plan"}:
@@ -149,10 +155,17 @@ class HarnessSession:
             self.conversation["mode"] = conversation_mode
         if resume_session and conversation_mode is None:
             from homebrew_harness.storage.durable_runtime import DurableStore
+
             state_store = DurableStore(workdir)
-            identity = state_store.get_meta("latest_session") if resume_session == "latest" else resume_session
+            identity = (
+                state_store.get_meta("latest_session")
+                if resume_session == "latest"
+                else resume_session
+            )
             prior = state_store.get("checkpoints", "lead:" + str(identity), {})
-            self.conversation = validate_state(prior.get("conversation", initial_state()))
+            self.conversation = validate_state(
+                prior.get("conversation", initial_state())
+            )
         self.project_guidance = ProjectGuidance(workdir)
         self.fork_seed = fork_seed
         self.fork_source = None
@@ -199,9 +212,11 @@ class HarnessSession:
             if memory_runtime is not None and self.capabilities.memory_mode == "off":
                 self.capabilities = Capabilities(
                     self.capabilities.enabled,
-                    memory_runtime.mode
-                    if isinstance(memory_runtime.mode, str)
-                    else "recall",
+                    (
+                        memory_runtime.mode
+                        if isinstance(memory_runtime.mode, str)
+                        else "recall"
+                    ),
                     self.capabilities.details,
                 )
             from homebrew_harness.execution.model_registry import ModelRegistry
@@ -217,9 +232,14 @@ class HarnessSession:
                 )
             self.models.claim(self)
             self._model_source_client, self._model_source_name = client, model
-            self._model_defaults = (context_chars, worker_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS)
+            self._model_defaults = (
+                context_chars,
+                worker_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS,
+            )
             self._memory_tracks_model = memory_runtime is None
-            self._goal_tracks_model = goal_controller is None and goal_evaluator_model is None
+            self._goal_tracks_model = (
+                goal_controller is None and goal_evaluator_model is None
+            )
             own("models", self.models)
             lead_alias = (
                 lead_model_profile
@@ -233,10 +253,26 @@ class HarnessSession:
                 context_chars=context_chars,
                 max_output_tokens=worker_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS,
             )
-            from homebrew_harness.runtime.model_selection import choose_binding, validate_choice
-            self.model_selection = validate_choice(model_selection or {"profile": lead_alias, "model": model if lead_alias is None else None})
-            initial = choose_binding(self.models, self._model_source_client, self._model_source_name, self.model_selection,
-                context_chars=context_chars, output_tokens=worker_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS)
+            from homebrew_harness.runtime.model_selection import (
+                choose_binding,
+                validate_choice,
+            )
+
+            self.model_selection = validate_choice(
+                model_selection
+                or {
+                    "profile": lead_alias,
+                    "model": model if lead_alias is None else None,
+                }
+            )
+            initial = choose_binding(
+                self.models,
+                self._model_source_client,
+                self._model_source_name,
+                self.model_selection,
+                context_chars=context_chars,
+                output_tokens=worker_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS,
+            )
             client, model = initial.client, initial.model
             self.gateway = gateway or (
                 client
@@ -254,11 +290,21 @@ class HarnessSession:
             if worker_output_tokens is not None:
                 self.gateway.configure_worker_output(worker_output_tokens)
             self._model_defaults = (context_chars, self.gateway.worker_output_tokens)
-            self._selection_base_identity = self.models.select(lead_alias, client=self._model_source_client,
-                model=self._model_source_name, context_chars=context_chars,
-                max_output_tokens=self.gateway.worker_output_tokens).identity()
-            self.lead_binding = choose_binding(self.models, self._model_source_client, self._model_source_name,
-                self.model_selection, context_chars=context_chars, output_tokens=self.gateway.worker_output_tokens)
+            self._selection_base_identity = self.models.select(
+                lead_alias,
+                client=self._model_source_client,
+                model=self._model_source_name,
+                context_chars=context_chars,
+                max_output_tokens=self.gateway.worker_output_tokens,
+            ).identity()
+            self.lead_binding = choose_binding(
+                self.models,
+                self._model_source_client,
+                self._model_source_name,
+                self.model_selection,
+                context_chars=context_chars,
+                output_tokens=self.gateway.worker_output_tokens,
+            )
             self._committed_model_selection = dict(self.model_selection)
             self._committed_model_revision = self.model_revision = 0
             client, model = self.lead_binding.client, self.lead_binding.model
@@ -476,17 +522,21 @@ class HarnessSession:
                     from contextlib import nullcontext
 
                     with (
-                        self.run_control.team_control.scope(member)
-                        if self.run_control and self.run_control.team_control
-                        else nullcontext(),
+                        (
+                            self.run_control.team_control.scope(member)
+                            if self.run_control and self.run_control.team_control
+                            else nullcontext()
+                        ),
                         capability_scope(self.capabilities),
                         self.gateway.scope(
                             role="teammate",
                             context_id=member.name,
                             cancel_event=member.stop_event,
-                            deadline=self.run_control.deadline()
-                            if self.run_control
-                            else None,
+                            deadline=(
+                                self.run_control.deadline()
+                                if self.run_control
+                                else None
+                            ),
                             inherit_deadline=self.run_control is None,
                         ),
                         self.trace.scope("teammate", member.name),
@@ -526,7 +576,10 @@ class HarnessSession:
             self.session_id = uuid.uuid4().hex
             self.checkpoint_key = "lead:" + self.session_id
             from homebrew_harness.execution.operations import Operations
-            self.operations = Operations(self.workdir, self.checkpoint_key, leases=self.workspace.leases)
+
+            self.operations = Operations(
+                self.workdir, self.checkpoint_key, leases=self.workspace.leases
+            )
             self.messages = ConversationHistory(
                 [
                     {
@@ -557,6 +610,7 @@ class HarnessSession:
             self._execution_paused = False
             self._execution_cancel = threading.Event()
             from homebrew_harness.runtime.activities import Activities
+
             self.activities = Activities()
             self._poller = Poller(self.stop_event)
             self._threads = self._poller.workers.threads
@@ -582,9 +636,24 @@ class HarnessSession:
 
             self.inputs = UserInputController(self)
             from homebrew_harness.security.approval_review import ApprovalReviewer
-            effective_review = run_control.spec.approval_review if run_control is not None and run_control.spec.approval_review is not None else approval_review
-            self.approval_reviewer = ApprovalReviewer(effective_review, self.runtime_store, self.models, self.gateway, lambda: self.lead_binding)
-            if self.approval_reviewer.config.mode == "auto_review" and self.approval_reviewer.config.model_source == "profile":
+
+            effective_review = (
+                run_control.spec.approval_review
+                if run_control is not None
+                and run_control.spec.approval_review is not None
+                else approval_review
+            )
+            self.approval_reviewer = ApprovalReviewer(
+                effective_review,
+                self.runtime_store,
+                self.models,
+                self.gateway,
+                lambda: self.lead_binding,
+            )
+            if (
+                self.approval_reviewer.config.mode == "auto_review"
+                and self.approval_reviewer.config.model_source == "profile"
+            ):
                 self.models.validate(self.approval_reviewer.config.model_profile)
             self.run_control = run_control
             if run_control is not None:
@@ -656,9 +725,11 @@ class HarnessSession:
             "pending_background": copy.deepcopy(self._pending_background),
             "last_result": self.last_goal_result,
             "goal_id": self.goal.state["goal_id"] if self.goal.pending else None,
-            "lead_task": self.workspace.lead_assignment.id
-            if self.workspace.lead_assignment
-            else None,
+            "lead_task": (
+                self.workspace.lead_assignment.id
+                if self.workspace.lead_assignment
+                else None
+            ),
             "usage": self.gateway.summary(),
             **(
                 {"test_handoff": self.tests.handoff_state()}
@@ -670,9 +741,11 @@ class HarnessSession:
                 {
                     "mcp": self.mcp.checkpoint(
                         workdir=self.workspace.lead_cwd(),
-                        task_id=self.workspace.lead_assignment.id
-                        if self.workspace.lead_assignment
-                        else None,
+                        task_id=(
+                            self.workspace.lead_assignment.id
+                            if self.workspace.lead_assignment
+                            else None
+                        ),
                     )
                 }
                 if isinstance(self.mcp, MCPRuntime)
@@ -680,13 +753,19 @@ class HarnessSession:
             ),
             "bash_policy": self.bash_policy.identity(),
             "model_binding": self.lead_binding.identity(),
-            "model_selection": {"base_binding": self._selection_base_identity, "choice": self.model_selection, "revision": self.model_revision},
+            "model_selection": {
+                "base_binding": self._selection_base_identity,
+                "choice": self.model_selection,
+                "revision": self.model_revision,
+            },
             "model_registry": self.models.manifest(),
             **(
                 {
-                    "team": self.team.snapshot_for_storage()
-                    if borrow
-                    else self.team.checkpoint()
+                    "team": (
+                        self.team.snapshot_for_storage()
+                        if borrow
+                        else self.team.checkpoint()
+                    )
                 }
                 if self.team
                 else {}
@@ -697,6 +776,7 @@ class HarnessSession:
 
     def loop_components(self):
         from homebrew_harness.runtime.conversation_commands import PLAN_TOOLS
+
         return LoopComponents(
             operations=self.operations,
             hooks=self.hooks,
@@ -718,14 +798,26 @@ class HarnessSession:
             model_registry=self.models,
             worker_output_tokens=self.lead_binding.max_output_tokens,
             steering=getattr(self, "inputs", None),
-            on_user_submit=self._ack_user_input
-            if getattr(self, "_pending_user", None)
-            else None,
+            on_user_submit=(
+                self._ack_user_input if getattr(self, "_pending_user", None) else None
+            ),
             run_control=self.run_control,
-            tool_allowlist=self.run_control.spec.effective_tools() if self.run_control else
-                PLAN_TOOLS if self.conversation["mode"] == "plan" else None,
+            tool_allowlist=(
+                self.run_control.spec.effective_tools()
+                if self.run_control
+                else PLAN_TOOLS if self.conversation["mode"] == "plan" else None
+            ),
             project_guidance=self.project_guidance,
             planning=self.conversation["mode"] == "plan",
+            completion_check=(
+                (
+                    lambda calls, messages: __import__(
+                        "homebrew_harness.runs.work_progress", fromlist=["completed"]
+                    ).completed(self.run_control, calls, messages)
+                )
+                if self.run_control and self.run_control.spec.work_context
+                else None
+            ),
             plan_observer=self._plan_evidence.observe if self._plan_evidence else None,
         )
 
@@ -824,21 +916,34 @@ class HarnessSession:
                     "Resume requires the saved Bash execution policy; a sandbox cannot silently become host execution."
                 )
             from homebrew_harness.security.approval_review import ReviewConfig
-            if ReviewConfig.parse(saved.get("approval_review")).data() != self.approval_reviewer.config.data():
-                raise RecoveryRequired("Resume requires the saved approval reviewer policy.")
+
+            if (
+                ReviewConfig.parse(saved.get("approval_review")).data()
+                != self.approval_reviewer.config.data()
+            ):
+                raise RecoveryRequired(
+                    "Resume requires the saved approval reviewer policy."
+                )
             selection = saved.get("model_selection")
             if selection:
                 if saved.get("model_registry") != self.models.manifest():
-                    raise RecoveryRequired("Resume requires the original model catalog.")
+                    raise RecoveryRequired(
+                        "Resume requires the original model catalog."
+                    )
                 if saved.get("model_binding") != self.lead_binding.identity():
                     if selection.get("base_binding") != self._selection_base_identity:
-                        raise RecoveryRequired("Saved model choice belongs to a different original binding.")
+                        raise RecoveryRequired(
+                            "Saved model choice belongs to a different original binding."
+                        )
                     from homebrew_harness.runtime.session_commands import select
+
                     select(self, selection["choice"], restore=True)
                 self._selection_base_identity = selection["base_binding"]
                 self.model_selection = selection["choice"]
                 self._committed_model_selection = dict(self.model_selection)
-                self._committed_model_revision = self.model_revision = selection.get("revision", 0)
+                self._committed_model_revision = self.model_revision = selection.get(
+                    "revision", 0
+                )
             if (
                 saved.get("model_binding") != self.lead_binding.identity()
                 or saved.get("model_registry") != self.models.manifest()
@@ -855,8 +960,14 @@ class HarnessSession:
                 uncertain = self.run_control.recovered(
                     saved, operations, restored, uncertain
                 )
-            from homebrew_harness.runtime.conversation_commands import validate_state, initial_state
-            self.conversation = validate_state(saved.get("conversation", initial_state()))
+            from homebrew_harness.runtime.conversation_commands import (
+                validate_state,
+                initial_state,
+            )
+
+            self.conversation = validate_state(
+                saved.get("conversation", initial_state())
+            )
             self.fork_source = saved.get("fork_source")
             self.messages[:] = restored
             homebrew_harness.runtime.turns.set_memory_context(self.messages, "")
@@ -921,6 +1032,7 @@ class HarnessSession:
             self.runtime_store.start_session(sid, self.workspace.leases.instance)
         if not self.resume_session and self.fork_seed:
             from homebrew_harness.runtime.conversation_commands import seed_fork
+
             seed_fork(self, self.fork_seed)
         self.project_guidance.refresh(self.messages, self.workspace.lead_cwd())
         if not self.resume_session:
@@ -949,7 +1061,11 @@ class HarnessSession:
         self._recovery_blocked.extend(
             x for x in unknown if x not in self._recovery_blocked
         )
-        self._execution_paused = bool(self.runtime_store.get("session_meta", self.session_id, {}).get("execution_paused"))
+        self._execution_paused = bool(
+            self.runtime_store.get("session_meta", self.session_id, {}).get(
+                "execution_paused"
+            )
+        )
         if self._execution_paused:
             self._execution_cancel.set()
         self._runtime_started = True
@@ -980,7 +1096,9 @@ class HarnessSession:
                 else None
             )
             try:
-                with persistence_scope(operation="checkpoint", context_id=self.checkpoint_key):
+                with persistence_scope(
+                    operation="checkpoint", context_id=self.checkpoint_key
+                ):
                     self.runtime_store.checkpoint(
                         self.checkpoint_key,
                         snapshot,
@@ -1197,7 +1315,11 @@ class HarnessSession:
         if include_clock and self.cron:
             jobs.append(
                 (
-                    lambda: self.cron.poll_due(self.clock()) if self.conversation["mode"] != "plan" else None,
+                    lambda: (
+                        self.cron.poll_due(self.clock())
+                        if self.conversation["mode"] != "plan"
+                        else None
+                    ),
                     self.poll_interval,
                     "harness-clock",
                 )
@@ -1265,7 +1387,13 @@ class HarnessSession:
         if self.operations.ready():
             pending.append("execution_events")
         if (
-            include_dispatch and not for_goal and (self._input_dispatching.is_set() or self._pending_user or self._user_waiting.is_set())
+            include_dispatch
+            and not for_goal
+            and (
+                self._input_dispatching.is_set()
+                or self._pending_user
+                or self._user_waiting.is_set()
+            )
         ) or (
             self.inputs.pending(active_only=True)
             if for_goal
@@ -1361,9 +1489,7 @@ class HarnessSession:
                     return (
                         1
                         if failed or self.goal.status()["status"] == "failed"
-                        else 2
-                        if self.goal.pending
-                        else 0
+                        else 2 if self.goal.pending else 0
                     )
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -1464,7 +1590,8 @@ class HarnessSession:
         ):
             return False
         if self._execution_paused and not any(
-            not row.get("metadata", {}).get("literal") and HostCommand.parse(row["content"]).local
+            not row.get("metadata", {}).get("literal")
+            and HostCommand.parse(row["content"]).local
             for row in self.inputs.pending()
         ):
             return False
@@ -1478,7 +1605,11 @@ class HarnessSession:
                 r
                 for r in values
                 if not r.get("metadata", {}).get("literal")
-                and (HostCommand.parse(r["content"]).allowed_during_recovery if self._recovery_blocked else HostCommand.parse(r["content"]).local)
+                and (
+                    HostCommand.parse(r["content"]).allowed_during_recovery
+                    if self._recovery_blocked
+                    else HostCommand.parse(r["content"]).local
+                )
             ]
             if not controls:
                 self.inputs.release(values)
@@ -1611,11 +1742,11 @@ class HarnessSession:
         if identity and not self._api_pending_work():
             self._finish_api_turn(
                 identity,
-                "blocked"
-                if self.goal.pending or self._automatic_failed
-                else "failed"
-                if self._async_failed
-                else "completed",
+                (
+                    "blocked"
+                    if self.goal.pending or self._automatic_failed
+                    else "failed" if self._async_failed else "completed"
+                ),
                 self.last_goal_result,
             )
             self._api_pending_turn_id = None
@@ -1704,13 +1835,17 @@ class HarnessSession:
         deadline = (
             operation_deadline(self.turn_timeout)
             if command.mode == "context"
-            else Deadline.after(DEFAULT_LOCAL_CONTROL_SECONDS)
-            if command.local
-            else operation_deadline(self.turn_timeout)
+            else (
+                Deadline.after(DEFAULT_LOCAL_CONTROL_SECONDS)
+                if command.local
+                else operation_deadline(self.turn_timeout)
+            )
         )
         with (
             control_scope(deadline) if command.local else nullcontext(),
-            self.gateway.scope(cancel_event=None if command.local else self._execution_cancel),
+            self.gateway.scope(
+                cancel_event=None if command.local else self._execution_cancel
+            ),
             acquired(self._runtime_init_lock, deadline, inherit=not command.local),
         ):
             return (
@@ -1727,12 +1862,29 @@ class HarnessSession:
             return json.dumps(self.request_stop(command.argument or None))
         if command.name == "resume" and command.action != "list":
             if command.argument:
-                raise ValueError("Historical /resume ID belongs to the terminal entry; use /resume list.")
+                raise ValueError(
+                    "Historical /resume ID belongs to the terminal entry; use /resume list."
+                )
             if self._execution_paused or self.goal.pending and not self.goal.enabled:
                 return json.dumps(self.resume_execution())
         if command.mode == "read" and command.name in {"plan", "init"}:
-            return json.dumps(self.conversation if command.name == "plan" else {"file": self.project_guidance.snapshot(), "draft": self.conversation["init"]}, ensure_ascii=False, indent=2)
-        from homebrew_harness.runtime.local_commands import QUERY_NAMES, run as local_run
+            return json.dumps(
+                (
+                    self.conversation
+                    if command.name == "plan"
+                    else {
+                        "file": self.project_guidance.snapshot(),
+                        "draft": self.conversation["init"],
+                    }
+                ),
+                ensure_ascii=False,
+                indent=2,
+            )
+        from homebrew_harness.runtime.local_commands import (
+            QUERY_NAMES,
+            run as local_run,
+        )
+
         if command.mode == "read" and command.name in QUERY_NAMES:
             with control_scope(Deadline.after(DEFAULT_LOCAL_CONTROL_SECONDS)):
                 if not self._runtime_started:
@@ -1760,6 +1912,7 @@ class HarnessSession:
         if self._closed:
             raise ValueError("Harness session is closed.")
         from homebrew_harness.runtime.activities import activity_scope
+
         query = command.query
         with self.gateway.scope(cancel_event=self.stop_event, deadline=turn_deadline):
             self._ensure_runtime(turn_deadline)
@@ -1832,41 +1985,96 @@ class HarnessSession:
                     raise RecoveryRequired(
                         "Recovery requires host inspection. Use /recovery for pending outcomes, then /recovery continue after checking them."
                     )
-                if self.conversation["mode"] == "plan" and command.name in {"goal", "task"} and not command.local:
-                    raise ValueError("Leave planning mode or apply its plan before activating executable Goal/task work.")
+                if (
+                    self.conversation["mode"] == "plan"
+                    and command.name in {"goal", "task"}
+                    and not command.local
+                ):
+                    raise ValueError(
+                        "Leave planning mode or apply its plan before activating executable Goal/task work."
+                    )
                 if command.name in {"plan", "init"}:
-                    from homebrew_harness.runtime import conversation_commands as conversation
+                    from homebrew_harness.runtime import (
+                        conversation_commands as conversation,
+                    )
+
                     if command.action == "status":
-                        return json.dumps(self.conversation if command.name == "plan" else {"file": self.project_guidance.snapshot(), "draft": self.conversation["init"]}, ensure_ascii=False, indent=2)
+                        return json.dumps(
+                            (
+                                self.conversation
+                                if command.name == "plan"
+                                else {
+                                    "file": self.project_guidance.snapshot(),
+                                    "draft": self.conversation["init"],
+                                }
+                            ),
+                            ensure_ascii=False,
+                            indent=2,
+                        )
                     if command.name == "init":
-                        value = conversation.publish_init(self, command.values[0]) if command.action == "apply" else conversation.init_draft(self, preview=command.action == "preview")
+                        value = (
+                            conversation.publish_init(self, command.values[0])
+                            if command.action == "apply"
+                            else conversation.init_draft(
+                                self, preview=command.action == "preview"
+                            )
+                        )
                         return json.dumps(value, ensure_ascii=False, indent=2)
                     if command.action in {"on", "off"}:
-                        return json.dumps(conversation.set_mode(self, "plan" if command.action == "on" else "normal"), ensure_ascii=False)
+                        return json.dumps(
+                            conversation.set_mode(
+                                self, "plan" if command.action == "on" else "normal"
+                            ),
+                            ensure_ascii=False,
+                        )
                     if command.action == "discuss":
                         conversation.set_mode(self, "plan")
                         query = command.argument
                     elif command.action == "apply":
                         query = conversation.accept_plan(self, command.values[0])
-                        command = HostCommand("/goal resume", "goal", "resume") if self.goal.pending else HostCommand(query)
-                if self.conversation["mode"] == "plan" and (not command.name or command.name == "plan" and command.action == "discuss"):
+                        command = (
+                            HostCommand("/goal resume", "goal", "resume")
+                            if self.goal.pending
+                            else HostCommand(query)
+                        )
+                if self.conversation["mode"] == "plan" and (
+                    not command.name
+                    or command.name == "plan"
+                    and command.action == "discuss"
+                ):
                     from homebrew_harness.runtime.conversation_commands import plan_turn
+
                     if goal_spec is not None:
                         self._bind_task_goal(query, goal_spec)
-                        self.goal.suspend("suspended", "Goal awaits accepted planning execution.")
+                        self.goal.suspend(
+                            "suspended", "Goal awaits accepted planning execution."
+                        )
                     work_started = True
                     return plan_turn(self, query)
-                if command.name in {"pwd", "ps", "hooks", "agents", "worktree", "memory", "resume"}:
+                if command.name in {
+                    "pwd",
+                    "ps",
+                    "hooks",
+                    "agents",
+                    "worktree",
+                    "memory",
+                    "resume",
+                }:
                     from homebrew_harness.runtime.local_commands import run as local_run
+
                     return local_run(self, command)
                 if command.extended and command.name not in {"plan", "init"}:
                     from homebrew_harness.runtime.session_commands import run
+
                     result = run(self, command)
                     if result is not None:
                         return result
                     query = command.values[0]
                     if self.conversation["mode"] == "plan":
-                        from homebrew_harness.runtime.conversation_commands import plan_turn
+                        from homebrew_harness.runtime.conversation_commands import (
+                            plan_turn,
+                        )
+
                         work_started = True
                         return plan_turn(self, query)
                 if command.name == "mcp":
@@ -2037,16 +2245,22 @@ class HarnessSession:
             if work_started and self.goal.enabled:
                 controlled = gateway_error(error)
                 self.goal.suspend(
-                    "limit"
-                    if isinstance(controlled, ModelDeadlineExceeded)
-                    else "suspended"
-                    if isinstance(controlled, ModelCancelled)
-                    else "error",
-                    str(controlled)
-                    if controlled
-                    else "Worker turn failed ("
-                    + type(error).__name__
-                    + "); goal retained.",
+                    (
+                        "limit"
+                        if isinstance(controlled, ModelDeadlineExceeded)
+                        else (
+                            "suspended"
+                            if isinstance(controlled, ModelCancelled)
+                            else "error"
+                        )
+                    ),
+                    (
+                        str(controlled)
+                        if controlled
+                        else "Worker turn failed ("
+                        + type(error).__name__
+                        + "); goal retained."
+                    ),
                 )
             if quota_exhausted(error):
                 self._quota_blocked = True
@@ -2130,7 +2344,10 @@ class HarnessSession:
 
     def process_once(self) -> bool:
         from homebrew_harness.runtime.activities import activity_scope
-        with activity_scope(self.activities), self.gateway.scope(cancel_event=None if self._execution_paused else self._execution_cancel), capability_scope(self.capabilities):
+
+        with activity_scope(self.activities), self.gateway.scope(
+            cancel_event=None if self._execution_paused else self._execution_cancel
+        ), capability_scope(self.capabilities):
             return self._process_once()
 
     def _process_once(self) -> bool:
@@ -2140,7 +2357,11 @@ class HarnessSession:
         if self._consume_user_input():
             return True
         self._refresh_recovery()
-        if self._execution_paused or self._recovery_blocked or self.conversation["mode"] == "plan":
+        if (
+            self._execution_paused
+            or self._recovery_blocked
+            or self.conversation["mode"] == "plan"
+        ):
             return False
         if (
             self.stop_event.is_set()
@@ -2211,11 +2432,7 @@ class HarnessSession:
                 source = (
                     "events"
                     if team and background
-                    else "team"
-                    if team
-                    else "background"
-                    if background
-                    else "goal"
+                    else "team" if team else "background" if background else "goal"
                 )
                 self._emit_trace(
                     "observations_collected",
@@ -2276,16 +2493,22 @@ class HarnessSession:
                     self._control_limit = isinstance(controlled, ModelDeadlineExceeded)
                     if self.goal.enabled:
                         self.goal.suspend(
-                            "limit"
-                            if self._control_limit
-                            else "suspended"
-                            if isinstance(controlled, ModelCancelled)
-                            else "error",
-                            str(controlled)
-                            if controlled
-                            else "Automatic worker turn failed ("
-                            + type(error).__name__
-                            + "); goal retained.",
+                            (
+                                "limit"
+                                if self._control_limit
+                                else (
+                                    "suspended"
+                                    if isinstance(controlled, ModelCancelled)
+                                    else "error"
+                                )
+                            ),
+                            (
+                                str(controlled)
+                                if controlled
+                                else "Automatic worker turn failed ("
+                                + type(error).__name__
+                                + "); goal retained."
+                            ),
                         )
                     if quota_exhausted(error):
                         self._quota_blocked = True
@@ -2384,16 +2607,30 @@ class HarnessSession:
 
     def wait_user_boundary(self, timeout=2):
         """Allow a visible final reply to finish its critical input commit."""
-        if self.gateway.inflight or self.tests.active.is_set() or self.goal.pending or any(row["stoppable"] for row in self.activities.snapshot()):
+        if (
+            self.gateway.inflight
+            or self.tests.active.is_set()
+            or self.goal.pending
+            or any(row["stoppable"] for row in self.activities.snapshot())
+        ):
             return False
         expires = time.monotonic() + timeout
-        while self._input_dispatching.is_set() or self._user_waiting.is_set() or self.inputs.active_id:
-            if self.gateway.inflight or self.tests.active.is_set() or self.goal.pending or any(row["stoppable"] for row in self.activities.snapshot()):
+        while (
+            self._input_dispatching.is_set()
+            or self._user_waiting.is_set()
+            or self.inputs.active_id
+        ):
+            if (
+                self.gateway.inflight
+                or self.tests.active.is_set()
+                or self.goal.pending
+                or any(row["stoppable"] for row in self.activities.snapshot())
+            ):
                 return False
             remaining = expires - time.monotonic()
             if remaining <= 0:
                 return False
-            self._drain_changed.wait(min(.05, remaining))
+            self._drain_changed.wait(min(0.05, remaining))
             self._drain_changed.clear()
         return True
 
@@ -2405,11 +2642,20 @@ class HarnessSession:
                 meta = db._get(conn, "session_meta", self.session_id)
                 if not meta or meta.get("instance") != self.workspace.leases.instance:
                     raise ValueError("Session pause belongs to its live owner.")
-                candidate = {**meta, "execution_paused": paused, "revision": meta["revision"] + 1}
+                candidate = {
+                    **meta,
+                    "execution_paused": paused,
+                    "revision": meta["revision"] + 1,
+                }
                 db._put(conn, "session_meta", self.session_id, candidate)
         except Exception:
             saved = self.runtime_store.get("session_meta", self.session_id, {})
-            if not candidate or saved.get("instance") != candidate["instance"] or saved.get("execution_paused") is not paused or saved.get("revision", 0) < candidate["revision"]:
+            if (
+                not candidate
+                or saved.get("instance") != candidate["instance"]
+                or saved.get("execution_paused") is not paused
+                or saved.get("revision", 0) < candidate["revision"]
+            ):
                 raise
             self._emit_trace("control_confirmation_lost", paused=paused)
 
@@ -2425,6 +2671,7 @@ class HarnessSession:
                 return self.run_control.store.control(self.run_control.id, "pause")
             if identity and identity != "agent:lead":
                 from homebrew_harness.runtime.local_commands import stop_target
+
                 return stop_target(self, identity)
             with self.inputs.lock:
                 self._publish_pause(True)
@@ -2453,11 +2700,23 @@ class HarnessSession:
                 self._ensure_runtime()
             if self.run_control:
                 return self.run_control.store.control(self.run_control.id, "run")
-            if self.inputs.active_id or self._user_waiting.is_set() or self.gateway.inflight or self.tests.active.is_set() or self.workflow and self.workflow.pending() or any(r["stoppable"] for r in self.activities.snapshot()):
-                raise ValueError("Stopped work still needs cleanup; inspect /ps before /resume.")
+            if (
+                self.inputs.active_id
+                or self._user_waiting.is_set()
+                or self.gateway.inflight
+                or self.tests.active.is_set()
+                or self.workflow
+                and self.workflow.pending()
+                or any(r["stoppable"] for r in self.activities.snapshot())
+            ):
+                raise ValueError(
+                    "Stopped work still needs cleanup; inspect /ps before /resume."
+                )
             self._refresh_recovery()
             if self._recovery_blocked or self.recovery_operations():
-                raise ValueError("Inspect /recovery before continuing the stopped task.")
+                raise ValueError(
+                    "Inspect /recovery before continuing the stopped task."
+                )
             self._publish_pause(False)
             self._execution_paused = False
             self._execution_cancel = threading.Event()
@@ -2465,11 +2724,19 @@ class HarnessSession:
             pending = self.inputs.pending()
             if self.conversation["mode"] == "plan":
                 if not pending and self.intent.original:
-                    self.submit_user_input("Continue the planning discussion without executing the project.", mode="queued")
-            elif self.goal.pending and not any(row["content"].strip() == "/goal resume" for row in pending):
+                    self.submit_user_input(
+                        "Continue the planning discussion without executing the project.",
+                        mode="queued",
+                    )
+            elif self.goal.pending and not any(
+                row["content"].strip() == "/goal resume" for row in pending
+            ):
                 self.submit_user_input("/goal resume", mode="queued")
             elif not pending and self.intent.original:
-                self.submit_user_input("Continue the interrupted task using saved requirements and results; inspect current state before repeating work.", mode="queued")
+                self.submit_user_input(
+                    "Continue the interrupted task using saved requirements and results; inspect current state before repeating work.",
+                    mode="queued",
+                )
             self._goal_changed.set()
             return {"state": "accepted", "session_id": self.session_id}
 
@@ -2525,13 +2792,11 @@ class HarnessSession:
         complete = self._close_finished.is_set() and not held
         return {
             "execution_paused": self._execution_paused,
-            "state": "open"
-            if not self._closed
-            else "pending"
-            if not complete
-            else "error"
-            if errors
-            else "closed",
+            "state": (
+                "open"
+                if not self._closed
+                else "pending" if not complete else "error" if errors else "closed"
+            ),
             "resources_closed": complete,
             "persistence_ok": complete and not errors,
             "errors": errors,
@@ -2619,9 +2884,11 @@ class HarnessSession:
                 (
                     "team",
                     lambda: self.workspace.close(
-                        timeout=0
-                        if deadline is None
-                        else max(0, deadline - time.monotonic())
+                        timeout=(
+                            0
+                            if deadline is None
+                            else max(0, deadline - time.monotonic())
+                        )
                     ),
                 ),
                 ("goal", self.goal.close),

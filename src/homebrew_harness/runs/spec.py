@@ -29,7 +29,8 @@ RUN_CONTROL_TOOLS = frozenset(
 )
 RUN_STAGE_TOOLS = frozenset({"get_handoff", "integrate_stage", "publish_stage"})
 RUN_RECOVERY_TOOLS = frozenset({"report_run_blocker"})
-RUN_TOOLS = RUN_CONTROL_TOOLS | RUN_RECOVERY_TOOLS | RUN_STAGE_TOOLS
+RUN_WORK_TOOLS = frozenset({"submit_work_progress", "get_work_progress"})
+RUN_TOOLS = RUN_CONTROL_TOOLS | RUN_RECOVERY_TOOLS | RUN_STAGE_TOOLS | RUN_WORK_TOOLS
 DEFAULT_TOOLS = tuple(
     sorted(
         (CORE_TOOLS - {"bash", "list_artifacts", "get_artifact", "publish_artifacts"})
@@ -58,6 +59,7 @@ class RunSpec:
     members: tuple = ()
     enabled: tuple = ()
     memory_mode: str = "off"
+    work_context: dict = field(default_factory=dict)
     mcp: dict = field(default_factory=dict)
     mcp_delegation: str = "lead_only"
     tools: tuple = DEFAULT_TOOLS
@@ -94,8 +96,31 @@ class RunSpec:
     )
 
     def __post_init__(self):
+        import json
+
+        try:
+            context_size = len(json.dumps(self.work_context, allow_nan=False))
+        except (TypeError, ValueError):
+            raise ValueError("Invalid Service work context.") from None
+        if (
+            not isinstance(self.work_context, dict)
+            or context_size > 32000
+            or self.work_context
+            and (
+                not isinstance(self.work_context.get("work_id"), str)
+                or not re.fullmatch(r"work_[0-9a-f]{32}", self.work_context["work_id"])
+                or not isinstance(self.work_context.get("service_id"), str)
+                or not re.fullmatch(
+                    r"svc_[0-9a-f]{32}", self.work_context["service_id"]
+                )
+                or type(self.work_context.get("requirements_revision")) is not int
+                or self.work_context["requirements_revision"] < 0
+            )
+        ):
+            raise ValueError("Invalid Service work context.")
         if self.approval_review is not None:
             from homebrew_harness.security.approval_review import ReviewConfig
+
             ReviewConfig.parse(self.approval_review)
         from homebrew_harness.tools.mcp.selection import validate_selection
 
@@ -131,10 +156,14 @@ class RunSpec:
             raise ValueError("Run prompt must be nonempty text.")
         if len(self.prompt) > MAX_RUN_PROMPT_CHARS:
             raise boundary_error(
-                ValueError, "run_prompt_limit",
+                ValueError,
+                "run_prompt_limit",
                 "Combined Run prompt exceeds its character limit.",
-                source="run", phase="prepare", limit_name="run.prompt_characters",
-                limit_value=MAX_RUN_PROMPT_CHARS, observed_value=len(self.prompt),
+                source="run",
+                phase="prepare",
+                limit_name="run.prompt_characters",
+                limit_value=MAX_RUN_PROMPT_CHARS,
+                observed_value=len(self.prompt),
                 unit="characters",
             )
         if redact(self.prompt) != self.prompt:
@@ -239,7 +268,11 @@ class RunSpec:
             | RUN_CONTROL_TOOLS
             | RUN_RECOVERY_TOOLS
             | stage_run_tools(self.stages)
-            | ({"task", "read_subagent_result"} if "subagents" in self.enabled else set())
+            | (
+                {"task", "read_subagent_result"}
+                if "subagents" in self.enabled
+                else set()
+            )
             | ({"check_background"} if "background" in self.enabled else set())
             | ({"workflow"} if "workflow" in self.enabled else set())
             | ({"connect_mcp"} if self.mcp else set())
@@ -329,10 +362,21 @@ class RunSpec:
     def effective_tools(self):
         from homebrew_harness.tools.mcp.selection import selected_names
 
-        controls = {"report_run_blocker"} if "request_attention" in self.tools else set()
+        controls = (
+            {"report_run_blocker"} if "request_attention" in self.tools else set()
+        )
         if "task" in self.tools:
             controls.add("read_subagent_result")
-        return frozenset(self.tools) | selected_names(self.mcp) | controls
+        return (
+            frozenset(self.tools)
+            | selected_names(self.mcp)
+            | controls
+            | (
+                {"submit_work_progress", "get_work_progress"}
+                if self.work_context
+                else set()
+            )
+        )
 
     def data(self):
         return copy.deepcopy(asdict(self))

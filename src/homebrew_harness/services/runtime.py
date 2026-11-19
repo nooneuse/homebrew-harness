@@ -68,6 +68,7 @@ class ServiceRuntime:
         self.current = None
         self.audit_preparing = False
         from .approval_review import ServiceApprovalReview
+
         self.approval_review = ServiceApprovalReview(self)
         self.children = {}
         self.error = None
@@ -240,18 +241,22 @@ class ServiceRuntime:
             "error": meta.get("error"),
             "runtime_failures": meta.get("runtime_failures", {}),
             "work_counts": counts,
-            "maintenance": {
-                "running": not self.maintenance.finished.is_set(),
-                "error": self.maintenance.error,
-                "delivery": {
-                    "running": not self.maintenance.delivery.finished.is_set(),
-                    "error": self.maintenance.delivery.error,
+            "maintenance": (
+                {
+                    "running": not self.maintenance.finished.is_set(),
+                    "error": self.maintenance.error,
+                    "delivery": (
+                        {
+                            "running": not self.maintenance.delivery.finished.is_set(),
+                            "error": self.maintenance.delivery.error,
+                        }
+                        if self.maintenance.delivery
+                        else None
+                    ),
                 }
-                if self.maintenance.delivery
-                else None,
-            }
-            if self.maintenance is not None
-            else None,
+                if self.maintenance is not None
+                else None
+            ),
             "active_work": meta.get("active_work"),
             "active_run": meta.get("active_run"),
             "launch": meta.get("launch"),
@@ -262,10 +267,20 @@ class ServiceRuntime:
         try:
             self.store.runtime_failure(self.header, component, error, phase=phase)
         except Exception as storage_error:
-            self.unpersisted_failure = {**failure_fields(error, component=component, phase=phase),
-                "persistence_error": failure_fields(storage_error, phase="persist_diagnostic")}
+            self.unpersisted_failure = {
+                **failure_fields(error, component=component, phase=phase),
+                "persistence_error": failure_fields(
+                    storage_error, phase="persist_diagnostic"
+                ),
+            }
         else:
-            if self.unpersisted_failure and self.unpersisted_failure["error_info"]["details"].get("component") == component and self.unpersisted_failure["error_info"]["details"].get("phase") == phase:
+            if (
+                self.unpersisted_failure
+                and self.unpersisted_failure["error_info"]["details"].get("component")
+                == component
+                and self.unpersisted_failure["error_info"]["details"].get("phase")
+                == phase
+            ):
                 self.unpersisted_failure = None
 
     def phase_succeeded(self, phase, meta):
@@ -273,7 +288,11 @@ class ServiceRuntime:
         if fault and not fault.get("resolved_at"):
             self.store.runtime_failure(self.header, "service", phase=phase)
         pending = self.unpersisted_failure
-        if pending and pending["error_info"]["details"].get("component") == "service" and pending["error_info"]["details"].get("phase") == phase:
+        if (
+            pending
+            and pending["error_info"]["details"].get("component") == "service"
+            and pending["error_info"]["details"].get("phase") == phase
+        ):
             self.unpersisted_failure = None
 
     def loop(self):
@@ -365,7 +384,11 @@ class ServiceRuntime:
                         {
                             **current,
                             "result": {
-                                **failure_fields(error, phase="command_recovery", operation=value["method"]),
+                                **failure_fields(
+                                    error,
+                                    phase="command_recovery",
+                                    operation=value["method"],
+                                ),
                                 "code": getattr(error, "code", "command_failed"),
                             },
                         },
@@ -404,6 +427,16 @@ class ServiceRuntime:
             if meta.get("active_work"):
                 self.store.update(self.header, active_work=None, active_run=None)
             return
+        if self.maintenance is not None:
+            from .work_progress import import_run, route, install_context
+
+            if work.get("run_id"):
+                native = self.child_for(work).run_store.get(work["run_id"])
+                import_run(self, work, native)
+                work = self.store.work(work["id"], self.id)
+            if route(self, work):
+                return
+            install_context(self, work)
         if self.maintenance is not None and not self.maintenance.store.valid_authority(
             work
         ):
@@ -478,8 +511,10 @@ class ServiceRuntime:
                     self.header,
                     work["id"],
                     state="approved" if busy else "failed",
-                    **{**failure_fields(error, phase="run_start"),
-                       **({"error": "workspace_busy"} if busy else {})},
+                    **{
+                        **failure_fields(error, phase="run_start"),
+                        **({"error": "workspace_busy"} if busy else {}),
+                    },
                 )
                 return
             self.current = handle
@@ -552,6 +587,11 @@ class ServiceRuntime:
                     from .evidence import collect
 
                     verification = {"verification": collect(self, work)}
+                    if latest["status"] == "completed" and not stale_requirements:
+                        from .work_progress import import_run
+
+                        import_run(self, work, latest)
+                        work = self.store.work(work["id"], self.id)
                 if stale_requirements:
                     disposition = (
                         (work.get("triage") or {}).get("disposition")
@@ -570,11 +610,15 @@ class ServiceRuntime:
                     self.header,
                     work["id"],
                     state=completed_state,
-                    error="requirements_changed"
-                    if stale_requirements
-                    else outcome.get("reason_code")
-                    if latest["status"] != "completed"
-                    else None,
+                    error=(
+                        "requirements_changed"
+                        if stale_requirements
+                        else (
+                            outcome.get("reason_code")
+                            if latest["status"] != "completed"
+                            else None
+                        )
+                    ),
                     result=outcome,
                     clear_result=bool(stale_requirements),
                     **verification,
@@ -604,6 +648,10 @@ class ServiceRuntime:
     def work_snapshot(self, identity):
         work = self.store.work(identity, self.id)
         work = self.store.summary(work)
+        if self.maintenance:
+            from .work_progress import view
+
+            work["progress"] = view(self, self.store.work(identity, self.id))
         if work["run_id"]:
             work = {
                 **work,
@@ -678,9 +726,9 @@ class ServiceRuntime:
                 focus = {
                     "work_id": work["id"] if work else None,
                     "revision": work["revision"] if work else None,
-                    "requirements_revision": work["requirements_revision"]
-                    if work
-                    else None,
+                    "requirements_revision": (
+                        work["requirements_revision"] if work else None
+                    ),
                     "checkpoint": "service:" + self.id,
                 }
                 self.store.db._put(
@@ -774,12 +822,26 @@ class ServiceRuntime:
                 self.store.db._put(conn, "service_commands", key, prior)
         target = self.store.work(target["id"], self.id)
         if not target["run_id"]:
-            if method not in {"work_cancel", "work_pause", "work_resume"}:
+            if method not in {
+                "work_cancel",
+                "work_pause",
+                "work_resume",
+                "work_context",
+            }:
                 raise ValueError("Work has no native execution yet.")
             changes = (
-                {"cancel_requested": True, "state": "cancelled"}
-                if method == "work_cancel"
-                else {"pause_requested": method == "work_pause"}
+                {
+                    "execution_context": [
+                        *target.get("execution_context", []),
+                        payload["text"],
+                    ][-8:]
+                }
+                if method == "work_context"
+                else (
+                    {"cancel_requested": True, "state": "cancelled"}
+                    if method == "work_cancel"
+                    else {"pause_requested": method == "work_pause"}
+                )
             )
             result = {"id": target["id"], "accepted": True, "request_id": request_id}
         else:
@@ -795,39 +857,82 @@ class ServiceRuntime:
                     handle.pause()
                 changes = {"pause_requested": True}
             elif method == "work_retry":
-                if self.maintenance is not None and not self.maintenance.store.valid_authority(target):
-                    raise ValueError("Renew current work authority before retrying execution.")
-                if self.store.get(self.id)["state"] != "running":
-                    raise ValueError("Resume the service before retrying a Run.")
-                authority = target.get("authority") or {}
-                handle.retry(seconds=payload.get("seconds"), expires_at=authority.get("expires_at"), request_id="service-retry-" + key)
-                changes = {"pause_requested": False, "service_paused": False, "error": None}
-            elif method == "work_resume":
                 if (
                     self.maintenance is not None
                     and not self.maintenance.store.valid_authority(target)
                 ):
                     raise ValueError(
-                        "Renew current work authority before resuming execution."
+                        "Renew current work authority before retrying execution."
                     )
                 if self.store.get(self.id)["state"] != "running":
-                    raise ValueError("Resume the service before resuming a Run.")
-                if state in {"paused", "blocked"}:
-                    handle.resume()
-                elif state not in {"completed", "cancelled", "failed"}:
-                    handle.supervise()
-                changes = {"pause_requested": False, "service_paused": False}
-            elif method in {"steer", "interrupt"}:
-                getattr(handle, method)(
-                    payload["text"], request_id="service-control-" + key
+                    raise ValueError("Resume the service before retrying a Run.")
+                authority = target.get("authority") or {}
+                handle.retry(
+                    seconds=payload.get("seconds"),
+                    expires_at=authority.get("expires_at"),
+                    request_id="service-retry-" + key,
                 )
                 changes = {
-                    "amendments": [*target.get("amendments", []), payload["text"]],
-                    "requirements_revision": target["requirements_revision"] + 1,
+                    "pause_requested": False,
+                    "service_paused": False,
+                    "error": None,
                 }
-                if self.maintenance is not None:
-                    # An authenticated amendment retains the same scope and expiry.
-                    # Community-source updates do not take this control path.
+            elif method == "work_resume":
+                from .work_progress import current, route
+
+                progress = current(self, target) if self.maintenance else None
+                candidate = (
+                    self.maintenance.store.get("changesets", target["changeset_id"])
+                    if self.maintenance and target.get("changeset_id")
+                    else None
+                )
+                delivery_stage = bool(
+                    candidate
+                    and candidate["requirements_revision"]
+                    == target["requirements_revision"]
+                    and candidate["policy"] == self.maintenance.delivery.store.policy
+                    or progress
+                    and progress["complete"]
+                )
+                if self.store.get(self.id)["state"] != "running":
+                    raise ValueError("Resume the service before resuming Work.")
+                if delivery_stage:
+                    if (target.get("authority") or {}).get("revoked"):
+                        raise ValueError("Work authority was explicitly revoked.")
+                    route(self, {**target, "pause_requested": False})
+                else:
+                    if self.maintenance and not self.maintenance.store.valid_authority(
+                        target
+                    ):
+                        raise ValueError(
+                            "Renew current work authority before resuming execution."
+                        )
+                    if state in {"paused", "blocked"}:
+                        handle.resume()
+                    elif state not in {"completed", "cancelled", "failed"}:
+                        handle.supervise()
+                changes = {"pause_requested": False, "service_paused": False}
+            elif method in {"steer", "interrupt", "work_context"}:
+                if method == "work_context":
+                    if state not in {"completed", "cancelled", "failed"}:
+                        handle.steer(
+                            payload["text"], request_id="service-context-" + key
+                        )
+                    changes = {
+                        "execution_context": [
+                            *target.get("execution_context", []),
+                            payload["text"],
+                        ][-8:]
+                    }
+                else:
+                    getattr(handle, method)(
+                        payload["text"], request_id="service-control-" + key
+                    )
+                    changes = {
+                        "amendments": [*target.get("amendments", []), payload["text"]],
+                        "requirements_revision": target["requirements_revision"] + 1,
+                    }
+                if method != "work_context" and self.maintenance is not None:
                     authority = dict(target.get("authority") or {})
                     if authority:
                         authority["requirements_revision"] = changes[
@@ -835,7 +940,6 @@ class ServiceRuntime:
                         ]
                         changes["authority"] = authority
                     changes["triage_revision"] = changes["requirements_revision"]
-
             elif method == "decide":
                 ref = payload["ref"]
                 reference = RequestRef(
@@ -953,28 +1057,47 @@ class ServiceRuntime:
                 return self.store.runtime.get(
                     "service_focus", self.id + ":" + payload["context"]
                 )
-            if method in {"work_executions", "work_execution_get", "work_execution_output", "work_execution_stop", "work_execution_input"}:
+            if method in {
+                "work_executions",
+                "work_execution_get",
+                "work_execution_output",
+                "work_execution_stop",
+                "work_execution_input",
+            }:
                 work = self.store.work(payload["id"], self.id)
                 if not work.get("run_id"):
                     if method == "work_executions":
                         return {"executions": []}
                     raise ValueError("Work has no execution yet.")
-                handle = self.child_for(work).runs.get(work['run_id'], control=method in {'work_execution_stop', 'work_execution_input'})
+                handle = self.child_for(work).runs.get(
+                    work["run_id"],
+                    control=method in {"work_execution_stop", "work_execution_input"},
+                )
                 views = handle.executions
-                if method == 'work_executions':
-                    return {'executions': [row.data() for row in views.list()]}
-                execution = views.get(payload['execution_id'])
-                if method == 'work_execution_get':
+                if method == "work_executions":
+                    return {"executions": [row.data() for row in views.list()]}
+                execution = views.get(payload["execution_id"])
+                if method == "work_execution_get":
                     return execution.snapshot().data()
-                if method == 'work_execution_output':
-                    return execution.output(payload.get('cursor', 0), payload.get('limit', 16000), stream=payload.get('stream', 'output'))
-                if work['revision'] != payload.get('revision'):
-                    raise ValueError('Work revision changed.')
-                if method == 'work_execution_input':
-                    return execution.input(payload['text'], request_id=request_id)
-                return execution.stop(revision=payload.get('execution_revision'), request_id=request_id)
+                if method == "work_execution_output":
+                    return execution.output(
+                        payload.get("cursor", 0),
+                        payload.get("limit", 16000),
+                        stream=payload.get("stream", "output"),
+                    )
+                if work["revision"] != payload.get("revision"):
+                    raise ValueError("Work revision changed.")
+                if method == "work_execution_input":
+                    return execution.input(payload["text"], request_id=request_id)
+                return execution.stop(
+                    revision=payload.get("execution_revision"), request_id=request_id
+                )
             if method == "work_get":
                 return self.work_snapshot(payload["id"])
+            if method == "work_progress":
+                from .work_progress import view
+
+                return view(self, self.store.work(payload["id"], self.id))
             if method == "work_input":
                 return self.store.input_page(
                     self.id,
@@ -1041,6 +1164,7 @@ class ServiceRuntime:
         self.operations.close()
         if self.approval_review.running:
             from homebrew_harness.runtime.runtime_control import ClosePending
+
             raise ClosePending("Approval review is still finishing.")
         self.approval_review.close()
         if self.maintenance is not None:
@@ -1090,9 +1214,11 @@ class ServiceRuntime:
                 "token": (self.store.get(self.id).get("launch") or {}).get("token"),
                 "phase": "ended",
             },
-            error=self.start_error
-            if all(report.persistence_ok for report in reports)
-            else "persistence_failed",
+            error=(
+                self.start_error
+                if all(report.persistence_ok for report in reports)
+                else "persistence_failed"
+            ),
         )
         self.workspace_lease.close()
         self.leases.close()

@@ -25,7 +25,13 @@ def state_roots(state, external=()):
         {
             k: v
             for k, v in state.items()
-            if k not in {"artifacts", "session_meta", "artifact_bundles"}
+            if k
+            not in {
+                "artifacts",
+                "session_meta",
+                "artifact_bundles",
+                "work_source_bundles",
+            }
         }
     )
     roots.update(external)
@@ -44,7 +50,11 @@ def artifact_closure(state, roots):
     """Follow bundle manifests only after all retained roots have been collected."""
     roots = set(roots)
     edges = {}
-    for bundle in state.get("artifact_bundles", {}).values():
+    bundles = [
+        *state.get("artifact_bundles", {}).values(),
+        *state.get("work_source_bundles", {}).values(),
+    ]
+    for bundle in bundles:
         targets = references(bundle)
         reference = bundle.get("reference")
         if reference:

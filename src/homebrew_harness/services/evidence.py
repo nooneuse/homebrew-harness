@@ -32,6 +32,8 @@ def collect(runtime, work):
         "execution_backend",
         "isolation",
         "error",
+        "verification_basis",
+        "executed_at",
     )
     receipts = [
         {k: v for k, v in json.loads(raw).items() if k in fields}
@@ -65,3 +67,25 @@ def collect(runtime, work):
         "passed": sum(r["status"] == "passed" for r in receipts),
         "failed": sum(r["status"] == "failed" for r in receipts),
     }
+
+
+def receipts(runtime, work):
+    """Only evidence lifted from this Work's owned execution history is readable."""
+    store = runtime.maintenance.store
+    with store.db.connection() as conn:
+        rows = conn.execute(
+            "SELECT value FROM records WHERE section='service_evidence' AND owner=?",
+            ("service:" + runtime.id,),
+        ).fetchall()
+    values = {}
+    allowed = set(work.get("run_history", [])) | {work.get("run_id")}
+    for (raw,) in rows:
+        record = json.loads(raw)
+        if (
+            record.get("work_id") == work["id"]
+            and record.get("run_id") in allowed
+            and record.get("receipts_complete")
+        ):
+            for receipt in record.get("test_receipts", []):
+                values[receipt["run_id"]] = receipt
+    return list(values.values())

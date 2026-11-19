@@ -212,8 +212,18 @@ def check_rules(tool_name: str, arguments: dict, workdir: Path) -> PermissionDec
                 "deny", "No host TestRunner policy is bound to this call."
             )
         )
-    if tool_name in {"list_executions", "get_execution", "read_execution_output", "wait_execution", "stop_execution", "send_execution_input"}:
-        return PermissionDecision("allow", "Control only executions owned by the current context; input has its own permission check.")
+    if tool_name in {
+        "list_executions",
+        "get_execution",
+        "read_execution_output",
+        "wait_execution",
+        "stop_execution",
+        "send_execution_input",
+    }:
+        return PermissionDecision(
+            "allow",
+            "Control only executions owned by the current context; input has its own permission check.",
+        )
     if tool_name in {"list_tests", "get_test_result"}:
         return PermissionDecision(
             "allow", "Read host-registered test names and current-session receipts."
@@ -246,13 +256,17 @@ def check_rules(tool_name: str, arguments: dict, workdir: Path) -> PermissionDec
             "Archive and summarize the current conversation after this tool batch.",
         )
     if tool_name in {"service_read", "service_read_code", "service_propose"}:
-        return PermissionDecision("allow", "Prepared service queries and non-authorizing proposals only.")
+        return PermissionDecision(
+            "allow", "Prepared service queries and non-authorizing proposals only."
+        )
     if tool_name == "load_skill":
         return PermissionDecision(
             "allow", "Read-only access to a registered skill snapshot."
         )
     if tool_name == "read_subagent_result":
-        return PermissionDecision("allow", "Read only evidence from the owning parent checkpoint.")
+        return PermissionDecision(
+            "allow", "Read only evidence from the owning parent checkpoint."
+        )
     if tool_name == "task":
         return PermissionDecision(
             "allow",
@@ -404,27 +418,60 @@ def ask_user(
     broker = current_broker()
     if broker is not None and _INTERACTIVE_APPROVAL.get():
         return broker.request(tool_name, arguments, workdir, reason)
-    from homebrew_harness.security.review_context import owner, session_context, bind_guard
+    from homebrew_harness.security.review_context import (
+        owner,
+        session_context,
+        bind_guard,
+    )
     from homebrew_harness.security.approval_review import requester_binding
+
     session = owner()
     if session is not None and session.approval_reviewer.config.mode == "auto_review":
         import uuid
+
         requester = requester_binding()
-        request = {"id": "approval_" + uuid.uuid4().hex, "revision": 0, "kind": "tool", "tool": tool_name, "arguments": dict(arguments), "reason": reason, "checkpoint": session.checkpoint_key}
+        request = {
+            "id": "approval_" + uuid.uuid4().hex,
+            "revision": 0,
+            "kind": "tool",
+            "tool": tool_name,
+            "arguments": dict(arguments),
+            "reason": reason,
+            "checkpoint": session.checkpoint_key,
+        }
         try:
-            snapshot = session_context(session, tool_name, arguments, workdir, requester=requester)
+            snapshot = session_context(
+                session, tool_name, arguments, workdir, requester=requester
+            )
+
             def current():
-                return session_context(session, tool_name, arguments, workdir, requester=requester)
+                return session_context(
+                    session, tool_name, arguments, workdir, requester=requester
+                )
+
             review_identity = None
+
             def publish(decision, review_id):
                 nonlocal review_identity
                 review_identity = review_id
-                return PermissionDecision("allow" if decision == "approve" else "deny", "Independent approval review " + review_id, "auto_review")
-            result = session.approval_reviewer.review(request, snapshot, current, publish, requester=requester)
+                return PermissionDecision(
+                    "allow" if decision == "approve" else "deny",
+                    "Independent approval review " + review_id,
+                    "auto_review",
+                )
+
+            result = session.approval_reviewer.review(
+                request, snapshot, current, publish, requester=requester
+            )
             if result is not None:
                 if result.action == "allow":
-                    bind_guard(_APPROVAL_CALL.get(), lambda: current() == snapshot
-                        and session.approval_reviewer.execution_evidence_current(review_identity, workdir))
+                    bind_guard(
+                        _APPROVAL_CALL.get(),
+                        lambda: current() == snapshot
+                        and session.approval_reviewer.execution_evidence_current(
+                            review_identity, workdir
+                        ),
+                    )
                 return result
         except Exception:
             pass
@@ -499,6 +546,12 @@ def check_permission(
             "deny",
             "The path is outside this Run's host-authorized write prefixes.",
             "write_boundary",
+        )
+    if tool_name in {"submit_work_progress", "get_work_progress"}:
+        return (
+            PermissionDecision("allow", "Access the owning Service work progress only.")
+            if managed and managed.spec.work_context
+            else PermissionDecision("deny", "No owning Service work context.")
         )
     if managed is not None and tool_name in {
         "request_attention",

@@ -39,6 +39,7 @@ class WorkHandle(Handle):
                 "changeset_id": value.get("changeset_id"),
                 "workspace_sync": value.get("workspace_sync"),
                 "ci_fix_attempts": value.get("ci_fix_attempts", 0),
+                "progress": value.get("progress"),
                 "authority": value.get("authority"),
                 "verification": value.get("verification"),
                 "triage": value.get("triage_summary"),
@@ -86,7 +87,11 @@ class WorkHandle(Handle):
 
     def retry(self, *, seconds=None, revision=None, request_id=None):
         revision = self.snapshot().revision if revision is None else revision
-        return self.service.command("work_retry", {"id": self.id, "revision": revision, "seconds": seconds}, request_id)
+        return self.service.command(
+            "work_retry",
+            {"id": self.id, "revision": revision, "seconds": seconds},
+            request_id,
+        )
 
     def cancel(self, **kw):
         return self._control("work_cancel", **kw)
@@ -94,25 +99,62 @@ class WorkHandle(Handle):
     def steer(self, text, **kw):
         return self._control("steer", text=text, **kw)
 
+    def context(self, text, **kw):
+        return self._control("work_context", text=text, **kw)
+
+    def progress(self):
+        return self.service.query("work_progress", {"id": self.id})
+
     def revise(self, text, **kw):
         return self._control("work_revise", text=text, **kw)
 
     def executions(self):
-        return self.service.query('work_executions', {'id': self.id})
+        return self.service.query("work_executions", {"id": self.id})
 
     def execution(self, identity):
-        return self.service.query('work_execution_get', {'id': self.id, 'execution_id': identity})
+        return self.service.query(
+            "work_execution_get", {"id": self.id, "execution_id": identity}
+        )
 
     def execution_output(self, identity, *, cursor=0, limit=16000, stream="output"):
-        return self.service.query('work_execution_output', {'id': self.id, 'execution_id': identity, 'cursor': cursor, 'limit': limit, 'stream': stream})
+        return self.service.query(
+            "work_execution_output",
+            {
+                "id": self.id,
+                "execution_id": identity,
+                "cursor": cursor,
+                "limit": limit,
+                "stream": stream,
+            },
+        )
 
-    def stop_execution(self, identity, *, revision=None, execution_revision=None, request_id=None):
+    def stop_execution(
+        self, identity, *, revision=None, execution_revision=None, request_id=None
+    ):
         revision = self.snapshot().revision if revision is None else revision
-        return self.service.command('work_execution_stop', {'id': self.id, 'revision': revision, 'execution_id': identity, 'execution_revision': execution_revision}, request_id)
+        return self.service.command(
+            "work_execution_stop",
+            {
+                "id": self.id,
+                "revision": revision,
+                "execution_id": identity,
+                "execution_revision": execution_revision,
+            },
+            request_id,
+        )
 
     def send_execution_input(self, identity, text, *, revision=None, request_id=None):
         revision = self.snapshot().revision if revision is None else revision
-        return self.service.command('work_execution_input', {'id': self.id, 'revision': revision, 'execution_id': identity, 'text': text}, request_id)
+        return self.service.command(
+            "work_execution_input",
+            {
+                "id": self.id,
+                "revision": revision,
+                "execution_id": identity,
+                "text": text,
+            },
+            request_id,
+        )
 
     def request_authority(self, **kw):
         return self._control("work_request_authority", **kw)
@@ -157,7 +199,11 @@ class ServiceControls:
         ref = request.ref if hasattr(request, "ref") else request
         if ref.target.kind != "service" or ref.target.id != self.id:
             raise ValueError("Review retry requires this Service's request reference.")
-        return self.command("approval_review_retry", {"id": ref.id, "revision": ref.revision}, request_id)
+        return self.command(
+            "approval_review_retry",
+            {"id": ref.id, "revision": ref.revision},
+            request_id,
+        )
 
     def recover_model(self, profile, *, revision, request_id=None):
         return self.command(
@@ -407,11 +453,11 @@ class ServiceControls:
             "batch_create",
             {
                 "refs": [
-                    r.ref.data()
-                    if hasattr(r, "ref")
-                    else r.data()
-                    if hasattr(r, "data")
-                    else r
+                    (
+                        r.ref.data()
+                        if hasattr(r, "ref")
+                        else r.data() if hasattr(r, "data") else r
+                    )
                     for r in requests
                 ]
             },

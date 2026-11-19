@@ -1,8 +1,11 @@
 import shutil
+import hashlib
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from homebrew_harness.services.delivery.git import GitBackend, StaleDelivery
 from homebrew_harness.services.delivery.spec import validate, read_values
@@ -54,7 +57,10 @@ class GitTests(unittest.TestCase):
         )
         self.backend = GitBackend(self.control, self.spec, self.values)
         self.addCleanup(self.backend.close)
-        self.baseline = {"files": snapshot(self.workspace)}
+        self.baseline = {
+            "files": snapshot(self.workspace),
+            "head": self.backend.head(self.workspace),
+        }
         self.work = {
             "id": "work_fixture",
             "run_spec": {
@@ -105,10 +111,78 @@ class GitTests(unittest.TestCase):
             result, self.backend.publish(candidate, "harness/review", None)
         )
 
+    def test_delayed_git_stdin_preserves_large_input_across_poll_boundaries(self):
+        from homebrew_harness.execution.model_gateway import Deadline
+
+        real_popen = subprocess.Popen
+
+        def delayed(argv, **kwargs):
+            return real_popen(
+                [
+                    sys.executable,
+                    "-c",
+                    "import os,sys,time; time.sleep(.15); os.execv(sys.argv[1],sys.argv[1:])",
+                    *argv,
+                ],
+                **kwargs
+            )
+
+        data = b"large source input\n" * 10000
+        with patch(
+            "homebrew_harness.services.delivery.git.subprocess.Popen",
+            side_effect=delayed,
+        ):
+            actual = self.backend.run(
+                ["hash-object", "--stdin"], data=data, deadline=Deadline.after(3)
+            )
+        expected = hashlib.sha1(
+            b"blob " + str(len(data)).encode() + b"\0" + data
+        ).hexdigest()
+        self.assertEqual(actual.decode().strip(), expected)
+
     def test_changed_target_is_not_overwritten(self):
         candidate = self.candidate()
         with self.assertRaises(StaleDelivery):
             self.backend.publish(candidate, "harness/review", "0" * 40)
+
+    def advance_target(self, path, contents):
+        other = self.base / "upstream"
+        self.run_git("clone", str(self.remote), str(other))
+        (other / path).write_text(contents)
+        self.run_git("add", path, cwd=other)
+        self.run_git("commit", "-qm", "upstream", cwd=other)
+        self.run_git("push", "origin", "HEAD:main", cwd=other)
+        return self.backend.ref("main")
+
+    def test_first_candidate_integrates_advanced_target_without_changing_original_base(
+        self,
+    ):
+        original = self.baseline["head"]
+        target = self.advance_target("upstream.txt", "preserve upstream")
+        candidate = self.candidate()
+        self.assertEqual(candidate["target_base"], target)
+        self.assertEqual(self.baseline["head"], original)
+        self.assertEqual(
+            (Path(candidate["workspace"]) / "upstream.txt").read_text(),
+            "preserve upstream",
+        )
+        self.assertEqual(set(candidate["delta"]), {"module.py"})
+        self.assertFalse(candidate["conflicts"])
+
+    def test_conflicting_target_is_exposed_without_choosing_a_side(self):
+        target = self.advance_target("module.py", "value=3\n")
+        candidate = self.candidate()
+        self.assertEqual(candidate["conflicts"], ["module.py"])
+        self.assertIn(
+            "<<<<<<<", (Path(candidate["workspace"]) / "module.py").read_text()
+        )
+        self.assertEqual(self.backend.ref("main"), target)
+
+    def test_changes_already_in_target_are_not_repeated_in_delta(self):
+        self.advance_target("module.py", "value=2\n")
+        candidate = self.candidate()
+        self.assertEqual(candidate["delta"], {})
+        self.assertFalse(candidate["conflicts"])
 
     def test_candidate_mutation_invalidates_delivery(self):
         candidate = self.candidate()
@@ -125,6 +199,32 @@ class GitTests(unittest.TestCase):
         )
         self.assertFalse((Path(candidate["workspace"]) / "unrelated.txt").exists())
         self.assertEqual(set(candidate["delta"]), {"module.py"})
+
+    def test_explicit_existing_draft_is_included_without_publishing_other_drafts(self):
+        (self.workspace / "accepted.txt").write_text("accepted proposal")
+        (self.workspace / "unrelated.txt").write_text("another work")
+        baseline = {"files": snapshot(self.workspace), "head": self.baseline["head"]}
+        candidate = self.backend.prepare(
+            self.work | {"included_inputs": ["accepted.txt"]},
+            self.workspace,
+            baseline,
+            self.base / "included",
+        )
+        self.assertEqual(set(candidate["delta"]), {"accepted.txt"})
+        self.assertFalse((Path(candidate["workspace"]) / "unrelated.txt").exists())
+
+    def test_target_rename_cannot_expand_the_approved_publication_paths(self):
+        other = self.base / "upstream"
+        self.run_git("clone", str(self.remote), str(other))
+        self.run_git("mv", "module.py", "outside.py", cwd=other)
+        self.run_git("commit", "-qm", "rename", cwd=other)
+        self.run_git("push", "origin", "HEAD:main", cwd=other)
+        (self.workspace / "module.py").write_text("value=2\n")
+        self.work["run_spec"]["write_paths"] = ["module.py"]
+        with self.assertRaisesRegex(ValueError, "approved paths"):
+            self.backend.prepare(
+                self.work, self.workspace, self.baseline, self.base / "renamed"
+            )
 
     def test_hooks_and_filters_are_not_executed(self):
         marker = self.base / "hook-executed"

@@ -13,10 +13,35 @@ def verify(delivery, candidate, work):
     )
     delivery.tests.own(runner)
     receipts = []
+    reused = {}
     try:
         for name in delivery.spec["required_tests"]:
             if delivery.stop.is_set():
                 raise RuntimeError("Service stopped during fixed-content verification.")
+            from homebrew_harness.services.evidence import receipts as historical
+            from homebrew_harness.execution.verification import applicable
+
+            reuse = applicable(
+                historical(delivery.runtime, work),
+                runner,
+                name,
+                Path(candidate["workspace"]),
+            )
+            if reuse["ok"]:
+                reused[name] = reuse
+                receipts.append(
+                    {
+                        **reuse["receipt"],
+                        "evidence_use": {
+                            "mode": "reused",
+                            "receipt_ref": reuse["receipt_ref"],
+                            "executed_at": reuse["executed_at"],
+                            "checked_basis": reuse["basis"],
+                            "candidate_digest": candidate["content_hash"],
+                        },
+                    }
+                )
+                continue
             runner.approve(
                 name, cwd=Path(candidate["workspace"]), role="lead", max_runs=1
             )
@@ -48,7 +73,9 @@ def verify(delivery, candidate, work):
         goal = work["run_spec"].get("goal")
         with test_context("lead"):
             evidence = (
-                HardVerifier(candidate["workspace"], test_runner=runner).check(goal)
+                HardVerifier(
+                    candidate["workspace"], test_runner=EvidenceView(runner, reused)
+                ).check(goal)
                 if goal
                 else None
             )
@@ -60,3 +87,22 @@ def verify(delivery, candidate, work):
         }
     finally:
         delivery.tests.settle()
+
+
+class EvidenceView:
+    def __init__(self, runner, reused):
+        self.runner, self.reused = runner, reused
+
+    def verify(self, name, cwd, **kwargs):
+        if name in self.reused and kwargs.get("selection") is None:
+            return {
+                "ok": True,
+                "evidence_use": {
+                    k: self.reused[name][k]
+                    for k in ("mode", "receipt_ref", "executed_at", "basis")
+                },
+            }
+        return self.runner.verify(name, cwd, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self.runner, name)

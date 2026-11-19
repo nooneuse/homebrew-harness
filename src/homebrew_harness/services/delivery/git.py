@@ -67,6 +67,7 @@ class GitBackend:
         deadline=None,
         max_output=64_000_000,
         env_extra=None,
+        accepted_codes=(0,),
     ):
         from homebrew_harness.execution.test_runner import executable_identity
 
@@ -94,12 +95,18 @@ class GitBackend:
             self.leases.use("delivery-git"),
             tempfile.TemporaryFile() as stdout,
             tempfile.TemporaryFile() as stderr,
+            tempfile.TemporaryFile() as stdin,
         ):
+            if data is not None:
+                for offset in range(0, len(data), 1024 * 1024):
+                    check(deadline, (self.stop,))
+                    stdin.write(data[offset : offset + 1024 * 1024])
+                stdin.seek(0)
             process = subprocess.Popen(
                 argv,
                 cwd=cwd or self.root,
                 env={**self.env(credentials=credentials), **(env_extra or {})},
-                stdin=subprocess.PIPE if data is not None else subprocess.DEVNULL,
+                stdin=stdin if data is not None else subprocess.DEVNULL,
                 stdout=stdout,
                 stderr=stderr,
                 start_new_session=True,
@@ -107,16 +114,15 @@ class GitBackend:
             )
             self.processes.add(process)
             try:
-                pending = data
                 while True:
                     check(deadline, (self.stop,))
                     try:
                         process.communicate(
-                            pending, timeout=min(0.05, max(0.001, deadline.remaining()))
+                            timeout=min(0.05, max(0.001, deadline.remaining()))
                         )
                         break
                     except subprocess.TimeoutExpired:
-                        pending = None
+                        continue
             except BaseException:
                 from homebrew_harness.execution.background import ShellRunner
 
@@ -131,7 +137,7 @@ class GitBackend:
             stderr.read(65536)
             if len(out) > max_output:
                 raise ValueError("Git output exceeds its bound.")
-            if process.returncode:
+            if process.returncode not in accepted_codes:
                 raise ValueError(
                     "Controlled Git operation failed (" + str(process.returncode) + ")."
                 )
@@ -190,17 +196,17 @@ class GitBackend:
             raise ValueError("Inspect an existing candidate before preparing it again.")
         current = snapshot(workspace, **work["run_spec"]["snapshot_limits"])
         before = baseline["files"]
-        changes = {
-            name: current.get(name)
+        input_changes = {
+            name
             for name in set(before) | set(current)
             if (before.get(name) or {}).get("sha256")
             != (current.get(name) or {}).get("sha256")
             or (before.get(name) or {}).get("executable")
             != (current.get(name) or {}).get("executable")
         }
-        if not changes:
-            raise ValueError("Work produced no candidate changes.")
-        if any(not within(name, work["run_spec"]["write_paths"]) for name in changes):
+        if any(
+            not within(name, work["run_spec"]["write_paths"]) for name in input_changes
+        ):
             raise ValueError("Work changes exceed its approved paths.")
         base = previous["commit"] if previous else self.ref(self.spec["target_branch"])
         if not base:
@@ -218,19 +224,64 @@ class GitBackend:
             ],
             credentials=not previous,
         )
-        files = self.tree(repo, base)
+        origin = previous["commit"] if previous else baseline.get("head") or base
+        if origin != base:
+            self.run(
+                [
+                    "--git-dir=" + str(repo),
+                    "fetch",
+                    "--no-tags",
+                    "--no-recurse-submodules",
+                    self.values["remote"],
+                    origin,
+                ],
+                credentials=True,
+            )
+        files = self.tree(repo, origin)
+        # Original working input may include explicitly proposed source drafts.
+        # Only the approved paths contribute; unmodified outside-scope input is
+        # evidence, not an implicit publication grant.
+        changes = {}
+        initial_dirty = []
+        for name in set(files) | set(current):
+            if name not in input_changes and name not in work.get(
+                "included_inputs", []
+            ):
+                continue
+            old = files.get(name)
+            old_data = self.content(repo, old["oid"]) if old else None
+            old_hash = (
+                hashlib.sha256(old_data).hexdigest() if old_data is not None else None
+            )
+            proposed = current.get(name)
+            if (
+                not baseline.get("head")
+                and name in input_changes
+                and old_hash != (before.get(name) or {}).get("sha256")
+                and old_hash != (proposed or {}).get("sha256")
+            ):
+                raise StaleDelivery(
+                    "Candidate baseline differs from the work input without an original Git base: "
+                    + name
+                )
+            if old_hash == (proposed or {}).get("sha256") and (
+                old is None or (old["mode"] == "100755") == bool(proposed["executable"])
+            ):
+                continue
+            if not within(name, work["run_spec"]["write_paths"]):
+                continue
+            changes[name] = proposed
+            if old_hash != (before.get(name) or {}).get("sha256"):
+                initial_dirty.append(name)
+        if not changes:
+            raise ValueError("Work produced no candidate changes.")
         index = directory / "index"
         extra = {"GIT_INDEX_FILE": str(index)}
-        self.run(["--git-dir=" + str(repo), "read-tree", base], env_extra=extra)
+        self.run(["--git-dir=" + str(repo), "read-tree", origin], env_extra=extra)
         delta = {}
         for name, metadata in sorted(changes.items()):
             actual = files.get(name)
             expected = before.get(name)
-            old_data = self.content(repo, actual["oid"]) if actual else None
-            if (
-                hashlib.sha256(old_data).hexdigest() if old_data is not None else None
-            ) != (expected or {}).get("sha256"):
-                raise StaleDelivery("Candidate baseline differs from the work input.")
             if metadata is None:
                 self.run(
                     [
@@ -288,6 +339,66 @@ class GitBackend:
             "GIT_COMMITTER_NAME": self.values["author_name"],
             "GIT_COMMITTER_EMAIL": self.values["author_email"],
         }
+        if origin != base:
+            proposal = (
+                self.run(
+                    [
+                        "--git-dir=" + str(repo),
+                        "commit-tree",
+                        tree,
+                        "-p",
+                        origin,
+                        "-m",
+                        "Proposed work " + work["id"],
+                    ],
+                    env_extra=identity,
+                )
+                .decode()
+                .strip()
+            )
+            merged = self.run(
+                [
+                    "--git-dir=" + str(repo),
+                    "merge-tree",
+                    "--write-tree",
+                    "--name-only",
+                    "-z",
+                    base,
+                    proposal,
+                ],
+                accepted_codes=(0, 1),
+            ).split(b"\0")
+            tree = merged[0].decode().strip()
+            conflicts = []
+            for path in merged[1:]:
+                if not path:
+                    break
+                conflicts.append(path.decode())
+        else:
+            proposal, conflicts = None, []
+        # Delta is relative to the observed target, so already published host
+        # repairs are not re-described as new feature work.
+        final_files = self.tree(repo, tree)
+        target_files = self.tree(repo, base)
+        delta = {}
+        for name in set(final_files) | set(target_files):
+            if final_files.get(name) == target_files.get(name):
+                continue
+            meta = final_files.get(name)
+            delta[name] = (
+                {"deleted": True}
+                if meta is None
+                else {
+                    "sha256": hashlib.sha256(
+                        self.content(repo, meta["oid"])
+                    ).hexdigest(),
+                    "executable": meta["mode"] == "100755",
+                }
+            )
+        if any(not within(name, work["run_spec"]["write_paths"]) for name in delta):
+            raise ValueError(
+                "Aligned candidate changes exceed the Work approved paths."
+            )
         commit = (
             self.run(
                 [
@@ -330,6 +441,10 @@ class GitBackend:
             "files": frozen,
             "content_hash": content_digest(frozen),
             "delta": delta,
+            "original_git_base": origin,
+            "proposal_commit": proposal,
+            "conflicts": conflicts,
+            "initial_input_changes": sorted(initial_dirty),
             "snapshot_limits": work["run_spec"]["snapshot_limits"],
         }
 

@@ -13,7 +13,9 @@ from homebrew_harness.cli_arguments import add_location_arguments
 def commands(parser, *, attach=True):
     actions = parser.add_subparsers(dest="command", required=True)
     if attach:
-        validate = actions.add_parser("validate", help="Check external service configuration without starting it")
+        validate = actions.add_parser(
+            "validate", help="Check external service configuration without starting it"
+        )
         validate.add_argument("--spec", type=Path, required=True)
         validate.add_argument("--host-config", type=Path, required=True)
         start = actions.add_parser("start")
@@ -309,13 +311,23 @@ def commands(parser, *, attach=True):
     listing.add_argument("--state")
     listing.add_argument("--cursor", type=int, default=0)
     listing.add_argument("--limit", type=int, default=20)
-    retry = tasks.add_parser("retry", help="Retry the current Run with renewed work authority.")
+    retry = tasks.add_parser(
+        "retry", help="Retry the current Run with renewed work authority."
+    )
     retry.add_argument("work_id")
     retry.add_argument("--seconds", type=float)
     retry.add_argument("--request-id")
-    for name in ("show", "pause", "resume", "cancel", "revoke", "request-authority"):
+    for name in (
+        "show",
+        "progress",
+        "pause",
+        "resume",
+        "cancel",
+        "revoke",
+        "request-authority",
+    ):
         tasks.add_parser(name).add_argument("work_id")
-    for name in ("steer", "interrupt", "revise"):
+    for name in ("steer", "interrupt", "revise", "context"):
         item = tasks.add_parser(name)
         item.add_argument("work_id")
         item.add_argument("text")
@@ -378,6 +390,7 @@ def render_error(error, *, file=None):
     else:
         if getattr(error, "code", None) or getattr(error, "reason_code", None):
             from homebrew_harness.runtime.errors import error_info
+
             render(error_info(error), file=file)
         else:
             print(redact(str(error)), file=file)
@@ -428,9 +441,7 @@ def operate(service, args):
         arguments = (
             (args.alias,)
             if op == "upgrade-prepare"
-            else (args.identity,)
-            if hasattr(args, "identity")
-            else ()
+            else (args.identity,) if hasattr(args, "identity") else ()
         )
         return getattr(service, methods[op])(*arguments, **values)
     if args.command == "delivery":
@@ -450,9 +461,11 @@ def operate(service, args):
                 args.identity,
                 args.kind,
                 body=args.body,
-                subject=json.loads(args.subject_file.read_text())
-                if args.subject_file
-                else None,
+                subject=(
+                    json.loads(args.subject_file.read_text())
+                    if args.subject_file
+                    else None
+                ),
                 request_id=args.request_id,
             )
         if op == "inspect":
@@ -587,7 +600,7 @@ def operate(service, args):
             return work.snapshot()
         if args.work_command == "retry":
             return work.retry(seconds=args.seconds, request_id=args.request_id)
-        if args.work_command in {"steer", "interrupt", "revise"}:
+        if args.work_command in {"steer", "interrupt", "revise", "context"}:
             return getattr(work, args.work_command)(
                 args.text, request_id=args.request_id
             )
@@ -757,9 +770,11 @@ def execute(args, parser):
                 config = (
                     saved_config(ServiceStore(control).get(args.service_id)["config"])
                     if args.service_id
-                    else HostConfig.from_file(args.host_config, workdir=control)
-                    if args.host_config
-                    else HostConfig.from_files(env_file=args.env_file)
+                    else (
+                        HostConfig.from_file(args.host_config, workdir=control)
+                        if args.host_config
+                        else HostConfig.from_files(env_file=args.env_file)
+                    )
                 )
                 core = Harness(workdir=control, config=config)
                 spec = ServiceSpec.load(args.spec, control) if args.spec else None

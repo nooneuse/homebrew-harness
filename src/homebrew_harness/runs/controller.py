@@ -15,7 +15,10 @@ from contextvars import ContextVar
 from dataclasses import replace
 
 from homebrew_harness.configuration import DEFAULT_GIT_QUERY_SECONDS
-from homebrew_harness.execution.execution_control import cleanup_scope, persistence_scope
+from homebrew_harness.execution.execution_control import (
+    cleanup_scope,
+    persistence_scope,
+)
 from homebrew_harness.execution.model_gateway import (
     Deadline,
     ModelDeadlineExceeded,
@@ -74,6 +77,7 @@ class RunController:
         self.spec = RunSpec.from_dict(self.state["spec"])
         self.session = None
         from homebrew_harness.security.native_review import NativeReviewGate
+
         self.native_reviews = NativeReviewGate(self)
         self.cancel = threading.Event()
         self.stop_heartbeat = threading.Event()
@@ -155,31 +159,72 @@ class RunController:
         return self.test_authorizations.operation_fields(name, workdir)
 
     def wait_for_source(self, *, workdir, until="event", reason=""):
-        if until not in {"event", "healthy"} or not isinstance(reason, str) or len(reason) > 1000:
+        if (
+            until not in {"event", "healthy"}
+            or not isinstance(reason, str)
+            or len(reason) > 1000
+        ):
             raise ValueError("Source wait requires event/healthy and a short reason.")
         if not self.state.get("source_enabled"):
             raise ValueError("This Run has no external source.")
         with self.store.runtime.backend().connection() as conn:
             recipient = "reference_" + self.id
-            epoch = self.store.runtime.backend()._get(conn, "input_epochs", recipient, 0)
-            observed_sources = {row[0]: json.loads(row[1]).get("revision", 0) for row in conn.execute(
-                "SELECT key,value FROM records WHERE section='run_sources' AND owner=?", (self.session.checkpoint_key,))}
-        self.state = self.store.update(self.header, {"source_wait": {
-            "until": until, "reason": reason, "after_time": time.time(), "after_input": epoch, "after_sources": observed_sources}})
+            epoch = self.store.runtime.backend()._get(
+                conn, "input_epochs", recipient, 0
+            )
+            observed_sources = {
+                row[0]: json.loads(row[1]).get("revision", 0)
+                for row in conn.execute(
+                    "SELECT key,value FROM records WHERE section='run_sources' AND owner=?",
+                    (self.session.checkpoint_key,),
+                )
+            }
+        self.state = self.store.update(
+            self.header,
+            {
+                "source_wait": {
+                    "until": until,
+                    "reason": reason,
+                    "after_time": time.time(),
+                    "after_input": epoch,
+                    "after_sources": observed_sources,
+                }
+            },
+        )
         self.source_wait_requested = True
-        return json.dumps({"waiting_for": "source", "until": until, "accepted": True, "permission_granted": False})
+        return json.dumps(
+            {
+                "waiting_for": "source",
+                "until": until,
+                "accepted": True,
+                "permission_granted": False,
+            }
+        )
 
     def observe_model_failure(self, error, messages):
         from .model_recovery import observe
+
         return observe(self, error, messages)
 
     def model_response_received(self):
         from .model_recovery import acknowledged
+
         acknowledged(self)
 
     def report_run_blocker(self, **arguments):
         from .model_recovery import block
+
         return block(self, **arguments)
+
+    def submit_work_progress(self, **arguments):
+        from .work_progress import submit
+
+        return submit(self, **arguments)
+
+    def get_work_progress(self, **arguments):
+        from .work_progress import view
+
+        return view(self, **arguments)
 
     def request_attention(
         self, *, workdir, question, reason, impact, independent_work=""
@@ -222,15 +267,37 @@ class RunController:
         try:
             return self.native_reviews.wait()
         except (RunStopped, ModelCancelled, ModelDeadlineExceeded) as error:
-            reason = error.reason_code if isinstance(error, RunStopped) else self.host_action or (
-                "deadline_reached" if self.deadline().remaining() == 0 else "approval_review_wait_timeout"
-                if isinstance(error, ModelDeadlineExceeded) else "approval_review_cancelled")
-            return self.finish("paused" if reason == "pause" else "cancelled" if reason == "cancel"
-                else "failed" if reason == "deadline_reached" else "blocked", reason)
+            reason = (
+                error.reason_code
+                if isinstance(error, RunStopped)
+                else self.host_action
+                or (
+                    "deadline_reached"
+                    if self.deadline().remaining() == 0
+                    else (
+                        "approval_review_wait_timeout"
+                        if isinstance(error, ModelDeadlineExceeded)
+                        else "approval_review_cancelled"
+                    )
+                )
+            )
+            return self.finish(
+                (
+                    "paused"
+                    if reason == "pause"
+                    else (
+                        "cancelled"
+                        if reason == "cancel"
+                        else "failed" if reason == "deadline_reached" else "blocked"
+                    )
+                ),
+                reason,
+            )
 
     def before_model(self, messages, components):
         self.native_reviews.wait()
         from .model_recovery import context
+
         context(self, messages)
         from homebrew_harness.context.tracked_history import set_context
 
@@ -249,14 +316,39 @@ class RunController:
         sources = self.store.runtime.items(
             "run_sources", owner=self.session.checkpoint_key
         )
-        observation = [{"id": source.get("id"), "status": "unavailable" if source.get("failures", 0) else "ready" if source.get("last_success") else "unobserved",
-            "failures": source.get("failures", 0), "last_error": source.get("last_error"),
-            "error_info": source.get("error_info"),
-            "last_error_status": source.get("last_error_status"), "last_success": source.get("last_success"),
-            "next_poll_at": source.get("next_poll_at")} for source in sources.values()]
+        observation = [
+            {
+                "id": source.get("id"),
+                "status": (
+                    "unavailable"
+                    if source.get("failures", 0)
+                    else "ready" if source.get("last_success") else "unobserved"
+                ),
+                "failures": source.get("failures", 0),
+                "last_error": source.get("last_error"),
+                "error_info": source.get("error_info"),
+                "last_error_status": source.get("last_error_status"),
+                "last_success": source.get("last_success"),
+                "next_poll_at": source.get("next_poll_at"),
+            }
+            for source in sources.values()
+        ]
         if self.state.get("source_enabled"):
-            set_context(messages, "source_observations", {"role": "user", "name": "source_observations", "content": json.dumps({"sources": observation,
-                "instruction": "Collection errors are observations, not a change to accepted requirements. Continue independent work, inspect available events, explicitly wait_for_source, or request necessary host help. Do not claim missing current external proof."}, ensure_ascii=False)})
+            set_context(
+                messages,
+                "source_observations",
+                {
+                    "role": "user",
+                    "name": "source_observations",
+                    "content": json.dumps(
+                        {
+                            "sources": observation,
+                            "instruction": "Collection errors are observations, not a change to accepted requirements. Continue independent work, inspect available events, explicitly wait_for_source, or request necessary host help. Do not claim missing current external proof.",
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            )
         rows = self.requests.reconcile(self)
         pending = [r for r in rows if r["state"] == "pending"]
         if pending:
@@ -282,25 +374,29 @@ class RunController:
         set_context(
             messages,
             "run_control",
-            {
-                "role": "user",
-                "name": "run_control",
-                "content": "Host request states. Approved original calls require execute_approved(request_id); task answers grant no tool permission. "
-                + json.dumps(selected),
-            }
-            if selected
-            else None,
+            (
+                {
+                    "role": "user",
+                    "name": "run_control",
+                    "content": "Host request states. Approved original calls require execute_approved(request_id); task answers grant no tool permission. "
+                    + json.dumps(selected),
+                }
+                if selected
+                else None
+            ),
         )
         set_context(
             messages,
             "run_progress",
-            {
-                "role": "user",
-                "name": "run_progress",
-                "content": json.dumps(state["feedback"], ensure_ascii=False),
-            }
-            if state["feedback"]
-            else None,
+            (
+                {
+                    "role": "user",
+                    "name": "run_progress",
+                    "content": json.dumps(state["feedback"], ensure_ascii=False),
+                }
+                if state["feedback"]
+                else None
+            ),
         )
 
     def apply_references(self, messages):
@@ -622,6 +718,13 @@ class RunController:
                     },
                 )
             state.update(status=self.proposed.status, last_outcome=self.proposed.data())
+            progress = getattr(self, "work_progress", None)
+            if (
+                state["status"] == "completed"
+                and progress
+                and progress.get("ready_for_accept")
+            ):
+                state["work_progress_ref"] = progress["id"]
         boundary = {
             **(boundary or {}),
             "managed": {
@@ -833,19 +936,25 @@ class RunController:
         s.tests.max_runs = max(
             0, limits["max_runs"] - sum(self.state.get("test_attempts", {}).values())
         )
-        s.tests.total_seconds = None if limits["seconds"] is None else max(0, limits["seconds"] - self.test_seconds_offset)
+        s.tests.total_seconds = (
+            None
+            if limits["seconds"] is None
+            else max(0, limits["seconds"] - self.test_seconds_offset)
+        )
         targets = [(None, s.workdir, "lead")]
         if self.stages:
             targets += [
                 (
                     row["id"],
                     s.workspace.store.workspace(s.workspace.store.load(row["id"])),
-                    "lead"
-                    if self.stages.definition(s.workspace.store.load(row["id"]))[
-                        "executor"
-                    ]
-                    == "lead"
-                    else "teammate",
+                    (
+                        "lead"
+                        if self.stages.definition(s.workspace.store.load(row["id"]))[
+                            "executor"
+                        ]
+                        == "lead"
+                        else "teammate"
+                    ),
                 )
                 for row in self.stages.records().values()
                 if row["worktree"]
@@ -947,9 +1056,11 @@ class RunController:
                     manifest = prepare_runtime(
                         s.mcp,
                         workdir=s.workspace.lead_cwd(),
-                        task_id=s.workspace.lead_assignment.id
-                        if s.workspace.lead_assignment
-                        else None,
+                        task_id=(
+                            s.workspace.lead_assignment.id
+                            if s.workspace.lead_assignment
+                            else None
+                        ),
                     )
             except ValueError as error:
                 from homebrew_harness.tools.mcp.runtime import (
@@ -1116,9 +1227,11 @@ class RunController:
                         {
                             "pid": os.getpid(),
                             "episode": self.state["episode"],
-                            "phase": "closing"
-                            if self.session._closed
-                            else self.session.inputs.phase,
+                            "phase": (
+                                "closing"
+                                if self.session._closed
+                                else self.session.inputs.phase
+                            ),
                             "model_inflight": usage["inflight"],
                             "model_calls": usage["calls"],
                             "tests_active": self.session.tests.active.is_set(),
@@ -1153,9 +1266,9 @@ class RunController:
                 self.proposed,
                 details={
                     "error_type": type(error).__name__,
-                    "cause_type": type(error.__cause__).__name__
-                    if error.__cause__
-                    else None,
+                    "cause_type": (
+                        type(error.__cause__).__name__ if error.__cause__ else None
+                    ),
                     "message": error_message(error)[:4000],
                     "error_info": error_info(error),
                 },
@@ -1234,11 +1347,15 @@ class RunController:
             reason = getattr(
                 error,
                 "reason_code",
-                "provider_blocked"
-                if isinstance(error, ModelGatewayError) and s.gateway.blocked
-                else "recovery_required"
-                if isinstance(error, RecoveryRequired)
-                else "binding_changed",
+                (
+                    "provider_blocked"
+                    if isinstance(error, ModelGatewayError) and s.gateway.blocked
+                    else (
+                        "recovery_required"
+                        if isinstance(error, RecoveryRequired)
+                        else "binding_changed"
+                    )
+                ),
             )
             if isinstance(error, ProposalSuperseded):
                 action = self.store.runtime.get("run_controls", self.id, {}).get(
@@ -1253,11 +1370,11 @@ class RunController:
             status = (
                 "failed"
                 if reason == "deadline_reached"
-                else "paused"
-                if reason == "pause"
-                else "cancelled"
-                if reason == "cancel"
-                else "blocked"
+                else (
+                    "paused"
+                    if reason == "pause"
+                    else "cancelled" if reason == "cancel" else "blocked"
+                )
             )
             self.state = self.store.update(
                 self.header,
@@ -1270,9 +1387,11 @@ class RunController:
                         reason,
                         s.checkpoint_key,
                         required_host_actions=(
-                            "Check the selected MCP service and frozen configuration"
-                            if isinstance(error, MCPError)
-                            else "Inspect run configuration or recovery state",
+                            (
+                                "Check the selected MCP service and frozen configuration"
+                                if isinstance(error, MCPError)
+                                else "Inspect run configuration or recovery state"
+                            ),
                         ),
                         details={
                             "error_type": type(error).__name__,
@@ -1291,13 +1410,19 @@ class RunController:
                     self.safe_point()
                 except RunStopped as error:
                     return self.finish(
-                        "paused"
-                        if error.reason_code == "pause"
-                        else "cancelled"
-                        if error.reason_code == "cancel"
-                        else "failed"
-                        if error.reason_code == "deadline_reached"
-                        else "blocked",
+                        (
+                            "paused"
+                            if error.reason_code == "pause"
+                            else (
+                                "cancelled"
+                                if error.reason_code == "cancel"
+                                else (
+                                    "failed"
+                                    if error.reason_code == "deadline_reached"
+                                    else "blocked"
+                                )
+                            )
+                        ),
                         error.reason_code,
                     )
                 self.state = self.store.update(
@@ -1332,11 +1457,13 @@ class RunController:
                         decision = StopDecision(
                             "allow"
                             if goal_status == "none"
-                            else "achieved"
-                            if goal_status == "achieved"
-                            else "defer"
-                            if goal_status == "waiting"
-                            else goal_status
+                            else (
+                                "achieved"
+                                if goal_status == "achieved"
+                                else (
+                                    "defer" if goal_status == "waiting" else goal_status
+                                )
+                            )
                         )
                         self.stage_result(result, decision, self.pending_work())
                         outcome = self.finish(
@@ -1451,9 +1578,19 @@ class RunController:
                                     continue
                         if reason == "model_blocked":
                             blocker = self.state.get("model_blocker") or {}
-                            return self.finish("blocked", reason, text=blocker.get("reason", ""), actions=(blocker.get("required_action") or "Inspect the model-reported blocker",))
+                            return self.finish(
+                                "blocked",
+                                reason,
+                                text=blocker.get("reason", ""),
+                                actions=(
+                                    blocker.get("required_action")
+                                    or "Inspect the model-reported blocker",
+                                ),
+                            )
                         if reason == "source_wait":
-                            return self.finish("waiting", "source_wait", pending=("source",))
+                            return self.finish(
+                                "waiting", "source_wait", pending=("source",)
+                            )
                         if (
                             reason in {"approval_required", "attention_required"}
                             and self.waiting_request
@@ -1469,22 +1606,32 @@ class RunController:
                                 ),
                             )
                         return self.finish(
-                            "paused"
-                            if reason == "pause"
-                            else "cancelled"
-                            if reason == "cancel"
-                            else "failed"
-                            if reason == "deadline_reached"
-                            else "blocked",
+                            (
+                                "paused"
+                                if reason == "pause"
+                                else (
+                                    "cancelled"
+                                    if reason == "cancel"
+                                    else (
+                                        "failed"
+                                        if reason == "deadline_reached"
+                                        else "blocked"
+                                    )
+                                )
+                            ),
                             reason,
                         )
                     if isinstance(error, ModelCancelled) and self.host_action:
                         return self.finish(
-                            "paused"
-                            if self.host_action == "pause"
-                            else "cancelled"
-                            if self.host_action == "cancel"
-                            else "blocked",
+                            (
+                                "paused"
+                                if self.host_action == "pause"
+                                else (
+                                    "cancelled"
+                                    if self.host_action == "cancel"
+                                    else "blocked"
+                                )
+                            ),
                             self.host_action,
                         )
                     if (
@@ -1525,43 +1672,80 @@ class RunController:
                             )
                             return self.finish(
                                 "retrying",
-                                "request_timeout"
-                                if isinstance(error, ModelDeadlineExceeded)
-                                else "provider_transient",
+                                (
+                                    "request_timeout"
+                                    if isinstance(error, ModelDeadlineExceeded)
+                                    else "provider_transient"
+                                ),
                                 retry_at=retry_at,
                             )
-                    from homebrew_harness.context.compaction import SummaryCompactionError
+                    from homebrew_harness.context.compaction import (
+                        SummaryCompactionError,
+                    )
+
                     reason = (
                         "deadline_reached"
                         if self.deadline().remaining() == 0
-                        else "context_compaction_required"
-                        if isinstance(error, SummaryCompactionError)
-                        else "provider_blocked"
-                        if isinstance(error, ModelGatewayError)
-                        and not isinstance(error, ModelDeadlineExceeded)
-                        and s.gateway.blocked
-                        and self.deadline().remaining() > 0
-                        else "deadline_reached"
-                        if self.deadline().remaining() == 0
-                        else error.reason_code
-                        if isinstance(error, ModelDeadlineExceeded)
-                        else getattr(error, "reason_code", None) or error.code
-                        if isinstance(error, RecoveryRequired) and (getattr(error, "reason_code", None) or getattr(error, "code", None))
-                        else "provider_" + error.kind
-                        if isinstance(error, ProviderError)
-                        else "execution_failed"
+                        else (
+                            "context_compaction_required"
+                            if isinstance(error, SummaryCompactionError)
+                            else (
+                                "provider_blocked"
+                                if isinstance(error, ModelGatewayError)
+                                and not isinstance(error, ModelDeadlineExceeded)
+                                and s.gateway.blocked
+                                and self.deadline().remaining() > 0
+                                else (
+                                    "deadline_reached"
+                                    if self.deadline().remaining() == 0
+                                    else (
+                                        error.reason_code
+                                        if isinstance(error, ModelDeadlineExceeded)
+                                        else (
+                                            getattr(error, "reason_code", None)
+                                            or error.code
+                                            if isinstance(error, RecoveryRequired)
+                                            and (
+                                                getattr(error, "reason_code", None)
+                                                or getattr(error, "code", None)
+                                            )
+                                            else (
+                                                "provider_" + error.kind
+                                                if isinstance(error, ProviderError)
+                                                else "execution_failed"
+                                            )
+                                        )
+                                    )
+                                )
+                            )
+                        )
                     )
                     return self.finish(
-                        "failed"
-                        if reason == "deadline_reached"
-                        else "blocked"
-                        if isinstance(
-                            error,
-                            (ProviderError, ModelGatewayError, RecoveryRequired, SummaryCompactionError),
-                        )
-                        else "failed",
+                        (
+                            "failed"
+                            if reason == "deadline_reached"
+                            else (
+                                "blocked"
+                                if isinstance(
+                                    error,
+                                    (
+                                        ProviderError,
+                                        ModelGatewayError,
+                                        RecoveryRequired,
+                                        SummaryCompactionError,
+                                    ),
+                                )
+                                else "failed"
+                            )
+                        ),
                         reason,
-                        actions=("Inspect retained history and summary diagnostics; adjust context or explicitly resume",) if isinstance(error, SummaryCompactionError) else ("Inspect run status before resuming",),
+                        actions=(
+                            (
+                                "Inspect retained history and summary diagnostics; adjust context or explicitly resume",
+                            )
+                            if isinstance(error, SummaryCompactionError)
+                            else ("Inspect run status before resuming",)
+                        ),
                     )
         finally:
             # Keep heartbeats during true resource cleanup; Runner closes them afterwards.

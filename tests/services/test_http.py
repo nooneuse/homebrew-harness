@@ -17,7 +17,7 @@ import httpx
 from homebrew_harness import RemoteService, ControlConnection
 from homebrew_harness.contracts import SDKError
 from homebrew_harness.services.http_client import ControlClient, descriptor_path
-from homebrew_harness.services.cli import attach, execute
+from homebrew_harness.services.cli import attach, execute, operate
 from homebrew_harness.cli import parser
 from tests.services import test_runtime as fixture
 from tests.support.clients import reply, call
@@ -60,6 +60,34 @@ class HTTPControl(unittest.TestCase):
             )
         )
         return config
+
+    def test_work_progress_and_context_use_authenticated_api_and_text_ui(self):
+        _, _, service, credentials = self.service()
+        service.pause()
+        with RemoteService(credentials, control=True) as remote:
+            work = remote.work.submit("Wait for operational context.")
+            before = service.store.work(work.id)
+            self.assertEqual(work.progress()["phase"], "developing")
+            args = parser().parse_args(
+                [
+                    "service",
+                    "work",
+                    service.id,
+                    "context",
+                    work.id,
+                    "The operator will resume this attempt later.",
+                ]
+            )
+            operate(remote, args)
+            after = service.store.work(work.id)
+            self.assertEqual(
+                after["requirements_revision"], before["requirements_revision"]
+            )
+            self.assertIn("operator will resume", after["execution_context"][-1])
+            args = parser().parse_args(
+                ["service", "work", service.id, "progress", work.id]
+            )
+            self.assertEqual(operate(remote, args)["handoff_ref"], None)
 
     def test_authentication_is_required_for_queries_and_commands(self):
         _, _, service, c = self.service()
@@ -521,35 +549,63 @@ class HTTPControl(unittest.TestCase):
 
     def test_work_execution_controls_cross_http_while_test_keeps_running(self):
         from tests.runtime.test_interaction import eventually
+
         tests = self.workspace / "tests"
         tests.mkdir()
         (tests / "__init__.py").write_text("")
         (tests / "test_long.py").write_text(
-            'import time,unittest\nclass Long(unittest.TestCase):\n'
+            "import time,unittest\nclass Long(unittest.TestCase):\n"
             ' def test_wait(self):\n  print("test ready",flush=True)\n  time.sleep(20)\n'
         )
-        host, _ = self.host([
-            reply(calls=[call("test", name="run_tests", arguments=json.dumps({
-                "name": "unit-tests", "execution": {"wait_seconds": 0}
-            }))]), reply("Waiting for the test."), reply("Test cancellation observed.")
-        ], allow_tests=("unit-tests",))
-        owner = host.services.start(self.spec(run_defaults={
-            "tools": ["run_tests"], "allow_tests": ["unit-tests"], "episode_model_calls": 5
-        }))
+        host, _ = self.host(
+            [
+                reply(
+                    calls=[
+                        call(
+                            "test",
+                            name="run_tests",
+                            arguments=json.dumps(
+                                {"name": "unit-tests", "execution": {"wait_seconds": 0}}
+                            ),
+                        )
+                    ]
+                ),
+                reply("Waiting for the test."),
+                reply("Test cancellation observed."),
+            ],
+            allow_tests=("unit-tests",),
+        )
+        owner = host.services.start(
+            self.spec(
+                run_defaults={
+                    "tools": ["run_tests"],
+                    "allow_tests": ["unit-tests"],
+                    "episode_model_calls": 5,
+                }
+            )
+        )
         self.addCleanup(owner.close)
         with RemoteService.from_root(self.control, control=True) as service:
             work = service.work.submit("Run and observe the registered test")
             rows = eventually(lambda: work.executions()["executions"], 15)
             identity = rows[0]["ref"]["id"]
-            eventually(lambda: "test ready" in work.execution_output(identity)["content"], 10)
+            eventually(
+                lambda: "test ready" in work.execution_output(identity)["content"], 10
+            )
             self.assertTrue(work.execution(identity)["execution_pending"])
             with RemoteService.from_root(self.control, control=False) as observer:
                 with self.assertRaises(SDKError):
                     observer.work.get(work.id).stop_execution(identity)
             accepted = work.stop_execution(identity, request_id="stop-long-test")
             self.assertEqual(accepted["state"], "accepted")
-            settled = eventually(lambda: (row if not row["execution_pending"] else None)
-                                 if (row := work.execution(identity)) else None, 10)
+            settled = eventually(
+                lambda: (
+                    (row if not row["execution_pending"] else None)
+                    if (row := work.execution(identity))
+                    else None
+                ),
+                10,
+            )
             self.assertEqual(settled["state"], "cancelled")
             self.assertTrue(settled["cleanup"]["complete"])
             result = work.execution_output(identity, stream="result")["content"]

@@ -2,6 +2,8 @@
 
 [简体中文](PYTHON_API.zh-CN.md)
 
+Repository Work handles provide `work.progress()` for the current stage, handoff and evidence references. `work.context(text, request_id=...)` adds operational context without changing accepted requirements; `work.steer(...)` retains its requirement-amendment semantics. Resume uses a valid handoff or delivery candidate before considering another development Run. These controls use the same authenticated HTTP interface as Text UI.
+
 `Harness` is the application entry point. It prepares models and tools, owns attached executions, and exposes the same controllers used by the CLI. `AsyncHarness` provides awaitable views of those services.
 
 ## Start a Session
