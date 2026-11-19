@@ -87,7 +87,7 @@ class ContextContinuityTests(unittest.TestCase):
         checkpoint = c.store.checkpoint()
         resumed, requests = self.compactor([reply('Facts: launch(owner, cwd).')])
         resumed.store.restore_checkpoint(checkpoint)
-        messages = [{'role': 'user', 'content': 'Implement'}, *batch('read', [preview])]
+        messages = [{'role': 'user', 'content': 'Implement'}, *batch('read', [preview]), {'role':'assistant','content':'Read consumed; retain its evidence.'}]
         resumed.compact_history(messages, 'Implement')
         self.assertIn('EXACT_API_AT_END', requests[0]['messages'][-1]['content'])
         self.assertNotIn('[Tool result saved]', requests[0]['messages'][-1]['content'])
@@ -112,7 +112,7 @@ class ContextContinuityTests(unittest.TestCase):
         messages = [{'role': 'user', 'content': 'Task'}, *batch('large', [preview])]
         original = copy.deepcopy(messages)
         with self.assertRaises(CompactionError) as failure:
-            c.compact_history(messages, 'Task')
+            c.compact_history(messages + [{'role':'assistant','content':'Consumed evidence'}], 'Task', required=True)
         self.assertEqual(error_info(failure.exception)['code'], 'summary_archive_char_limit')
         self.assertEqual(messages, original)
         self.assertEqual(requests, [])

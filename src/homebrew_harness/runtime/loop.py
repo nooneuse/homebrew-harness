@@ -487,7 +487,7 @@ def _agent_loop(
                 continue
             if is_context_overflow(error) and reactive_retries < 1:
                 messages[:] = compactor.compact_history(
-                    messages, active_request, plan, keep_recent=5, tools=tools
+                    messages, active_request, plan, keep_recent=5, tools=tools, required=True
                 )
                 reactive_retries += 1
                 continue

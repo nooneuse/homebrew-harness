@@ -295,7 +295,7 @@ class ProtocolInputContracts(unittest.TestCase):
                     {"role": "assistant", "content": "important fact"},
                 ]
                 with self.assertRaises(CompactionError):
-                    compactor.compact_history(history, "Keep facts")
+                    compactor.compact_history(history, "Keep facts", required=True)
                 self.assertEqual(history[1]["content"], "important fact")
 
     def test_private_replay_is_included_in_input_size(self):
@@ -391,8 +391,9 @@ class ProtocolInputContracts(unittest.TestCase):
         adapter.backend.client.close()
         adapter.backend.client = httpx.Client(
             base_url=local_endpoint(),
-            transport=httpx.MockTransport(lambda request: httpx.Response(
-                200, json=responses("Recovered"))),
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json=responses("Recovered"))
+            ),
         )
         recovered = gateway.request(
             model="fixture", messages=[{"role": "user", "content": "Answer"}]
