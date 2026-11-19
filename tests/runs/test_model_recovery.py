@@ -98,11 +98,13 @@ class ModelRecoveryTests(unittest.TestCase):
         self.assertEqual(self.store.get(control.id)["model_feedback"]["consecutive"], 2)
 
     def test_unverified_tool_effect_prevents_model_error_feedback(self):
-        from unittest.mock import patch
         control, session, _, _ = self.responses([])
         control.prepare()
-        with patch.object(session, "recovery_operations", return_value=[{"state":"unknown"}]):
-            self.assertFalse(control.observe_model_failure(filtered(), session.messages))
+        session.runtime_store.put('operations', 'unverified', {
+            'checkpoint': session.checkpoint_key, 'call_id': 'unverified',
+            'state': 'unknown', 'revision': 0,
+        })
+        self.assertFalse(control.observe_model_failure(filtered(), session.messages))
         self.assertFalse(self.store.get(control.id).get("model_feedback"))
 
     def test_recovery_preparation_reports_its_specific_cause(self):

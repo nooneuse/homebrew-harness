@@ -26,6 +26,8 @@ Bash, registered tests, subagent `task` and `workflow` accept an `execution` obj
 
 `timeout_seconds` is an optional execution deadline. Omission or `null` adds no per-call wallclock deadline. The parent Run or task deadline and explicitly configured host limits still apply. `wait_seconds` accepts 0–60 seconds and is only an observation window for interactive calls; it is not accepted in one-shot mode.
 
+Interactive executions can continue across normal Run Episode boundaries. Checkpoints retain their execution IDs, and the next Episode can observe or control the same attempt. A `started` operation with a live owner remains pending; an operation whose owner was lost, or whose effects are unknown, requires recovery inspection. Explicit stops and parent deadlines still end execution.
+
 Execution mode does not change permissions, working directories, or container policy. Short calls normally finish during the initial wait. The existing Bash `run_in_background` endpoint remains available through its background module; use the execution options for the shared observation and input interface.
 
 For another registered workspace tool, use the shared wrapper to select the execution mode without repeating options in every tool schema:

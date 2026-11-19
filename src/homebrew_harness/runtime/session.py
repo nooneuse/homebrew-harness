@@ -959,16 +959,7 @@ class HarnessSession:
     @persistence_scope(operation="session_checkpoint_prepare")
     def _save_checkpoint(self, phase="idle", *, ack=()):
         if self._runtime_started:
-            operations = self.runtime_store.items(
-                "operations", owner=self.checkpoint_key
-            )
-            self._recovery_blocked.extend(
-                v["call_id"]
-                for v in operations.values()
-                if v["checkpoint"] == self.checkpoint_key
-                and v["state"] in {"started", "unknown"}
-                and v["call_id"] not in self._recovery_blocked
-            )
+            self._refresh_operation_recovery()
             for message in self.messages:
                 if message.get("role") == "tool":
                     try:
@@ -1004,10 +995,22 @@ class HarnessSession:
             else:
                 self._persistence_error = None
 
-    def _refresh_recovery(self):
+    def _refresh_operation_recovery(self):
         for row in self.recovery_operations():
-            if not row["active"] and row["call_id"] not in self._recovery_blocked:
-                self._recovery_blocked.append(row["call_id"])
+            if row["active"] and row["state"] != "unknown":
+                continue
+            # An owner can commit its result between the scan and the liveness
+            # check. Re-read the durable fact before retaining a blocker.
+            current = self.runtime_store.get("operations", row["operation_id"])
+            if (
+                current is not None
+                and current["state"] in {"started", "unknown"}
+                and current["call_id"] not in self._recovery_blocked
+            ):
+                self._recovery_blocked.append(current["call_id"])
+
+    def _refresh_recovery(self):
+        self._refresh_operation_recovery()
         for key in self.cron.unresolved() if self.cron else []:
             if key not in self._recovery_blocked:
                 self._recovery_blocked.append(key)

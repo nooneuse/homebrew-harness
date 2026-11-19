@@ -1427,7 +1427,8 @@ class RunController:
                     self.last_exception = error
                     if isinstance(error, (KeyboardInterrupt, SystemExit)):
                         raise
-                    if s.recovery_operations() or any(
+                    s._refresh_operation_recovery()
+                    if s._recovery_blocked or any(
                         needs_inspection(m.get("content", "{}"))
                         for m in s.messages
                         if m.get("role") == "tool"

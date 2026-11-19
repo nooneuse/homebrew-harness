@@ -40,7 +40,8 @@ def observe(control, error, messages):
     if "report_run_blocker" not in control.spec.effective_tools() or not recoverable(error):
         return False
     control.safe_point()
-    if control.session.recovery_operations() or any(needs_inspection(m.get("content", "{}")) for m in messages if m.get("role") == "tool"):
+    control.session._refresh_operation_recovery()
+    if control.session._recovery_blocked or any(needs_inspection(m.get("content", "{}")) for m in messages if m.get("role") == "tool"):
         return False
     previous = control.state.get("model_feedback") or {}
     count = previous.get("consecutive", 0) + 1
