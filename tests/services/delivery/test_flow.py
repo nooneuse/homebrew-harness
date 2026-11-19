@@ -386,6 +386,63 @@ class FlowTests(unittest.TestCase):
         service.decide(request, "approve", decision_id="target")
         eventually(lambda: work.snapshot().state == "delivered", 20)
 
+    def test_ci_triage_keeps_fixed_delta_without_serializing_host_inventory(self):
+        from homebrew_harness.services.agent import ServiceAgent
+
+        original = ServiceAgent._execute
+        inventory = {
+            f"internal_version_{n}.txt": {
+                "sha256": "a" * 64,
+                "version": [1, 2, 3, 4, 5],
+                "executable": False,
+            }
+            for n in range(2000)
+        }
+
+        def execute(agent, job, **kwargs):
+            if job["kind"] == "ci_triage":
+                with agent.store.db.write() as conn:
+                    row = agent.store.get("changesets", job["target"], conn)
+                    row["primary_expected"] = inventory
+                    agent.store.put(conn, "changesets", row)
+            return original(agent, job, **kwargs)
+
+        self.peer.ci_failure = True
+        with patch.object(ServiceAgent, "_execute", execute):
+            service = self.start(auto_ci_fix=False)
+            work = service.work.submit(
+                "Fix the scoped source and diagnose its fixed CI result."
+            )
+            row = eventually(
+                lambda: next(
+                    (
+                        r
+                        for r in service.records("changesets")["items"]
+                        if r.get("ci_diagnosis")
+                    ),
+                    None,
+                ),
+                35,
+            )
+        self.assertEqual(row["ci_diagnosis"]["classification"], "code")
+        inputs = [
+            json.loads(m["content"])["input"]
+            for request in self.peer.model_requests
+            for m in request["messages"]
+            if m.get("role") == "user"
+            and m.get("content", "").startswith("{")
+            and json.loads(m["content"]).get("job", {}).get("kind") == "ci_triage"
+        ]
+        self.assertTrue(inputs)
+        self.assertNotIn("primary_expected", inputs[-1])
+        self.assertIn("src/value.txt", inputs[-1]["candidate"]["delta"])
+        self.assertEqual(
+            service.runtime.maintenance.store.get("changesets", row["id"])[
+                "primary_expected"
+            ],
+            inventory,
+        )
+
     def test_lost_pull_creation_ack_is_reconciled_without_duplicate_write(self):
         self.peer.drop = "pull"
         service = self.start()

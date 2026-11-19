@@ -532,6 +532,7 @@ class ServiceAgent:
                 "integration_quality",
                 "merge_rules",
                 "candidate_history",
+                "primary_expected",
             }
         }
         if primary.get("candidate") and kind in {"review", "ci_triage"}:
