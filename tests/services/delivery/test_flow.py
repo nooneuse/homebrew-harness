@@ -443,6 +443,31 @@ class FlowTests(unittest.TestCase):
             inventory,
         )
 
+    def test_repair_derives_work_identity_without_a_prior_run_context(self):
+        from homebrew_harness.services.delivery.runtime import Delivery
+
+        original = Delivery.repair
+
+        def repair(delivery, row, work):
+            settings = {
+                k: v for k, v in work["run_spec"].items() if k != "work_context"
+            }
+            return original(delivery, row, {**work, "run_spec": settings})
+
+        self.peer.ci_failure = True
+        with patch.object(Delivery, "repair", repair):
+            service = self.start(auto_ci_fix=True)
+            work = service.work.submit("Continue this Work through focused CI repair.")
+            eventually(lambda: self.pending_target(service), 45)
+        saved = service.store.work(work.id)
+        self.assertEqual(saved["ci_fix_attempts"], 1)
+        context = saved["run_spec"]["work_context"]
+        self.assertEqual(context["service_id"], service.id)
+        self.assertEqual(context["work_id"], work.id)
+        self.assertEqual(
+            context["requirements_revision"], saved["requirements_revision"]
+        )
+
     def test_lost_pull_creation_ack_is_reconciled_without_duplicate_write(self):
         self.peer.drop = "pull"
         service = self.start()

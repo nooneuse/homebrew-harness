@@ -690,6 +690,9 @@ class Delivery:
                 + row["ci_diagnosis"]["plan"],
                 "work_context": {
                     **work["run_spec"].get("work_context", {}),
+                    "service_id": self.ms.id,
+                    "work_id": work["id"],
+                    "requirements_revision": work["requirements_revision"],
                     "progress": {
                         "summary": "The existing candidate requires only the confirmed repair.",
                         "remaining": [row["ci_diagnosis"]["plan"]],
