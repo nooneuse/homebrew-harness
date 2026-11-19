@@ -580,7 +580,7 @@ def unretire(root, sid, *, now=None):
         data, _ = _load_archive(root, sid, meta["cold_archive"])
         for reference in meta["protected_refs"]:
             if re.fullmatch(
-                r"\.harness/(?:[A-Za-z0-9_-]+/)?(?:tool-results|transcripts)/[0-9a-f]{32}\.(?:txt|jsonl)",
+                r"\.harness/(?:(?:[A-Za-z0-9_-]+/)?(?:tool-results|transcripts)/[0-9a-f]{32}\.(?:txt|jsonl)|media/[0-9a-f]{64}\.(?:png|jpg))",
                 reference,
             ):
                 with SafeFile(root, reference) as target, target.open_read():

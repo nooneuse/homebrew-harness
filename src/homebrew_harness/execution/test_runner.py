@@ -62,6 +62,11 @@ def executable_identity(path):
         "bash",
         "zsh",
         "fish",
+        "dash",
+        "ash",
+        "ksh",
+        "csh",
+        "tcsh",
         "sudo",
         "su",
         "rm",
@@ -112,6 +117,7 @@ class TestRecipe:
         object.__setattr__(
             self, "snapshot_limits", validate_limits(self.snapshot_limits)
         )
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
         for name in (
             "argv",
             "roles",
@@ -120,6 +126,9 @@ class TestRecipe:
             "env",
             "test_roots",
         ):
+=======
+        for name in ("argv", "roles", "input_globs", "locked_globs", "env", "test_roots"):
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
             object.__setattr__(self, name, tuple(getattr(self, name)))
         if not isinstance(self.name, str) or not _ID.fullmatch(self.name):
             raise TestRunnerError("Invalid registered test name.")
@@ -157,6 +166,7 @@ class TestRecipe:
         ):
             if type(getattr(self, name)) is not int or getattr(self, name) < 1:
                 raise TestRunnerError("Test resource limits must be positive integers.")
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
         if self.cpu_seconds is not None and (
             type(self.cpu_seconds) is not int or self.cpu_seconds < 1
         ):
@@ -176,6 +186,17 @@ class TestRecipe:
             or ".." in root
             for root in self.test_roots
         ):
+=======
+        if self.cpu_seconds is not None and (type(self.cpu_seconds) is not int or self.cpu_seconds < 1):
+            raise TestRunnerError("CPU seconds must be a positive integer or None.")
+        if self.selector is not None:
+            from .test_selection import LAUNCHER
+            if self.argv[1:] != ("-I", "-c", LAUNCHER):
+                raise TestRunnerError("Selection requires the fixed builtin test launcher.")
+        if self.selector not in {None, "unittest", "pytest"}:
+            raise TestRunnerError("Unknown test selection adapter.")
+        if not self.test_roots or any(not isinstance(root, str) or not re.fullmatch(r"[A-Za-z_][\w/-]*", root) or ".." in root for root in self.test_roots):
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
             raise TestRunnerError("Test roots must be relative directories.")
         for key in ("timeout", "approval_seconds"):
             value = getattr(self, key)
@@ -304,11 +325,16 @@ os.execve(spec["argv"][0], spec["argv"], spec["env"])
 """
 
 
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
 from .test_selection import (
     LAUNCHER as _UNITTEST,
     validate_selection,
     selection_environment,
 )
+=======
+from .test_selection import LAUNCHER as _UNITTEST, validate_selection, selection_environment
+
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
 
 
 class TestRunner:
@@ -343,12 +369,16 @@ class TestRunner:
         if (
             type(max_runs) is not int
             or max_runs < 1
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
             or total_seconds is not None
             and (
                 type(total_seconds) not in (int, float)
                 or not math.isfinite(total_seconds)
                 or total_seconds <= 0
             )
+=======
+            or total_seconds is not None and (type(total_seconds) not in (int, float) or not math.isfinite(total_seconds) or total_seconds <= 0)
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
         ):
             raise TestRunnerError("Invalid shared TestRunner limits.")
         self.runs = 0
@@ -487,6 +517,7 @@ class TestRunner:
         return cwd
 
     def approve(
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
         self,
         name,
         *,
@@ -496,6 +527,10 @@ class TestRunner:
         max_runs=None,
         expected=None,
         private=False,
+=======
+        self, name, *, cwd=None, role=None, task_id=None, max_runs=None, expected=None,
+        private=False
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
     ):
         recipe = self._recipe(name)
         target = self._cwd(cwd or self.workdir, recipe)
@@ -541,7 +576,10 @@ class TestRunner:
         if type(private) is not bool:
             raise TestRunnerError("Private approval must be an explicit boolean.")
         from homebrew_harness.execution.execution_control import acquired
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
 
+=======
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
         with acquired(self._account_lock):
             if private:
                 self._private_grants[grant.id] = threading.current_thread()
@@ -722,12 +760,16 @@ class TestRunner:
         selection = validate_selection(selection, recipe.selector, recipe.test_roots)
         cwd = self._cwd(workdir or self.workdir, recipe)
         from .test_selection import validate_target_paths
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
 
+=======
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
         validate_target_paths(cwd, recipe.selector, selection)
         scope = current_scope()
         context = (
             context or _CONTEXT.get() or TestContext(scope.role, scope.task_id or None)
         )
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
         deadline = Deadline.after(recipe.timeout, source="tool").intersect(
             scope.deadline
         )
@@ -735,6 +777,11 @@ class TestRunner:
             deadline = deadline.intersect(
                 Deadline.after(max(0, self.total_seconds - self.seconds), source="tool")
             )
+=======
+        deadline = Deadline.after(recipe.timeout, source="tool").intersect(scope.deadline)
+        if self.total_seconds is not None:
+            deadline = deadline.intersect(Deadline.after(max(0, self.total_seconds - self.seconds), source="tool"))
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
         if scope.gateway is not None:
             deadline = deadline.intersect(scope.gateway.operation_deadline())
         while not self.lock.acquire(timeout=0.05):
@@ -751,6 +798,7 @@ class TestRunner:
             if self.closed.is_set():
                 raise TestRunnerError("TestRunner is closed.")
             if self.runs >= self.max_runs:
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
                 raise boundary_error(
                     TestRunnerError,
                     "test_run_limit",
@@ -770,6 +818,11 @@ class TestRunner:
                     observed_value=self.seconds,
                     unit="seconds",
                 )
+=======
+                raise boundary_error(TestRunnerError, "test_run_limit", "TestRunner shared run limit is exhausted.", limit_name="test_runner.max_runs", limit_value=self.max_runs, observed_value=self.runs, unit="test_runs")
+            if self.total_seconds is not None and self.seconds >= self.total_seconds:
+                raise boundary_error(TestRunnerError, "test_time_limit", "TestRunner shared time limit is exhausted.", limit_name="test_runner.total_seconds", limit_value=self.total_seconds, observed_value=self.seconds, unit="seconds")
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
             grant = self._grant(recipe, cwd, context)
             if grant is None:
                 raise TestRunnerError(
@@ -901,6 +954,7 @@ class TestRunner:
                         if deadline.remaining() == 0:
                             status = "timeout"
                             break
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
                         for key, _ in selector.select(
                             min(0.05, deadline.remaining())
                             if deadline.remaining() is not None
@@ -911,6 +965,11 @@ class TestRunner:
                                 emit_output,
                             )
 
+=======
+                        for key, _ in selector.select(min(0.05, deadline.remaining()) if deadline.remaining() is not None else 0.05):
+                            chunk = os.read(key.fileobj.fileno(), 65536)
+                            from homebrew_harness.execution.operations import emit_output
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
                             emit_output(key.data, chunk)
                             if not chunk:
                                 selector.unregister(key.fileobj)
@@ -991,6 +1050,7 @@ class TestRunner:
                 "stdout": prefix + "/stdout.txt",
                 "stderr": prefix + "/stderr.txt",
             }
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
             receipt["limits"] = {
                 "timeout_seconds": recipe.timeout,
                 "deadline_source": deadline.source,
@@ -1005,6 +1065,13 @@ class TestRunner:
                 "shared_max_runs": self.max_runs,
                 "shared_total_seconds": self.total_seconds,
             }
+=======
+            receipt["limits"] = {"timeout_seconds": recipe.timeout, "deadline_source": deadline.source,
+                "effective_timeout_seconds": max(0, deadline.expires_at-started) if deadline.expires_at is not None else None,
+                "output_bytes": recipe.output_bytes, "cpu_seconds": recipe.cpu_seconds,
+                "memory_mb": recipe.memory_mb, "shared_max_runs": self.max_runs,
+                "shared_total_seconds": self.total_seconds}
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
             if diagnostic:
                 receipt["error_info"] = diagnostic["error_info"]
             receipt["execution_backend"] = self.backend.name
@@ -1121,6 +1188,7 @@ class TestRunner:
             )
             and (task_id is None or record["task_id"] == task_id)
         ]
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
         ordered = sorted(records, key=lambda record: record["started"])
         if (
             selection is None
@@ -1139,6 +1207,13 @@ class TestRunner:
             if record.get("selection") == selection
             and (selection is not None or record.get("test_scope", "full") == "full")
         ]
+=======
+        ordered = sorted(records, key=lambda record: record['started'])
+        if selection is None and ordered and ordered[-1].get('test_scope', 'full') == 'selected' and ordered[-1]['status'] != 'passed':
+            return {'ok': False, 'reason': 'Later selected verification failed; fresh full verification is required.', 'run_id': ordered[-1]['run_id']}
+        records = [record for record in records if record.get('selection') == selection
+                   and (selection is not None or record.get('test_scope', 'full') == 'full')]
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
         latest = (
             (records[-1] if records else None)
             if durable_scope is not None
@@ -1194,9 +1269,13 @@ class TestRunner:
         if tool_name == "list_tests":
             result = {"tests": self.catalog()}
         elif tool_name == "run_tests":
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
             result = self.run(
                 arguments["name"], workdir=workdir, selection=arguments.get("selection")
             )
+=======
+            result = self.run(arguments["name"], workdir=workdir, selection=arguments.get("selection"))
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
         elif tool_name == "get_test_result":
             result = self.get(arguments["run_id"])
         else:

@@ -402,14 +402,6 @@ store.close()
         self.assertEqual((self.root / "out.txt").read_text(), "done")
 
     def test_late_model_tool_proposal_is_discarded_at_total_deadline(self):
-        server = self.service([])
-
-        class SlowResponse:
-            def popleft(inner):
-                time.sleep(5)
-                return self.write().model_dump(exclude_none=True)
-
-        server.responses = SlowResponse()
         state = self.store.create(
             RunSpec(
                 "Write output",
@@ -421,6 +413,19 @@ store.close()
                 shutdown_seconds=0.5,
             )
         )
+        # Release the proposal only after the total deadline, independent of
+        # worker startup speed. A fixed sleep shorter than the budget lets a
+        # fast-starting worker receive the proposal before the deadline and
+        # legitimately execute the tool, which is not the scenario under test.
+        deadline = state["deadline_at"]
+
+        class SlowResponse:
+            def popleft(inner):
+                time.sleep(max(0.0, deadline + 1.0 - time.time()))
+                return self.write().model_dump(exclude_none=True)
+
+        server = self.service([])
+        server.responses = SlowResponse()
         with self.env(server):
             result = self.supervisor(server).supervise(state["id"])
         self.assertEqual(result["status"], "failed", result["last_outcome"])

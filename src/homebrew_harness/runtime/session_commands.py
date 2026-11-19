@@ -34,6 +34,7 @@ HELP = """/model [ALIAS or same-connection MODEL]  Show or choose the Lead model
 /usage  Inspect model usage; /storage  Inspect storage
 /tests [approve|revoke NAME]  Manage fixed test grants
 /mcp [close CONNECTION_ID]  Inspect MCP connections
+/media [list|show REF|export REF PATH]  Identify and export session images
 /queue TEXT; /steer TEXT; /interrupt TEXT; /steer-to MEMBER TEXT
 /approve ID [REVISION] yes/no  Decide an exact request
 Default entry also supports /status, /pause, /cancel, /upgrade, /detach
@@ -46,6 +47,47 @@ def visible_history(messages):
         for name in ("_protocol_state", "_replay", "reasoning_content"):
             message.pop(name, None)
     return history
+
+
+def ensure_history_media_supported(messages, binding):
+    """Reject a model switch that would strand accepted history images.
+
+    History images are never silently dropped, OCR'd or degraded to text.
+    The target binding must jointly declare image input (model capabilities)
+    and actually carry it on the wire (adapter), mirroring the pre-submission
+    gate in providers.common.
+    """
+    from homebrew_harness.contracts import content_media
+    from homebrew_harness.execution.providers import adapter_for
+
+    images = sum(
+        len(content_media(message.get("content")))
+        for message in messages
+    )
+    if not images:
+        return
+    adapter = (
+        binding.client._adapter
+        if isinstance(binding.client, ModelGateway)
+        else adapter_for(binding.client)
+    )
+    if not adapter.capabilities.supports_input("image"):
+        raise ValueError(
+            f"Session history contains {images} accepted image(s), but model "
+            f"'{binding.model}' does not declare image input support. History "
+            "images are never silently dropped or converted to text. Select an "
+            "image-capable model/profile, or start a new session (/new) to "
+            "handle the images explicitly."
+        )
+    wire = getattr(adapter, "supported_input_modalities", ("text",))
+    if "image" not in wire:
+        raise ValueError(
+            f"Session history contains {images} accepted image(s), but "
+            f"protocol adapter '{adapter.protocol}' cannot carry native image "
+            "content in this milestone. Select the documented image-capable "
+            "adapter (chat_completions), or start a new session (/new) to "
+            "handle the images explicitly."
+        )
 
 
 def busy(session):
@@ -61,6 +103,7 @@ def select(session, choice, *, restore=False):
         raise ValueError("Finish active model/tool work before changing the model.")
     binding = choose_binding(session.models, session._model_source_client, session._model_source_name, choice,
         context_chars=session._model_defaults[0], output_tokens=session._model_defaults[1])
+    ensure_history_media_supported(session.messages, binding)
     client = session.gateway.bind(binding.client)
     if binding.identity() == session.lead_binding.identity():
         return model_status(session.models, session.lead_binding)
@@ -201,4 +244,24 @@ def run(session, command):
             "Read-only review of the labelled snapshot; reference findings, not completion or authorization:\n" + json.dumps(output, ensure_ascii=False)})
         save_history(session, before)
         return json.dumps(output, ensure_ascii=False)
+    if command.name == "media":
+        from homebrew_harness.contracts import history_media
+        from homebrew_harness.media import MediaError, MediaStore
+        workdir = session.workspace.lead_cwd()
+        store = MediaStore(workdir)
+        if command.action == "list":
+            items = []
+            for media in history_media(session.messages):
+                entry = dict(media)
+                try:
+                    entry.update(store.describe(media["media_ref"]))
+                    entry["status"] = "available"
+                except MediaError as error:
+                    entry["status"] = error.media_code
+                items.append(entry)
+            return json.dumps({"media": items}, ensure_ascii=False, indent=2)
+        if command.action == "show":
+            return json.dumps(store.describe(command.argument), ensure_ascii=False, indent=2)
+        ref, destination = command.values
+        return json.dumps(store.export(ref, destination, workdir), ensure_ascii=False, indent=2)
     raise ValueError("Unsupported interactive command.")

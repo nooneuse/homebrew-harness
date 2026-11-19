@@ -185,7 +185,7 @@ class SessionHandle(Handle):
         )
 
     @host_operation
-    def submit(self, text, *, request_id=None, goal=None):
+    def submit(self, text, *, request_id=None, goal=None, parts=None):
         self.core.check_open()
         if goal is not None:
             from homebrew_harness.orchestration.hard_conditions import validate_spec
@@ -202,14 +202,22 @@ class SessionHandle(Handle):
                 sdk_turn=True,
                 request_id=request_id,
                 goal=goal,
+                parts=parts,
             )
         self.core.changed.set()
         return TurnHandle(
             self.core, ExecutionRef("turn", identity, self.id), owned=True
         )
 
-    def execute(self, text, *, timeout=None, request_id=None, goal=None):
-        return self.submit(text, request_id=request_id, goal=goal).wait(timeout)
+    def execute(self, text, *, timeout=None, request_id=None, goal=None, parts=None):
+        return self.submit(
+            text, request_id=request_id, goal=goal, parts=parts
+        ).wait(timeout)
+
+    @property
+    def executions(self):
+        from .executions import Executions
+        return Executions(self.core, self.runtime.runtime_store, self.runtime.checkpoint_key)
 
     @property
     def executions(self):
@@ -239,6 +247,45 @@ class SessionHandle(Handle):
 
     def recovery_status(self):
         return self.runtime.recovery_status()
+
+    @host_operation
+    def media(self):
+        """Typed media references and metadata held by this Session's history.
+
+        Returns ordered, deduplicated descriptors (reference, media type, byte
+        size, content hash, dimensions, origin and retrieval status) for user
+        attachments and tool-produced image results; no text scraping needed.
+        """
+        from homebrew_harness.contracts import history_media
+        from homebrew_harness.media import MediaError, MediaStore
+
+        store = MediaStore(self.runtime.workspace.lead_cwd())
+        items = []
+        for media in history_media(list(self.runtime.messages)):
+            entry = dict(media)
+            try:
+                entry.update(store.describe(media["media_ref"]))
+                entry["status"] = "available"
+            except MediaError as error:
+                entry["status"] = error.media_code
+            items.append(entry)
+        return items
+
+    @host_operation
+    def media_metadata(self, reference):
+        """Describe one frozen media reference (identity, type, size, shape)."""
+        from homebrew_harness.media import MediaStore
+
+        return MediaStore(self.runtime.workspace.lead_cwd()).describe(reference)
+
+    @host_operation
+    def export_media(self, reference, destination):
+        """Export frozen media bytes to an authorized, non-existing path."""
+        from homebrew_harness.media import MediaStore
+
+        workdir = self.runtime.workspace.lead_cwd()
+        with output_scope():
+            return MediaStore(workdir).export(reference, destination, workdir)
 
     @host_operation
     def continue_recovery(self):

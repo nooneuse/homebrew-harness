@@ -42,8 +42,16 @@ class DeleteFileTests(unittest.TestCase):
 
     def test_large_binary_removal_does_not_read_a_content_snapshot(self):
         target = self.workdir/'large.bin'
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
         with target.open('wb') as stream:
             stream.truncate(65*1024*1024)
+=======
+        # The registered test runner applies RLIMIT_FSIZE=64,000,000 bytes, so the
+        # fixture must stay below it. The regression is size-independent: deletion
+        # must never call SafeFile.snapshot (patched below to raise on any call).
+        with target.open('wb') as stream:
+            stream.truncate(48*1024*1024)
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
         with patch.object(SafeFile, 'snapshot', side_effect=AssertionError('Deletion must not read file bytes.')):
             self.assertTrue(json.loads(run_delete('large.bin', self.workdir))['deleted'])
 

@@ -87,11 +87,15 @@ class WorkHandle(Handle):
 
     def retry(self, *, seconds=None, revision=None, request_id=None):
         revision = self.snapshot().revision if revision is None else revision
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
         return self.service.command(
             "work_retry",
             {"id": self.id, "revision": revision, "seconds": seconds},
             request_id,
         )
+=======
+        return self.service.command("work_retry", {"id": self.id, "revision": revision, "seconds": seconds}, request_id)
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
 
     def cancel(self, **kw):
         return self._control("work_cancel", **kw)
@@ -109,6 +113,7 @@ class WorkHandle(Handle):
         return self._control("work_revise", text=text, **kw)
 
     def executions(self):
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
         return self.service.query("work_executions", {"id": self.id})
 
     def execution(self, identity):
@@ -155,6 +160,23 @@ class WorkHandle(Handle):
             },
             request_id,
         )
+=======
+        return self.service.query('work_executions', {'id': self.id})
+
+    def execution(self, identity):
+        return self.service.query('work_execution_get', {'id': self.id, 'execution_id': identity})
+
+    def execution_output(self, identity, *, cursor=0, limit=16000, stream="output"):
+        return self.service.query('work_execution_output', {'id': self.id, 'execution_id': identity, 'cursor': cursor, 'limit': limit, 'stream': stream})
+
+    def stop_execution(self, identity, *, revision=None, execution_revision=None, request_id=None):
+        revision = self.snapshot().revision if revision is None else revision
+        return self.service.command('work_execution_stop', {'id': self.id, 'revision': revision, 'execution_id': identity, 'execution_revision': execution_revision}, request_id)
+
+    def send_execution_input(self, identity, text, *, revision=None, request_id=None):
+        revision = self.snapshot().revision if revision is None else revision
+        return self.service.command('work_execution_input', {'id': self.id, 'revision': revision, 'execution_id': identity, 'text': text}, request_id)
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
 
     def request_authority(self, **kw):
         return self._control("work_request_authority", **kw)

@@ -332,6 +332,22 @@ class ContextCompactor:
         )
         return self.store.save("transcripts", content)
 
+    @staticmethod
+    def _reduce_tool_output(output: str, marker_text: str) -> str:
+        """Reduce a tool result to a marker without losing frozen media.
+
+        Media-bearing results keep their validated descriptors alongside the
+        marker text so native re-inspection, retrieval and GC roots survive
+        every pointer-only reduction. Plain text results keep the exact legacy
+        marker string.
+        """
+        from homebrew_harness.contracts import tool_result_media
+
+        media = tool_result_media(output)
+        if not media:
+            return marker_text
+        return json.dumps({"text": marker_text, "media": media}, ensure_ascii=False)
+
     def persisted_preview(self, output: str, preview_chars: int = 2000) -> str:
         reference = self._references.get(output)
         if reference is not None:
@@ -340,8 +356,9 @@ class ContextCompactor:
             return output
         reference = self.store.save("tool-results", output)
         preview = f"[Tool result saved]\nFull output: {reference}\nPreview:\n{output[:preview_chars]}"
-        self._references[preview] = reference
-        return preview
+        reduced = self._reduce_tool_output(output, preview)
+        self._references[reduced] = reference
+        return reduced
 
     def tool_result_budget(self, messages: list[dict]) -> list[dict]:
         results = self.unseen_results(messages)
@@ -368,10 +385,23 @@ class ContextCompactor:
         *,
         host_status: str = "",
         retained_request: bool = False,
+        media=(),
     ) -> dict:
         status = f"Host status: {host_status}\n" if host_status else ""
         request = ("Current user request: retained verbatim in the task_intent system message.\n"
                    if retained_request else f"Current user request:\n{active_request}\n")
+        # Archived history may carry frozen user attachments and tool-produced
+        # media. Their descriptors stay in the marker so later turns can still
+        # retrieve the exact accepted content and GC keeps the bytes rooted.
+        media_section = ""
+        if media:
+            from homebrew_harness.contracts import RETAINED_MEDIA_HEADER
+
+            media_section = (
+                RETAINED_MEDIA_HEADER + "\n"
+                + json.dumps(list(media), ensure_ascii=False)
+                + "\n\n"
+            )
         return {
             "role": "user",
             "name": "harness_compaction",
@@ -379,6 +409,10 @@ class ContextCompactor:
                 f"[{label}]\n{status}{request}\n"
                 f"Current plan (state, not proof of completion):\n{plan or '(no plan)'}\n\n"
                 f"Conversation working state (model-written reference only):\n{json.dumps(summary, ensure_ascii=False)}\n\n"
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
+=======
+                + media_section +
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
                 "Use confirmed facts and decisions to continue pending work. Hypotheses are not tool failures. "
                 "File observations describe their recorded versions, not current source after later edits; "
                 "compare relevant newer evidence when deciding what needs rechecking.\n\n"
@@ -405,6 +439,22 @@ class ContextCompactor:
                     match = re.match(r"^\[Tool result saved\]\nFull output: ([^\n]+)\nPreview:\n", content)
                     if match is None:
                         match = re.fullmatch(r"\[Earlier tool result saved at ([^\n]+)\]", content)
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
+=======
+                    if match is None:
+                        # Media-preserving reductions wrap the marker text with
+                        # frozen descriptors; restore the full archived result.
+                        from homebrew_harness.contracts import tool_result_media
+
+                        try:
+                            parsed = json.loads(content)
+                        except ValueError:
+                            parsed = None
+                        if isinstance(parsed, dict) and tool_result_media(parsed):
+                            text = parsed.get("text")
+                            if isinstance(text, str):
+                                match = re.match(r"^\[Tool result saved\]\nFull output: ([^\n]+)\nPreview:\n", text) or re.fullmatch(r"\[Earlier tool result saved at ([^\n]+)\]", text)
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
                     reference = match[1] if match else None
                 if reference and self.store.owns(reference) and Path(reference).parent.name == "tool-results":
                     if reference not in restored:
@@ -424,22 +474,32 @@ class ContextCompactor:
 
     def pin_intent(self, messages, active_request):
         if not self.intent.original:
-            original = next(
-                (
-                    message.get("content", "")
-                    for message in messages
-                    if message.get("role") == "user"
-                    and not message.get("name")
-                    and isinstance(message.get("content"), str)
-                ),
-                active_request,
-            )
+            from homebrew_harness.contracts import content_text
+
+            original = active_request
+            for message in messages:
+                if message.get("role") != "user" or message.get("name"):
+                    continue
+                content = message.get("content")
+                if isinstance(content, str):
+                    original = content
+                    break
+                if isinstance(content, list):
+                    # Multimodal submissions pin their ordered text projection;
+                    # frozen media stays referenced by the retained message and
+                    # by the compaction marker's media inventory.
+                    text = content_text(content)
+                    if text:
+                        original = text
+                        break
             self.intent.update(original)
         return self.intent.pin(messages)
 
     def snip_compact(
         self, messages: list[dict], active_request: str, plan: str = "", tools=None
     ) -> list[dict]:
+        from homebrew_harness.contracts import history_media
+
         messages = self.pin_intent(messages, active_request)
         pressure = self.estimate_chars(messages, tools)
         if pressure < self.context_chars and (
@@ -468,8 +528,13 @@ class ContextCompactor:
             base = ".harness/" + (self.store.namespace + "/" if self.store.namespace else "")
             index = base + "tool-results/" + "x" * 32 + ".txt"
             transcript = base + "transcripts/" + "x" * 32 + ".jsonl"
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
             room = self.summary_capacity(retained, active_request, plan, "History archived", transcript, index, tools)
             old_history = [m for m in middle if m.get("role") not in {"system", "developer"}]
+=======
+            old_history = [m for m in middle if m.get("role") not in {"system", "developer"}]
+            room = self.summary_capacity(retained, active_request, plan, "History archived", transcript, index, tools, media=history_media(old_history))
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
             if room >= self.MIN_SUMMARY_CHARS and room >= self.minimum_summary_chars(old_history, active_request):
                 break
             if tail >= required_start:
@@ -507,8 +572,9 @@ class ContextCompactor:
             elif not self.store.exists(reference):
                 raise CompactionError("A saved tool result is no longer available.")
             marker = f"[Earlier tool result saved at {reference}]"
-            self._references[marker] = reference
-            result["content"] = marker
+            reduced = self._reduce_tool_output(output, marker)
+            self._references[reduced] = reference
+            result["content"] = reduced
         return messages
 
     def fit_tool_results(
@@ -711,21 +777,41 @@ class ContextCompactor:
 
     COMPACTION_STATUS = "Context compaction completed successfully; the semantic working record is installed and the transcript saved. Its observations describe state before this compaction. Continue remaining work; this compaction is no longer pending."
 
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
     def summary_capacity(self, retained, active_request, plan, label, transcript, operation_index, tools):
         index_suffix = "\nExact tool calls, results and denials index: " + operation_index if operation_index else ""
         skeleton = self.state_message(label, active_request, plan, index_suffix, transcript,
             host_status=self.COMPACTION_STATUS, retained_request=self.request_is_retained(active_request))
+=======
+    def summary_capacity(self, retained, active_request, plan, label, transcript, operation_index, tools, media=()):
+        index_suffix = "\nExact tool calls, results and denials index: " + operation_index if operation_index else ""
+        skeleton = self.state_message(label, active_request, plan, index_suffix, transcript,
+            host_status=self.COMPACTION_STATUS, retained_request=self.request_is_retained(active_request), media=media)
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
         return min(self.SUMMARY_CHAR_LIMIT, int(self.context_chars * 0.8) - self.estimate_chars([*retained, skeleton], tools))
 
     def summary_marker(self, messages, old_history, active_request, plan, retained, label, tools):
         """Only install a history replacement after all of its working state is summarized."""
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
+=======
+        from homebrew_harness.contracts import history_media
+
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
         transcript = self.write_transcript(messages)
         operation_index = self.operation_index(old_history)
         index_suffix = "\nExact tool calls, results and denials index: " + operation_index if operation_index else ""
         status = self.COMPACTION_STATUS
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
         hard_limit = self.summary_capacity(retained, active_request, plan, label, transcript, operation_index, tools)
         skeleton = self.state_message(label, active_request, plan, index_suffix, transcript,
             host_status=status, retained_request=self.request_is_retained(active_request))
+=======
+        # Frozen media from archived turns stays retrievable and GC-rooted.
+        media = history_media(old_history)
+        hard_limit = self.summary_capacity(retained, active_request, plan, label, transcript, operation_index, tools, media=media)
+        skeleton = self.state_message(label, active_request, plan, index_suffix, transcript,
+            host_status=status, retained_request=self.request_is_retained(active_request), media=media)
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
         fixed_size = self.estimate_chars([*retained, skeleton], tools)
         if hard_limit < self.MIN_SUMMARY_CHARS:
             raise boundary_error(SummaryCompactionError, "summary_context_limit",
@@ -740,7 +826,11 @@ class ContextCompactor:
             summary_budget=(min(self.SUMMARY_TARGET_CHARS, int(hard_limit * 0.8)), hard_limit),
             acceptance_limit=acceptance_limit)
         marker = self.state_message(label, active_request, plan, summary + index_suffix, transcript,
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
             host_status=status, retained_request=self.request_is_retained(active_request))
+=======
+            host_status=status, retained_request=self.request_is_retained(active_request), media=media)
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
         self.check_compacted_size([*retained, marker], tools)
         return marker
 

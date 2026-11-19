@@ -49,9 +49,13 @@ class MaintenanceStore:
 
     @cached_property
     def development_handoff(self):
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
         return (Path(__file__).parent / "prompts" / "development-handoff.md").read_text(
             encoding="utf-8"
         )
+=======
+        return (Path(__file__).parent / "prompts" / "development-handoff.md").read_text(encoding="utf-8")
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
 
     def get(self, kind, identity, conn=None):
         if kind not in SECTIONS:
@@ -563,6 +567,7 @@ class MaintenanceStore:
         )
         from .maintenance_spec import instructions_for
 
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
         if work.get("execution_context"):
             prompt += (
                 "\n\nOperator execution context (not a requirements amendment):\n"
@@ -573,6 +578,10 @@ class MaintenanceStore:
                 "\n\nService development-to-delivery handoff:\n"
                 + self.development_handoff
             )
+=======
+        if self.delivery is not None:
+            prompt += "\n\nService development-to-delivery handoff:\n" + self.development_handoff
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
         guidance = instructions_for(self.policy, "development")
         if guidance:
             prompt += "\n\nConfigured development guidance:\n" + "\n\n".join(

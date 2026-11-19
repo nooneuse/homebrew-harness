@@ -11,6 +11,26 @@ from homebrew_harness.security.safe_files import SafeFile
 from .spec import RunSpec, RunOutcome, TERMINAL
 
 
+def _worker_process_exited(pid):
+    """Confirm a signal-visible pid has actually exited (Linux ``/proc``).
+
+    ``os.kill(pid, 0)`` also succeeds for a zombie awaiting reaping, which is
+    not a live worker. Only a positively observed zombie/dead state counts as
+    exited; without ``/proc`` (non-Linux) the signal result stands.
+    """
+    try:
+        with open(f"/proc/{pid}/status", encoding="utf-8") as status:
+            for line in status:
+                if line.startswith("State:"):
+                    fields = line.split()
+                    return len(fields) > 1 and fields[1] in {"Z", "X"}
+    except FileNotFoundError:
+        return True
+    except OSError:
+        return False
+    return False
+
+
 class RunSupervisor:
     def __init__(
         self,
@@ -78,7 +98,7 @@ class RunSupervisor:
             return False
         except PermissionError:
             return True
-        return True
+        return not _worker_process_exited(pid)
 
     def _close_process(self, process, seconds):
         if process.poll() is not None:

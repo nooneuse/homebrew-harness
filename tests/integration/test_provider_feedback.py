@@ -63,7 +63,8 @@ class FeedbackTests(unittest.TestCase):
 
     def test_sdk_status_error_without_json_keeps_service_message(self):
         from homebrew_harness.execution.providers.backends import sdk_available
-        if not sdk_available("chat_completions"):
+        available, _reason = sdk_available("chat_completions")
+        if available is None:
             self.skipTest("Optional OpenAI SDK is unavailable.")
         server = ProtocolService([(400, b"Unsupported option: sdk_future_flag")])
         self.addCleanup(server.close)

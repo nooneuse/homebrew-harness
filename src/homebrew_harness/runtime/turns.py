@@ -285,6 +285,7 @@ def run_user_turn(
     goal_controller=None,
     stop_block_cap=8,
     stop_event=None,
+    query_parts=None,
 ):
     """Recall once per actual user request; extract only after a normal final stop."""
     components = replace(components, stop_event=stop_event or components.stop_event)
@@ -299,7 +300,8 @@ def run_user_turn(
             messages, query, compactor, memory_runtime, tool_pool=prepared.pool
         )
         homebrew_harness.runtime.hooks.submit_prompt(
-            messages, query, workdir, prepared.components.hooks
+            messages, query, workdir, prepared.components.hooks,
+            parts=query_parts,
         )
         if prepared.components.on_user_submit is not None:
             prepared.components.on_user_submit(messages, prepared.components)

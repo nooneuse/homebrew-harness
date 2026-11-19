@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
 from homebrew_harness.configuration import (
     DEFAULT_SHUTDOWN_SECONDS,
     DEFAULT_LOCAL_CONTROL_SECONDS,
 )
+=======
+from homebrew_harness.configuration import DEFAULT_SHUTDOWN_SECONDS, DEFAULT_LOCAL_CONTROL_SECONDS
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
 
 from homebrew_harness.runtime.errors import error_info, error_message
 
@@ -576,10 +580,14 @@ class HarnessSession:
             self.session_id = uuid.uuid4().hex
             self.checkpoint_key = "lead:" + self.session_id
             from homebrew_harness.execution.operations import Operations
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
 
             self.operations = Operations(
                 self.workdir, self.checkpoint_key, leases=self.workspace.leases
             )
+=======
+            self.operations = Operations(self.workdir, self.checkpoint_key, leases=self.workspace.leases)
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
             self.messages = ConversationHistory(
                 [
                     {
@@ -1096,9 +1104,13 @@ class HarnessSession:
                 else None
             )
             try:
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
                 with persistence_scope(
                     operation="checkpoint", context_id=self.checkpoint_key
                 ):
+=======
+                with persistence_scope(operation="checkpoint", context_id=self.checkpoint_key):
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
                     self.runtime_store.checkpoint(
                         self.checkpoint_key,
                         snapshot,
@@ -1530,7 +1542,14 @@ class HarnessSession:
         request_id=None,
         goal=None,
         target_input_id=None,
+        parts=None,
     ):
+        if parts is None:
+            from homebrew_harness.contracts import parse_image_markup
+
+            parsed = parse_image_markup(text)
+            if parsed is not None:
+                parts = parsed
         if self.run_control is not None:
             return self.inputs.submit(
                 text,
@@ -1538,6 +1557,7 @@ class HarnessSession:
                 target=target,
                 expected_turn_id=expected_turn_id,
                 input_id=input_id,
+                parts=parts,
             )
         if not self._runtime_started:
             self._ensure_runtime()
@@ -1552,6 +1572,7 @@ class HarnessSession:
             request_id=request_id,
             goal=goal,
             target_input_id=target_input_id,
+            parts=parts,
         )
         if not self._poller.started and self.inputs.active_id is None:
             self.start(include_clock=False)
@@ -1654,6 +1675,7 @@ class HarnessSession:
                 record["content"],
                 literal=literal,
                 goal_spec=record.get("metadata", {}).get("sdk_goal"),
+                parts=record.get("metadata", {}).get("content_parts"),
             )
             if self._pending_user:
                 with cleanup_scope():
@@ -1800,7 +1822,35 @@ class HarnessSession:
             self.goal.discard_prepared(prepared)
             raise
 
-    def run_user(self, query: str, *, goal_spec=None, literal=False) -> str:
+    def run_user(self, query: str, *, goal_spec=None, literal=False, parts=None) -> str:
+        if parts is None:
+            from homebrew_harness.contracts import parse_image_markup
+
+            parsed = parse_image_markup(query)
+            if parsed is not None:
+                parts = parsed
+        if parts is not None:
+            from homebrew_harness.contracts import (
+                content_is_multimodal,
+                content_text,
+                normalize_content_parts,
+            )
+
+            parts = normalize_content_parts(parts)
+            if not content_is_multimodal(parts):
+                parts = None
+            else:
+                if goal_spec is not None:
+                    raise ValueError(
+                        "Image content parts cannot bind a Goal in this milestone."
+                    )
+                if self.conversation.get("mode") == "plan":
+                    raise ValueError(
+                        "Planning mode accepts text only; leave planning mode "
+                        "(/plan off) before submitting images."
+                    )
+                literal = True
+                query = content_text(parts)
         if goal_spec is not None:
             from homebrew_harness.orchestration.hard_conditions import validate_spec
 
@@ -1835,11 +1885,17 @@ class HarnessSession:
         deadline = (
             operation_deadline(self.turn_timeout)
             if command.mode == "context"
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
             else (
                 Deadline.after(DEFAULT_LOCAL_CONTROL_SECONDS)
                 if command.local
                 else operation_deadline(self.turn_timeout)
             )
+=======
+            else Deadline.after(DEFAULT_LOCAL_CONTROL_SECONDS)
+            if command.local
+            else operation_deadline(self.turn_timeout)
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
         )
         with (
             control_scope(deadline) if command.local else nullcontext(),
@@ -1848,11 +1904,11 @@ class HarnessSession:
             ),
             acquired(self._runtime_init_lock, deadline, inherit=not command.local),
         ):
-            return (
-                self._run_user(command, deadline)
-                if goal_spec is None
-                else self._run_user(command, deadline, goal_spec=goal_spec)
-            )
+            if goal_spec is not None:
+                return self._run_user(command, deadline, goal_spec=goal_spec)
+            if parts is not None:
+                return self._run_user(command, deadline, parts=parts)
+            return self._run_user(command, deadline)
 
     def _independent_control(self, command):
         if command.name == "quit":
@@ -1907,7 +1963,8 @@ class HarnessSession:
             return self._run_user(command, deadline)
 
     def _run_user(
-        self, command: HostCommand, turn_deadline: Deadline, *, goal_spec=None
+        self, command: HostCommand, turn_deadline: Deadline, *, goal_spec=None,
+        parts=None,
     ) -> str:
         if self._closed:
             raise ValueError("Harness session is closed.")
@@ -2230,6 +2287,7 @@ class HarnessSession:
                         stop_block_cap=self.stop_block_cap,
                         stop_event=self.stop_event,
                         components=self.loop_components(),
+                        query_parts=parts,
                     )
                 self.user_request = self.intent.original
                 if self.workspace.store:

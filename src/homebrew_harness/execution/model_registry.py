@@ -485,8 +485,15 @@ def load_model_registry(path, workdir, *, client_factory=None, environment=None)
             caps = value.get("capabilities", {})
             if (
                 not isinstance(caps, dict)
-                or set(caps) - {"tools", "json_schema", "thinking"}
-                or any(type(v) is not bool for v in caps.values())
+                or set(caps) - {"tools", "json_schema", "thinking", "input_modalities", "output_modalities"}
+                or any(type(v) is not bool for k, v in caps.items() if k in {"tools", "json_schema", "thinking"})
+                or any(
+                    not isinstance(caps[k], (list, tuple))
+                    or not caps[k]
+                    or any(m not in {"text", "image"} for m in caps[k])
+                    for k in ("input_modalities", "output_modalities")
+                    if k in caps
+                )
             ):
                 raise boundary_error(ValueError, "model_configuration", "Invalid model capabilities.")
             specs.append(

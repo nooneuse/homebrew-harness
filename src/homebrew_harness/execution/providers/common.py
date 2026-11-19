@@ -153,6 +153,40 @@ def effective_options(adapter, request):
 def messages(request, adapter):
     result = []
     binding = binding_key(adapter, request.model)
+    from homebrew_harness.contracts import tool_result_media
+
+    pending_tool_media = []
+
+    def flush_tool_media():
+        # Tool-produced media is re-inspected as native image content only on
+        # the documented image-capable path (model declaration AND adapter wire
+        # capability). Otherwise the tool result keeps its stable reference and
+        # metadata as text; pixels are never faked via filenames or byte text.
+        # Deriving this at request time (instead of mutating history) keeps the
+        # canonical conversation, recovery replay and compaction unchanged.
+        if not pending_tool_media:
+            return
+        wire = getattr(adapter, "supported_input_modalities", ("text",))
+        if adapter.capabilities.supports_input("image") and "image" in wire:
+            parts = [
+                {
+                    "type": "text",
+                    "text": (
+                        "Native image output produced by the registered tool "
+                        "result(s) above. Inspect the image content directly; "
+                        "the frozen media references remain retrievable for export."
+                    ),
+                }
+            ]
+            seen = set()
+            for media in pending_tool_media:
+                if media["media_ref"] in seen:
+                    continue
+                seen.add(media["media_ref"])
+                parts.append({"type": "image", "media": dict(media)})
+            result.append({"role": "user", "name": "tool_media", "content": parts})
+        pending_tool_media.clear()
+
     for message in request.messages:
         row = copy.deepcopy(
             {
@@ -169,6 +203,60 @@ def messages(request, adapter):
                 }
             }
         )
+        # Ordered frozen content parts are the authoritative multimodal input.
+        # The plain `content` string stays a lossless text projection for the
+        # text-only runtime; expand parts to native wire content here so images
+        # travel as real media, never filenames or byte text.
+        parts = message.get("content_parts")
+        if parts is not None:
+            from homebrew_harness.contracts import (
+                content_is_multimodal,
+                normalize_content_parts,
+            )
+
+            try:
+                normalized_parts = normalize_content_parts(parts)
+            except ValueError as exc:
+                raise ModelProtocolError(str(exc)) from exc
+            if content_is_multimodal(normalized_parts):
+                row["content"] = [dict(part) for part in normalized_parts]
+        content = row.get("content")
+        if isinstance(content, list):
+            from homebrew_harness.contracts import (
+                content_media,
+                normalize_content_parts,
+            )
+
+            try:
+                row["content"] = [
+                    dict(part) for part in normalize_content_parts(content)
+                ]
+            except ValueError as exc:
+                raise ModelProtocolError(str(exc)) from exc
+            if any(
+                part.get("type") == "image" and "media" not in part
+                for part in row["content"]
+            ):
+                raise ModelProtocolError(
+                    "Image content must be frozen by the session before model submission."
+                )
+            if content_media(row["content"]):
+                if not adapter.capabilities.supports_input("image"):
+                    raise ModelProtocolError(
+                        f"Model '{request.model}' via protocol '{adapter.protocol}' "
+                        "does not declare image input support. Select an image-capable "
+                        "model/profile or explicitly handle the images; history images "
+                        "are never silently dropped or converted to text."
+                    )
+                wire = getattr(adapter, "supported_input_modalities", ("text",))
+                if "image" not in wire:
+                    raise ModelProtocolError(
+                        f"Protocol adapter '{adapter.protocol}' cannot carry native "
+                        "image content in this milestone even though model "
+                        f"'{request.model}' declares image input. Use the documented "
+                        "image-capable adapter (chat_completions) or explicitly "
+                        "handle the images; they are never silently dropped."
+                    )
         state = row.pop("_protocol_state", None)
         if state:
             if request.state_root is None:
@@ -178,9 +266,57 @@ def messages(request, adapter):
             row["_replay"] = load_replay(
                 request.state_root, request.context_key, binding, state
             )
+        if row.get("role") == "tool":
+            pending_tool_media.extend(tool_result_media(row.get("content")))
+        else:
+            flush_tool_media()
         # Names are local provenance, not permission-bearing native roles.
         result.append(row)
+    flush_tool_media()
+    # Per-request image count and total media bytes are a separate limit class
+    # from per-image bytes/dimensions (enforced at freeze) and from the encoded
+    # request-body ceiling (enforced by the adapter).  Aggregate every frozen
+    # image re-sent in this request, including history, so the limit reflects
+    # what actually reaches the provider.
+    from homebrew_harness.media import MediaError, MediaLimits, request_body_bounds
+    from homebrew_harness.runtime.errors import annotate_error
+
+    request_parts = []
+    for row in result:
+        content = row.get("content")
+        if isinstance(content, list):
+            request_parts.extend(
+                part for part in content if part.get("type") == "image"
+            )
+    if request_parts:
+        try:
+            request_body_bounds(request_parts, MediaLimits())
+        except MediaError as exc:
+            raise annotate_error(
+                ModelProtocolError(str(exc)),
+                code=getattr(exc, "code", None),
+                **(getattr(exc, "details", None) or {}),
+            ) from exc
     return result
+
+
+def logical_payload(value):
+    """Copy a provider payload with inline base64 media replaced by a marker.
+
+    Base64 image bytes are media, not ordinary text context characters. The
+    logical size keeps context accounting honest without a token budget.
+    """
+    if isinstance(value, dict):
+        return {key: logical_payload(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [logical_payload(item) for item in value]
+    if (
+        isinstance(value, str)
+        and value.startswith("data:image/")
+        and ";base64," in value
+    ):
+        return "media:inline"
+    return value
 
 
 def number(value):

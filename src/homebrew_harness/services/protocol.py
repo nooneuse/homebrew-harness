@@ -49,7 +49,10 @@ QUERY_METHODS = {
     "snapshot": set(),
     "focus_get": {"context"},
     "work_get": {"id"},
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
     "work_progress": {"id"},
+=======
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
     "work_executions": {"id"},
     "work_execution_get": {"id", "execution_id"},
     "work_execution_output": {"id", "execution_id", "cursor", "limit", "stream"},

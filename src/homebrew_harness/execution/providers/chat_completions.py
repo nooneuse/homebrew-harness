@@ -2,6 +2,7 @@
 
 from homebrew_harness.runtime.errors import boundary_error
 
+import base64
 import copy
 import json
 
@@ -81,6 +82,10 @@ def usage_from_chat(value):
 class ChatCompletionsAdapter:
     protocol = "chat_completions"
     revision = "chat-v1"
+    # Wire formats this adapter can actually carry, independent of any single
+    # model's declared modalities. Chat Completions accepts native image_url
+    # content parts; a model must still declare image input to use them.
+    supported_input_modalities = ("text", "image")
 
     def __init__(
         self, client, *, options_json="{}", capabilities=None, connection_id=None
@@ -185,7 +190,73 @@ class ChatCompletionsAdapter:
                 raw.close()
 
 
+def _native_rows(request, rows):
+    """Map ordered content parts to native Chat Completions image content.
+
+    Frozen image bytes travel as data URLs in part order; filenames or byte
+    text are never sent as visual input. Text-only requests pass unchanged.
+    """
+    from homebrew_harness.contracts import content_media
+    from homebrew_harness.media import MediaError, MediaStore
+
+    if not any(content_media(row.get("content")) for row in rows):
+        return rows
+    if request.state_root is None:
+        raise ModelProtocolError("Image input requires its owning state root.")
+    store = MediaStore(request.state_root)
+    result = []
+    for row in rows:
+        parts = row.get("content")
+        if not content_media(parts):
+            result.append(row)
+            continue
+        if row.get("role") != "user":
+            raise ModelProtocolError(
+                "Native image content is carried by user messages in this "
+                "adapter; tool media is re-inspected through an explicit user "
+                "turn, not embedded in assistant/tool messages."
+            )
+        native = []
+        for part in parts:
+            if part["type"] == "text":
+                native.append({"type": "text", "text": part["text"]})
+                continue
+            meta = part["media"]
+            try:
+                data = store.load(meta["media_ref"])
+                from homebrew_harness.media import validate_image
+
+                actual_type = validate_image(data)["media_type"]
+            except MediaError as exc:
+                from homebrew_harness.runtime.errors import annotate_error
+
+                raise annotate_error(
+                    ModelProtocolError(str(exc)),
+                    code=getattr(exc, "code", None),
+                    **(getattr(exc, "details", None) or {}),
+                ) from exc
+            if actual_type != meta["media_type"]:
+                raise ModelProtocolError(
+                    "Frozen media type does not match the stored content."
+                )
+            native.append(
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "data:"
+                        + actual_type
+                        + ";base64,"
+                        + base64.b64encode(data).decode("ascii")
+                    },
+                }
+            )
+        result.append({**row, "content": native})
+    return result
+
+
 def prepare(request, rows, options, capabilities):
+    from homebrew_harness.contracts import content_media
+
     if request.tools and not capabilities.tools:
         raise ModelProtocolError(
             "This model does not support the required client tools."
@@ -194,9 +265,10 @@ def prepare(request, rows, options, capabilities):
         replay = row.pop("_replay", None)
         if replay:
             row.update(replay)
+    has_media = any(content_media(row.get("content")) for row in rows)
     payload = {
         "model": request.model,
-        "messages": rows,
+        "messages": _native_rows(request, rows),
         "max_tokens": request.max_output_tokens,
     }
     if request.tools:
@@ -231,6 +303,18 @@ def prepare(request, rows, options, capabilities):
         payload.update(extensions)
     if options.get("stream"):
         payload.update(stream=True, stream_options={"include_usage": True})
+    if has_media:
+        from homebrew_harness.media import MediaError, ensure_request_body_size
+        from homebrew_harness.runtime.errors import annotate_error
+
+        try:
+            ensure_request_body_size(len(json.dumps(payload, allow_nan=False).encode()))
+        except MediaError as exc:
+            raise annotate_error(
+                ModelProtocolError(str(exc)),
+                code=getattr(exc, "code", None),
+                **(getattr(exc, "details", None) or {}),
+            ) from exc
     return payload
 
 

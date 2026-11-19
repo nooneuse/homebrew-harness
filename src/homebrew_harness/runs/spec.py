@@ -29,8 +29,12 @@ RUN_CONTROL_TOOLS = frozenset(
 )
 RUN_STAGE_TOOLS = frozenset({"get_handoff", "integrate_stage", "publish_stage"})
 RUN_RECOVERY_TOOLS = frozenset({"report_run_blocker"})
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
 RUN_WORK_TOOLS = frozenset({"submit_work_progress", "get_work_progress"})
 RUN_TOOLS = RUN_CONTROL_TOOLS | RUN_RECOVERY_TOOLS | RUN_STAGE_TOOLS | RUN_WORK_TOOLS
+=======
+RUN_TOOLS = RUN_CONTROL_TOOLS | RUN_RECOVERY_TOOLS | RUN_STAGE_TOOLS
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
 DEFAULT_TOOLS = tuple(
     sorted(
         (CORE_TOOLS - {"bash", "list_artifacts", "get_artifact", "publish_artifacts"})
@@ -156,6 +160,7 @@ class RunSpec:
             raise ValueError("Run prompt must be nonempty text.")
         if len(self.prompt) > MAX_RUN_PROMPT_CHARS:
             raise boundary_error(
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
                 ValueError,
                 "run_prompt_limit",
                 "Combined Run prompt exceeds its character limit.",
@@ -164,6 +169,12 @@ class RunSpec:
                 limit_name="run.prompt_characters",
                 limit_value=MAX_RUN_PROMPT_CHARS,
                 observed_value=len(self.prompt),
+=======
+                ValueError, "run_prompt_limit",
+                "Combined Run prompt exceeds its character limit.",
+                source="run", phase="prepare", limit_name="run.prompt_characters",
+                limit_value=MAX_RUN_PROMPT_CHARS, observed_value=len(self.prompt),
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
                 unit="characters",
             )
         if redact(self.prompt) != self.prompt:
@@ -268,11 +279,15 @@ class RunSpec:
             | RUN_CONTROL_TOOLS
             | RUN_RECOVERY_TOOLS
             | stage_run_tools(self.stages)
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
             | (
                 {"task", "read_subagent_result"}
                 if "subagents" in self.enabled
                 else set()
             )
+=======
+            | ({"task", "read_subagent_result"} if "subagents" in self.enabled else set())
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
             | ({"check_background"} if "background" in self.enabled else set())
             | ({"workflow"} if "workflow" in self.enabled else set())
             | ({"connect_mcp"} if self.mcp else set())
@@ -362,6 +377,7 @@ class RunSpec:
     def effective_tools(self):
         from homebrew_harness.tools.mcp.selection import selected_names
 
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
         controls = (
             {"report_run_blocker"} if "request_attention" in self.tools else set()
         )
@@ -377,6 +393,12 @@ class RunSpec:
                 else set()
             )
         )
+=======
+        controls = {"report_run_blocker"} if "request_attention" in self.tools else set()
+        if "task" in self.tools:
+            controls.add("read_subagent_result")
+        return frozenset(self.tools) | selected_names(self.mcp) | controls
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
 
     def data(self):
         return copy.deepcopy(asdict(self))

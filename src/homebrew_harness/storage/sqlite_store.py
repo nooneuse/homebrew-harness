@@ -666,6 +666,7 @@ class SQLiteDatabase:
                         "sdk_goal",
                         "target_input_id",
                         "sdk_turn",
+                        "content_parts",
                     )
                 ):
                     raise ValueError(

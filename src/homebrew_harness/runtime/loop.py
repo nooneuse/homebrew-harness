@@ -231,14 +231,20 @@ def _agent_loop(
             "",
         )
     if not compactor.intent.original:
-        original = next(
-            (
-                message.get("content", "")
-                for message in messages
-                if message.get("role") == "user" and not message.get("name")
-            ),
-            active_request,
-        )
+        from homebrew_harness.contracts import content_text
+
+        original = active_request
+        for message in messages:
+            if message.get("role") != "user" or message.get("name"):
+                continue
+            content = message.get("content", "")
+            if isinstance(content, list):
+                # Multimodal submissions pin their ordered text projection;
+                # image-only turns carry no text task and keep intent empty.
+                content = content_text(content)
+            if isinstance(content, str) and content:
+                original = content
+                break
         compactor.intent.update(original)
     rounds_since_todo = 0
     stop_blocks = 0

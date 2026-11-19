@@ -8,12 +8,15 @@ The `repository_maintenance` profile adds GitHub input, requirement triage, scop
 
 With Delivery enabled, the development Run finishes implementation, authorized cleanup and registered verification, then reports its results and remaining acceptance limits. The Service prepares and reviews the candidate and handles branch/PR publication under its configured approval policy. The development Run completes before PR creation; its code tools do not need platform credentials. Configured identity, text prefixes and merge responsibility remain in force throughout this handoff.
 
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
 Service Runs expose `get_work_progress` and `submit_work_progress`. Save a concise summary and remaining work at useful boundaries; submit `complete=true` by itself when development is done. A verified source snapshot and the accepted handoff remain attached to the Work when its Run is replaced. Resume advances an existing handoff or ChangeSet rather than opening another development Run. Ordinary successful Run completion also follows this handoff contract.
 
 Delivery validates the frozen candidate. Matching stable evidence from the same declared test input and container environment may be referenced across Runs; `run_tests` always executes. Reused evidence identifies its original receipt and execution time. Changed inputs or contracts, partial test scope and newer related failures require current verification. External observations and undeclared native environments are not reused by default.
 
 Candidate preparation preserves the original work input and Git base while integrating an observed target commit in an isolated repository. Existing input drafts must be explicitly proposed for inclusion. Already published changes are excluded from the candidate delta; conflicts are exposed to the scoped repair flow. A target that already contains the reviewed result is reported as existing content, without inventing a PR or merge.
 
+=======
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
 ## Host setup
 
 The bundled host-project skill guides setup from the default interaction. See [Host a repository](HOSTING.md). Use `service validate --spec ... --host-config ... --cwd ...` for offline configuration checks before startup.

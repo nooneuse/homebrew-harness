@@ -101,11 +101,17 @@ class UserInputController:
         request_id=None,
         goal=None,
         target_input_id=None,
+        parts=None,
     ):
         managed = getattr(self.session, "run_control", None)
         if managed is not None:
             if target != "lead":
                 raise ValueError("Managed team supervision is not enabled.")
+            if parts is not None:
+                raise ValueError(
+                    "Managed Run input accepts task text only; image parts are not "
+                    "propagated into managed Runs in this milestone."
+                )
             receipt = managed.store.submit(
                 managed.id,
                 text,
@@ -116,7 +122,42 @@ class UserInputController:
             if mode == "interrupt" and self.active_id is not None:
                 self.cancel.set()
             return {**receipt, "mode": mode, "target": target}
-        if not isinstance(text, str) or not text.strip() or len(text) > 64000:
+        if parts is not None:
+            from homebrew_harness.contracts import (
+                content_is_multimodal,
+                content_text,
+                normalize_content_parts,
+            )
+            from homebrew_harness.media import MediaStore, request_body_bounds
+
+            if target != "lead":
+                raise ValueError(
+                    "Image content parts target the Lead session in this milestone."
+                )
+            normalized = normalize_content_parts(parts)
+            if not content_is_multimodal(normalized):
+                raise ValueError(
+                    "Content parts without images must be submitted as plain text."
+                )
+            store = MediaStore(self.session.workdir)
+            frozen = []
+            for part in normalized:
+                if part["type"] == "image" and "media" not in part:
+                    part = {
+                        "type": "image",
+                        "media": store.freeze_attachment(
+                            part["path"], self.session.workdir
+                        ),
+                    }
+                frozen.append(part)
+            request_body_bounds(frozen)
+            parts = frozen
+            text = content_text(parts)
+            # Attachments are model content, never host control commands.
+            literal = True
+        if not isinstance(text, str) or len(text) > 64000 or (
+            not text.strip() and parts is None
+        ):
             raise ValueError(
                 "User input must be nonempty text within 64,000 characters."
             )
@@ -177,6 +218,7 @@ class UserInputController:
                         else {}
                     ),
                     **({"target_input_id": target_input_id} if target_input_id else {}),
+                    **({"content_parts": parts} if parts is not None else {}),
                 },
             }
             accepted_turn = self.session.runtime_store.submit_input(
@@ -315,10 +357,11 @@ class UserInputController:
             if append:
                 intent.update(amendment)
                 local_intent.update(amendment)
+                parts = meta.get("content_parts")
                 staged.append(
                     {
                         "role": "user",
-                        "content": amendment,
+                        "content": parts if parts is not None else amendment,
                         "user_input_id": record["id"],
                     }
                 )

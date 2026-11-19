@@ -1,0 +1,1 @@
+"""Media contract and store tests."""

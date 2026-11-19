@@ -219,6 +219,45 @@ class RecoveryTests(unittest.TestCase):
         self.assertEqual(result["supervisor_reason"], "worker_process_alive")
         self.assertEqual(result["generation"], 1)
 
+    @unittest.skipUnless(os.path.isdir("/proc"), "requires Linux /proc state")
+    def test_zombie_worker_pid_does_not_block_recovery(self):
+        import subprocess
+
+        # A killed worker that nobody reaped stays visible to os.kill(pid, 0)
+        # as a zombie. It is not a live worker and must not block recovery.
+        child = subprocess.Popen(
+            [sys.executable, "-I", "-c", "import os; os._exit(0)"]
+        )
+        self.addCleanup(child.wait)
+        zombie = False
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            try:
+                with open(f"/proc/{child.pid}/status", encoding="utf-8") as status:
+                    state = next(
+                        line.split()[1]
+                        for line in status
+                        if line.startswith("State:")
+                    )
+            except (FileNotFoundError, StopIteration):
+                break
+            if state in {"Z", "X"}:
+                zombie = True
+                break
+            time.sleep(0.01)
+        self.assertTrue(zombie, "fixture did not produce a zombie worker")
+        state = self.store.create(RunSpec("Work"))
+        state = self.store.claim(state["id"])
+        header = {
+            "run_id": state["id"],
+            "owner": state["owner"],
+            "generation": state["generation"],
+        }
+        self.store.pid(header, child.pid)
+        supervisor = RunSupervisor(self.store)
+        self.addCleanup(supervisor.close)
+        self.assertFalse(supervisor.worker_alive(state))
+
     def test_active_run_protects_closed_checkpoint_from_retirement(self):
         state = self.store.create(RunSpec("Work"))
         data = {

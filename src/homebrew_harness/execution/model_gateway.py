@@ -1109,7 +1109,9 @@ class ModelGateway:
                 ),
             },
         )
-        return len(json.dumps(params[1], ensure_ascii=False))
+        from homebrew_harness.execution.providers.common import logical_payload
+
+        return len(json.dumps(logical_payload(params[1]), ensure_ascii=False))
 
     def _launch_request(self, receipt, params):
         try:

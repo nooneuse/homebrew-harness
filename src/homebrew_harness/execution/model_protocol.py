@@ -110,6 +110,25 @@ class ModelCapabilities:
     tools: bool = True
     json_schema: bool = True
     thinking: bool = True
+    input_modalities: tuple = ("text",)
+    output_modalities: tuple = ("text",)
+
+    def __post_init__(self):
+        for name in ("input_modalities", "output_modalities"):
+            value = getattr(self, name)
+            if not isinstance(value, tuple):
+                object.__setattr__(self, name, tuple(value))
+            value = getattr(self, name)
+            if not value or any(m not in {"text", "image"} for m in value):
+                raise ValueError("Model modalities must be a nonempty subset of text/image.")
+            if "text" not in value:
+                raise ValueError("Model modalities must include text.")
+
+    def supports_input(self, modality):
+        return modality in self.input_modalities
+
+    def supports_output(self, modality):
+        return modality in self.output_modalities
 
 
 @dataclass(frozen=True)

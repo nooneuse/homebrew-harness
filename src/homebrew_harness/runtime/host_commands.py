@@ -26,14 +26,14 @@ class HostCommand:
     @property
     def extended(self):
         return self.name in {"model", "reasoning", "compact", "new", "diff", "review", "skills", "help",
-            "memory", "worktree", "pwd", "ps", "hooks", "agents", "resume", "stop", "quit", "plan", "fork", "init"}
+            "memory", "worktree", "pwd", "ps", "hooks", "agents", "resume", "stop", "quit", "plan", "fork", "init", "media"}
 
     @property
     def allowed_during_recovery(self):
         return (
             self.name in {"usage", "storage", "recovery", "mcp", "inputs", "help", "diff", "pwd", "ps", "hooks", "agents", "resume", "stop", "quit"}
             or self.name in {"model", "reasoning", "skills"} and self.mode == "read"
-            or self.name in {"memory", "worktree"} and self.mode == "read"
+            or self.name in {"memory", "worktree", "media"} and self.mode == "read"
             or self.name in {"plan", "init"} and self.mode == "read"
             or self.name == "goal"
             and self.local
@@ -55,7 +55,7 @@ class HostCommand:
             "task",
             "mcp",
             "model", "reasoning", "compact", "new", "diff", "review", "skills", "help",
-            "worktree", "pwd", "ps", "stop", "hooks", "agents", "resume", "quit", "exit", "plan", "fork", "init",
+            "worktree", "pwd", "ps", "stop", "hooks", "agents", "resume", "quit", "exit", "plan", "fork", "init", "media",
         }:
             if query.lstrip().startswith("/"):
                 raise ValueError("Unknown host command; use /help.")
@@ -144,6 +144,15 @@ class HostCommand:
             ):
                 raise ValueError("Use /inputs, /inputs cancel ID or /inputs retry ID.")
             return cls(query, name, parts[0], parts[1], mode="manage")
+        if name == "media":
+            parts = shlex.split(argument)
+            if not parts or parts == ["list"]:
+                return cls(query, name, "list", mode="read")
+            if len(parts) == 2 and parts[0] == "show":
+                return cls(query, name, "show", parts[1], mode="read")
+            if len(parts) == 3 and parts[0] == "export":
+                return cls(query, name, "export", mode="manage", values=(parts[1], parts[2]))
+            raise ValueError("Use /media [list], /media show REF or /media export REF PATH.")
         if name in {"usage", "storage"}:
             if argument:
                 raise ValueError("/" + name + " accepts no arguments.")

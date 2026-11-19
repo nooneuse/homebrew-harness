@@ -219,8 +219,11 @@ def create_hooks() -> HookRegistry:
 
 
 def submit_prompt(
-    messages: list[dict], query: str, workdir: Path, hooks: HookRegistry
+    messages: list[dict], query: str, workdir: Path, hooks: HookRegistry,
+    *, parts=None,
 ) -> None:
     """Only real user input emits UserPromptSubmit, not tool results or continuations."""
     hooks.trigger_hooks("UserPromptSubmit", query, workdir)
-    messages.append({"role": "user", "content": query})
+    messages.append(
+        {"role": "user", "content": parts if parts is not None else query}
+    )

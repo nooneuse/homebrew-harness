@@ -339,6 +339,7 @@ class ConvergenceTests(unittest.TestCase):
                 "todo_write",
                 "load_skill",
                 "compact",
+                "render_chart",
             },
         )
         self.assertIsNone(session.team)

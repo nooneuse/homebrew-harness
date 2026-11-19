@@ -156,7 +156,13 @@ class PreparedLoopTests(unittest.TestCase):
             result, _, compactor = self.user(client)
         self.assertEqual(result, "done")
         self.assertEqual(len(self.pools), 1)
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
         self.assertEqual(len(self.pools[0].tools), 27)
+=======
+        # render_chart is a registered core tool in this workspace.
+        self.assertIn("render_chart", self.pools[0].names)
+        self.assertEqual(len(self.pools[0].tools), 28)
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
         self.assertTrue(
             set(homebrew_harness.orchestration.task_store.TASK_TOOL_NAMES)
             <= self.pools[0].names
@@ -181,7 +187,12 @@ class PreparedLoopTests(unittest.TestCase):
         ):
             result, _, compactor = self.user(client)
         self.assertEqual(result, "done")
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
         self.assertEqual(len(self.pools[0].tools), 19)
+=======
+        # Core capabilities include the registered render_chart tool.
+        self.assertEqual(len(self.pools[0].tools), 20)
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
         self.assertEqual(set(created), {"tests", "shell"})
         self.assert_recall_matches(client, compactor, "Read fixture")
         self.assert_closed(created)

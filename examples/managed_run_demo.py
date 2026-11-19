@@ -574,7 +574,7 @@ def run_demo(base, *, timeout=360):
     ).strip()
     store = RunStore(workspace)
     server = DemoService(store, head)
-    processes, handles = [], []
+    processes, handles, process_logs = [], [], []
     deadline = time.monotonic() + timeout
     env = {
         k: v
@@ -857,7 +857,8 @@ def run_demo(base, *, timeout=360):
     ]
 
     def launch(arguments, name):
-        handle = (private / (name + ".log")).open("wb")
+        log_path = private / (name + ".log")
+        handle = log_path.open("wb")
         handles.append(handle)
         process = subprocess.Popen(
             [*command, *arguments],
@@ -867,6 +868,7 @@ def run_demo(base, *, timeout=360):
             stderr=handle,
         )
         processes.append(process)
+        process_logs.append(log_path)
         return process
 
     def wait_for(predicate):
@@ -875,8 +877,18 @@ def run_demo(base, *, timeout=360):
             if value:
                 return value
             if processes and processes[-1].poll() is not None:
+                detail = ""
+                if process_logs:
+                    try:
+                        detail = process_logs[-1].read_text(
+                            encoding="utf-8", errors="replace"
+                        )[-16000:]
+                    except OSError:
+                        detail = ""
                 raise RuntimeError(
-                    "Supervisor exited before the expected stage; inspect private logs."
+                    "Supervisor exited before the expected stage "
+                    f"(exit={processes[-1].returncode}); "
+                    "last supervisor log tail:\n" + detail
                 )
             time.sleep(0.05)
         raise TimeoutError("A-E demo exceeded its deadline; inspect the private logs.")
@@ -994,7 +1006,13 @@ def run_demo(base, *, timeout=360):
         ):
             raise RuntimeError("A-E demo took an unexpected model/tool path.")
         for index, messages in enumerate(server.messages):
+<<<<<<< 44b0af9717f2a641ffc1e4acec8aa82686f1c94c
             if messages and str(messages[0].get('content', '')).startswith('Summarize the supplied conversation'):
+=======
+            if messages and str(messages[0].get('content', '')).startswith(
+                ('Summarize the supplied conversation', 'Create a compact working-state handoff')
+            ):
+>>>>>>> d1dd8171a8bb0c53197d34e3d89c7c23bf488f2a
                 payload = json.loads(messages[-1]['content'])
                 if payload.get('current_request') != PROMPT:
                     raise RuntimeError('Compaction lost the original task scope.')
@@ -1074,7 +1092,8 @@ def run_demo(base, *, timeout=360):
         del simple[index : index + 2]
 
         def simple_launch(arguments, name):
-            handle = (private / (name + ".log")).open("wb")
+            log_path = private / (name + ".log")
+            handle = log_path.open("wb")
             handles.append(handle)
             process = subprocess.Popen(
                 [*simple, *arguments],
@@ -1084,6 +1103,7 @@ def run_demo(base, *, timeout=360):
                 stderr=handle,
             )
             processes.append(process)
+            process_logs.append(log_path)
             return process
 
         def simple_spec(prompt, key, path):

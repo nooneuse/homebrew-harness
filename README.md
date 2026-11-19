@@ -12,6 +12,7 @@ The model proposes an action, the runtime executes the corresponding tool, and t
 | --- | --- |
 | Models | Chat Completions, Responses, DashScope Generation, Anthropic Messages; model selection by role |
 | Core tools | Read, write, and edit files; match paths; run Bash; update plans; load skills |
+| Multimodal | Ordered text + local PNG/JPEG image input; tool-produced PNG results with stable references, metadata and export ([docs](docs/MULTIMODAL.md)) |
 | Context | On-demand skill loading, history compaction, full-result archives, optional cross-session memory |
 | Orchestration | Subagents, persistent task dependency graphs, Agent Teams, background commands, Cron, Workflows |
 | Completion | Goals with file and test conditions |
@@ -127,6 +128,8 @@ The default interactive entry and `homebrew-harness session` support these comma
 | `/reasoning` | Show the current reasoning/thinking options. |
 | `/reasoning LEVEL` | Set `none`, `minimal`, `low`, `medium`, `high` or `xhigh` for Chat/Responses; `on`/`off` selects thinking where mapped. `default` restores configured options. |
 | `/compact` | Compact completed history, preserving the original requirements, current plan and full archives. |
+| `/media` / `/media list` / `/media show REF` | List or describe frozen image media held by the session history ([multimodal](docs/MULTIMODAL.md)). |
+| `/media export REF PATH` | Export frozen media bytes to an authorized, non-existing path. |
 | `/new` | Start blank context after accepted work ends, retaining model choice. Old history remains saved. |
 | `/diff [--base REF] [PATH ...]` | Inspect a fixed Git base against the working tree, including untracked text. Quote paths containing spaces. |
 | `/review [--base REF] [PATH ...]` | Review a bounded snapshot using only reading/search/Git tools. Findings refer to the recorded snapshot; later changes mark the result stale. |

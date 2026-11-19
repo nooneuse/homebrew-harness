@@ -90,6 +90,14 @@ class ProtocolAdapter:
             raise ValueError("SDK retries are controlled by the ModelGateway.")
         return self
 
+    @property
+    def supported_input_modalities(self):
+        # Only the documented Chat Completions wire format carries native
+        # image content in this milestone; other protocols stay text-only.
+        if self.protocol == "chat_completions":
+            return ("text", "image")
+        return ("text",)
+
     def prepare(self, request):
         if request.tools and not self.capabilities.tools:
             raise ModelProtocolError("This profile does not support client tools.")

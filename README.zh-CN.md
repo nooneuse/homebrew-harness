@@ -12,6 +12,7 @@
 | --- | --- |
 | 模型接入 | Chat Completions、Responses、DashScope Generation、Anthropic Messages；按角色选择模型 |
 | 基础工具 | 文件读取、写入和编辑；路径匹配；Bash；计划更新；技能加载 |
+| 多模态 | 有序文本 + 本地 PNG/JPEG 图片输入；工具生成 PNG 结果，含稳定引用、元数据与导出（[文档](docs/MULTIMODAL.zh-CN.md)） |
 | 上下文 | 按需技能加载、历史压缩、完整结果归档、可选跨会话记忆 |
 | 编排 | Subagent、持久任务依赖图、Agent Teams、后台命令、Cron、Workflow |
 | 完成检查 | Goal 与文件、测试条件 |
@@ -126,6 +127,8 @@ homebrew-harness session --memory-mode recall
 | `/reasoning` | 查看当前 reasoning／thinking 设置。 |
 | `/reasoning LEVEL` | Chat／Responses 使用 `none`、`minimal`、`low`、`medium`、`high`、`xhigh`；有映射的协议可用 `on`／`off` 设置 thinking，`default` 恢复配置值。 |
 | `/compact` | 压缩已完成的历史，保留原始要求、当前计划及完整归档。 |
+| `/media` / `/media list` / `/media show REF` | 列出或描述会话历史持有的冻结图片媒体（[多模态](docs/MULTIMODAL.zh-CN.md)）。 |
+| `/media export REF PATH` | 将冻结媒体字节导出到授权范围内且尚不存在的路径。 |
 | `/new` | 已接受工作结束后开始空白上下文，保留模型选择，旧历史仍保存。 |
 | `/diff [--base REF] [PATH ...]` | 查看固定 Git 基准与工作区的变更，包含未跟踪文本；带空格路径需加引号。 |
 | `/review [--base REF] [PATH ...]` | 使用只读文件／搜索／Git 工具审查有界快照；后续代码变化会将结果标记为旧快照。 |

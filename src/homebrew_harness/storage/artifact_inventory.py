@@ -18,7 +18,10 @@ from homebrew_harness.storage.retention_graph import (
 )
 
 _ARCHIVE = re.compile(
-    r"\.harness/(?:[A-Za-z0-9_-]{1,80}/)?(tool-results|transcripts)/[0-9a-f]{32}\.(?:txt|jsonl)\Z"
+    r"\.harness/(?:"
+    r"(?:[A-Za-z0-9_-]{1,80}/)?(?:tool-results|transcripts)/[0-9a-f]{32}\.(?:txt|jsonl)"
+    r"|media/[0-9a-f]{64}\.(?:png|jpg)"
+    r")\Z"
 )
 
 

@@ -37,6 +37,7 @@ CORE_TOOLS = frozenset(
         "list_artifacts",
         "get_artifact",
         "publish_artifacts",
+        "render_chart",
     }
 )
 from homebrew_harness.runtime.execution_options import CONTROL_TOOLS
