@@ -162,6 +162,12 @@ TOOLS = [
         ["path", "old_text", "new_text"],
     ),
     define_tool(
+        "delete_file",
+        "Delete one authorized regular file; directories and symlinks are rejected. Optionally pass the version returned by read_file. An already absent file is reported without claiming deletion.",
+        {"path": NONEMPTY_STRING, "expected_version": {"type": "string", "pattern": "^[a-f0-9]{64}$"}},
+        ["path"],
+    ),
+    define_tool(
         "glob",
         "Find files with a relative glob pattern such as **/*.py. Return up to 200 sorted paths inside the working directory. Paths containing symlinks are omitted.",
         {"pattern": NONEMPTY_STRING},
@@ -372,7 +378,7 @@ TOOL_SCHEMAS = {
 }
 
 
-BASE_TOOL_NAMES = ("bash", "read_file", "write_file", "edit_file", "glob", "search_text", "git_status", "git_diff")
+BASE_TOOL_NAMES = ("bash", "read_file", "write_file", "edit_file", "delete_file", "glob", "search_text", "git_status", "git_diff")
 
 
 SUB_TOOL_NAMES = (

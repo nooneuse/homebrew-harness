@@ -70,7 +70,7 @@ def session_context(session, tool, arguments, cwd, *, requester=None):
         "tool": tool,
         "arguments": copy.deepcopy(arguments),
     }
-    if tool in {"write_file", "edit_file"}:
+    if tool in {"write_file", "edit_file", "delete_file"}:
         value["workspace"] = workspace_digest(cwd, {"kind": "paths", "values": [arguments["path"]]})
     if intent:
         value["requester_intent"] = intent.to_dict()

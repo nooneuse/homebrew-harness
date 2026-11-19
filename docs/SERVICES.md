@@ -6,6 +6,8 @@ A service owns a persistent work queue and fixed schedules. Each work item runs 
 
 The `repository_maintenance` profile adds GitHub input, requirement triage, scoped work authority, operator discussions and reports. Service work reaches `review` when its delegated Run completes. Optional delivery adds grouped publication approval, fixed candidate validation and remote delivery; community communication adds multi-round issue and PR review.
 
+With Delivery enabled, the development Run finishes implementation, authorized cleanup and registered verification, then reports its results and remaining acceptance limits. The Service prepares and reviews the candidate and handles branch/PR publication under its configured approval policy. The development Run completes before PR creation; its code tools do not need platform credentials. Configured identity, text prefixes and merge responsibility remain in force throughout this handoff.
+
 ## Host setup
 
 The bundled host-project skill guides setup from the default interaction. See [Host a repository](HOSTING.md). Use `service validate --spec ... --host-config ... --cwd ...` for offline configuration checks before startup.
@@ -218,7 +220,7 @@ Add these fields to an external service specification:
     "scopes": {
       "code": {
         "write_paths": ["src", "tests"],
-        "tools": ["read_file", "write_file", "edit_file", "glob", "search_text"],
+        "tools": ["read_file", "write_file", "edit_file", "delete_file", "glob", "search_text"],
         "allow_tests": []
       }
     },

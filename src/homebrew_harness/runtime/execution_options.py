@@ -3,7 +3,7 @@
 import math
 
 CONTROL_TOOLS = frozenset({'list_executions', 'get_execution', 'read_execution_output', 'wait_execution', 'stop_execution', 'send_execution_input'})
-SLOW_TOOLS = frozenset({'bash', 'run_tests', 'task', 'workflow', 'connect_mcp', 'read_file', 'write_file', 'edit_file', 'glob', 'search_text', 'git_status', 'git_diff', 'create_worktree', 'service_read_code', 'service_read', 'load_skill', 'publish_artifacts', 'integrate_stage', 'publish_stage', 'request_shutdown'})
+SLOW_TOOLS = frozenset({'bash', 'run_tests', 'task', 'workflow', 'connect_mcp', 'read_file', 'write_file', 'edit_file', 'delete_file', 'glob', 'search_text', 'git_status', 'git_diff', 'create_worktree', 'service_read_code', 'service_read', 'load_skill', 'publish_artifacts', 'integrate_stage', 'publish_stage', 'request_shutdown'})
 
 
 def options(value=None):

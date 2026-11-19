@@ -27,6 +27,7 @@ TOOL_HANDLERS = {
     "read_file": homebrew_harness.tools.files.run_read,
     "write_file": homebrew_harness.tools.files.run_write,
     "edit_file": homebrew_harness.tools.files.run_edit,
+    "delete_file": homebrew_harness.tools.files.run_delete,
     "glob": homebrew_harness.tools.files.run_glob,
     "search_text": homebrew_harness.tools.queries.search_text,
     "git_status": homebrew_harness.tools.queries.git_status,
@@ -65,7 +66,7 @@ def create_tool_handlers(
         handlers.update(
             {name: partial(task_store.run_tool, name) for name in TASK_TOOL_NAMES}
         )
-        for name in ("write_file", "edit_file", "task"):
+        for name in ("write_file", "edit_file", "delete_file", "task"):
             if name not in handlers:
                 continue
             original_handler = handlers[name]

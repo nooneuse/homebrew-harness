@@ -28,6 +28,15 @@ class FilePublicationError(OSError):
         }
 
 
+class FileRemovalError(OSError):
+    """The name was removed, but directory durability was not confirmed."""
+
+    def __init__(self, path):
+        super().__init__("File was removed, but durability is unconfirmed; inspect its current state before retrying.")
+        self.outcome = "unknown"
+        self.details = {"path": path, "removed": True, "durability_confirmed": False}
+
+
 def canonical_root(root: Path) -> Path:
     candidate = root.absolute()
     before = os.stat(candidate, follow_symlinks=False)
@@ -187,15 +196,26 @@ class SafeFile:
         except FileNotFoundError:
             return None, None, 0o644
 
-    def unlink(self, version=None):
+    def unlink(self, version=None, *, expected_read_version=None):
         from homebrew_harness.execution.execution_control import check
 
         check()
         self.verify_binding()
         if version is not None and self.snapshot()[1] != version:
             raise ValueError("File changed before removal.")
+        if expected_read_version is not None:
+            with self.open_read() as stream:
+                observed = self.read_version(stream)
+            if observed != expected_read_version:
+                raise boundary_error(ValueError, "file_delete_version_changed",
+                    "File changed before deletion; read its current version before retrying.",
+                    file_path="/".join(self.parts), expected_version=expected_read_version, observed_version=observed)
+        check()
         os.unlink(self.parts[-1], dir_fd=self.fds[-1])
-        os.fsync(self.fds[-1])
+        try:
+            os.fsync(self.fds[-1])
+        except Exception as error:
+            raise FileRemovalError("/".join(self.parts)) from error
 
     def publish(self, data: bytes, version, mode: int):
         from homebrew_harness.execution.execution_control import check

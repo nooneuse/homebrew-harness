@@ -30,6 +30,8 @@ Bash、注册测试、子任务 `task` 和 `workflow` 接受 `execution` 选项�
 
 模式不改变权限、目录或容器政策。短调用通常会在首次等待内完成。Bash 原有 `run_in_background` 仍属于后台模块；统一观察、输入和控制采用新的执行选项。
 
+`delete_file` 在与 `write_file`、`edit_file` 相同的写入授权范围内删除一个普通文件，可传入 `read_file` 返回的 `expected_version`。已不存在的文件单独报告；目录和 symlink 路径会被拒绝。删除不要求 Bash 权限；删除后的持久化失败会保留不确定结果供恢复检查。
+
 其它注册工作区工具可以通过统一包装入口选择模式，避免每个工具重复携带选项 Schema：
 
 ```json

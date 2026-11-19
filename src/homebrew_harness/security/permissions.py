@@ -300,7 +300,7 @@ def check_rules(tool_name: str, arguments: dict, workdir: Path) -> PermissionDec
             "ask", "Bash commands require approval because they can modify the host."
         )
 
-    if tool_name in {"read_file", "write_file", "edit_file", "glob"}:
+    if tool_name in {"read_file", "write_file", "edit_file", "delete_file", "glob"}:
         path = arguments["pattern"] if tool_name == "glob" else arguments["path"]
         if tool_name == "glob" and (
             Path(path).is_absolute() or ".." in Path(path).parts
@@ -492,7 +492,7 @@ def check_permission(
     managed = current_run()
     if (
         managed is not None
-        and tool_name in {"write_file", "edit_file"}
+        and tool_name in {"write_file", "edit_file", "delete_file"}
         and not managed.write_allowed(workdir, arguments["path"])
     ):
         return PermissionDecision(

@@ -12,6 +12,7 @@ from homebrew_harness.execution.execution_leases import file_update_lease
 from homebrew_harness.security.file_visibility import assert_visible, assert_model_write
 from homebrew_harness.security.safe_files import (
     FilePublicationError,
+    FileRemovalError,
     SafeFile,
     canonical_root,
 )
@@ -84,7 +85,7 @@ def run_read(
 def file_publication_outcome():
     try:
         yield
-    except FilePublicationError as error:
+    except (FilePublicationError, FileRemovalError) as error:
         from homebrew_harness.tools.tool_outcome import ToolExecutionError
 
         raise ToolExecutionError(
@@ -127,6 +128,25 @@ def run_edit(path: str, old_text: str, new_text: str, workdir: Path) -> str:
         return json.dumps(
             {"path": "/".join(target.parts), "replacements": 1}, ensure_ascii=False
         )
+
+
+def run_delete(path: str, workdir: Path, expected_version: str | None = None) -> str:
+    assert_model_write(workdir, path)
+    with file_publication_outcome(), file_update_lease(workdir, path), SafeFile(workdir, path) as target:
+        relative = "/".join(target.parts)
+        try:
+            with target.open_read() as stream:
+                observed = target.read_version(stream)
+        except FileNotFoundError:
+            target.verify_binding()
+            return json.dumps({"path": relative, "deleted": False, "already_absent": True}, ensure_ascii=False)
+        if expected_version is not None and observed != expected_version:
+            raise boundary_error(ValueError, "file_delete_version_changed",
+                "File changed since the previous read; inspect its current version before deleting.",
+                file_path=relative, expected_version=expected_version, observed_version=observed)
+        assert_model_write(target.root, relative)
+        target.unlink(expected_read_version=observed)
+        return json.dumps({"path": relative, "deleted": True, "previous_version": observed}, ensure_ascii=False)
 
 
 def run_glob(pattern: str, workdir: Path) -> str:

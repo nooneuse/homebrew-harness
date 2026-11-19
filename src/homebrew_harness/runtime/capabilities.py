@@ -23,6 +23,7 @@ CORE_TOOLS = frozenset(
         "read_file",
         "write_file",
         "edit_file",
+        "delete_file",
         "glob",
         "search_text",
         "git_status",

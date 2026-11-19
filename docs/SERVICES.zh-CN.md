@@ -6,6 +6,8 @@ Service 管理持久工作队列与固定周期计划，每项工作交给已有
 
 `repository_maintenance` profile 增加 GitHub 收件、自动研判、工作授权、长期对话和汇报。工作项在委派 Run 完成后进入 `review`。可选交付能力提供固定候选验证、分组发布审批与远端交付；社区沟通能力提供 Issue 多轮讨论和外部 PR 审查。
 
+启用 Delivery 时，开发 Run 完成实现、授权范围内的清理和注册验证，再报告结果及剩余验收限制。Service 随后准备并审查候选，按已配置的审批策略发布分支和 PR。开发 Run 在 PR 创建前完成，其代码工具无需平台凭据；身份、公开正文前缀和合并责任约定在交接中继续生效。
+
 ## 宿主准备
 
 默认交互中的内置 host-project Skill 可以引导配置，详见[托管仓库](HOSTING.zh-CN.md)。启动前通过 `service validate --spec ... --host-config ... --cwd ...` 进行离线配置检查。
@@ -213,7 +215,7 @@ python examples/service_demo.py --output /tmp/harness-service-demo
     "scopes": {
       "code": {
         "write_paths": ["src", "tests"],
-        "tools": ["read_file", "write_file", "edit_file", "glob", "search_text"],
+        "tools": ["read_file", "write_file", "edit_file", "delete_file", "glob", "search_text"],
         "allow_tests": []
       }
     },

@@ -102,6 +102,7 @@ class MaintenanceTests(unittest.TestCase):
             value["run_spec"]["prompt"],
         )
         self.assertIn("Do not publish external changes.", value["run_spec"]["prompt"])
+        self.assertNotIn('Service development-to-delivery handoff:',value['run_spec']['prompt'])
         self.assertTrue(
             any(
                 "service_propose" in [t["function"]["name"] for t in r.get("tools", [])]

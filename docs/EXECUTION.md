@@ -30,6 +30,8 @@ Interactive executions can continue across normal Run Episode boundaries. Checkp
 
 Execution mode does not change permissions, working directories, or container policy. Short calls normally finish during the initial wait. The existing Bash `run_in_background` endpoint remains available through its background module; use the execution options for the shared observation and input interface.
 
+`delete_file` removes one regular file within the same authorized write scope as `write_file` and `edit_file`. It accepts an optional `expected_version` from `read_file`, reports an already absent file separately, and rejects directories and symlink paths. Deletion does not require Bash access. A failure after removal retains the uncertain result for recovery inspection.
+
 For another registered workspace tool, use the shared wrapper to select the execution mode without repeating options in every tool schema:
 
 ```json

@@ -105,7 +105,7 @@ class ProgressTracker:
                 + json.dumps(category, ensure_ascii=False),
             )
             return
-        if call.name not in {"write_file", "edit_file", "run_tests"}:
+        if call.name not in {"write_file", "edit_file", "delete_file", "run_tests"}:
             return
         state = self.ensure_intent(control)
         if call.name == "run_tests":
@@ -122,7 +122,7 @@ class ProgressTracker:
             return
         with SafeFile(workdir, args["path"]) as target:
             raw, _, _ = target.snapshot()
-        file_hash = digest({"content": __import__("hashlib").sha256(raw).hexdigest()})
+        file_hash = digest({"content": __import__("hashlib").sha256(raw).hexdigest() if raw is not None else None})
         path = str((workdir / args["path"]).resolve().relative_to(self.store.root))
         seen = state["files"].get(path, [])
         if file_hash in seen:

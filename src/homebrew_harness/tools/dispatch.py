@@ -495,7 +495,7 @@ def _execute_tool(
         if (
             assignment is not None
             and assignment.worktree
-            and call.name in {"read_file", "write_file", "edit_file", "glob"}
+            and call.name in {"read_file", "write_file", "edit_file", "delete_file", "glob"}
         ):
             raw_path = (
                 arguments["pattern"] if call.name == "glob" else arguments["path"]

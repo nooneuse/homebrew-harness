@@ -4,6 +4,8 @@ from homebrew_harness.runtime.errors import annotate_error, error_info, error_me
 
 import json
 import time
+from functools import cached_property
+from pathlib import Path
 
 from .protocol import request_key, fingerprint
 from .maintenance_spec import text, number
@@ -38,6 +40,10 @@ class MaintenanceStore:
         self.id = header["id"]
         self.delivery = None
         self.communication = None
+
+    @cached_property
+    def development_handoff(self):
+        return (Path(__file__).parent / "prompts" / "development-handoff.md").read_text(encoding="utf-8")
 
     def get(self, kind, identity, conn=None):
         if kind not in SECTIONS:
@@ -508,6 +514,8 @@ class MaintenanceStore:
         )
         from .maintenance_spec import instructions_for
 
+        if self.delivery is not None:
+            prompt += "\n\nService development-to-delivery handoff:\n" + self.development_handoff
         guidance = instructions_for(self.policy, "development")
         if guidance:
             prompt += "\n\nConfigured development guidance:\n" + "\n\n".join(guidance.values())

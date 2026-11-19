@@ -9,6 +9,7 @@ from homebrew_harness.execution.model_connections import read_environment
 from homebrew_harness.services.agent import ServiceAgent
 from .maintenance_store import MaintenanceStore
 from .maintenance_spec import text
+from .protocol import fingerprint
 from .sources import RepositorySource, retry_after
 
 
@@ -66,6 +67,7 @@ class Maintenance:
     def identity(self):
         return {
             "delivery": self.delivery.identity() if self.delivery else None,
+            "development_handoff": fingerprint(self.store.development_handoff) if self.delivery else None,
             **(
                 {"communication": self.communication.identity()}
                 if self.communication

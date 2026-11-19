@@ -69,6 +69,23 @@ class EffectiveRunCapabilitiesTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(ValueError):
                 RunSpec("Inspect", tools=("read_file", name))
 
+    def test_delete_obeys_the_same_write_scope_and_tracks_absence_as_progress(self):
+        (self.root/'src').mkdir();(self.root/'src/remove.txt').write_text('remove')
+        (self.root/'outside.txt').write_text('keep')
+        session,control,pool=self.pool(RunSpec('Delete the authorized file.',tools=('delete_file',),write_paths=('src',)))
+        from tests.support.clients import reply,call
+        session.client._client.chat.completions.create.side_effect=[
+            reply(calls=[call('outside',name='delete_file',arguments=json.dumps({'path':'outside.txt'}))]),
+            reply(calls=[call('inside',name='delete_file',arguments=json.dumps({'path':'src/remove.txt'}))]),
+            reply('Done'),
+        ]
+        self.assertIn('delete_file',pool.names)
+        self.assertEqual(control.execute().status,'completed')
+        self.assertEqual((self.root/'outside.txt').read_text(),'keep')
+        self.assertFalse((self.root/'src/remove.txt').exists())
+        denied=json.loads(next(m['content'] for m in session.messages if m.get('tool_call_id')=='outside'))
+        self.assertEqual(denied['reason_code'],'write_boundary')
+
     def test_nonintegration_stages_only_expose_handoff(self):
         goal = {
             "condition": "Report exists",
