@@ -88,10 +88,18 @@ def inspect_artifacts(
                     raise ValueError("Runtime inventory refuses internal symlinks.")
             with SafeFile(root, str(Path(parent) / ".inventory-anchor")) as anchor:
                 for name in sorted(names):
-                    info = os.stat(name, dir_fd=anchor.fds[-1], follow_symlinks=False)
+                    path = (Path(parent) / name).relative_to(root).as_posix()
+                    try:
+                        info = os.stat(name, dir_fd=anchor.fds[-1], follow_symlinks=False)
+                    except FileNotFoundError:
+                        if (archive_path(path) or path in registry or "/goals/" in path
+                                or "/workflows/" in path or path == ".harness/artifact-pins.json"):
+                            raise ValueError("Retained evidence changed during inventory: " + path) from None
+                        # Atomic publishers and SQLite may retire opaque metadata
+                        # between enumeration and stat. It is never a GC candidate.
+                        continue
                     if not stat.S_ISREG(info.st_mode):
                         raise ValueError("Runtime inventory requires regular files.")
-                    path = (Path(parent) / name).relative_to(root).as_posix()
                     if len(files) >= max_files:
                         raise ValueError(
                             "Runtime inventory exceeds the file count limit."

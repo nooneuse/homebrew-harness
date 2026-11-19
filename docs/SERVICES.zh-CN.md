@@ -278,6 +278,8 @@ python examples/maintenance_demo.py --output /tmp/harness-maintenance-demo
 
 可选 delivery 从已完成开发的工作准备私有 Git 候选，重新验证固定测试和原始 Goal 硬条件，进行独立审查，发布审查分支及变更请求，并等待确切 SHA 的 CI。默认等待维护者通过平台合并 PR；service_approved 模式在明确授权后执行原生合并，核验实际结果再完成 Work。公开评论另行批准。代码修复复用原生 Run，保留范围并累计次数。分组决定、动作回执和重启恢复共用 HTTP/SDK/Text UI。配置及离线演示见 [仓库交付](DELIVERY.zh-CN.md)。
 
+候选测试失败时保留回执和可读输出，由模型研判原因。代码修复使用有授权的原生 Run；本地临时故障可以请求同一候选重测，自动重测次数由 `ci_fix_limit` 限制。候选检查通过后才能发布。`work.progress()` 显示交付状态，健康检查提示当前阻塞候选。解决阻塞后，可用 `service.refresh_delivery(changeset_id)` 显式重新核验已收尾、尚未发布的候选，保留失败历史。后续需求修订使用经验证且已同步的集成结果作为本轮基线，历史交付记录继续保留。
+
 ## Service 运维（P4）
 
 [Service 运维](SERVICE_OPERATIONS.zh-CN.md) 提供健康事实、原生写入者停靠、跨工作区保留、备份集合/恢复、固定仓库审查及明确的兼容版本接替。CLI、Text UI 和 Python 共用认证控制方法。

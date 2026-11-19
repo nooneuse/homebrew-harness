@@ -75,6 +75,57 @@ class DeliveryStore:
         self.ms.changed(conn, work["id"])
         return value
 
+    def test_failure(self, row, checked):
+        """Accept real failed receipts and queue the existing model diagnosis job."""
+        with self.db.write() as conn:
+            self.runtime.store.guard(conn, self.runtime.header)
+            current = self.get("changesets", row["id"], conn)
+            self.current(current, conn)
+            if current["revision"] != row["revision"]:
+                raise StaleDelivery("Candidate changed during quality verification.")
+            current.update(
+                state="ci_diagnosing", quality=checked["quality"],
+                frozen=None, review=None,
+                test_failure=checked["test_failure"],
+                goal_evidence=checked["goal_evidence"],
+                error="candidate_test_failed",
+                error_detail="Registered candidate test failed; inspect its recorded receipt and output.",
+                validation_history=[*current.get("validation_history", []),
+                    {"observed_at": time.time(), "quality": checked["quality"],
+                     "test_failure": checked["test_failure"]}],
+                revision=current["revision"] + 1,
+            )
+            current.pop("ci_diagnosis", None)
+            self.put(conn, "changesets", current)
+            self.ms.job(conn, "ci_triage", current["id"], current["revision"], {},
+                        current["id"] + ":quality:" + checked["test_failure"]["run_id"])
+            self.ms.changed(conn, current["work_id"])
+            return current
+
+    def retry_validation(self, row):
+        """Explicit host recheck of unchanged, unpublished candidate content."""
+        self.runtime.maintenance.delivery.git.verify(row["candidate"])
+        with self.db.write() as conn:
+            self.runtime.store.guard(conn, self.runtime.header)
+            current = self.get("changesets", row["id"], conn)
+            self.current(current, conn)
+            if (current["revision"] != row["revision"]
+                    or current["state"] not in {"failed", "quality_failed", "blocked"}
+                    or current.get("change_request")):
+                raise ValueError("Only a settled, unpublished candidate can be rechecked.")
+            current.update(
+                state="validating", error=None, error_detail=None,
+                frozen=None, review=None, quality=None,
+                validation_history=[*current.get("validation_history", []),
+                    {"observed_at": time.time(), "state": row["state"],
+                     "error": row.get("error"), "error_detail": row.get("error_detail"),
+                     "quality": row.get("quality"), "requested_recheck": True}],
+                revision=current["revision"] + 1, next_validation=0,
+            )
+            self.put(conn, "changesets", current)
+            self.ms.changed(conn, current["work_id"])
+            return current
+
     def current(self, row, conn=None):
         work = (
             self.db._get(conn, "service_work", row["work_id"])
@@ -565,6 +616,15 @@ class DeliveryStore:
                             "reason": result["reason"],
                         },
                     )
+            elif row.get("test_failure") and result["classification"] in {"flaky", "infrastructure"}:
+                rechecks = row.get("validation_rechecks", 0)
+                if rechecks >= self.spec["ci_fix_limit"]:
+                    row.update(state="blocked", error="candidate_recheck_limit",
+                               error_detail="Model-requested candidate rechecks reached ci_fix_limit=" + str(self.spec["ci_fix_limit"]))
+                else:
+                    row.update(state="validating", validation_rechecks=rechecks + 1,
+                               next_validation=time.time() + self.spec["ci_poll_seconds"],
+                               error=None, error_detail=None)
             else:
                 row.update(state="blocked", error="ci_" + result["classification"])
         row["revision"] += 1

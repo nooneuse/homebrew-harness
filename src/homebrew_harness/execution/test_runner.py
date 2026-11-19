@@ -57,18 +57,20 @@ def executable_identity(path):
     resolved = configured.resolve(strict=True)
     if not resolved.is_file() or not os.access(resolved, os.X_OK):
         raise TestRunnerError("Registered test executable is unavailable.")
-    if resolved.name in {
+    prohibited = {
         "sh",
         "bash",
         "zsh",
         "fish",
+        "dash", "ash", "ksh", "csh", "tcsh",
         "sudo",
         "su",
         "rm",
         "dd",
         "shutdown",
         "reboot",
-    }:
+    }
+    if configured.name in prohibited or resolved.name in prohibited:
         raise TestRunnerError(
             "Shell and system-control executables are not TestRunner recipes."
         )

@@ -308,6 +308,7 @@ class ProcessRuns(unittest.TestCase):
         self.assertEqual(result["last_outcome"]["reason_code"], "deadline_reached")
         self.assertEqual(result["heartbeat"]["phase"], "tool")
         self.assertTrue(result["cleanup_complete"])
+        self.assertIsNotNone(result["finalized_at"])
 
     def test_concurrent_status_reads_keep_service_wal_binding_stable(self):
         code = """from pathlib import Path
@@ -406,7 +407,7 @@ store.close()
 
         class SlowResponse:
             def popleft(inner):
-                time.sleep(5)
+                time.sleep(max(0, self.store.get(state['id'])['deadline_at'] - time.time()) + .3)
                 return self.write().model_dump(exclude_none=True)
 
         server.responses = SlowResponse()
@@ -426,6 +427,57 @@ store.close()
         self.assertEqual(result["status"], "failed", result["last_outcome"])
         self.assertEqual(result["last_outcome"]["reason_code"], "deadline_reached")
         self.assertFalse((self.root / "out.txt").exists())
+
+    def test_cancel_recorded_as_worker_exits_is_finalized_without_replay(self):
+        server = self.service([self.write()])
+        goal = {"condition": "Output exists", "judge": False,
+                "predicates": [{"id": "out", "type": "file_exists", "path": "out.txt"}]}
+        state = self.store.create(RunSpec("Write output", goal=goal,
+            stages=({"key": "write", "subject": "Write output", "acceptance": goal},)))
+        supervisor = self.supervisor(server, self.crash_command("unstarted"))
+        reconcile = supervisor.reconcile_completed
+        cancelled = False
+        def record_cancel(current):
+            nonlocal cancelled
+            if (not cancelled and supervisor.process is not None
+                    and supervisor.process.poll() is not None):
+                self.store.control(state['id'], 'cancel')
+                cancelled = True
+                return False
+            return reconcile(current)
+        with self.env(server), patch.object(supervisor, 'reconcile_completed', record_cancel):
+            result = supervisor.supervise(state['id'])
+        self.assertTrue(cancelled)
+        self.assertEqual(result['status'], 'cancelled')
+        self.assertTrue(result['cleanup_complete'])
+        self.assertIsNotNone(result['finalized_at'])
+        self.assertEqual(len(server.requests), 1)
+        self.assertFalse((self.root/'out.txt').exists())
+        tasks = [t for t in self.store.runtime.items('tasks').values()
+                 if (t.get('stage') or {}).get('run_id') == state['id']]
+        self.assertTrue(tasks)
+        self.assertTrue(all(t['status'] == 'abandoned' for t in tasks))
+
+    @unittest.skipUnless(sys.platform == 'linux' and Path('/proc/self/stat').is_file(),
+                         'Linux process-state inspection is unavailable.')
+    def test_exited_unreaped_pid_is_not_a_live_worker_or_service_launcher(self):
+        from homebrew_harness.execution.process_liveness import process_alive
+        from homebrew_harness.services.launcher import gone
+        import subprocess
+        process = subprocess.Popen([sys.executable, '-I', '-c', 'pass'])
+        self.addCleanup(process.wait)
+        limit = time.monotonic() + 5
+        while time.monotonic() < limit:
+            text = Path(f'/proc/{process.pid}/stat').read_text()
+            if text.rsplit(')', 1)[1].split()[0] == 'Z':
+                break
+            time.sleep(.01)
+        else:
+            self.fail('Child never reached its unreaped exited state.')
+        os.kill(process.pid, 0)
+        self.assertFalse(process_alive(process.pid))
+        self.assertTrue(gone(process.pid))
+        self.assertTrue(process_alive(os.getpid()))
 
     def test_completed_run_crash_reconciles_without_another_model_request(self):
         server = self.service([reply("done")])

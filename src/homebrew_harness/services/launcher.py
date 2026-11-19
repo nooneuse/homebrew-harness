@@ -11,6 +11,7 @@ import threading
 from pathlib import Path
 
 from homebrew_harness.execution.execution_leases import ExecutionLeases
+from homebrew_harness.execution.process_liveness import process_alive
 from homebrew_harness.runtime.runtime_control import Workers
 from homebrew_harness.security.safe_files import SafeFile
 from .store import ServiceStore
@@ -35,13 +36,7 @@ def live(root):
 def gone(pid):
     if type(pid) is not int or pid <= 0:
         return False
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return True
-    except PermissionError:
-        return False
-    return False
+    return not process_alive(pid)
 
 
 def launch(store, identity, seconds=5):

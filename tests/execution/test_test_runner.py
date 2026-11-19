@@ -323,6 +323,10 @@ class RunnerTests(Fixture):
                 TestRecipe("bad", (sys.executable, "-c", "pass"), env=(env,))
         with self.assertRaises(TestRunnerError):
             TestRecipe("bad", ("/bin/sh", "-c", "echo bad"))
+        alias = self.root / "registered-shell"
+        alias.symlink_to('/bin/sh')
+        with self.assertRaises(TestRunnerError):
+            TestRecipe("bad", (str(alias), "-c", "echo bad"))
 
     def test_default_suite_detects_zero_tests_and_avoids_module_shadowing(self):
         (self.root / "tests").mkdir()

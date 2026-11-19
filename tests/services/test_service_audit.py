@@ -165,6 +165,8 @@ class AuditTests(unittest.TestCase):
             20,
         )
         self.peer.coding_value = "3\n"
+        first_changeset = service.store.work(work.id)["changeset_id"]
+        original_baseline = service.store.work(work.id)["original_baseline_ref"]
         work.revise("Now supply value 3 while retaining the public file and tests.")
         authority = eventually(
             lambda: next(
@@ -177,3 +179,8 @@ class AuditTests(unittest.TestCase):
         service.decide(target, "approve", decision_id="second")
         eventually(lambda: work.snapshot().state == "delivered", 20)
         self.assertEqual((self.workspace / "src/value.txt").read_text(), "3\n")
+        value = service.store.work(work.id)
+        prior = service.runtime.maintenance.store.get("changesets", first_changeset)
+        self.assertEqual(value["baseline"]["head"], prior["integration"]["commit"])
+        self.assertEqual(value["original_baseline_ref"], original_baseline)
+        self.assertIsNone(value["run_spec"]["work_context"]["progress"])

@@ -245,6 +245,8 @@ def refresh(delivery, identity):
     from .integration import refresh_candidate
 
     row = delivery.store.get("changesets", identity)
+    if not row.get("change_request") and row.get("candidate"):
+        return delivery.store.retry_validation(row)
     if row["state"] == "verification_blocked" and row.get("merge"):
         return delivery.store.update(
             "changesets", identity, state="merged_verifying", error=None, next_merge=0

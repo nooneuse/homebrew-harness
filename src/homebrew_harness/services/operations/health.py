@@ -14,6 +14,7 @@ def snapshot(runtime):
             "service_work",
             "service_decisions",
             "service_actions",
+            "service_changesets",
             "service_jobs_model",
             "service_communication_actions",
             "service_discussions",
@@ -33,6 +34,15 @@ def snapshot(runtime):
                 ("service:" + runtime.id,),
             )
         ]
+        delivery_blockers = [json.loads(raw) for raw, in conn.execute(
+            "SELECT candidate.value FROM records AS candidate JOIN records AS work "
+            "ON work.section='service_work' AND work.owner=candidate.owner "
+            "AND work.key=json_extract(candidate.value,'$.work_id') "
+            "AND json_extract(work.value,'$.changeset_id')=candidate.key "
+            "AND json_extract(work.value,'$.state')='review' "
+            "WHERE candidate.section='service_changesets' AND candidate.owner=? "
+            "AND json_extract(candidate.value,'$.state') IN ('failed','quality_failed','blocked','verification_blocked','repair_waiting','repair_waiting_authority')",
+            ("service:" + runtime.id,))]
 
     free = shutil.disk_usage(runtime.store.root).free
     maintenance = runtime.maintenance
@@ -41,6 +51,11 @@ def snapshot(runtime):
     decisions = summary(maintenance) if maintenance else {"actionable": 0, "unavailable": 0, "unavailable_examples": [], "oldest_actionable": None}
     pending = decisions["oldest_actionable"]
     issues = []
+    for row in delivery_blockers:
+        issues.append({"code": "delivery_blocked", "target": row["work_id"],
+                       "changeset_id": row["id"], "state": row["state"],
+                       "message": row.get("error_detail") or row.get("error") or "Delivery awaits a current repair decision.",
+                       "diagnostic_ref": {"record": "changesets", "id": row["id"]}})
     active_faults = {k: v for k, v in meta.get("runtime_failures", {}).items() if not v.get("resolved_at")}
     age = now - (meta["heartbeat_at"] or meta["created_at"])
     if age > runtime.spec.operations["stale_seconds"]:

@@ -994,10 +994,16 @@ def run_demo(base, *, timeout=360):
         ):
             raise RuntimeError("A-E demo took an unexpected model/tool path.")
         for index, messages in enumerate(server.messages):
-            if messages and str(messages[0].get('content', '')).startswith('Summarize the supplied conversation'):
-                payload = json.loads(messages[-1]['content'])
+            instruction = str(messages[0].get('content', '')) if messages else ''
+            if instruction.startswith('Create a compact working-state handoff'):
+                payload = json.loads(messages[1]['content'])
                 if payload.get('current_request') != PROMPT:
                     raise RuntimeError('Compaction lost the original task scope.')
+                continue
+            if instruction.startswith('Rewrite the supplied working-state handoff'):
+                payload = json.loads(messages[1]['content'])
+                if not isinstance(payload.get('summary'), str) or not payload.get('context_chars'):
+                    raise RuntimeError('Compaction rewrite lost its working-state input.')
                 continue
             constraints = [
                 m

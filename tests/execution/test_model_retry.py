@@ -6,7 +6,7 @@ import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from homebrew_harness.execution.model_gateway import (
     ModelGateway, GatewayLimits, Deadline, ModelCancelled, ModelDeadlineExceeded,
@@ -97,21 +97,27 @@ class ModelRetries(unittest.TestCase):
     def test_request_timeout_waits_for_actual_receipt_before_retry(self):
         released,finished=threading.Event(),threading.Event()
         self.addCleanup(released.set)
-        timer=threading.Timer(0.12,released.set)
-        self.addCleanup(timer.cancel)
         gateway=ModelGateway(self.client,GatewayLimits(request_timeout=0.04),workdir=self.root)
         self.addCleanup(lambda:(gateway.close(),gateway.wait_idle(2)))
         def model(**kwargs):
             if self.create.call_count==1:
-                released.wait(1)
+                released.wait(5)
                 finished.set()
                 return reply('Late answer')
             self.assertTrue(finished.is_set())
             return reply('Current answer')
         self.create.side_effect=model
-        timer.start()
-        with gateway.scope(deadline=Deadline.after(2)):
-            self.assertEqual(request(gateway,**self.params).text,'Current answer')
+        abandon = gateway._abandon
+        def observe_timeout(receipt, error):
+            abandon(receipt, error)
+            if isinstance(error, ModelDeadlineExceeded) and error.source == 'request':
+                # Release only after the first request really timed out. Give the
+                # fast retry normal scheduling room instead of another 40ms race.
+                gateway._state.limits = GatewayLimits(request_timeout=2)
+                released.set()
+        with patch.object(gateway, '_abandon', observe_timeout):
+            with gateway.scope(deadline=Deadline.after(5)):
+                self.assertEqual(request(gateway,**self.params).text,'Current answer')
         self.assertEqual(self.create.call_count,2)
         self.assertFalse(gateway._state.inflight)
 

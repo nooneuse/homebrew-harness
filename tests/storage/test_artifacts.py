@@ -30,6 +30,34 @@ class ArtifactTests(unittest.TestCase):
         self.assertEqual(inspect_artifacts(self.root)["files"], [])
         self.assertEqual(list(self.root.iterdir()), [])
 
+    def test_disappearing_opaque_metadata_does_not_block_archive_inventory(self):
+        import os
+        old = self.old()
+        volatile = self.root / '.harness/runtime/volatile.tmp'
+        volatile.write_text('Temporary metadata')
+        original = os.stat
+        def vanished(path, *args, **kw):
+            if path == 'volatile.tmp':
+                volatile.unlink(missing_ok=True)
+                raise FileNotFoundError('Atomic metadata retired')
+            return original(path, *args, **kw)
+        with patch('homebrew_harness.storage.artifact_inventory.os.stat', vanished):
+            result = inspect_artifacts(self.root)
+        self.assertEqual([row['path'] for row in result['candidates']], [old])
+
+    def test_disappearing_registered_archive_still_invalidates_inventory(self):
+        import os
+        old = self.old()
+        original = os.stat
+        def vanished(path, *args, **kw):
+            if path == Path(old).name:
+                (self.root/old).unlink(missing_ok=True)
+                raise FileNotFoundError('Archive removed')
+            return original(path, *args, **kw)
+        with patch('homebrew_harness.storage.artifact_inventory.os.stat', vanished):
+            with self.assertRaisesRegex(ValueError, 'Retained evidence changed'):
+                inspect_artifacts(self.root)
+
     def test_preview_preserves_unregistered_and_all_user_content(self):
         old = self.old()
         user = self.root / "source.py"

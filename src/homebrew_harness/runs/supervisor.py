@@ -7,6 +7,7 @@ import time
 
 from homebrew_harness.execution.execution_leases import ExecutionLeases
 from homebrew_harness.execution.execution_control import cleanup_scope
+from homebrew_harness.execution.process_liveness import process_alive
 from homebrew_harness.security.safe_files import SafeFile
 from .spec import RunSpec, RunOutcome, TERMINAL
 
@@ -70,15 +71,7 @@ class RunSupervisor:
             return False
         attempt = self.store.runtime.get("run_attempts", value["owner"], {})
         pid = attempt.get("pid")
-        if type(pid) is not int or pid <= 0:
-            return False
-        try:
-            os.kill(pid, 0)
-        except ProcessLookupError:
-            return False
-        except PermissionError:
-            return True
-        return True
+        return process_alive(pid)
 
     def _close_process(self, process, seconds):
         if process.poll() is not None:
@@ -252,6 +245,8 @@ class RunSupervisor:
                             "cleanup_complete": safe,
                         },
                     )
+                    if status in TERMINAL and safe:
+                        self.store.finalize_terminal(identity, supervisor=self)
                     return self.store.status(identity)
                 if time.time() < value["last_clock"] - 1:
                     header = {
@@ -408,6 +403,13 @@ class RunSupervisor:
                     if self.reconcile_completed(current):
                         self.store.finalize_terminal(identity, supervisor=self)
                         return self.store.status(identity)
+                    # A control can arrive while cleanup/reconciliation is being
+                    # observed, including after the worker has already exited.
+                    current = self.store.get(identity)
+                    if watchdog_reason is None:
+                        action = self.store.runtime.get("run_controls", identity, {}).get("action")
+                        if action in {"pause", "cancel"}:
+                            watchdog_reason = action
                     if current["status"] in TERMINAL:
                         self.store.finalize_terminal(identity, supervisor=self)
                     if current.get("cleanup_complete") is not True:
@@ -437,6 +439,8 @@ class RunSupervisor:
                                 {"status": status, "last_outcome": outcome.data()},
                             )
                             self.store.ended(header, cleanup=True)
+                            if status in TERMINAL:
+                                self.store.finalize_terminal(identity, supervisor=self)
                             return self.store.status(identity)
                         if current["status"] == "blocked":
                             return self.store.status(identity)

@@ -45,7 +45,7 @@ HANDLERS = {
     ),
     "ci_triage": JobHandler(
         "changesets",
-        "Read fixed candidate code and CI observations. Provide classification (code/baseline/flaky/infrastructure/unknown), reason and a bounded plan. This does not publish or grant repair authority.",
+        "Read fixed candidate code and local quality/CI observations. quality[].outputs lists exact output IDs; use service_read(kind='quality_output', identity=that ID) and next_offset to inspect the recorded log. Provide classification (code/baseline/flaky/infrastructure/unknown), reason and a bounded plan. Local flaky/infrastructure diagnoses request a bounded recheck of this same candidate; baseline/unknown require operator action. A code diagnosis proposes scoped repair. A passing isolated test does not by itself establish load-flakiness. This does not publish, waive failed checks or grant repair authority.",
         ("ci-failure-triage",),
         job_results.ci_triage,
         job_results.apply_delivery,
@@ -224,6 +224,10 @@ class JobContract:
                 "Public discussion cannot read unrelated internal evidence."
             )
         primary = self.primary()
+        if kind == "quality_output" and self.kind in {"review", "ci_triage"}:
+            from .delivery.quality import output_reference
+            output_reference(primary, identity)
+            return
         allowed = {
             "triage": {"work", "events", "work_list", "requirements", "evidence"},
             "review": {"changesets", "work", "events", "evidence", "requirements"},

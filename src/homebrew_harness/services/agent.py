@@ -160,6 +160,9 @@ class ServiceAgent:
         contract.authorize(kind, identity)
         number(offset, "offset", 0, 2**63 - 1, integer=True)
         number(limit, "limit", 1, 16000, integer=True)
+        if kind == "quality_output":
+            from .delivery.quality import read_output
+            return json.dumps(read_output(contract.primary(), identity, offset, limit), ensure_ascii=False)
         if kind == "project_context":
             raw = json.dumps(self.project_context, ensure_ascii=False)
             return json.dumps({"text": raw[offset:offset + limit], "length": len(raw),
@@ -533,6 +536,7 @@ class ServiceAgent:
                 "merge_rules",
                 "candidate_history",
                 "primary_expected",
+                "validation_history",
             }
         }
         if primary.get("candidate") and kind in {"review", "ci_triage"}:

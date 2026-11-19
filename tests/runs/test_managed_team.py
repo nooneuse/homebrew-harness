@@ -196,7 +196,7 @@ class ManagedTeamTests(unittest.TestCase):
                         "write_file",
                         {"path": actor + ".txt", "content": actor + " done"},
                     )
-                if index == 1:
+                if tasks[actor]["status"] == "in_progress":
                     return tool("complete_task", {"task_id": tasks[actor]["id"]})
                 return reply("Verified output ready.")
             if n == 0:

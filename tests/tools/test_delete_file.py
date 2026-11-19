@@ -41,6 +41,13 @@ class DeleteFileTests(unittest.TestCase):
         self.assertEqual(target.read_text(), 'after')
 
     def test_large_binary_removal_does_not_read_a_content_snapshot(self):
+        try:
+            import resource
+            maximum = resource.getrlimit(resource.RLIMIT_FSIZE)[0]
+            if maximum != resource.RLIM_INFINITY and maximum < 65*1024*1024:
+                self.skipTest('Host file-size limit cannot create the 65 MiB stress fixture.')
+        except ImportError:
+            pass
         target = self.workdir/'large.bin'
         with target.open('wb') as stream:
             stream.truncate(65*1024*1024)

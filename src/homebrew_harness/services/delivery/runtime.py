@@ -10,6 +10,7 @@ from homebrew_harness.execution.execution_control import control_scope
 from homebrew_harness.execution.model_gateway import Deadline
 from homebrew_harness.execution.test_runner import load_test_runner
 from homebrew_harness.services.protocol import request_key, fingerprint
+from homebrew_harness.services.maintenance_spec import within
 from homebrew_harness.security.data_boundary import redact
 from .spec import read_values
 from .git import GitBackend, StaleDelivery
@@ -101,10 +102,25 @@ class Delivery:
         if work.get("baseline"):
             return work
         files = snapshot(child.workdir, **work["run_spec"]["snapshot_limits"])
+        head = self.git.head(child.workdir)
+        sync = work.get("workspace_sync") or {}
+        if (child.workdir == Path(self.runtime.spec.workspace)
+                and sync.get("state") == "synchronized"):
+            prior = self.store.get("changesets", sync["changeset_id"])
+            integration = prior.get("integration")
+            if integration and all(
+                ((files.get(name) or {}).get("sha256"),
+                 (files.get(name) or {}).get("executable", False))
+                == ((integration["files"].get(name) or {}).get("sha256"),
+                    (integration["files"].get(name) or {}).get("executable", False))
+                for name in set(files) | set(integration["files"])
+                if within(name, prior["write_paths"])
+            ):
+                head = integration["commit"]
         return self.runtime.store.update_work(
             self.runtime.header,
             work["id"],
-            baseline={"files": files, "head": self.git.head(child.workdir)},
+            baseline={"files": files, "head": head},
         )
 
     def rows(self, kind, *, active=False):
@@ -259,6 +275,8 @@ class Delivery:
         }:
             return
         work = self.store.current(row)
+        if row.get("next_validation", 0) > time.time():
+            return
         if row["state"] in {"queued", "preparing"}:
             if not work.get("baseline"):
                 raise ValueError("Work has no frozen input baseline.")
@@ -347,6 +365,9 @@ class Delivery:
 
             checked = verify(self, row["candidate"], work)
             if not checked["ok"]:
+                if checked.get("test_failure"):
+                    self.store.test_failure(row, checked)
+                    return
                 self.store.update(
                     "changesets",
                     row["id"],
@@ -361,6 +382,7 @@ class Delivery:
                 row["id"],
                 quality=checked["quality"],
                 goal_evidence=checked["goal_evidence"],
+                test_failure=None, error=None, error_detail=None,
                 state=(
                     "reviewing"
                     if self.spec["require_review"]
@@ -556,7 +578,7 @@ class Delivery:
         try:
             if action["kind"] == "publish_branch":
                 previous = row.get("publish_base") or (
-                    self.store.get("changesets", row["previous"])["candidate"]["commit"]
+                    self.store.get("changesets", row["previous"]).get("review_commit")
                     if row.get("previous")
                     else None
                 )

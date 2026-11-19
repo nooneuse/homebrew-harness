@@ -56,6 +56,9 @@ def view(runtime, work):
         ),
         "verification": record.get("evidence_refs", []) if record else [],
         "changeset_id": work.get("changeset_id"),
+        "delivery": ({k: candidate.get(k) for k in
+                      ("state", "error", "error_detail", "test_failure", "ci_diagnosis")}
+                     if valid_candidate else None),
     }
 
 
@@ -231,7 +234,8 @@ def seed(runtime_store, work):
     progress = runtime_store.get("service_work_progress", work.get("progress_ref", ""))
     return (
         {k: progress[k] for k in ("summary", "remaining", "complete")}
-        if progress
+        if progress and progress["requirements_revision"] == work["requirements_revision"]
+        and progress.get("write_paths") == list(work["run_spec"]["write_paths"])
         else None
     )
 

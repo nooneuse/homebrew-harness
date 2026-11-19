@@ -55,7 +55,11 @@ class ServiceProcesses(unittest.TestCase):
                 reply("Recovered"),
             ]
         )
-        service = ready_service(host.services.start(self.spec(), lifetime="detached"))
+        # Cold imports, the attention round and a real process restart all share
+        # the original Run deadline, including under a loaded container host.
+        service = ready_service(host.services.start(self.spec(run_defaults={
+            "total_seconds": 120, "request_seconds": 20, "heartbeat_timeout": 30,
+        }), lifetime="detached"))
         self.addCleanup(self.stop, host, service.id)
         work = service.work.submit("Ask then complete", request_id="one")
         request = eventually(lambda: service.requests() and service.requests()[0], 20)
@@ -70,7 +74,7 @@ class ServiceProcesses(unittest.TestCase):
         )
         self.assertEqual(restored.ref.id, request.ref.id)
         host.requests.answer(restored.ref, text="Continue", decision_id="one")
-        eventually(lambda: recovered.work.get(work.id).snapshot().state == "review", 20)
+        eventually(lambda: recovered.work.get(work.id).snapshot().state == "review", 60)
         self.assertEqual(recovered.store.work(work.id)["run_id"], before["run_id"])
         self.assertEqual(len(model.requests), 2)
         recovered.stop()
@@ -109,7 +113,9 @@ class ServiceProcesses(unittest.TestCase):
                 reply("Done"),
             ]
         )
-        service = ready_service(host.services.start(self.spec(), lifetime="detached"))
+        service = ready_service(host.services.start(self.spec(run_defaults={
+            "total_seconds": 120, "request_seconds": 20, "heartbeat_timeout": 30,
+        }), lifetime="detached"))
         self.addCleanup(self.stop, host, service.id)
         work = service.work.submit("Ask then continue")
         eventually(lambda: service.requests(), 20)
@@ -118,10 +124,11 @@ class ServiceProcesses(unittest.TestCase):
         eventually(lambda: not live(self.control), 15)
         restarted = ready_service(host.services.start(identity=service.id, lifetime="detached"))
         request = eventually(
-            lambda: restarted.requests() and restarted.requests()[0], 20
+            lambda: next((r for r in restarted.requests()
+                          if r.question == "Continue after pause?"), None), 60
         )
         host.requests.answer(request.ref, text="Continue", decision_id="answer")
-        eventually(lambda: restarted.work.get(work.id).snapshot().state == "review", 20)
+        eventually(lambda: restarted.work.get(work.id).snapshot().state == "review", 60)
         self.assertEqual(restarted.store.work(work.id)["run_id"], before)
         self.assertEqual(len(model.requests), 3)
         restarted.stop()

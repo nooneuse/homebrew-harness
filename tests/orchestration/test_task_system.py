@@ -242,13 +242,50 @@ class TaskStoreTests(unittest.TestCase):
         self.assertEqual(self.store.claim(task.id).status, "in_progress")
 
     def test_busy_store_fails_without_mutation_then_recovers(self):
+        from homebrew_harness.execution.execution_control import control_scope
+        from homebrew_harness.execution.model_gateway import Deadline, ModelDeadlineExceeded
         task = self.store.create("Pending")
         with (self.store.directory / "task-board.lock").open("r+") as handle:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            with self.assertRaisesRegex(ValueError, "busy"):
+            with control_scope(Deadline.after(.06)), self.assertRaises(ModelDeadlineExceeded):
                 self.store.claim(task.id)
         self.assertEqual(self.store.load(task.id).status, "pending")
         self.assertEqual(self.store.claim(task.id).status, "in_progress")
+
+    def test_transient_task_board_contention_waits_without_requiring_tool_replay(self):
+        import threading
+        from homebrew_harness.execution.execution_control import control_scope
+        from homebrew_harness.execution.model_gateway import Deadline
+        task = self.store.create('Pending')
+        with (self.store.directory/'task-board.lock').open('r+') as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            release = threading.Timer(.05, lambda: fcntl.flock(handle, fcntl.LOCK_UN))
+            release.start()
+            try:
+                with control_scope(Deadline.after(2)):
+                    claimed = self.store.claim(task.id)
+            finally:
+                release.join()
+        self.assertEqual(claimed.status, 'in_progress')
+
+    def test_task_board_wait_reports_cancellation_without_claiming_deadline(self):
+        import threading
+        from homebrew_harness.execution.execution_control import control_scope
+        from homebrew_harness.execution.model_gateway import Deadline, ModelCancelled
+        task = self.store.create('Pending')
+        cancelled = threading.Event()
+        with (self.store.directory/'task-board.lock').open('r+') as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            timer = threading.Timer(.03, cancelled.set);timer.start()
+            try:
+                with control_scope(Deadline.after(2), cancel_events=(cancelled,)):
+                    with self.assertRaises(ModelCancelled) as caught:
+                        self.store.claim(task.id)
+            finally:
+                timer.join()
+        self.assertIn('cancelled', str(caught.exception))
+        self.assertNotIn('deadline', str(caught.exception))
+        self.assertEqual(self.store.load(task.id).status, 'pending')
 
     def test_fresh_python_process_recovers_description_owner_and_graph(self):
         schema, api = (
