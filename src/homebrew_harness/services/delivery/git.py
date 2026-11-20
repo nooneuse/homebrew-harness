@@ -430,6 +430,7 @@ class GitBackend:
         (target / ".git").write_text("gitdir: " + str(repo) + "\n")
         self.run(["--git-dir=" + str(repo), "config", "core.bare", "false"])
         self.run(["--git-dir=" + str(repo), "config", "core.worktree", str(target)])
+        self.run(["--git-dir=" + str(repo), "read-tree", commit])
         frozen = snapshot(target, **work["run_spec"]["snapshot_limits"])
         return {
             "repo": str(repo),

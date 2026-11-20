@@ -702,6 +702,7 @@ class Delivery:
             ["--git-dir=" + str(repo), "config", "core.worktree", str(workspace)]
         )
         (workspace / ".git").write_text("gitdir: " + str(repo) + "\n")
+        self.git.run(["--git-dir=" + str(repo), "read-tree", row["candidate"]["commit"]])
         from homebrew_harness.runs.spec import RunSpec
 
         def prompt(current):

@@ -69,3 +69,6 @@ class RepairPreparation(unittest.TestCase):
             eventually(lambda: self.pending_target(service), 40)
             self.assertEqual(service.store.work(work.id)['ci_fix_attempts'], 1)
             self.assertNotEqual(service.store.work(work.id)['run_id'], old_run)
+            workspace = service.store.work(work.id)['run_workspace']
+            self.assertIn(b'src/value.txt', self.run_git('ls-files', cwd=workspace))
+            self.run_git('diff', '--cached', '--quiet', 'HEAD', cwd=workspace)

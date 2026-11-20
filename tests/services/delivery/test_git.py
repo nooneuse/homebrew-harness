@@ -1,5 +1,6 @@
 import shutil
 import hashlib
+import json
 import subprocess
 import sys
 import tempfile
@@ -110,6 +111,20 @@ class GitTests(unittest.TestCase):
         self.assertEqual(
             result, self.backend.publish(candidate, "harness/review", None)
         )
+
+    def test_candidate_workspace_reports_only_actual_changes(self):
+        from homebrew_harness.tools.queries import git_status, git_diff
+
+        candidate = self.candidate()
+        workspace = Path(candidate["workspace"])
+        self.assertEqual(json.loads(git_status(workdir=workspace))["files"], [])
+        self.assertEqual((workspace / "module.py").read_text(), "value=2\n")
+        (workspace / "module.py").write_text("value=3\n")
+        status = json.loads(git_status(workdir=workspace))
+        self.assertEqual(status["files"], [{"status": " M", "path": "module.py"}])
+        diff = json.loads(git_diff(workdir=workspace, paths=["module.py"]))
+        self.assertIn("-value=2\n+value=3", diff["diff"])
+        self.assertFalse(diff["truncated"])
 
     def test_delayed_git_stdin_preserves_large_input_across_poll_boundaries(self):
         from homebrew_harness.execution.model_gateway import Deadline
