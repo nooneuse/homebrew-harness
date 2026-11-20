@@ -79,6 +79,7 @@ def validate_policy(raw, run_spec):
         "report_seconds",
         "job_seconds",
         "job_turns",
+        "job_call_warning",
         "job_attempts",
         "model_profile",
         "instructions",
@@ -92,7 +93,8 @@ def validate_policy(raw, run_spec):
         "authority_seconds": 3600,
         "report_seconds": 43200,
         "job_seconds": DEFAULT_TASK_SECONDS,
-        "job_turns": 24,
+        "job_turns": None,
+        "job_call_warning": 40,
         "job_attempts": 3,
         "model_profile": None,
         "instructions": {},
@@ -114,7 +116,10 @@ def validate_policy(raw, run_spec):
     for key in ("authority_seconds", "report_seconds"):
         number(policy[key], key, 1, 31536000)
     number(policy["job_seconds"], "job_seconds", 1, 3600)
-    number(policy["job_turns"], "job_turns", 1, 40, integer=True)
+    if policy["job_turns"] is not None:
+        number(policy["job_turns"], "job_turns", 1, 512, integer=True)
+    if policy["job_call_warning"] is not None:
+        number(policy["job_call_warning"], "job_call_warning", 1, 512, integer=True)
     number(policy["job_attempts"], "job_attempts", 1, 10, integer=True)
     if policy["model_profile"] is not None and (
         not isinstance(policy["model_profile"], str)

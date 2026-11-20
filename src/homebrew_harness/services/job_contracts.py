@@ -38,7 +38,7 @@ HANDLERS = {
     ),
     "review": JobHandler(
         "changesets",
-        "Read fixed candidate code and verification evidence. Provide text and findings=[{severity:blocking/warning,path,message}]. Optional publication={title,body} describes this PR from confirmed changes and tests, without implicit issue-closing keywords. Apply configured PR writing guidance to that publication draft when supplied. Review the bound candidate, not another workspace.",
+        "Read fixed candidate code and verification evidence. candidate.delta is the complete proposed change against target_base; repair_delta, when present, is only the latest repair and does not replace review of the original feature. Provide text and findings=[{severity:blocking/warning,path,message}]. Optional publication={title,body} describes this PR from confirmed changes and tests, without implicit issue-closing keywords. Apply configured PR writing guidance to that publication draft when supplied. Review the bound candidate, not another workspace.",
         ("code-review", "delivery-planning"),
         job_results.review,
         job_results.apply_delivery,
@@ -134,6 +134,9 @@ class JobContract:
                       "error_info", "reasoning_job_id")}
             value["candidate"] = {k: copy.deepcopy((primary.get("candidate") or {}).get(k))
                                   for k in ("commit", "tree", "target_base", "delta", "conflicts")}
+            if self.kind == "review" and primary.get("previous"):
+                value["candidate"]["repair_delta"] = value["candidate"]["delta"]
+                value["candidate"]["delta"] = self.store.delivery.git.proposed_delta(primary["candidate"])
             value["quality"] = self.quality(primary.get("quality"))
             value["validation_history"] = [
                 {k: copy.deepcopy(record.get(k)) for k in

@@ -16,6 +16,51 @@ class JobContextFlows(unittest.TestCase):
     run_git = fixture.FlowTests.run_git
     pending_target = fixture.FlowTests.pending_target
 
+    def test_soft_call_warning_allows_a_later_valid_proposal(self):
+        from tests.services import p2_fixture as model_fixture
+        self.peer.ci_failure = True
+        original_propose = ServiceAgent.propose
+        original_completion = model_fixture.completion
+        attempts = 0
+        call_id = 0
+        def complete(*args, **kwargs):
+            nonlocal call_id
+            value = original_completion(*args, **kwargs)
+            if value["choices"][0]["message"].get("content") == "Recorded.":
+                request = self.peer.model_requests[-1]
+                envelopes = [json.loads(m["content"]) for m in request["messages"]
+                    if m.get("role") == "user" and m.get("content", "").startswith('{"job":')]
+                if envelopes and envelopes[0]["job"]["kind"] == "ci_triage":
+                    value = original_completion(tool="service_propose", arguments={"proposal": json.dumps({
+                        "classification": "code", "reason": "Recorded sufficient evidence.",
+                        "plan": "Set src/value.txt to 2 and preserve the fixed tests."})})
+            call_id += 1
+            for call in value["choices"][0]["message"].get("tool_calls", []):
+                call["id"] += str(call_id)
+            return value
+        def propose(agent, proposal, **kwargs):
+            nonlocal attempts
+            if agent.job["kind"] == "ci_triage":
+                attempts += 1
+                if attempts < 5:
+                    raise ValueError("Synthetic evidence still being evaluated.")
+            return original_propose(agent, proposal, **kwargs)
+        with patch.object(ServiceAgent, "propose", propose), patch.object(model_fixture, "completion", complete):
+            service = self.start(auto_ci_fix=False, maintenance={
+                "job_turns": None, "job_call_warning": 2, "job_seconds": 30,
+            })
+            work = service.work.submit("Fix the scoped value.")
+            row = eventually(lambda: next((r for r in service.records("changesets")["items"]
+                if r.get("ci_diagnosis")), None), 40)
+        self.assertEqual(attempts, 5)
+        self.assertEqual(row["ci_diagnosis"]["classification"], "code")
+        observations = [m["content"] for request in self.peer.model_requests for m in request["messages"]
+            if m.get("name") == "service_call_observation"]
+        self.assertTrue(any("2 model calls" in text for text in observations), observations)
+        self.assertTrue(any("4 model calls" in text for text in observations), observations)
+        self.assertTrue(all("not a stop condition" in text for text in observations))
+        self.assertEqual(service.store.work(work.id)["requirements_revision"], 0)
+
     def test_first_ci_request_includes_latest_context_without_fixed_payload_duplication(self):
         self.peer.ci_failure = True
         original = ServiceAgent._execute

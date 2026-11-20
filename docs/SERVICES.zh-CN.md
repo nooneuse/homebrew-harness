@@ -284,6 +284,8 @@ python examples/maintenance_demo.py --output /tmp/harness-maintenance-demo
 
 候选审查与 CI 研判会获得绑定 Work 的当前执行说明、已接受需求、开发交接及历史验证证据。记录读取使用同一证据投影，内部文件清单仍留在存储中；执行说明发生变化时需要重新提交提议。重试失败研判会保留错误历史和候选回执，后续修复 Run 继承当前说明。健康检查与 Work 进度显示对应研判 job 和实际失败原因。
 
+修复后的候选审查会覆盖相对目标基线的完整拟交付变更，末次修复单独提供。`maintenance.job_call_warning` 默认在调用模型 40 次后提供软提醒，后续提醒间隔逐步增加，模型可以继续评估证据。`job_turns` 默认为 `null`，显式配置整数时才执行调用次数硬限制。`job_seconds` 继续限制总耗时，验证和发布要求继续生效。
+
 ## Service 运维（P4）
 
 [Service 运维](SERVICE_OPERATIONS.zh-CN.md) 提供健康事实、原生写入者停靠、跨工作区保留、备份集合/恢复、固定仓库审查及明确的兼容版本接替。CLI、Text UI 和 Python 共用认证控制方法。

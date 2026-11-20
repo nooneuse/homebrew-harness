@@ -297,6 +297,8 @@ Failed candidate tests retain their receipts and readable output for model diagn
 
 Candidate review and CI diagnosis receive the bound Work's current execution context, accepted requirements, completed handoff and prior validation evidence. Their record reads use the same evidence projection, while internal file inventories remain in storage. A changed Work instruction requires a fresh proposal. Retrying a failed reasoning job preserves its failure history and candidate receipts; the subsequent repair Run receives current execution instructions. Health and Work progress show the reasoning job and its actual failure reason.
 
+Review of a repaired candidate covers the complete proposed change against its target base, with the latest repair shown separately. `maintenance.job_call_warning` defaults to an advisory at 40 model calls; later reminders are spaced further apart. The model can continue evaluating evidence after a reminder. `job_turns` defaults to `null`; a configured integer provides an explicit hard call limit. `job_seconds` continues to bound total time, and verification and publication requirements remain in effect.
+
 ## Service operations (P4)
 
 [Service operations](SERVICE_OPERATIONS.md) add deterministic health, native writer parking, cross-workspace retention, backup sets/restoration, fixed repository audits and explicit compatible runtime handoff. CLI, Text UI and Python share the authenticated control methods.

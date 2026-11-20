@@ -85,6 +85,7 @@ class MaintenanceTests(unittest.TestCase):
             if live(self.control):
                 service.stop()
             eventually(lambda: not live(self.control), 15)
+            self.assertTrue(service.wait_closed(15))
 
         self.addCleanup(stop)
         return service

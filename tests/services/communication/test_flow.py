@@ -44,7 +44,7 @@ class CommunicationFlow(unittest.TestCase):
         )
         self.addCleanup(self.host.close)
 
-    def start(self, auto=False, *, operations=None, provider="github", **overrides):
+    def start(self, auto=False, *, operations=None, maintenance=None, provider="github", **overrides):
         source = {
             "name": "project",
             "provider": provider,
@@ -77,6 +77,7 @@ class CommunicationFlow(unittest.TestCase):
                     }
                 },
                 "report_seconds": 3600,
+                **(maintenance or {}),
             },
             communication=communication,
             operations=operations or {},

@@ -217,7 +217,9 @@ class DiscussionReasoning(unittest.TestCase):
     def test_retry_reuses_lead_and_drafting_cannot_change_assessed_scope(self):
         self.models()
         self.peer.proposals = [self.plan(), {'draft': {'text': 'unapproved change'}}]
-        service = self.start(model_profile='reply')
+        # The hostile synthetic writer never corrects its invalid proposal.
+        # Bound that fixture explicitly; the default call observation is advisory.
+        service = self.start(model_profile='reply', maintenance={'job_turns': 4})
         service.pause('all')
         store, job = self.active(service)
         agent = service.runtime.maintenance.agent

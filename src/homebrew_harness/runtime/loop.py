@@ -114,7 +114,7 @@ def agent_loop(
     model: str,
     messages: list[dict],
     workdir: Path,
-    max_turns: int = 20,
+    max_turns: int | None = 20,
     *,
     hooks: HookRegistry | None = None,
     todo_manager: TodoManager | None = None,
@@ -360,19 +360,19 @@ def _agent_loop(
             raise homebrew_harness.runtime.errors.AgentError(
                 "Agent turn stopped because the session is closing."
             )
-        if subagent:
+        if subagent and max_turns is not None:
             from homebrew_harness.context.tracked_history import set_context
             remaining = max_turns - turns
             if remaining <= 3:
                 set_context(messages, "subagent_remaining_calls", {"role": "user", "name": "subagent_remaining_calls", "content": f"This subtask has {max(0, remaining)} model calls remaining in its host limit. Choose whether to finish essential work or return a concise result with evidence and unfinished items. This adds no calls or permission."})
-        if components.service_control is not None and max_turns - turns <= 4:
+        if components.service_control is not None and max_turns is not None and max_turns - turns <= 4:
             from homebrew_harness.context.tracked_history import set_context
             remaining = max(0, max_turns - turns)
             set_context(messages, "service_remaining_calls", {"role": "user", "name": "service_remaining_calls",
                 "content": f"This Service phase has {remaining} model calls remaining, including the next request. "
                 "If the evidence is sufficient, submit the phase proposal with service_propose. Otherwise describe the "
                 "unresolved evidence and bounded next step in its result contract. This changes neither authorization nor quality requirements."})
-        if turns >= max_turns:
+        if max_turns is not None and turns >= max_turns:
             if goal_controller is not None and goal_controller.pending:
                 return goal_controller.report(
                     "",
@@ -384,6 +384,10 @@ def _agent_loop(
                 "Model-turn limit reached; the task may still be unfinished.",
                 limit_name="max_turns", limit_value=max_turns, observed_value=turns, unit="model_calls")
         turns += 1
+
+        observe_calls = getattr(components.service_control, "observe_calls", None)
+        if observe_calls is not None:
+            observe_calls(messages)
 
         if collect_background and background_manager is not None:
             inject_background_results(messages, background_manager, goal_controller)
@@ -432,7 +436,7 @@ def _agent_loop(
         def model_attempt(attempt):
             nonlocal turns
             if attempt:
-                if turns >= max_turns:
+                if max_turns is not None and turns >= max_turns:
                     raise boundary_error(RetryBoundary, "model_turn_limit", "Model-turn limit reached during transport recovery.", limit_name="max_turns", limit_value=max_turns, observed_value=turns, unit="model_calls")
                 turns += 1
                 if goal_controller is not None:

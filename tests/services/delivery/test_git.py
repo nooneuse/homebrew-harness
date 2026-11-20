@@ -6,6 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from homebrew_harness.services.delivery.git import GitBackend, StaleDelivery
@@ -125,6 +126,30 @@ class GitTests(unittest.TestCase):
         diff = json.loads(git_diff(workdir=workspace, paths=["module.py"]))
         self.assertIn("-value=2\n+value=3", diff["diff"])
         self.assertFalse(diff["truncated"])
+
+    def test_repair_review_keeps_the_entire_proposed_feature(self):
+        from homebrew_harness.services.job_contracts import JobContract
+
+        (self.workspace / "feature.py").write_text("feature = True\n")
+        first = self.candidate()
+        workspace = Path(first["workspace"])
+        (workspace / "module.py").write_text("value=3\n")
+        repaired = self.backend.prepare(
+            self.work, workspace, {"files": first["files"], "head": first["commit"]},
+            self.base / "repair-candidate", previous=first,
+        )
+        self.assertEqual(set(repaired["delta"]), {"module.py"})
+        store = SimpleNamespace(
+            id="service_fixture", delivery=SimpleNamespace(git=self.backend),
+            store=SimpleNamespace(work=lambda *args: self.work),
+        )
+        primary = {"id": "changeset_repair", "work_id": self.work["id"],
+                   "previous": "changeset_feature", "candidate": repaired}
+        contract = JobContract(store, {"id": "job_review", "kind": "review", "target": primary["id"]})
+        projected = contract.input(primary)["candidate"]
+        self.assertEqual(set(projected["delta"]), {"module.py", "feature.py"})
+        self.assertEqual(projected["repair_delta"], repaired["delta"])
+        self.assertEqual(set(repaired["delta"]), {"module.py"})
 
     def test_delayed_git_stdin_preserves_large_input_across_poll_boundaries(self):
         from homebrew_harness.execution.model_gateway import Deadline

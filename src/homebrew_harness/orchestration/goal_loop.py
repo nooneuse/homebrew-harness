@@ -648,7 +648,7 @@ class GoalController:
             return None
         if not self.enabled:
             return StopDecision(self.state["status"], self.state["last_reason"])
-        if self.state["episode_workers"] >= max_turns:
+        if max_turns is not None and self.state["episode_workers"] >= max_turns:
             return self.suspend(
                 "limit", "Global main-model turn limit reached; goal remains unmet."
             )

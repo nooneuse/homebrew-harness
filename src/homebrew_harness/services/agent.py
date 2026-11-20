@@ -61,6 +61,7 @@ class ServiceAgent:
         self.assessment_plan = None
         self.project_context = None
         self.phase_counts = {}
+        self.phase_warning_at = {}
         self.phase_feedback = None
         self.phase_key = None
         self.phase_signature = None
@@ -379,11 +380,32 @@ class ServiceAgent:
 
     def model_attempt(self):
         count = self.phase_counts.get(self.phase_key, 0)
-        if count >= self.store.policy["job_turns"]:
+        limit = self.store.policy["job_turns"]
+        if limit is not None and count >= limit:
             raise boundary_error(ValueError, "service_job_turn_limit", "Service phase model-call limit reached.",
                 limit_name="maintenance.job_turns", limit_value=self.store.policy["job_turns"],
                 observed_value=count, unit="model_calls", phase=self.phase_key)
         self.phase_counts[self.phase_key] = count + 1
+
+    def observe_calls(self, messages):
+        warning = self.store.policy["job_call_warning"]
+        if warning is None:
+            return
+        count = self.phase_counts.get(self.phase_key, 0)
+        threshold = self.phase_warning_at.get(self.phase_key, warning)
+        if count < threshold:
+            return
+        from homebrew_harness.context.tracked_history import set_context
+        set_context(messages, "service_call_observation", {
+            "role": "user", "name": "service_call_observation",
+            "content": f"This Service phase has made {count} model calls, passing its advisory threshold of {warning}. "
+                "This is an observation, not a stop condition or a request to approve unfinished work. "
+                "Assess current progress and remaining evidence; choose whether to continue or submit your conclusion. "
+                "Existing deadlines, authorization, verification and publication requirements still apply.",
+        })
+        while threshold <= count:
+            threshold *= 2
+        self.phase_warning_at[self.phase_key] = threshold
 
     def complete_phase(self, calls, messages):
         from .phase_output import overview_signature, versions
@@ -456,6 +478,7 @@ class ServiceAgent:
 
         self.job, self.stage, self.code_evidence = job, None, {}
         self.phase_counts, self.used_phases, self.phase_feedback = {}, set(), None
+        self.phase_warning_at = {}
         deadline = Deadline.after(self.store.policy["job_seconds"])
         with control_scope(deadline=deadline, cancel_events=(self.stop,)):
             context = build(self.code_root(), self.runtime.spec.communication or {}) if JobContract(self.store, job).handler.code else None
@@ -582,6 +605,7 @@ class ServiceAgent:
                                 **({"phase": stage} if stage else {})},
                         "policy": contract.policy(),
                         "execution_limits": {"model_calls": self.store.policy["job_turns"],
+                                             "model_call_warning": self.store.policy["job_call_warning"],
                                              "seconds": self.store.policy["job_seconds"]},
                         "input": preview,
                         **({"project_context": project} if project and kind in {"review", "ci_triage"} else {}),
@@ -623,9 +647,10 @@ class ServiceAgent:
             ) as loop,
         ):
             loop.components.compactor.intent.update(contract.task(), new_task=True)
+            limit = self.store.policy["job_turns"]
             loop.run(
                 messages,
-                max(1, self.store.policy["job_turns"] - self.phase_counts.get(self.phase_key, 0)),
+                max(1, limit - self.phase_counts.get(self.phase_key, 0)) if limit is not None else None,
                 active_request=contract.task(),
             )
         if self.proposal is None:

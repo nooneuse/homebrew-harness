@@ -184,6 +184,20 @@ class GitBackend:
             files[path] = {"mode": mode, "oid": blob}
         return files
 
+    def proposed_delta(self, candidate):
+        """The complete proposed change, including changes before a CI repair."""
+        self.verify(candidate)
+        base = self.tree(candidate["repo"], candidate["target_base"])
+        head = self.tree(candidate["repo"], candidate["commit"])
+        return {
+            path: (
+                {"deleted": True} if path not in head else
+                {key: candidate["files"][path][key] for key in ("sha256", "executable")}
+            )
+            for path in sorted(set(base) | set(head))
+            if base.get(path) != head.get(path)
+        }
+
     def content(self, repo, oid):
         return self.run(["--git-dir=" + str(repo), "cat-file", "blob", oid])
 
