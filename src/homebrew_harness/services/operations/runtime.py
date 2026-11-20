@@ -5,7 +5,7 @@ import json
 import threading
 import time
 
-from homebrew_harness.execution.execution_control import control_scope, check
+from homebrew_harness.execution.execution_control import control_scope, check, acquired
 from homebrew_harness.execution.model_gateway import Deadline
 from homebrew_harness.services.protocol import fingerprint, request_key
 from .health import snapshot
@@ -21,6 +21,7 @@ class Operations:
         self.started = False
         self.error = None
         self.restoring = False
+        self.observation_lock = threading.RLock()
 
     def health_snapshot(self):
         return snapshot(self.runtime)
@@ -216,6 +217,11 @@ class Operations:
             self.finished.set()
 
     def observe(self):
+        # Sampling and recording must stay ordered across background/manual reads.
+        with acquired(self.observation_lock):
+            return self._observe()
+
+    def _observe(self):
         health = snapshot(self.runtime)
         from .retention import refresh
 

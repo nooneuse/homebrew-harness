@@ -1,6 +1,7 @@
 """Ownership, replay and recovery boundaries of queued service operations."""
 
 import unittest
+import threading
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -16,6 +17,46 @@ class BoundaryTests(unittest.TestCase):
     spec = fixture.BackupTests.spec
     start = fixture.BackupTests.start
     wait_operation = fixture.BackupTests.wait_operation
+
+    def test_older_health_sample_cannot_reopen_a_resolved_incident(self):
+        from homebrew_harness.services.operations import runtime as operations
+
+        service, _ = self.start()
+        manager = service.runtime.operations
+        sampled, release, newer = threading.Event(), threading.Event(), threading.Event()
+        errors = []
+        def sample(runtime):
+            if threading.current_thread().name == 'older-health':
+                sampled.set()
+                release.wait(2)
+                return {'issues': [{'code': 'storage_space_low', 'target': service.id}]}
+            if threading.current_thread().name == 'newer-health':
+                newer.set()
+            return {'issues': []}
+        def observe():
+            try:
+                manager.observe()
+            except Exception as error:
+                errors.append(error)
+        first = threading.Thread(target=observe, name='older-health')
+        second = threading.Thread(target=observe, name='newer-health')
+        with patch.object(operations, 'snapshot', sample):
+            first.start()
+            self.assertTrue(sampled.wait(2))
+            second.start()
+            try:
+                self.assertFalse(newer.wait(.05))
+            finally:
+                release.set()
+                first.join(3)
+                second.join(3)
+        self.assertFalse(first.is_alive() or second.is_alive())
+        self.assertFalse(errors, errors)
+        self.assertTrue(newer.is_set())
+        incidents = service.store.runtime.items('service_incidents').values()
+        relevant = [r for r in incidents if r['issue']['code'] == 'storage_space_low']
+        self.assertEqual(len(relevant), 1)
+        self.assertEqual(relevant[0]['state'], 'resolved')
 
     def blocked(self, service, row):
         return eventually(

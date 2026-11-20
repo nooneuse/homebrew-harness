@@ -175,12 +175,12 @@ class Delivery:
                             error=type(error).__name__,
                         )
                     except Exception as error:
+                        from homebrew_harness.runtime.errors import annotate_error, failure_fields
+                        if getattr(error, "diagnostic_message", None) is None:
+                            annotate_error(error, message=redact(str(error)))
                         self.store.update(
-                            "changesets",
-                            row["id"],
-                            state="failed",
-                            error=type(error).__name__,
-                            error_detail=redact(str(error)),
+                            "changesets", row["id"], state="failed",
+                            **failure_fields(error, component="delivery", phase=row["state"]),
                         )
                 for action in self.rows("actions", active=True):
                     if self.stop.is_set():

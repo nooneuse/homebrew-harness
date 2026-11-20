@@ -287,15 +287,28 @@ class ContextCompactor:
     def estimate_chars(
         self, messages: list[dict], tools: list[dict] | None = None
     ) -> int:
-        from homebrew_harness.execution.model_gateway import ensure_gateway
+        return self._input_size(self.model_messages(messages, tools), tools)
 
+    def _input_size(self, messages, tools=None):
+        from homebrew_harness.execution.model_gateway import ensure_gateway
         return ensure_gateway(self.client).input_size(
-            self.model,
-            messages,
-            tools,
-            self.store.workdir,
+            self.model, messages, tools, self.store.workdir,
             getattr(self, "worker_output_tokens", None),
         )
+
+    def model_messages(self, messages, tools=None):
+        """Remove only an exact second task copy at model-context pressure."""
+        retained = self.intent.message()
+        if (not retained or retained not in messages
+                or self._input_size(messages, tools) <= self.context_chars):
+            return messages
+        for index, message in enumerate(messages):
+            if (message.get("role") == "user" and not message.get("name")
+                    and message.get("content") == self.intent.original):
+                result = list(messages)
+                result[index] = {**message, "content": "[Current task retained verbatim in task_intent.]"}
+                return result
+        return messages
 
     @staticmethod
     def groups(messages: list[dict]) -> list[list[dict]]:

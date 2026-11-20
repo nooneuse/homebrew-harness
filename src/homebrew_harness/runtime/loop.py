@@ -455,7 +455,7 @@ def _agent_loop(
                     else "lead",
                     task_id=assignment.id if assignment else None,
                     model=model,
-                    messages=messages,
+                    messages=compactor.model_messages(messages, tools),
                     max_tokens=components.worker_output_tokens
                     or client.worker_output_tokens,
                     protocol_root=compactor.store.workdir,

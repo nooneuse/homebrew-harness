@@ -127,6 +127,40 @@ class DeliveryStore:
             self.ms.changed(conn, current["work_id"])
             return current
 
+    def retry_unstarted_repair(self, row):
+        """Resume an accepted CI repair without repeating candidate validation."""
+        self.runtime.maintenance.delivery.git.verify(row["candidate"])
+        with self.db.write() as conn:
+            self.runtime.store.guard(conn, self.runtime.header)
+            current = self.get("changesets", row["id"], conn)
+            work = self.current(current, conn)
+            diagnosis = current.get("ci_diagnosis") or {}
+            if (current["revision"] != row["revision"] or current["state"] != "failed"
+                    or diagnosis.get("classification") != "code"
+                    or work.get("run_id") != current["run_id"]
+                    or work.get("repair_of") == current["id"]
+                    or work.get("ci_fix_attempts", 0) >= self.spec["ci_fix_limit"]):
+                raise ValueError("Retry only a current CI repair that has not created a Run.")
+            request_id = "request_" + request_key(
+                "ci-repair", self.id, current["id"] + ":" + fingerprint(diagnosis))
+            decision = self.db._get(conn, "service_decisions", request_id)
+            if not self.spec["auto_ci_fix"] and not (
+                decision and decision["state"] == "approved"
+                and decision["requirements_revision"] == current["requirements_revision"]
+                and decision["candidate"]["plan"] == diagnosis["plan"]
+            ):
+                raise ValueError("CI repair still requires its current accepted decision.")
+            current.update(
+                state="repair_approved", error=None, error_detail=None, error_info=None,
+                revision=current["revision"] + 1,
+                repair_retry_history=[*current.get("repair_retry_history", []),
+                    {"observed_at": time.time(), "error": row.get("error"),
+                     "error_detail": row.get("error_detail"), "error_info": row.get("error_info")}],
+            )
+            self.put(conn, "changesets", current)
+            self.ms.changed(conn, current["work_id"])
+            return current
+
     def current(self, row, conn=None):
         work = (
             self.db._get(conn, "service_work", row["work_id"])

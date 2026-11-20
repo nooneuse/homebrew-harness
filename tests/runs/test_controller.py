@@ -497,6 +497,20 @@ class LongRunPromptTests(unittest.TestCase):
     setUp = RunTests.setUp
     controller = RunTests.controller
 
+    def test_large_retained_task_is_sent_once_without_rewriting_history(self):
+        prompt = "Accepted scope and current repair. " + "Preserved direction. " * 7600
+        self.assertGreater(len(prompt), 128000)
+        control, session, client, requests = self.controller(
+            [reply("done")], spec=RunSpec(prompt, context_chars=240000), context_chars=240000,
+        )
+        outcome = control.execute()
+        self.assertEqual(outcome.status, "completed", outcome)
+        self.assertEqual(session.intent.original, prompt)
+        self.assertEqual(sum(m.get("content") == prompt for m in session.messages), 1)
+        payload = requests[0]
+        self.assertEqual(sum(prompt in str(m.get("content", "")) for m in payload), 1)
+        self.assertTrue(any(m.get("name") == "task_intent" and prompt in m["content"] for m in payload))
+
     def test_combined_long_prompt_reaches_model_and_intent_without_truncation(self):
         prompt = "Accepted requirement. " + "Preserved execution direction. " * 2500
         self.assertGreater(len(prompt), 64000)

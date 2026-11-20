@@ -21,7 +21,8 @@ from homebrew_harness.orchestration.hard_conditions import validate_spec
 from homebrew_harness.security.data_boundary import redact
 from homebrew_harness.execution.model_gateway import ModelGatewayError
 
-MAX_RUN_PROMPT_CHARS = 128_000
+# Admission bounds retained input; the selected model checks usable context.
+MAX_RUN_PROMPT_CHARS = 2_000_000
 
 TERMINAL = {"completed", "failed", "cancelled"}
 RUN_CONTROL_TOOLS = frozenset(
