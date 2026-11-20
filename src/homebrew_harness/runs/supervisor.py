@@ -272,6 +272,8 @@ class RunSupervisor:
                             "cleanup_complete": safe,
                         },
                     )
+                    if status in TERMINAL and safe:
+                        self.store.finalize_terminal(identity, supervisor=self)
                     return self.store.status(identity)
                 if time.time() < value["last_clock"] - 1:
                     header = {
@@ -428,6 +430,15 @@ class RunSupervisor:
                     if self.reconcile_completed(current):
                         self.store.finalize_terminal(identity, supervisor=self)
                         return self.store.status(identity)
+                    # A control can arrive while cleanup/reconciliation is being
+                    # observed, including after the worker has already exited.
+                    current = self.store.get(identity)
+                    if watchdog_reason is None:
+                        action = self.store.runtime.get(
+                            "run_controls", identity, {}
+                        ).get("action")
+                        if action in {"pause", "cancel"}:
+                            watchdog_reason = action
                     if current["status"] in TERMINAL:
                         self.store.finalize_terminal(identity, supervisor=self)
                     if current.get("cleanup_complete") is not True:
@@ -457,6 +468,8 @@ class RunSupervisor:
                                 {"status": status, "last_outcome": outcome.data()},
                             )
                             self.store.ended(header, cleanup=True)
+                            if status in TERMINAL:
+                                self.store.finalize_terminal(identity, supervisor=self)
                             return self.store.status(identity)
                         if current["status"] == "blocked":
                             return self.store.status(identity)

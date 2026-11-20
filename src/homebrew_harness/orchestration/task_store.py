@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -125,6 +126,21 @@ class TaskStore:
 
     @contextmanager
     def _file_lock(self):
+        from homebrew_harness.configuration import DEFAULT_STORAGE_LOCK_SECONDS
+        from homebrew_harness.execution.execution_control import operation_deadline
+        from homebrew_harness.storage.persistence import storage_check, StorageTimeout
+        from homebrew_harness.execution.model_gateway import ModelDeadlineExceeded
+
+        started = time.monotonic()
+        deadline = operation_deadline(DEFAULT_STORAGE_LOCK_SECONDS)
+        def checked():
+            from homebrew_harness.runtime.errors import annotate_error
+            try:
+                storage_check(deadline, phase="lock", limit=DEFAULT_STORAGE_LOCK_SECONDS, started=started)
+            except (StorageTimeout, ModelDeadlineExceeded) as error:
+                annotate_error(error, message="Task board lock wait reached its execution or storage deadline.",
+                               phase="task_board_lock", operation="task_board")
+                raise
         self._root(create=True)
         if (self.directory / "task-board.lock").is_symlink():
             raise ValueError("Task lock must not be a symlink.")
@@ -138,12 +154,14 @@ class TaskStore:
                 dir_fd=target.fds[-1],
             )
             try:
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    raise ValueError(
-                        "Task store is busy; retry this tool call."
-                    ) from None
+                while True:
+                    checked()
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        time.sleep(min(.02, deadline.remaining()))
+                checked()
                 target.verify_binding()
                 yield
             finally:

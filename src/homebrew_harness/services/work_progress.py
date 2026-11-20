@@ -231,7 +231,8 @@ def seed(runtime_store, work):
     progress = runtime_store.get("service_work_progress", work.get("progress_ref", ""))
     return (
         {k: progress[k] for k in ("summary", "remaining", "complete")}
-        if progress
+        if progress and progress["requirements_revision"] == work["requirements_revision"]
+        and progress.get("write_paths") == list(work["run_spec"]["write_paths"])
         else None
     )
 
