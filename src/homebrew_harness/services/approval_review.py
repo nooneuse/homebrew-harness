@@ -4,6 +4,7 @@ import copy
 import threading
 
 from homebrew_harness.security.approval_review import ApprovalReviewer, ReviewConfig
+from .job_contracts import JobContract, work_context
 
 
 class ServiceApprovalReview:
@@ -70,13 +71,11 @@ class ServiceApprovalReview:
             "delegated_kinds": list(self.config.kinds),
         }
         if work:
-            proposal.update(
-                prompt=work["prompt"],
-                goal=work.get("goal"),
-                requirements_revision=work["requirements_revision"],
-            )
+            proposal["work"] = work_context(maintenance, work)
             host_scope.update(
-                run_scope=work["run_spec"], accepted_authority=work.get("authority")
+                run_scope={key: value for key, value in work["run_spec"].items()
+                           if key not in {"prompt", "work_context"}},
+                accepted_authority=work.get("authority"),
             )
         if current["kind"] == "communication_authority":
             communication = runtime.maintenance.communication.store
@@ -100,9 +99,17 @@ class ServiceApprovalReview:
                     navigation = review_navigation(prepared)
         elif current["kind"] == "delivery_authority":
             proposal["action"] = maintenance.get("actions", raw["action_id"])
-            proposal["changeset"] = maintenance.get("changesets", raw["changeset_id"])
+            changeset = maintenance.get("changesets", raw["changeset_id"])
+            proposal["changeset"] = {key: copy.deepcopy(changeset.get(key)) for key in (
+                "id", "work_id", "requirements_revision", "revision", "state", "run_id", "previous",
+                "frozen", "branch", "review_commit", "change_request", "review", "ci", "ci_diagnosis",
+                "goal_evidence", "error", "error_detail", "error_info")}
+            proposal["changeset"]["quality"] = JobContract.quality(changeset.get("quality"))
+            candidate = changeset.get("candidate") or {}
+            proposal["changeset"]["candidate"] = {
+                key: copy.deepcopy(candidate.get(key))
+                for key in ("commit", "tree", "target_base", "delta", "conflicts")}
             host_scope["delivery_policy"] = runtime.maintenance.delivery.store.spec
-            candidate = proposal["changeset"].get("candidate") or {}
             cwd = candidate.get("workspace") or cwd
             navigation = [{"path": path, "observed_sha256": value.get("sha256")}
                           for path, value in list(candidate.get("files", {}).items())[:16]]

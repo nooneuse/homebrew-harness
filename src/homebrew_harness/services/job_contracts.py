@@ -90,6 +90,28 @@ HANDLERS = {
 }
 
 
+def work_context(store, work):
+    """Current accepted Work facts, without internal snapshots or compiled copies."""
+    spec = work.get("run_spec") or {}
+    value = {k: copy.deepcopy(work.get(k)) for k in
+             ("id", "state", "requirements_revision", "requirements_id", "prompt",
+              "amendments", "execution_context", "events")}
+    value["authority"] = {k: (work.get("authority") or {}).get(k) for k in
+                          ("requirements_revision", "scope", "expires_at", "revoked")}
+    value["write_paths"] = spec.get("write_paths", [])
+    value["goal"] = work.get("goal") or spec.get("goal")
+    if work.get("requirements_id"):
+        requirements = store.get("requirements", work["requirements_id"])
+        value["accepted_requirements"] = {k: requirements.get(k) for k in
+                                           ("id", "draft_revision", "draft", "operator_note", "sources")}
+    if work.get("progress_ref"):
+        progress = store.get("work_progress", work["progress_ref"])
+        if progress["requirements_revision"] == work["requirements_revision"]:
+            value["handoff"] = {k: progress.get(k) for k in
+                                 ("id", "run_id", "summary", "complete", "remaining", "evidence_refs")}
+    return value
+
+
 class JobContract:
     def __init__(self, store, job):
         if job is None or job.get("kind") not in HANDLERS:
@@ -104,25 +126,7 @@ class JobContract:
         return self.store.get(self.handler.section, self.job["target"])
 
     def work_context(self, work):
-        """Current accepted Work facts, without internal snapshots or compiled copies."""
-        spec = work.get("run_spec") or {}
-        value = {k: copy.deepcopy(work.get(k)) for k in
-                 ("id", "state", "requirements_revision", "requirements_id", "prompt",
-                  "amendments", "execution_context", "events")}
-        value["authority"] = {k: (work.get("authority") or {}).get(k) for k in
-                              ("requirements_revision", "scope", "expires_at", "revoked")}
-        value["write_paths"] = spec.get("write_paths", [])
-        value["goal"] = work.get("goal") or spec.get("goal")
-        if work.get("requirements_id"):
-            requirements = self.store.get("requirements", work["requirements_id"])
-            value["accepted_requirements"] = {k: requirements.get(k) for k in
-                                               ("id", "draft_revision", "draft", "operator_note", "sources")}
-        if work.get("progress_ref"):
-            progress = self.store.get("work_progress", work["progress_ref"])
-            if progress["requirements_revision"] == work["requirements_revision"]:
-                value["handoff"] = {k: progress.get(k) for k in
-                                     ("id", "run_id", "summary", "complete", "remaining", "evidence_refs")}
-        return value
+        return work_context(self.store, work)
 
     def input(self, primary=None):
         primary = self.primary() if primary is None else primary

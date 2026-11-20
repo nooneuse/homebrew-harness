@@ -92,6 +92,8 @@ Submission output confirms acceptance with the work ID and request_id. Use statu
 
 External host settings can enable [Approval review](APPROVALS.md). Native Runs review their delegated tool requests; explicit business kinds enable independent review of Service work, delivery or communication requests. Uncertain requests continue through these same human controls.
 
+Service approval uses the current accepted Work requirements and execution instructions, the frozen action, candidate identity, and recorded review and verification facts. It shares the Work evidence projection with reasoning jobs; repository contents are located through the candidate evidence navigation.
+
 `exit` or EOF disconnects the UI and leaves a detached service running. Ctrl-C cancels the current input/observation. `stop` explicitly requests service shutdown. Output is plain JSON/text; external terminal control characters are escaped. No terminal UI library is required. Text UI and individual control commands use the same authenticated HTTP API.
 
 ## HTTP connections and remote clients

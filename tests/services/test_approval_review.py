@@ -150,7 +150,7 @@ class ServiceReview(unittest.TestCase):
                 "plan": {"subject": "Review parser update", "commit": "a" * 40}
             },
             "changesets": {
-                "quality": {"state": "passed"},
+                "quality": [{"run_id": "test-fixture", "status": "passed"}],
                 "review": {"decision": "accept"},
             },
         }
@@ -164,6 +164,64 @@ class ServiceReview(unittest.TestCase):
         self.assertEqual(len(published), 1)
         self.assertIn("Review parser update", str(payloads[0]))
         self.assertIn("maintainer", str(payloads[0]))
+
+    def test_large_delivery_review_keeps_accepted_constraints_without_internal_copies(self):
+        from dataclasses import replace
+
+        runtime, request, published, client, payloads = self.runtime(["delivery_authority"])
+        request["kind"] = "delivery_authority"
+        inventory = {f"src/file_{number}.py": {"sha256": "a" * 64, "executable": False}
+                     for number in range(2000)}
+        plan = {"commit": "b" * 40, "hash": "frozen-fixture", "branch": "harness/feature",
+                "title": "Add parser support", "body": "Confirmed changes and tests."}
+        work = {"id": "work-fixture", "prompt": "Implement the accepted parser feature.",
+                "requirements_revision": 7, "requirements_id": "requirements-fixture",
+                "amendments": [{"text": "preserve_binary_inputs " * 1200}],
+                "execution_context": [{"text": "retain_current_test_receipt " * 1200}],
+                "goal": {"criteria": ["Keep existing parser behavior"]},
+                "authority": {"requirements_revision": 7, "scope": "src", "expires_at": 9999999999},
+                "run_spec": {"write_paths": ["src"], "tools": ["read_file"],
+                             "prompt": "compiled-copy " * 24000,
+                             "work_context": {"compiled": "duplicate-copy " * 2000}}}
+        rows = {"decisions": {"work_id": work["id"], "action_id": "action-fixture",
+                              "changeset_id": "change-fixture"},
+                "actions": {"plan": plan},
+                "requirements": {"id": "requirements-fixture", "draft_revision": 7,
+                                 "draft": {"out_of_scope": "No audio or video"}},
+                "changesets": {"id": "change-fixture", "frozen": "frozen-fixture",
+                               "candidate": {"workspace": str(self.root), "commit": "b" * 40,
+                                             "delta": {"src/file_1.py": inventory["src/file_1.py"]},
+                                             "files": inventory},
+                               "primary_expected": inventory,
+                               "quality": [{"run_id": "real-receipt", "status": "passed",
+                                            "source_stable": True,
+                                            "isolation": {"os_isolation_verified": True,
+                                                          "cleanup_complete": True}}],
+                               "review": {"text": "Approved with one warning", "findings": []}}}
+        runtime.store.work = lambda *args: work
+        runtime.maintenance.store.get = lambda section, identity: rows[section]
+        runtime.maintenance.delivery = SimpleNamespace(store=SimpleNamespace(spec={"merge": "manual"}))
+        runtime.maintenance.agent.base_binding = replace(runtime.maintenance.agent.base_binding,
+                                                         context_chars=160000, max_output_tokens=20000)
+        reviewer = ServiceApprovalReview(runtime)
+        self.addCleanup(reviewer.close)
+        reviewer.run()
+        self.assertEqual(client.chat.completions.create.call_count, 1)
+        self.assertEqual(len(published), 1)
+        supplied = json.loads(payloads[0][1]["content"])["host_context"]
+        self.assertEqual(supplied["proposal_evidence"]["action"]["plan"], plan)
+        self.assertEqual(supplied["proposal_evidence"]["work"]["amendments"], work["amendments"])
+        self.assertEqual(supplied["proposal_evidence"]["work"]["execution_context"], work["execution_context"])
+        self.assertEqual(supplied["proposal_evidence"]["work"]["accepted_requirements"]["draft"],
+                         rows["requirements"]["draft"])
+        self.assertEqual(supplied["proposal_evidence"]["changeset"]["quality"], rows["changesets"]["quality"])
+        self.assertEqual(supplied["proposal_evidence"]["changeset"]["review"], rows["changesets"]["review"])
+        self.assertNotIn("files", supplied["proposal_evidence"]["changeset"]["candidate"])
+        self.assertNotIn("primary_expected", supplied["proposal_evidence"]["changeset"])
+        self.assertNotIn("prompt", supplied["host_scope"]["run_scope"])
+        self.assertNotIn("work_context", supplied["host_scope"]["run_scope"])
+        self.assertLess(len(json.dumps(supplied)), 100000)
+        self.assertEqual(len(supplied["evidence_navigation"]), 16)
 
     def test_changed_service_request_supersedes_review(self):
         runtime, request, published, client, payloads = self.runtime(["work_authority"])
@@ -185,6 +243,25 @@ class ServiceReview(unittest.TestCase):
             ],
             "superseded",
         )
+
+    def test_current_execution_instruction_change_supersedes_review(self):
+        runtime, request, published, client, _ = self.runtime(["work_authority"])
+        work = runtime.store.work("work-fixture", "svc-fixture")
+        work["execution_context"] = [{"text": "Keep the existing accepted scope."}]
+        original = client.chat.completions.create.side_effect
+
+        def model(**kwargs):
+            result = original(**kwargs)
+            work["execution_context"].append({"text": "Pause public delivery pending this clarification."})
+            return result
+
+        client.chat.completions.create.side_effect = model
+        reviewer = ServiceApprovalReview(runtime)
+        self.addCleanup(reviewer.close)
+        reviewer.run()
+        self.assertFalse(published)
+        self.assertEqual(next(iter(runtime.store.runtime.items("approval_reviews").values()))["state"],
+                         "superseded")
 
 
     def test_communication_review_uses_the_fixed_snapshot_root(self):
