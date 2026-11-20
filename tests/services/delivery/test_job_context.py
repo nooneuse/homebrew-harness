@@ -110,3 +110,47 @@ class JobContextFlows(unittest.TestCase):
         self.assertIn("currently published framework fix", current["run_spec"]["prompt"])
         self.assertEqual(current["requirements_revision"], 0)
         self.assertEqual(current["ci_fix_attempts"], 1)
+
+    def test_remaining_phase_calls_are_visible_before_the_final_proposal(self):
+        import examples.delivery_fixture as model_fixture
+        self.peer.ci_failure = True
+        original = ServiceAgent.propose
+        original_completion = model_fixture.completion
+        attempts = 0
+        calls = 0
+        def unique_completion(*args, **kw):
+            nonlocal calls
+            value = original_completion(*args, **kw)
+            # This peer normally acknowledges tool results. For this scenario,
+            # it must retry the deliberately rejected proposal in the same phase.
+            if value["choices"][0]["message"].get("content") == "Recorded.":
+                current = self.peer.model_requests[-1]
+                envelopes = [json.loads(m["content"]) for m in current["messages"]
+                    if m.get("role") == "user" and m.get("content", "").startswith('{"job":')]
+                if envelopes and envelopes[0]["job"]["kind"] == "ci_triage":
+                    value = original_completion(tool="service_propose", arguments={"proposal": json.dumps({
+                        "classification": "code", "reason": "Confirmed current-candidate regression.",
+                        "plan": "Set src/value.txt to 2 and preserve the fixed tests."})})
+            calls += 1
+            for call in value["choices"][0]["message"].get("tool_calls", []):
+                call["id"] += str(calls)
+            return value
+        def propose(agent, proposal, **kw):
+            nonlocal attempts
+            if agent.job["kind"] == "ci_triage":
+                attempts += 1
+                if attempts < 3:
+                    raise ValueError("Synthetic unfinished evidence read.")
+            return original(agent, proposal, **kw)
+        with patch.object(ServiceAgent, "propose", propose), patch.object(model_fixture, "completion", unique_completion):
+            service = self.start(auto_ci_fix=False, maintenance={"job_turns": 3, "job_seconds": 30})
+            work = service.work.submit("Fix the scoped value.")
+            eventually(lambda: next((r for r in service.records("changesets")["items"] if r.get("ci_diagnosis")), None), 40)
+        requests = [r for r in self.peer.model_requests if any(
+            m.get("role") == "user" and m.get("content", "").startswith("{")
+            and json.loads(m["content"]).get("job", {}).get("kind") == "ci_triage" for m in r["messages"])]
+        remaining = [next(m["content"] for m in r["messages"] if m.get("name") == "service_remaining_calls") for r in requests]
+        self.assertEqual(len(remaining), 3, remaining)
+        self.assertIn("3 model calls", remaining[0])
+        self.assertIn("1 model calls", remaining[-1])
+        self.assertEqual(service.store.work(work.id)["requirements_revision"], 0)

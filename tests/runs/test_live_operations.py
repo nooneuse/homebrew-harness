@@ -123,7 +123,35 @@ class LiveOperationRuns(unittest.TestCase):
             self.assertTrue(session.wait_closed(5))
         row = session.operations.snapshots()[0]
         self.assertFalse(row['execution_pending'])
+        self.assertEqual(row['effect_state'], 'observed')
+        self.assertEqual(row['result']['status'], 'cancelled')
         self.assertNotEqual((row.get('result') or {}).get('status'), 'passed')
+
+    def test_pause_during_receipt_commit_preserves_the_observed_test_result(self):
+        control, session, runner, _ = self.setup_test(duration=.1, wait=3, calls=1)
+        save = runner._save
+        paused = []
+
+        def stop_after_receipt(reference, value):
+            save(reference, value)
+            if reference.endswith('/receipt.json') and not paused:
+                paused.append(True)
+                control.store.control(control.id, 'pause')
+                # Deliver the accepted pause at the same point as its heartbeat.
+                control.host_action = 'pause'
+                control.cancel.set()
+
+        with patch.object(runner, '_save', stop_after_receipt):
+            outcome = control.execute()
+        self.assertEqual(outcome.status, 'paused', outcome)
+        self.assertEqual(paused, [True])
+        session.close()
+        self.assertTrue(session.wait_closed(5))
+        row = session.operations.snapshots()[0]
+        self.assertFalse(row['execution_pending'])
+        self.assertEqual(row['effect_state'], 'observed')
+        # The test actually completed before pause; the Run is still paused.
+        self.assertEqual(row['result']['status'], 'passed')
 
     def test_parent_deadline_ends_the_live_test_instead_of_extending_it(self):
         control, session, _, _ = self.setup_test(duration=20, calls=1, total_seconds=2, episode_seconds=1)

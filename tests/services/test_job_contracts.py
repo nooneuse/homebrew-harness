@@ -110,6 +110,18 @@ class JobContracts(unittest.TestCase):
         self.assertIn("character", tool["description"])
         self.assertIn("expected_version", tool["parameters"]["properties"])
 
+    def test_published_source_evidence_pages_text_without_nested_record_encoding(self):
+        work, _ = self.candidate_job()
+        text = 'diff --git a/source.py b/source.py\n+value = "quoted"\n'
+        with self.store.db.write() as conn:
+            self.store.put(conn, "evidence", {"id": "source_reference", "kind": "published_source_reference",
+                           "work_id": work.id, "source_commit": "a"*40, "text": text})
+        first = self.read("evidence", "source_reference", offset=0, limit=20)
+        second = self.read("evidence", "source_reference", offset=first["next_offset"], limit=16000)
+        self.assertEqual(first["text"] + second["text"], text)
+        self.assertEqual(first["source_commit"], "a"*40)
+        self.assertEqual(first["length"], len(text))
+
     def test_all_job_schemas_reject_invalid_candidates_and_unknown_jobs(self):
         receipt = self.service.converse("Discuss the next step.")
         job = self.activate(receipt)
@@ -407,10 +419,12 @@ class JobContracts(unittest.TestCase):
     def test_stopping_requeues_candidate_before_validation_or_application(self):
         receipt = self.service.converse("An unfinished discussion.")
         job = self.activate(receipt)
-        self.service.store.update(self.store.header, state="stopping")
-        finished = self.store.finish(job, {"unexpected": "Invalid candidate."})
-        self.assertEqual(finished["state"], "queued")
-        self.assertEqual(finished["error"], "service_stopping")
+        # Exercise the transaction before the coordinator releases its owner.
+        with self.service.runtime.lock:
+            self.service.store.update(self.store.header, state="stopping")
+            finished = self.store.finish(job, {"unexpected": "Invalid candidate."})
+            self.assertEqual(finished["state"], "queued")
+            self.assertEqual(finished["error"], "service_stopping")
         self.assertIsNone(self.service.conversation(receipt["id"]).get("result"))
 
     def test_internal_jobs_follow_accepted_discussion_and_publication_evidence(self):

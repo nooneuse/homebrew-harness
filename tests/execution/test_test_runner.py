@@ -93,6 +93,31 @@ class Fixture(unittest.TestCase):
 
 
 class RunnerTests(Fixture):
+    def test_cancelled_process_still_commits_its_durable_receipt(self):
+        from homebrew_harness.execution.execution_control import control_scope
+        from homebrew_harness.storage.durable_runtime import DurableStore
+
+        cancelled = threading.Event()
+        runner = self.runner("import time;print('started',flush=True);time.sleep(20)")
+        runner.receipt_scope = lambda: {"session_id": "cancelled-test"}
+
+        def output(stream, chunk):
+            if stream == "stdout" and b"started" in chunk:
+                cancelled.set()
+
+        with control_scope(Deadline.after(10), cancel_events=(cancelled,)), patch(
+            "homebrew_harness.execution.operations.emit_output", output
+        ):
+            result = runner.run("suite")
+        self.assertTrue(cancelled.is_set())
+        self.assertEqual(result["status"], "cancelled")
+        self.assertTrue(result["isolation"]["cleanup_complete"])
+        self.assertFalse(runner._processes)
+        saved = DurableStore(self.root).get("test_receipts", result["run_id"])
+        self.assertEqual(saved["status"], "cancelled")
+        self.assertEqual(saved["scope"], {"session_id": "cancelled-test"})
+        self.assertFalse(runner.verify("suite", self.root)["ok"])
+
     def test_actual_success_and_failure_have_host_receipts(self):
         runner = self.runner()
         result = runner.run("suite")

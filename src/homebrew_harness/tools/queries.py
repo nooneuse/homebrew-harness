@@ -51,8 +51,12 @@ def search_text(text, *, workdir, pattern="**/*", limit=50):
         if "\0" in decoded:
             skipped += 1
             continue
-        for line, value in enumerate(decoded.splitlines(), 1):
+        offset = 0
+        for line, raw_line in enumerate(decoded.splitlines(keepends=True), 1):
             check()
+            value = raw_line.rstrip("\r\n")
+            line_offset = offset
+            offset += len(raw_line)
             column = value.find(text)
             if column >= 0:
                 start = max(0, column - 200)
@@ -61,6 +65,7 @@ def search_text(text, *, workdir, pattern="**/*", limit=50):
                         "path": path,
                         "line": line,
                         "column": column + 1,
+                        "offset": line_offset,
                         "text": value[start : start + 1000],
                     }
                 )

@@ -328,6 +328,7 @@ class CheckpointWriter:
             (str(self.store.workdir), operation_id), threading.current_thread()
         )
 
+    @persistence_scope(operation="tool_result")
     def tool_finished(self, operation_id, output):
         call_id = operation_id.split(":", 1)[1]
         for effect in reversed(self.effects):

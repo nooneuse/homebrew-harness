@@ -1041,7 +1041,11 @@ class TestRunner:
                     else None
                 )
                 db = DurableStore(self.workdir).backend()
-                with db.write() as conn:
+                from homebrew_harness.execution.execution_control import persistence_scope
+
+                # A stopped process still needs a durable, truthful receipt.
+                # This scope covers only the commit, never more test execution.
+                with persistence_scope(operation="test_receipt", context_id=run_id), db.write() as conn:
                     db._put(conn, "test_receipts", run_id, receipt)
             self._receipts[run_id] = json.loads(encoded(receipt))
             return {key: value for key, value in receipt.items() if key != "inputs"} | {

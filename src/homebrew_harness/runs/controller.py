@@ -259,6 +259,7 @@ class RunController:
             raise ValueError("Source event does not belong to this Run.")
         return redact(json.dumps(event, ensure_ascii=False))
 
+    @persistence_scope(operation="run_progress_observation")
     def observe_tool(self, call, workdir, output):
         self.progress.observe(self, call, workdir, output)
 

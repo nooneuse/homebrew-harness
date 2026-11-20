@@ -167,6 +167,13 @@ class ServiceAgent:
         if kind == "quality_output":
             from .delivery.quality import read_output
             return json.dumps(read_output(contract.primary(), identity, offset, limit), ensure_ascii=False)
+        if kind == "evidence":
+            record = self.store.get(kind, identity)
+            if record.get("kind") == "published_source_reference":
+                text = record["text"]
+                return json.dumps({"id": identity, "source_commit": record.get("source_commit"),
+                    "offset": offset, "length": len(text), "text": text[offset:offset + limit],
+                    "next_offset": offset + limit if offset + limit < len(text) else None}, ensure_ascii=False)
         if kind == "project_context":
             raw = json.dumps(self.project_context, ensure_ascii=False)
             return json.dumps({"text": raw[offset:offset + limit], "length": len(raw),
@@ -574,6 +581,8 @@ class ServiceAgent:
                         "job": {**{k: job[k] for k in ("id", "kind", "target", "revision")},
                                 **({"phase": stage} if stage else {})},
                         "policy": contract.policy(),
+                        "execution_limits": {"model_calls": self.store.policy["job_turns"],
+                                             "seconds": self.store.policy["job_seconds"]},
                         "input": preview,
                         **({"project_context": project} if project and kind in {"review", "ci_triage"} else {}),
                     },

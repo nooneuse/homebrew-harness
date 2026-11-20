@@ -365,6 +365,13 @@ def _agent_loop(
             remaining = max_turns - turns
             if remaining <= 3:
                 set_context(messages, "subagent_remaining_calls", {"role": "user", "name": "subagent_remaining_calls", "content": f"This subtask has {max(0, remaining)} model calls remaining in its host limit. Choose whether to finish essential work or return a concise result with evidence and unfinished items. This adds no calls or permission."})
+        if components.service_control is not None and max_turns - turns <= 4:
+            from homebrew_harness.context.tracked_history import set_context
+            remaining = max(0, max_turns - turns)
+            set_context(messages, "service_remaining_calls", {"role": "user", "name": "service_remaining_calls",
+                "content": f"This Service phase has {remaining} model calls remaining, including the next request. "
+                "If the evidence is sufficient, submit the phase proposal with service_propose. Otherwise describe the "
+                "unresolved evidence and bounded next step in its result contract. This changes neither authorization nor quality requirements."})
         if turns >= max_turns:
             if goal_controller is not None and goal_controller.pending:
                 return goal_controller.report(
