@@ -103,7 +103,7 @@ class ServiceApprovalReview:
             proposal["changeset"] = {key: copy.deepcopy(changeset.get(key)) for key in (
                 "id", "work_id", "requirements_revision", "revision", "state", "run_id", "previous",
                 "frozen", "branch", "review_commit", "change_request", "review", "ci", "ci_diagnosis",
-                "goal_evidence", "error", "error_detail", "error_info")}
+                "goal_evidence", "error", "error_detail", "error_info", "publication", "publication_feedback")}
             proposal["changeset"]["quality"] = JobContract.quality(changeset.get("quality"))
             candidate = changeset.get("candidate") or {}
             proposal["changeset"]["candidate"] = {

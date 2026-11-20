@@ -137,6 +137,7 @@ class ServiceModels:
         alias = {
             "audit": spec.operations.get("audit_model"),
             "review": (spec.delivery or {}).get("review_model"),
+            "publication": (spec.delivery or {}).get("review_model"),
         }.get(job["kind"])
         if job["kind"] == "discussion":
             alias = (

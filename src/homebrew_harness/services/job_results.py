@@ -81,6 +81,22 @@ def review(store, job, raw, conn=None):
     return raw
 
 
+def publication(store, job, raw, conn=None):
+    """Public wording is a proposal; neither this result nor a review publishes it."""
+    from homebrew_harness.platforms.merges import CLOSING
+
+    if isinstance(raw, dict) and set(raw) == {"human_required", "reason"} and raw["human_required"] is True:
+        text(raw["reason"], "reason", 8000)
+        return raw
+    if not isinstance(raw, dict) or set(raw) != {"title", "body"}:
+        raise boundary_error(ValueError, "service_result_invalid", "Publication needs title/body or an explicit human_required reason.")
+    text(raw["title"], "PR title", 200)
+    text(raw["body"], "PR body", 16000)
+    if CLOSING.search(raw["title"]) or CLOSING.search(raw["body"]):
+        raise boundary_error(ValueError, "service_result_invalid", "PR text cannot implicitly close issues.")
+    return raw
+
+
 def ci_triage(store, job, raw, conn=None):
     if (
         not isinstance(raw, dict)

@@ -277,8 +277,9 @@ class DeliveryStore:
                 + row["candidate"]["commit"]
                 + "\n\nLocal verification completed. Publication is tracked separately.",
             )
-            if row.get("review", {}).get("publication"):
-                content.update(row["review"]["publication"])
+            publication = row.get("publication") or row.get("review", {}).get("publication")
+            if publication:
+                content.update(publication)
             if row.get("change_request"):
                 content.update(
                     existing=row["change_request"],
@@ -309,7 +310,7 @@ class DeliveryStore:
                 if kind in self.spec["auto_actions"]
                 and not (
                     kind == "ensure_change_request"
-                    and row.get("review", {}).get("publication")
+                    and (row.get("publication") or row.get("review", {}).get("publication"))
                 )
                 else "awaiting_approval"
             ),
@@ -318,7 +319,7 @@ class DeliveryStore:
                 if kind in self.spec["auto_actions"]
                 and not (
                     kind == "ensure_change_request"
-                    and row.get("review", {}).get("publication")
+                    and (row.get("publication") or row.get("review", {}).get("publication"))
                 )
                 else None
             ),
@@ -447,6 +448,19 @@ class DeliveryStore:
         )
         self.put(conn, "actions", action)
         self.put(conn, "decisions", request)
+        if not approve:
+            if action["kind"] == "ensure_change_request":
+                row["state"] = "publication_denied"
+            row.update(error="delivery_action_denied",
+                       error_detail="The exact " + action["kind"] + " plan was denied; inspect its decision and approval review.",
+                       denied_action_id=action["id"], denied_request_id=request["id"],
+                       revision=row["revision"] + 1)
+            self.put(conn, "changesets", row)
+        elif row.get("error") == "delivery_action_denied" and row.get("denied_action_id") == action["id"]:
+            if row["state"] == "publication_denied":
+                row["state"] = "review_branch_ready"
+            row.update(error=None, error_detail=None, error_info=None, revision=row["revision"] + 1)
+            self.put(conn, "changesets", row)
         self.ms.changed(conn, row["work_id"])
         return {
             "id": request["id"],
@@ -595,7 +609,10 @@ class DeliveryStore:
         self.current(row)
         if row["revision"] != job["revision"]:
             return "stale"
-        if job["kind"] == "review":
+        if job["kind"] == "publication":
+            from .publication import accept
+            accept(self, row, job, result, conn)
+        elif job["kind"] == "review":
             row["review"] = result
             if any(f["severity"] == "blocking" for f in result["findings"]):
                 row.update(state="quality_failed", error="review_findings")

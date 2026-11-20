@@ -328,7 +328,7 @@ class MaintenanceStore:
             if kind == "audits":
                 row["state"] = "failed"
             self.put(conn, kind, row)
-        elif job["kind"] in {"review", "ci_triage"}:
+        elif job["kind"] in {"review", "ci_triage", "publication"}:
             row = self.get("changesets", job["target"], conn)
             from .delivery.git import StaleDelivery
             try:
@@ -338,7 +338,7 @@ class MaintenanceStore:
             if row["revision"] != job["revision"]:
                 return
             row.update(
-                state="quality_failed" if job["kind"] == "review" else "blocked",
+                state="publication_failed" if job["kind"] == "publication" else "quality_failed" if job["kind"] == "review" else "blocked",
                 error=job["error"],
                 error_detail=job.get("error_detail"), error_info=job.get("error_info"),
                 reasoning_job_id=job["id"],

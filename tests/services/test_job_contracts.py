@@ -133,6 +133,7 @@ class JobContracts(unittest.TestCase):
                 "alignment": "Within scope.",
             },
             "review": {"text": "Reviewed fixed candidate.", "findings": []},
+            "publication": {"title": "Describe the change", "body": "Recorded changes and verification."},
             "ci_triage": {
                 "classification": "unknown",
                 "reason": "Missing facts.",

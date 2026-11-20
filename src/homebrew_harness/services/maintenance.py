@@ -257,13 +257,12 @@ class Maintenance:
                     retry_history=[*job.get("retry_history", []),
                                    {k: job.get(k) for k in ("attempts", "error", "error_detail", "error_info", "error_stage")}],
                 )
-                if job["kind"] in {"review", "ci_triage"}:
+                if job["kind"] in {"review", "ci_triage", "publication"}:
                     row = self.store.get("changesets", job["target"], conn)
                     self.delivery.store.current(row, conn)
                     row.update(
-                        state="reviewing"
-                        if job["kind"] == "review"
-                        else "ci_diagnosing",
+                        state=("publication_drafting" if job["kind"] == "publication" else
+                               "reviewing" if job["kind"] == "review" else "ci_diagnosing"),
                         error=None,
                         error_detail=None, error_info=None,
                         revision=row["revision"] + 1,

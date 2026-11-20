@@ -50,6 +50,14 @@ HANDLERS = {
         job_results.ci_triage,
         job_results.apply_delivery,
     ),
+    "publication": JobHandler(
+        "changesets",
+        "Draft the public change-request title and body from the current accepted requirements, confirmed review and verification facts. Apply operator PR-writing guidance and the exact rejection feedback when present. Return title/body, or human_required=true with reason if direction or authority is needed. Keep the content useful to repository reviewers; omit internal Work/Run/job identifiers and control-process notes. Distinguish recorded tests from unavailable live checks. This prepares wording only; new public content still requires its own exact approval. Do not change code, reinterpret a denial as approval or promise an unconfirmed publication.",
+        ("delivery-planning",),
+        job_results.publication,
+        job_results.apply_delivery,
+        code=False,
+    ),
     "audit": JobHandler(
         "audits",
         "Use code-review to review the fixed audited workspace. Provide text and findings=[{severity:blocking/warning,path,message}]. Cite evidence and actionable defects.",
@@ -90,7 +98,7 @@ HANDLERS = {
 }
 
 
-def work_context(store, work):
+def work_context(store, work, conn=None):
     """Current accepted Work facts, without internal snapshots or compiled copies."""
     spec = work.get("run_spec") or {}
     value = {k: copy.deepcopy(work.get(k)) for k in
@@ -101,11 +109,13 @@ def work_context(store, work):
     value["write_paths"] = spec.get("write_paths", [])
     value["goal"] = work.get("goal") or spec.get("goal")
     if work.get("requirements_id"):
-        requirements = store.get("requirements", work["requirements_id"])
+        requirements = (store.get("requirements", work["requirements_id"], conn) if conn is not None
+                        else store.get("requirements", work["requirements_id"]))
         value["accepted_requirements"] = {k: requirements.get(k) for k in
                                            ("id", "draft_revision", "draft", "operator_note", "sources")}
     if work.get("progress_ref"):
-        progress = store.get("work_progress", work["progress_ref"])
+        progress = (store.get("work_progress", work["progress_ref"], conn) if conn is not None
+                    else store.get("work_progress", work["progress_ref"]))
         if progress["requirements_revision"] == work["requirements_revision"]:
             value["handoff"] = {k: progress.get(k) for k in
                                  ("id", "run_id", "summary", "complete", "remaining", "evidence_refs")}
@@ -130,12 +140,12 @@ class JobContract:
 
     def input(self, primary=None):
         primary = self.primary() if primary is None else primary
-        if self.kind in {"review", "ci_triage"}:
+        if self.kind in {"review", "ci_triage", "publication"}:
             value = {k: copy.deepcopy(primary.get(k)) for k in
                      ("id", "work_id", "requirements_revision", "revision", "state", "run_id",
                       "previous", "requirements_id", "quality", "test_failure", "goal_evidence",
                       "review", "ci", "ci_diagnosis", "validation_rechecks", "error", "error_detail",
-                      "error_info", "reasoning_job_id")}
+                      "error_info", "reasoning_job_id", "publication", "publication_feedback")}
             value["candidate"] = {k: copy.deepcopy((primary.get("candidate") or {}).get(k))
                                   for k in ("commit", "tree", "target_base", "delta", "conflicts")}
             if self.kind == "review" and primary.get("previous"):
@@ -182,7 +192,7 @@ class JobContract:
             if self.kind != "discussion"
             else {k: self.store.policy[k] for k in ("objectives", "non_goals", "scopes")}
         )
-        guidance = instructions_for(self.store.policy, self.kind)
+        guidance = instructions_for(self.store.policy, "review" if self.kind == "publication" else self.kind)
         if guidance:
             value["instructions"] = guidance
         else:
@@ -291,7 +301,7 @@ class JobContract:
                 "Public discussion cannot read unrelated internal evidence."
             )
         primary = self.primary()
-        if kind == "quality_output" and self.kind in {"review", "ci_triage"}:
+        if kind == "quality_output" and self.kind in {"review", "ci_triage", "publication"}:
             from .delivery.quality import output_reference
             output_reference(primary, identity)
             return
@@ -299,6 +309,7 @@ class JobContract:
             "triage": {"work", "events", "work_list", "requirements", "evidence"},
             "review": {"changesets", "work", "events", "evidence", "requirements"},
             "ci_triage": {"changesets", "work", "events", "evidence", "requirements"},
+            "publication": {"changesets", "work", "events", "evidence", "requirements"},
             "audit": {"audits", "work_list"},
             "incident": {"incidents", "health"},
             "upgrade_assessment": {"upgrade_plans", "health"},
@@ -528,7 +539,7 @@ class JobContract:
     def override(self, kind, identity):
         if kind == "policy":
             return self.policy()
-        if self.kind in {"review", "ci_triage"}:
+        if self.kind in {"review", "ci_triage", "publication"}:
             if kind == "changesets":
                 return self.input()
             if kind == "work":

@@ -57,7 +57,8 @@ def view(runtime, work):
         "verification": record.get("evidence_refs", []) if record else [],
         "changeset_id": work.get("changeset_id"),
         "delivery": ({k: candidate.get(k) for k in
-                      ("state", "error", "error_detail", "error_info", "reasoning_job_id", "test_failure", "ci_diagnosis")}
+                      ("state", "error", "error_detail", "error_info", "reasoning_job_id", "test_failure", "ci_diagnosis",
+                       "denied_action_id", "denied_request_id", "publication_feedback")}
                      if valid_candidate else None),
     }
 

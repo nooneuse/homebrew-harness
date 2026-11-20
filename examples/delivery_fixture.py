@@ -304,6 +304,15 @@ class Peer:
                             "text": "Fixed candidate reviewed.", "findings": [],
                             **getattr(outer, "review_extra", {}),
                         }
+                    elif kind == "publication":
+                        if getattr(outer, "publication_started", None):
+                            outer.publication_started.set()
+                        if getattr(outer, "publication_hold", None):
+                            outer.publication_hold.wait(10)
+                        proposal = getattr(outer, "publication_value", {
+                            "title": "Restore the documented value",
+                            "body": "Restore the value and preserve the fixed unit-test contract.",
+                        })
                     elif kind == "ci_triage":
                         proposal = {
                             "classification": "code",

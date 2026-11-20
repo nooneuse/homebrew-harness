@@ -41,7 +41,8 @@ def snapshot(runtime):
             "AND json_extract(work.value,'$.changeset_id')=candidate.key "
             "AND json_extract(work.value,'$.state')='review' "
             "WHERE candidate.section='service_changesets' AND candidate.owner=? "
-            "AND json_extract(candidate.value,'$.state') IN ('failed','quality_failed','blocked','verification_blocked','repair_waiting','repair_waiting_authority')",
+            "AND (json_extract(candidate.value,'$.state') IN ('failed','quality_failed','blocked','verification_blocked','repair_waiting','repair_waiting_authority','publication_denied','publication_attention','publication_failed') "
+            "OR json_extract(candidate.value,'$.error')='delivery_action_denied')",
             ("service:" + runtime.id,))]
 
     free = shutil.disk_usage(runtime.store.root).free
@@ -52,11 +53,20 @@ def snapshot(runtime):
     pending = decisions["oldest_actionable"]
     issues = []
     for row in delivery_blockers:
+        denial = None
+        if row.get("denied_request_id") and row.get("error") == "delivery_action_denied":
+            with runtime.store.db.connection() as conn:
+                value = conn.execute(
+                    "SELECT value FROM records WHERE section='approval_reviews' AND owner=? "
+                    "AND json_extract(value,'$.request_id')=? AND json_extract(value,'$.state')='denied' "
+                    "ORDER BY rowid DESC LIMIT 1", ("service:" + runtime.id, row["denied_request_id"])).fetchone()
+                denial = (json.loads(value[0]).get("verdict") or {}).get("reason") if value else None
         issues.append({"code": "delivery_blocked", "target": row["work_id"],
                        "changeset_id": row["id"], "state": row["state"],
-                       "message": row.get("error_detail") or row.get("error") or "Delivery awaits a current repair decision.",
+                       "message": denial or row.get("error_detail") or row.get("error") or "Delivery awaits a current repair decision.",
                        "reason_code": (row.get("error_info") or {}).get("code"),
                        "reasoning_job_id": row.get("reasoning_job_id"),
+                       "action_id": row.get("denied_action_id"), "request_id": row.get("denied_request_id"),
                        "diagnostic_ref": {"record": "changesets", "id": row["id"]}})
     active_faults = {k: v for k, v in meta.get("runtime_failures", {}).items() if not v.get("resolved_at")}
     age = now - (meta["heartbeat_at"] or meta["created_at"])
@@ -141,7 +151,9 @@ def snapshot(runtime):
             for r in sources
         ],
         "issues": issues,
-        "waiting_for_operator": bool(decisions["actionable"]),
+        "waiting_for_operator": bool(decisions["actionable"] or any(
+            row["state"] == "publication_attention" or row.get("error") == "delivery_action_denied"
+            for row in delivery_blockers)),
         "decisions": decisions,
         "active_work": meta.get("active_work"),
         "active_run": meta.get("active_run"),

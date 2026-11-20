@@ -130,7 +130,7 @@ class Delivery:
                 for row in conn.execute(
                     "SELECT value FROM records WHERE section=? AND owner=?"
                     + (
-                        " AND coalesce(json_extract(value,'$.observation_terminal'),0)=0 AND json_extract(value,'$.state') IN ('queued','preparing','validating','reviewing','review_branch_ready','ci_waiting','review_waiting','repair_approved','merge_ready','merge_pending','merged_verifying','integration_required','closed_unmerged','verification_blocked','superseded','ci_diagnosing','repairing','repair_waiting','repair_waiting_authority','quality_failed','blocked')"
+                        " AND coalesce(json_extract(value,'$.observation_terminal'),0)=0 AND json_extract(value,'$.state') IN ('queued','preparing','validating','reviewing','review_branch_ready','ci_waiting','review_waiting','repair_approved','merge_ready','merge_pending','merged_verifying','integration_required','closed_unmerged','verification_blocked','superseded','ci_diagnosing','repairing','repair_waiting','repair_waiting_authority','quality_failed','blocked','publication_drafting','publication_denied','publication_attention','publication_failed')"
                         if active and kind == "changesets"
                         else (
                             " AND json_extract(value,'$.state') IN ('queued','started')"
@@ -263,6 +263,10 @@ class Delivery:
                 "ci_waiting",
                 "review_waiting",
             }:
+                return
+        if row["state"] in {"review_branch_ready", "publication_denied", "publication_attention"}:
+            from .publication import prepare
+            if prepare(self, row):
                 return
         if row["state"] not in {
             "queued",

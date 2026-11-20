@@ -118,7 +118,7 @@ class ServiceAgent:
                 properties[name] = {
                     key: item for key, item in value.items() if key != "pattern"
                 }
-            if function.get("name") == "service_read" and self.job and self.job["kind"] in {"review", "ci_triage"}:
+            if function.get("name") == "service_read" and self.job and self.job["kind"] in {"review", "ci_triage", "publication"}:
                 properties["kind"]["enum"] = ["changesets", "work", "requirements", "events", "evidence",
                                                 "policy", "job", "project_context", "quality_output"]
                 properties["identity"]["description"] = "Use exact IDs from input: changesets=job.target, work=input.work_context.id, quality_output=quality[].outputs[].id."
@@ -295,7 +295,7 @@ class ServiceAgent:
             )
         if self.job and self.job["kind"] == "audit":
             return Path(self.store.get("audits", self.job["target"])["workspace"])
-        if self.job and self.job["kind"] in {"review", "ci_triage"}:
+        if self.job and self.job["kind"] in {"review", "ci_triage", "publication"}:
             return Path(
                 self.store.get("changesets", self.job["target"])["candidate"][
                     "workspace"
@@ -418,7 +418,7 @@ class ServiceAgent:
             return False
         if self.proposal is None:
             return False
-        if self.job["kind"] in {"review", "ci_triage"}:
+        if self.job["kind"] in {"review", "ci_triage", "publication"}:
             latest = JobContract(self.store, self.job).input()
             signature = fingerprint(latest)
             if signature != self.phase_signature["primary"]:
@@ -531,7 +531,7 @@ class ServiceAgent:
             from .communication.reasoning import work_status
             self.phase_work_status = work_status(self.store, job)
             primary = {**primary, "work_status": self.phase_work_status}
-        if kind in {"review", "ci_triage"}:
+        if kind in {"review", "ci_triage", "publication"}:
             self.store.delivery.git.verify(primary["candidate"])
         if kind == "audit":
             from .operations.audit import verify
@@ -542,7 +542,7 @@ class ServiceAgent:
         self.used_phases.add(self.phase_key)
         preview = contract.input(primary)
         self.phase_signature = {**identity(job, self.phase_key, self.binding, self.discussion_prompts, plan),
-                                "primary": fingerprint(preview if kind in {"review", "ci_triage"} else primary)}
+                                "primary": fingerprint(preview if kind in {"review", "ci_triage", "publication"} else primary)}
         cached = self.store.job_get(job["id"]).get("phase_outputs", {}).get(self.phase_key)
         root = self.code_root() if project is not None else None
         if valid(cached, self.phase_signature, project, root):
@@ -590,7 +590,7 @@ class ServiceAgent:
                                 "truncated": len(text) < len(body)})
                 budget -= len(text)
             preview["source_previews"] = list(reversed(sources))
-        if project and kind not in {"review", "ci_triage"}:
+        if project and kind not in {"review", "ci_triage", "publication"}:
             preview["project_context"] = project
         if plan:
             from .communication.reasoning import public
@@ -608,7 +608,7 @@ class ServiceAgent:
                                              "model_call_warning": self.store.policy["job_call_warning"],
                                              "seconds": self.store.policy["job_seconds"]},
                         "input": preview,
-                        **({"project_context": project} if project and kind in {"review", "ci_triage"} else {}),
+                        **({"project_context": project} if project and kind in {"review", "ci_triage", "publication"} else {}),
                     },
                     ensure_ascii=False,
                 ),
@@ -655,7 +655,7 @@ class ServiceAgent:
             )
         if self.proposal is None:
             raise ValueError("Service reasoning did not submit a structured proposal.")
-        if kind in {"review", "ci_triage"}:
+        if kind in {"review", "ci_triage", "publication"}:
             self.store.delivery.git.verify(primary["candidate"])
         if kind == "audit":
             verify(self.runtime, primary)
