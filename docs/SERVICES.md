@@ -295,6 +295,8 @@ Optional delivery prepares a private Git candidate from reviewed work, rechecks 
 
 Failed candidate tests retain their receipts and readable output for model diagnosis. Scoped code repairs use native Runs; local transient failures can request a recheck of the same candidate, bounded by `ci_fix_limit`. Publication requires passing candidate checks. `work.progress()` shows delivery status, and health reports current blocked candidates. `service.refresh_delivery(changeset_id)` can explicitly recheck a settled, unpublished candidate after resolving a blocker, preserving its failure history. A subsequent requirements revision uses the verified synchronized integration as its baseline while retaining prior delivery records.
 
+Candidate review and CI diagnosis receive the bound Work's current execution context, accepted requirements, completed handoff and prior validation evidence. Their record reads use the same evidence projection, while internal file inventories remain in storage. A changed Work instruction requires a fresh proposal. Retrying a failed reasoning job preserves its failure history and candidate receipts; the subsequent repair Run receives current execution instructions. Health and Work progress show the reasoning job and its actual failure reason.
+
 ## Service operations (P4)
 
 [Service operations](SERVICE_OPERATIONS.md) add deterministic health, native writer parking, cross-workspace retention, backup sets/restoration, fixed repository audits and explicit compatible runtime handoff. CLI, Text UI and Python share the authenticated control methods.

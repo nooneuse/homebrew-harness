@@ -117,6 +117,10 @@ class ServiceAgent:
                 properties[name] = {
                     key: item for key, item in value.items() if key != "pattern"
                 }
+            if function.get("name") == "service_read" and self.job and self.job["kind"] in {"review", "ci_triage"}:
+                properties["kind"]["enum"] = ["changesets", "work", "requirements", "events", "evidence",
+                                                "policy", "job", "project_context", "quality_output"]
+                properties["identity"]["description"] = "Use exact IDs from input: changesets=job.target, work=input.work_context.id, quality_output=quality[].outputs[].id."
             if function.get("name") != "service_read" or not self.job or self.job["kind"] != "discussion":
                 continue
             properties["kind"]["enum"] = [
@@ -310,7 +314,7 @@ class ServiceAgent:
                 workdir=self.code_root(),
             )
 
-    def read_code(self, path, offset=0, limit=100, workdir=None):
+    def read_code(self, path, offset=0, limit=100, expected_version=None, workdir=None):
         from homebrew_harness.tools.files import run_read
         from homebrew_harness.security.file_visibility import (
             model_parts,
@@ -342,7 +346,7 @@ class ServiceAgent:
                 self.code_evidence[path] = file_version(root, path)
             except (OSError, ValueError):
                 self.code_evidence[path] = None
-        return run_read(path=path, offset=offset, limit=limit, workdir=root)
+        return run_read(path=path, offset=offset, limit=limit, expected_version=expected_version, workdir=root)
 
     def propose(self, proposal, workdir=None):
         self.proposal = None
@@ -385,6 +389,15 @@ class ServiceAgent:
             return False
         if self.proposal is None:
             return False
+        if self.job["kind"] in {"review", "ci_triage"}:
+            latest = JobContract(self.store, self.job).input()
+            signature = fingerprint(latest)
+            if signature != self.phase_signature["primary"]:
+                self.phase_signature["primary"] = signature
+                self.proposal = None
+                messages.append({"role": "user", "content": json.dumps({"input": latest,
+                    "instruction": "Current Work instructions or candidate evidence changed during reasoning. Re-evaluate this current input and submit a new proposal; no authority is granted."}, ensure_ascii=False)})
+                return False
         if self.job["kind"] == "discussion":
             from .communication.reasoning import work_status
             latest = work_status(self.store, self.job)
@@ -497,8 +510,9 @@ class ServiceAgent:
         from .phase_output import identity, valid
         self.phase_key = stage or ("combined" if kind == "discussion" else kind)
         self.used_phases.add(self.phase_key)
+        preview = contract.input(primary)
         self.phase_signature = {**identity(job, self.phase_key, self.binding, self.discussion_prompts, plan),
-                                "primary": fingerprint(primary)}
+                                "primary": fingerprint(preview if kind in {"review", "ci_triage"} else primary)}
         cached = self.store.job_get(job["id"]).get("phase_outputs", {}).get(self.phase_key)
         root = self.code_root() if project is not None else None
         if valid(cached, self.phase_signature, project, root):
@@ -518,32 +532,7 @@ class ServiceAgent:
                 self.code_evidence = dict(cached["evidence"])
                 self.proposal = candidate
                 return self.proposal
-        preview = {
-            k: v
-            for k, v in primary.items()
-            if k
-            not in {
-                "run_spec",
-                "result",
-                "facts",
-                "candidate",
-                "baseline",
-                "files",
-                "workspace",
-                "plans",
-                "integration",
-                "integration_quality",
-                "merge_rules",
-                "candidate_history",
-                "primary_expected",
-                "validation_history",
-            }
-        }
-        if primary.get("candidate") and kind in {"review", "ci_triage"}:
-            preview["candidate"] = {
-                k: primary["candidate"][k] for k in ("commit", "tree", "delta")
-            }
-        elif kind == "upgrade_assessment":
+        if kind == "upgrade_assessment":
             preview["candidate"] = {
                 k: primary["candidate"][k] for k in ("runtime", "package_hash", "proof")
             }
@@ -571,7 +560,7 @@ class ServiceAgent:
                                 "truncated": len(text) < len(body)})
                 budget -= len(text)
             preview["source_previews"] = list(reversed(sources))
-        if project:
+        if project and kind not in {"review", "ci_triage"}:
             preview["project_context"] = project
         if plan:
             from .communication.reasoning import public
@@ -586,6 +575,7 @@ class ServiceAgent:
                                 **({"phase": stage} if stage else {})},
                         "policy": contract.policy(),
                         "input": preview,
+                        **({"project_context": project} if project and kind in {"review", "ci_triage"} else {}),
                     },
                     ensure_ascii=False,
                 ),
@@ -623,10 +613,11 @@ class ServiceAgent:
                 self.gateway, self.binding.model, directory, components
             ) as loop,
         ):
+            loop.components.compactor.intent.update(contract.task(), new_task=True)
             loop.run(
                 messages,
                 max(1, self.store.policy["job_turns"] - self.phase_counts.get(self.phase_key, 0)),
-                active_request=json.dumps(preview, ensure_ascii=False),
+                active_request=contract.task(),
             )
         if self.proposal is None:
             raise ValueError("Service reasoning did not submit a structured proposal.")

@@ -330,9 +330,18 @@ class MaintenanceStore:
             self.put(conn, kind, row)
         elif job["kind"] in {"review", "ci_triage"}:
             row = self.get("changesets", job["target"], conn)
+            from .delivery.git import StaleDelivery
+            try:
+                self.delivery.store.current(row, conn)
+            except StaleDelivery:
+                return
+            if row["revision"] != job["revision"]:
+                return
             row.update(
                 state="quality_failed" if job["kind"] == "review" else "blocked",
                 error=job["error"],
+                error_detail=job.get("error_detail"), error_info=job.get("error_info"),
+                reasoning_job_id=job["id"],
                 revision=row["revision"] + 1,
             )
             self.put(conn, "changesets", row)

@@ -33,6 +33,83 @@ class JobContracts(unittest.TestCase):
     def read(self, kind, identity="", **kwargs):
         return json.loads(self.agent.read(kind, identity, **kwargs))
 
+    def candidate_job(self):
+        work = self.service.work.submit("Keep the original feature requirement.")
+        with self.store.db.write() as conn:
+            saved = self.store.get("work", work.id, conn)
+            saved.update(amendments=["Retain the accepted constraint."],
+                         execution_context=["Integrate the latest published framework fix."],
+                         progress_ref="handoff_current")
+            self.store.put(conn, "work", saved)
+            self.store.put(conn, "work_progress", {"id": "handoff_current", "requirements_revision": 0,
+                           "summary": "Feature finished; prior isolated baseline test failed.", "complete": True,
+                           "remaining": [], "evidence_refs": ["test_previous"]})
+            self.store.put(conn, "changesets", {"id": "changeset_current", "work_id": work.id,
+                           "revision": 1, "requirements_revision": 0, "state": "ci_diagnosing",
+                           "candidate": {"commit": "a"*40, "tree": "b"*40, "delta": {"src/f.py": {}},
+                                         "files": {"internal": "v"*100000}, "repo": "internal git", "workspace": "internal path"},
+                           "primary_expected": {"internal": "v"*100000},
+                           "quality": [{"run_id": "test_current", "status": "failed", "inputs": {"internal": "v"*100000}}],
+                           "validation_history": [{"quality": [{"run_id": "test_previous", "status": "failed",
+                                                               "inputs": {"internal": "v"*100000}}]}]})
+        job = self.activate(self.service.converse("Inspect the candidate."))
+        job = {**job, "kind": "ci_triage", "target": "changeset_current"}
+        self.agent.job = job
+        return work, JobContract(self.store, job)
+
+    def test_candidate_input_and_reads_preserve_current_context_and_exclude_inventories(self):
+        work, contract = self.candidate_job()
+        before = self.store.get("changesets", "changeset_current")
+        data = contract.input()
+        pages = [];offset = 0
+        while offset is not None:
+            page = self.read("changesets", "changeset_current", offset=offset, limit=300)
+            pages.append(page["text"]);offset = page["next_offset"]
+        self.assertEqual(json.loads("".join(pages)), data)
+        self.assertEqual(json.loads(self.read("work", work.id)["text"]), data["work_context"])
+        self.assertIn("latest published framework", json.dumps(data))
+        self.assertIn("Retain the accepted constraint", json.dumps(data))
+        self.assertIn("prior isolated baseline test failed", json.dumps(data))
+        self.assertEqual(data["validation_history"][0]["quality"][0]["run_id"], "test_previous")
+        self.assertNotIn("internal", json.dumps(data))
+        self.assertLess(len(json.dumps(data)), 5000)
+        self.assertLess(len(contract.task()), 500)
+        self.assertNotIn("latest published framework", contract.task())
+        self.assertEqual(self.store.get("changesets", "changeset_current"), before)
+        with self.assertRaisesRegex(ValueError, "changesets"):
+            self.read("changeset", "changeset_current")
+
+    def test_candidate_phase_rejects_proposal_when_current_work_instructions_change(self):
+        from homebrew_harness.services.protocol import fingerprint
+        work, contract = self.candidate_job()
+        self.agent.phase_signature = {"primary": fingerprint(contract.input())}
+        self.agent.proposal = {"classification": "code", "reason": "Known defect.", "plan": "Repair."}
+        with self.store.db.write() as conn:
+            current = self.store.get("work", work.id, conn)
+            current["execution_context"].append("Preserve the newly clarified execution constraint.")
+            self.store.put(conn, "work", current)
+        messages = []
+        self.assertFalse(self.agent.complete_phase([SimpleNamespace(name="service_propose")], messages))
+        self.assertIsNone(self.agent.proposal)
+        self.assertIn("newly clarified", messages[0]["content"])
+
+    def test_service_code_reader_uses_characters_and_checks_page_version(self):
+        from homebrew_harness.tools.catalog import SERVICE_TOOL_DEFINITIONS
+        target = self.workspace/"source.txt";target.write_text("first\nsecond\nthird\n")
+        job = self.activate(self.service.converse("Discuss this repository."))
+        self.agent.job = {**job, "kind": "triage"}
+        with patch.object(self.agent, "code_root", return_value=self.workspace):
+            first = json.loads(self.agent.read_code("source.txt", offset=0, limit=1))
+            second = json.loads(self.agent.read_code("source.txt", offset=first["next_offset"], limit=1,
+                                                     expected_version=first["version"]))
+            self.assertEqual(second["content"], "second\n")
+            target.write_text("replaced\n")
+            with self.assertRaisesRegex(ValueError, "changed"):
+                self.agent.read_code("source.txt", offset=first["next_offset"], expected_version=first["version"])
+        tool = next(t["function"] for t in SERVICE_TOOL_DEFINITIONS if t["function"]["name"] == "service_read_code")
+        self.assertIn("character", tool["description"])
+        self.assertIn("expected_version", tool["parameters"]["properties"])
+
     def test_all_job_schemas_reject_invalid_candidates_and_unknown_jobs(self):
         receipt = self.service.converse("Discuss the next step.")
         job = self.activate(receipt)

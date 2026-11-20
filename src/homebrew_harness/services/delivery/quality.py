@@ -34,7 +34,11 @@ def receipt_view(root, receipt):
 
 
 def output_reference(row, identity):
-    for receipt in row.get("quality") or []:
+    receipts = [*(row.get("quality") or [])]
+    for historical in row.get("validation_history", []):
+        if historical.get("candidate_commit") in {None, row["candidate"]["commit"]}:
+            receipts.extend(historical.get("quality") or [])
+    for receipt in receipts:
         for output in receipt.get("outputs", {}).values():
             if output["id"] == identity:
                 return output

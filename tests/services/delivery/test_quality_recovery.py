@@ -44,6 +44,12 @@ class QualityRecoveryTests(unittest.TestCase):
         read = quality.read_output(first, output['id'], 0, 60)
         rest = quality.read_output(first, output['id'], read['next_offset'], 16000)
         self.assertIn('FAILED', read['text'] + rest['text'])
+        historical = {**first, 'quality': [], 'validation_history': [
+            {'candidate_commit': first['candidate']['commit'], 'quality': first['quality']}]}
+        self.assertEqual(quality.read_output(historical, output['id'], 0, 60), read)
+        historical['validation_history'][0]['candidate_commit'] = 'f' * 40
+        with self.assertRaises(ValueError):
+            quality.read_output(historical, output['id'], 0, 60)
         agent = service.runtime.maintenance.agent
         contract = JobContract(agent.store, {'kind': 'ci_triage', 'target': first['id']})
         contract.authorize('quality_output', output['id'])

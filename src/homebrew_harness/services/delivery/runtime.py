@@ -704,12 +704,17 @@ class Delivery:
         (workspace / ".git").write_text("gitdir: " + str(repo) + "\n")
         from homebrew_harness.runs.spec import RunSpec
 
+        def prompt(current):
+            original = current["run_spec"]["prompt"]
+            context = [note for note in current.get("execution_context", []) if note not in original]
+            return (original + "\n\nConfirmed CI repair plan:\n" + row["ci_diagnosis"]["plan"]
+                    + ("\n\nCurrent operator execution context (not a requirements amendment):\n" +
+                       "\n\n".join(context) if context else ""))
+
         spec = RunSpec(
             **{
                 **work["run_spec"],
-                "prompt": work["run_spec"]["prompt"]
-                + "\n\nConfirmed CI repair plan:\n"
-                + row["ci_diagnosis"]["plan"],
+                "prompt": prompt(work),
                 "work_context": {
                     **work["run_spec"].get("work_context", {}),
                     "service_id": self.ms.id,
@@ -736,6 +741,8 @@ class Delivery:
                 raise ValueError(
                     "CI repair authority or attempt changed during preparation."
                 )
+            if current.get("execution_context") != work.get("execution_context"):
+                spec = RunSpec(**{**spec.data(), "prompt": prompt(current)})
             current.update(
                 state="approved",
                 run_workspace=str(workspace),

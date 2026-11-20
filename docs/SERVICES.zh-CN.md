@@ -280,6 +280,8 @@ python examples/maintenance_demo.py --output /tmp/harness-maintenance-demo
 
 候选测试失败时保留回执和可读输出，由模型研判原因。代码修复使用有授权的原生 Run；本地临时故障可以请求同一候选重测，自动重测次数由 `ci_fix_limit` 限制。候选检查通过后才能发布。`work.progress()` 显示交付状态，健康检查提示当前阻塞候选。解决阻塞后，可用 `service.refresh_delivery(changeset_id)` 显式重新核验已收尾、尚未发布的候选，保留失败历史。后续需求修订使用经验证且已同步的集成结果作为本轮基线，历史交付记录继续保留。
 
+候选审查与 CI 研判会获得绑定 Work 的当前执行说明、已接受需求、开发交接及历史验证证据。记录读取使用同一证据投影，内部文件清单仍留在存储中；执行说明发生变化时需要重新提交提议。重试失败研判会保留错误历史和候选回执，后续修复 Run 继承当前说明。健康检查与 Work 进度显示对应研判 job 和实际失败原因。
+
 ## Service 运维（P4）
 
 [Service 运维](SERVICE_OPERATIONS.zh-CN.md) 提供健康事实、原生写入者停靠、跨工作区保留、备份集合/恢复、固定仓库审查及明确的兼容版本接替。CLI、Text UI 和 Python 共用认证控制方法。

@@ -55,6 +55,8 @@ def snapshot(runtime):
         issues.append({"code": "delivery_blocked", "target": row["work_id"],
                        "changeset_id": row["id"], "state": row["state"],
                        "message": row.get("error_detail") or row.get("error") or "Delivery awaits a current repair decision.",
+                       "reason_code": (row.get("error_info") or {}).get("code"),
+                       "reasoning_job_id": row.get("reasoning_job_id"),
                        "diagnostic_ref": {"record": "changesets", "id": row["id"]}})
     active_faults = {k: v for k, v in meta.get("runtime_failures", {}).items() if not v.get("resolved_at")}
     age = now - (meta["heartbeat_at"] or meta["created_at"])

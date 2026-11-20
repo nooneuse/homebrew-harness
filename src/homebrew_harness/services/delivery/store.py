@@ -92,6 +92,7 @@ class DeliveryStore:
                 error_detail="Registered candidate test failed; inspect its recorded receipt and output.",
                 validation_history=[*current.get("validation_history", []),
                     {"observed_at": time.time(), "quality": checked["quality"],
+                     "candidate_commit": current["candidate"]["commit"],
                      "test_failure": checked["test_failure"]}],
                 revision=current["revision"] + 1,
             )

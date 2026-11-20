@@ -45,7 +45,7 @@ HANDLERS = {
     ),
     "ci_triage": JobHandler(
         "changesets",
-        "Read fixed candidate code and local quality/CI observations. quality[].outputs lists exact output IDs; use service_read(kind='quality_output', identity=that ID) and next_offset to inspect the recorded log. Provide classification (code/baseline/flaky/infrastructure/unknown), reason and a bounded plan. Local flaky/infrastructure diagnoses request a bounded recheck of this same candidate; baseline/unknown require operator action. A code diagnosis proposes scoped repair. A passing isolated test does not by itself establish load-flakiness. This does not publish, waive failed checks or grant repair authority.",
+        "Read fixed candidate code and local quality/CI observations. The input work_context contains current execution instructions, accepted scope and handoff facts; validation_history contains prior actual failures for this candidate. Use them before repeating an investigation. Published fix references are source evidence, not passing receipts for this candidate. quality[].outputs lists exact output IDs; use service_read(kind='quality_output', identity=that ID) and next_offset to inspect current or historical recorded logs. service_read kinds are changesets (job.target), work (work_context.id), requirements, events, evidence, policy, job, project_context and quality_output; do not invent kinds. Provide classification (code/baseline/flaky/infrastructure/unknown), reason and a bounded plan. Local flaky/infrastructure diagnoses request a bounded recheck of this same candidate; baseline/unknown require operator action. A code diagnosis proposes scoped repair. A passing isolated test does not by itself establish load-flakiness. This does not publish, waive failed checks or grant repair authority.",
         ("ci-failure-triage",),
         job_results.ci_triage,
         job_results.apply_delivery,
@@ -102,6 +102,66 @@ class JobContract:
             value = {k: v for k, v in self.job["input"].items() if k != "projection"}
             return {**value, "projection_available": True}
         return self.store.get(self.handler.section, self.job["target"])
+
+    def work_context(self, work):
+        """Current accepted Work facts, without internal snapshots or compiled copies."""
+        spec = work.get("run_spec") or {}
+        value = {k: copy.deepcopy(work.get(k)) for k in
+                 ("id", "state", "requirements_revision", "requirements_id", "prompt",
+                  "amendments", "execution_context", "events")}
+        value["authority"] = {k: (work.get("authority") or {}).get(k) for k in
+                              ("requirements_revision", "scope", "expires_at", "revoked")}
+        value["write_paths"] = spec.get("write_paths", [])
+        value["goal"] = work.get("goal") or spec.get("goal")
+        if work.get("requirements_id"):
+            requirements = self.store.get("requirements", work["requirements_id"])
+            value["accepted_requirements"] = {k: requirements.get(k) for k in
+                                               ("id", "draft_revision", "draft", "operator_note", "sources")}
+        if work.get("progress_ref"):
+            progress = self.store.get("work_progress", work["progress_ref"])
+            if progress["requirements_revision"] == work["requirements_revision"]:
+                value["handoff"] = {k: progress.get(k) for k in
+                                     ("id", "run_id", "summary", "complete", "remaining", "evidence_refs")}
+        return value
+
+    def input(self, primary=None):
+        primary = self.primary() if primary is None else primary
+        if self.kind in {"review", "ci_triage"}:
+            value = {k: copy.deepcopy(primary.get(k)) for k in
+                     ("id", "work_id", "requirements_revision", "revision", "state", "run_id",
+                      "previous", "requirements_id", "quality", "test_failure", "goal_evidence",
+                      "review", "ci", "ci_diagnosis", "validation_rechecks", "error", "error_detail",
+                      "error_info", "reasoning_job_id")}
+            value["candidate"] = {k: copy.deepcopy((primary.get("candidate") or {}).get(k))
+                                  for k in ("commit", "tree", "target_base", "delta", "conflicts")}
+            value["quality"] = self.quality(primary.get("quality"))
+            value["validation_history"] = [
+                {k: copy.deepcopy(record.get(k)) for k in
+                 ("observed_at", "candidate_commit", "state", "quality", "test_failure",
+                  "error", "error_detail", "requested_recheck")}
+                for record in primary.get("validation_history", [])]
+            for record in value["validation_history"]:
+                record["quality"] = self.quality(record.get("quality"))
+            value["work_context"] = self.work_context(
+                self.store.store.work(primary["work_id"], self.store.id))
+            return value
+        return {k: copy.deepcopy(v) for k, v in primary.items() if k not in {
+            "run_spec", "result", "facts", "candidate", "baseline", "files", "workspace", "plans",
+            "integration", "integration_quality", "merge_rules", "candidate_history", "primary_expected",
+            "validation_history"}}
+
+    @staticmethod
+    def quality(receipts):
+        return [{k: copy.deepcopy(receipt[k]) for k in
+                 ("run_id", "recipe", "status", "exit_code", "test_scope", "selection", "source_stable",
+                  "outputs", "error", "error_info", "executed_at", "verification_basis", "limits",
+                  "isolation", "evidence_use") if k in receipt}
+                for receipt in receipts or []]
+
+    def task(self):
+        return ("Complete the " + self.kind + " job " + self.job["id"] +
+                " for " + self.job["target"] + ". Use the supplied evidence and current accepted constraints; "
+                "submit the final result through service_propose. Stored evidence remains readable with service_read.")
 
     def validate(self, result, conn=None):
         return self.handler.validate(self.store, self.job, result, conn)
@@ -237,7 +297,8 @@ class JobContract:
             "upgrade_assessment": {"upgrade_plans", "health"},
         }[self.kind]
         if kind not in allowed:
-            raise ValueError("Evidence kind is outside this job contract.")
+            raise ValueError("Evidence kind is outside this job contract. Use one of: " +
+                             ", ".join(sorted(allowed | ({"quality_output"} if self.kind in {"review", "ci_triage"} else set()))))
         if kind in {"work_list", "health"}:
             return
         work_id = (
@@ -460,6 +521,11 @@ class JobContract:
     def override(self, kind, identity):
         if kind == "policy":
             return self.policy()
+        if self.kind in {"review", "ci_triage"}:
+            if kind == "changesets":
+                return self.input()
+            if kind == "work":
+                return self.work_context(self.store.store.work(identity, self.store.id))
         if self.kind == "discussion" and kind == "discussions":
             return {"id": identity, **copy.deepcopy(self.job["input"])}
         if self.kind == "discussion" and kind == "work":
