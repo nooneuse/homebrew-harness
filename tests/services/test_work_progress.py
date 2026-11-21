@@ -108,7 +108,8 @@ class CompletionAdoption(unittest.TestCase):
             )
         )
         self.runtime.child_for = Mock(return_value=child)
-        delivery_store = SimpleNamespace(policy="policy", create=Mock())
+        delivery_store = SimpleNamespace(policy="policy", create=Mock(),
+            policy_matches=lambda row: row["policy"] == "policy")
         self.runtime.maintenance.delivery = SimpleNamespace(store=delivery_store)
         self.runtime.maintenance.store.get = Mock(return_value=candidate)
         self.runtime.store.guard = Mock()

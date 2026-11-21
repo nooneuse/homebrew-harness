@@ -888,6 +888,7 @@ class ServiceRuntime:
                 )
                 delivery_stage = bool(
                     candidate
+                    and candidate.get("run_id") == target.get("run_id")
                     and candidate["requirements_revision"]
                     == target["requirements_revision"]
                     and self.maintenance.delivery.store.policy_matches(candidate)

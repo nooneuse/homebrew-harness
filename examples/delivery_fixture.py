@@ -343,6 +343,10 @@ class Peer:
                         "Confirmed CI repair plan" in str(m.get("content"))
                         for m in messages
                     )
+                    if repair and getattr(outer, "repair_started", None):
+                        outer.repair_started.set()
+                    if repair and getattr(outer, "repair_hold", None):
+                        outer.repair_hold.wait(20)
                     self.emit(
                         completion(
                             tool="write_file",

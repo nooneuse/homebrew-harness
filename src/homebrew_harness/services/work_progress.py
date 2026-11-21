@@ -41,7 +41,7 @@ def view(runtime, work):
     )
     phase = (
         "delivery"
-        if valid_candidate
+        if valid_candidate and candidate.get("run_id") == work.get("run_id")
         else "handoff_ready" if record and record["complete"] else "developing"
     )
     return {
