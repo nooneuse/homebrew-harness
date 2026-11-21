@@ -255,12 +255,21 @@ class ApprovalReviewer:
                     check(deadline)
                     progress = {"round": round_number, "remaining_model_turns_including_this": self.config.max_turns - round_number + 1,
                         "observed_evidence": evidence.observed(),
-                        "instruction": "Assess the exact action and its relevant claims. Use known paths or navigation tools rather than guessing names. Choose additional reads, or return approve/deny/human_required when you can decide. Further tool rounds also consume this limit."}
+                        "context_limit_characters": binding.context_chars,
+                        "input_characters": 0, "remaining_input_characters": 0,
+                        "instruction": "Assess the exact action and its relevant claims. Use known paths or navigation tools rather than guessing names. Choose additional reads, or return approve/deny/human_required when you can decide. Further tool rounds also consume this limit. The remaining input space includes further file text, tool replies and protocol continuation; narrow read limits when needed. This observation does not require an approval or a premature conclusion."}
                     messages[:] = [message for message in messages if message.get("name") != "review_progress"]
                     messages.append({"role": "user", "name": "review_progress", "content": json.dumps(progress)})
-                    if gateway.input_size(binding.model, messages, tools, self.store.workdir,
-                                          binding.max_output_tokens) >= binding.context_chars:
-                        raise boundary_error(ValueError, "review_context_limit", "Required review context exceeds the selected model's window.", limit_name="context_chars", limit_value=binding.context_chars, observed_value=gateway.input_size(binding.model, messages, tools, self.store.workdir, binding.max_output_tokens), unit="serialized_characters")
+                    for _ in range(2):
+                        size = gateway.input_size(binding.model, messages, tools, self.store.workdir,
+                                                  binding.max_output_tokens)
+                        progress.update(input_characters=size,
+                                        remaining_input_characters=max(0, binding.context_chars - size))
+                        messages[-1]["content"] = json.dumps(progress)
+                    size = gateway.input_size(binding.model, messages, tools, self.store.workdir,
+                                              binding.max_output_tokens)
+                    if size >= binding.context_chars:
+                        raise boundary_error(ValueError, "review_context_limit", "Required review context exceeds the selected model's window.", limit_name="context_chars", limit_value=binding.context_chars, observed_value=size, unit="serialized_characters")
                     try:
                         response = gateway.request(
                             model=binding.model, messages=messages, max_tokens=binding.max_output_tokens,

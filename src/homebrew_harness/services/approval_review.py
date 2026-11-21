@@ -64,7 +64,8 @@ class ServiceApprovalReview:
             if raw.get("work_id")
             else None
         )
-        proposal = {"decision": raw, "trust": "proposal, not authorization"}
+        proposal = {"decision": copy.deepcopy(raw), "trust": "proposal, not authorization"}
+        current = copy.deepcopy(current)
         cwd, navigation = runtime.spec.workspace, []
         host_scope = {
             "project_policy": maintenance.policy,
@@ -99,12 +100,24 @@ class ServiceApprovalReview:
                     navigation = review_navigation(prepared)
         elif current["kind"] == "delivery_authority":
             proposal["action"] = maintenance.get("actions", raw["action_id"])
+            plan = proposal["action"]["plan"]
+            candidate_plan = proposal["decision"].get("candidate", {})
+            if candidate_plan.get("plan") == str(plan):
+                candidate_plan.pop("plan")
+                candidate_plan["plan_ref"] = "proposal_evidence.action.plan"
+            arguments = current.get("arguments") or {}
+            if arguments.get("plan") == str(plan):
+                arguments.pop("plan")
+                arguments["plan_ref"] = "proposal_evidence.action.plan"
             changeset = maintenance.get("changesets", raw["changeset_id"])
             proposal["changeset"] = {key: copy.deepcopy(changeset.get(key)) for key in (
                 "id", "work_id", "requirements_revision", "revision", "state", "run_id", "previous",
                 "frozen", "branch", "review_commit", "change_request", "review", "ci", "ci_diagnosis",
                 "goal_evidence", "error", "error_detail", "error_info", "publication", "publication_feedback")}
             proposal["changeset"]["quality"] = JobContract.quality(changeset.get("quality"))
+            publication = proposal["changeset"].get("publication")
+            if publication and all(publication.get(key) == plan.get(key) for key in ("title", "body")):
+                proposal["changeset"]["publication"] = {"plan_ref": "proposal_evidence.action.plan"}
             candidate = changeset.get("candidate") or {}
             proposal["changeset"]["candidate"] = {
                 key: copy.deepcopy(candidate.get(key))
@@ -158,7 +171,7 @@ class ServiceApprovalReview:
                     "revision": view["ref"]["revision"],
                     "kind": view["kind"],
                     "checkpoint": "service:" + runtime.id,
-                    "arguments": view.get("arguments"),
+                    "arguments": context["request"].get("arguments"),
                     "expires_at": view.get("expires_at"),
                     "reason": view.get("reason"),
                 }

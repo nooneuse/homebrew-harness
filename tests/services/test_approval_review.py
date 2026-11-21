@@ -263,6 +263,33 @@ class ServiceReview(unittest.TestCase):
         self.assertEqual(next(iter(runtime.store.runtime.items("approval_reviews").values()))["state"],
                          "superseded")
 
+    def test_long_frozen_publication_is_supplied_once_without_mutating_records(self):
+        import copy
+
+        runtime, request, published, client, payloads = self.runtime(["delivery_authority"])
+        request["kind"] = "delivery_authority"
+        body = "PUBLIC DRAFT WORDING " * 700
+        plan = {"commit": "a" * 40, "title": "Describe the change", "body": body}
+        rows = {"decisions": {"work_id": "work-fixture", "action_id": "action-fixture",
+                              "changeset_id": "change-fixture", "candidate": {"scope": "delivery", "plan": str(plan)}},
+                "actions": {"plan": plan},
+                "changesets": {"quality": [], "review": {"text": "Accepted", "findings": []},
+                               "publication": {"title": plan["title"], "body": body}}}
+        request["arguments"]["plan"] = str(plan)
+        original_rows, original_request = copy.deepcopy(rows), copy.deepcopy(request)
+        runtime.maintenance.store.get = lambda section, identity: rows[section]
+        runtime.maintenance.delivery = SimpleNamespace(store=SimpleNamespace(spec={"merge": "manual"}))
+        reviewer = ServiceApprovalReview(runtime)
+        self.addCleanup(reviewer.close)
+        snapshot = reviewer.context(request)
+        self.assertEqual(snapshot["proposal_evidence"]["action"]["plan"], plan)
+        self.assertEqual(rows, original_rows)
+        self.assertEqual(request, original_request)
+        reviewer.run()
+        self.assertEqual(len(published), 1)
+        self.assertEqual(client.chat.completions.create.call_count, 1)
+        self.assertEqual(json.dumps(payloads[0]).count(body), 1)
+
 
     def test_communication_review_uses_the_fixed_snapshot_root(self):
         runtime, request, _, _, _ = self.runtime(["communication_authority"])

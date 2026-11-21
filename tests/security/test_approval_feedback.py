@@ -37,6 +37,22 @@ class ApprovalFeedback(TestCase):
         record = next(iter(reviewer.store.items('approval_reviews').values()))
         self.assertEqual(record['diagnostics'][0]['path'], '.github/workflows/ci.yml')
 
+    def test_remaining_context_observation_tracks_actual_evidence_growth(self):
+        (self.root / 'guide').write_text('Evidence text. ' * 100)
+        reviewer, client, payloads = self.reviewer([
+            reply(calls=[call('read', name='read_review_file', arguments='{"path":"guide","limit":1000}')]),
+            fixture.verdict()])
+        published = []
+        self.invoke(reviewer, published)
+        self.assertEqual(published, ['approve'])
+        progress = [json.loads(next(m['content'] for m in messages if m.get('name') == 'review_progress'))
+                    for messages in payloads]
+        self.assertGreater(progress[1]['input_characters'], progress[0]['input_characters'])
+        self.assertLess(progress[1]['remaining_input_characters'], progress[0]['remaining_input_characters'])
+        self.assertEqual(progress[0]['input_characters'] + progress[0]['remaining_input_characters'],
+                         progress[0]['context_limit_characters'])
+        self.assertIn('does not require an approval', progress[0]['instruction'])
+
     def test_protocol_output_error_can_be_corrected_by_the_model(self):
         invalid = reply(calls=[call('', name='read_review_file', arguments='{"path":"guide"}')])
         reviewer, client, payloads = self.reviewer([invalid, fixture.verdict()])
