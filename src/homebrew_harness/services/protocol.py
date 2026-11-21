@@ -75,6 +75,7 @@ MAINTENANCE_COMMANDS = {
     "delivery_inspect": {"id", "conclusion", "confirmed"},
     "delivery_refresh": {"id"},
     "delivery_ci_limits": {"ci_fix_limit", "ci_fix_warning"},
+    "delivery_base_update": {"mode"},
     "batch_create": {"refs"},
     "batch_decide": {"id", "revision", "decisions"},
     "conversation_submit": {"text", "context", "work_id", "revision"},

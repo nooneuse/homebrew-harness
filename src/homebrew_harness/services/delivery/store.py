@@ -18,8 +18,8 @@ class DeliveryStore:
         self.runtime, self.ms, self.spec = runtime, maintenance, spec
         self.db, self.id = maintenance.db, maintenance.id
         self.policy = fingerprint({k: v for k, v in spec.items()
-                                   if k not in {"ci_fix_limit", "ci_fix_warning"}})
-        self.legacy_policy = fingerprint({k: v for k, v in spec.items() if k != "ci_fix_warning"})
+                                   if k not in {"ci_fix_limit", "ci_fix_warning", "base_update"}})
+        self.legacy_policy = fingerprint({k: v for k, v in spec.items() if k not in {"ci_fix_warning", "base_update"}})
 
     def policy_matches(self, row):
         return row["policy"] in {self.policy, self.legacy_policy} or row.get("policy_scope") == self.policy
@@ -40,6 +40,30 @@ class DeliveryStore:
             value = self.get(kind, identity, conn)
             value.update(changes, revision=value["revision"] + 1)
             return self.put(conn, kind, value)
+
+    def commit_feedback(self, row, changes, *, diagnose=False, merge=False):
+        """Commit one queried version, never overwrite newer preparation or merge facts."""
+        with self.db.write() as conn:
+            self.runtime.store.guard(conn, self.runtime.header)
+            current = self.get("changesets", row["id"], conn)
+            if (current["revision"] != row["revision"]
+                    or current["candidate"]["commit"] != row["candidate"]["commit"]
+                    or current.get("frozen") != row.get("frozen")
+                    or current.get("merge")
+                    or getattr(self.ms.delivery, "preparing", False)):
+                return None
+            try:
+                self.current(current, conn)
+            except StaleDelivery:
+                return None
+            current.update(changes, revision=current["revision"] + 1)
+            self.put(conn, "changesets", current)
+            if diagnose:
+                self.ms.job(conn, "ci_triage", current["id"], current["revision"], {},
+                            current["id"] + ":ci:" + fingerprint(current["ci"]))
+            if merge:
+                self.action(conn, current, "merge_change_request")
+            return current
 
     def repair_decision(self, row, conn=None):
         identity = "request_" + request_key("ci-repair", self.id,

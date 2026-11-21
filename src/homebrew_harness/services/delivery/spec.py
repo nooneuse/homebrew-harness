@@ -34,6 +34,12 @@ def branch(value, *, prefix=False):
     return value
 
 
+def validate_base_update(mode):
+    if not isinstance(mode, str) or mode not in {"manual", "automatic"}:
+        raise ValueError("Base updates must be manual or automatic.")
+    return {"base_update": mode}
+
+
 def validate_ci_limits(limit, warning):
     if limit is not None:
         number(limit, "ci_fix_limit", 0, 10, integer=True)
@@ -48,6 +54,7 @@ def validate(raw):
     defaults = {
         "mode": "isolated",
         "target_branch": "main",
+        "base_update": "manual",
         "review_prefix": "harness/",
         "required_tests": [],
         "required_checks": [],
@@ -111,6 +118,7 @@ def validate(raw):
         or not Path(value["git_executable"]).is_absolute()
     ):
         raise ValueError("Delivery requires a fixed absolute Git executable.")
+    validate_base_update(value["base_update"])
     branch(value["target_branch"])
     branch(value["review_prefix"], prefix=True)
     if value["target_branch"].startswith(value["review_prefix"]):

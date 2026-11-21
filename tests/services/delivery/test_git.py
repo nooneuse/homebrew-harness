@@ -197,6 +197,7 @@ class GitTests(unittest.TestCase):
     def test_first_candidate_integrates_advanced_target_without_changing_original_base(
         self,
     ):
+        self.spec["base_update"] = "automatic"
         original = self.baseline["head"]
         target = self.advance_target("upstream.txt", "preserve upstream")
         candidate = self.candidate()
@@ -210,6 +211,7 @@ class GitTests(unittest.TestCase):
         self.assertFalse(candidate["conflicts"])
 
     def test_conflicting_target_is_exposed_without_choosing_a_side(self):
+        self.spec["base_update"] = "automatic"
         target = self.advance_target("module.py", "value=3\n")
         candidate = self.candidate()
         self.assertEqual(candidate["conflicts"], ["module.py"])
@@ -219,6 +221,7 @@ class GitTests(unittest.TestCase):
         self.assertEqual(self.backend.ref("main"), target)
 
     def test_changes_already_in_target_are_not_repeated_in_delta(self):
+        self.spec["base_update"] = "automatic"
         self.advance_target("module.py", "value=2\n")
         candidate = self.candidate()
         self.assertEqual(candidate["delta"], {})
@@ -254,6 +257,7 @@ class GitTests(unittest.TestCase):
         self.assertFalse((Path(candidate["workspace"]) / "unrelated.txt").exists())
 
     def test_target_rename_cannot_expand_the_approved_publication_paths(self):
+        self.spec["base_update"] = "automatic"
         other = self.base / "upstream"
         self.run_git("clone", str(self.remote), str(other))
         self.run_git("mv", "module.py", "outside.py", cwd=other)

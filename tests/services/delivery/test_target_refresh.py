@@ -13,7 +13,9 @@ from tests.services.delivery import test_merge_flow as fixture
 
 class TargetRefreshTests(unittest.TestCase):
     setUp = fixture.MergeFlowTests.setUp
-    start = fixture.MergeFlowTests.start
+    def start(self, **options):
+        options.setdefault("base_update", "automatic")
+        return fixture.MergeFlowTests.start(self, **options)
     run_git = fixture.MergeFlowTests.run_git
     ready = fixture.MergeFlowTests.ready
     manual = fixture.MergeFlowTests.manual

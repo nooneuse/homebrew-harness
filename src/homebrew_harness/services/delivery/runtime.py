@@ -266,10 +266,14 @@ class Delivery:
             }:
                 return
         if row["state"] == "integration_required" and row.get("error") == "target_base_changed":
-            if row.get("next_validation", 0) <= time.time():
-                from .merge_flow import refresh_waiting
-                refresh_waiting(self, row)
-            return
+            if self.spec.get("base_update", "manual") == "automatic":
+                if row.get("next_validation", 0) <= time.time():
+                    from .merge_flow import refresh_waiting
+                    refresh_waiting(self, row)
+                return
+            # Continue exact published-head CI observation while its separate
+            # target integration is deferred. This does not replace the candidate.
+            row = {**row, "state": "ci_waiting"}
         if row["state"] in {"review_branch_ready", "publication_denied", "publication_attention"}:
             from .publication import prepare
             if prepare(self, row):
@@ -444,89 +448,45 @@ class Delivery:
                 or feedback["state"] != "open"
                 or feedback["merged"]
             ):
-                raise StaleDelivery(
-                    "Change request points to a different candidate or target."
-                )
+                # A PR can change while feedback is in flight. Observe that
+                # change next; it is not a failure of the newer candidate.
+                self.store.commit_feedback(row, {"observed": feedback, "next_merge": 0})
+                return
             from .merge_flow import gate
 
             evaluation = gate(feedback, self.spec)
             ready, failed = evaluation["ci_ready"], evaluation["failed"]
             review_gate = evaluation["review_gate"]
-            row = self.store.update(
-                "changesets",
-                row["id"],
-                ci=feedback,
-                review_gate=review_gate,
-                next_ci=time.time() + self.spec["ci_poll_seconds"],
-            )
+            changes = {"ci": feedback, "review_gate": review_gate,
+                       "next_ci": time.time() + self.spec["ci_poll_seconds"]}
+            request_merge = False
             if ready and not review_gate["ready"]:
-                self.store.update(
-                    "changesets",
-                    row["id"],
-                    state="review_waiting",
-                    error="review_authority_required",
-                )
+                changes.update(state="review_waiting", error="review_authority_required")
             elif ready:
-                if (
+                if feedback["base"] != row["candidate"]["target_base"]:
+                    changes.update(state="integration_required", error="target_base_changed")
+                elif (
                     feedback["draft"]
                     or feedback["mergeable"] is not True
                     or feedback["mergeable_state"]
                     in {"blocked", "behind", "dirty", "draft", "unknown"}
                 ):
-                    self.store.update(
-                        "changesets",
-                        row["id"],
-                        state="review_waiting",
-                        error="platform_merge_waiting",
-                    )
-                    return
-                if feedback["base"] != row["candidate"]["target_base"]:
-                    self.store.update(
-                        "changesets",
-                        row["id"],
-                        state="integration_required",
-                        error="target_base_changed",
-                    )
-                    return
-                if self.spec["merge"]["mode"] == "service_approved":
-                    try:
-                        evidence = self.adapter.merge_gate(self.spec["merge"]["method"])
-                    except Exception as error:
-                        self.store.update(
-                            "changesets",
-                            row["id"],
-                            state="review_waiting",
-                            error="native_merge_policy_unverified",
-                            error_detail=redact(str(error)),
-                        )
-                        return
-                    row = self.store.update(
-                        "changesets", row["id"], merge_rules=evidence
-                    )
-                row = self.store.update(
-                    "changesets", row["id"], state="merge_ready", next_merge=0
-                )
-                if self.spec["merge"]["mode"] == "service_approved":
-                    with self.ms.db.write() as conn:
-                        self.store.action(conn, row, "merge_change_request")
+                    changes.update(state="review_waiting", error="platform_merge_waiting")
+                else:
+                    changes.update(state="merge_ready", next_merge=0)
+                    if self.spec["merge"]["mode"] == "service_approved":
+                        try:
+                            changes["merge_rules"] = self.adapter.merge_gate(self.spec["merge"]["method"])
+                        except Exception as error:
+                            changes.update(state="review_waiting", error="native_merge_policy_unverified",
+                                           error_detail=redact(str(error)))
+                        else:
+                            request_merge = True
             elif failed:
-                row = self.store.update("changesets", row["id"], state="ci_diagnosing")
-                with self.ms.db.write() as conn:
-                    self.ms.job(
-                        conn,
-                        "ci_triage",
-                        row["id"],
-                        row["revision"],
-                        {},
-                        row["id"] + ":ci:" + fingerprint(feedback),
-                    )
-            elif (
-                time.time() - row.get("ci_started", time.time())
-                > self.spec["ci_wait_seconds"]
-            ):
-                self.store.update(
-                    "changesets", row["id"], state="blocked", error="ci_wait_expired"
-                )
+                changes.update(state="ci_diagnosing")
+            elif time.time() - row.get("ci_started", time.time()) > self.spec["ci_wait_seconds"]:
+                changes.update(state="blocked", error="ci_wait_expired")
+            self.store.commit_feedback(row, changes, diagnose=failed, merge=request_merge)
             return
         if row["state"] == "repair_approved":
             self.repair(row, work)

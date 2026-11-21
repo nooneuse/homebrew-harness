@@ -199,6 +199,9 @@ class ServiceControls:
         return self.command("delivery_ci_limits",
             {"ci_fix_limit": ci_fix_limit, "ci_fix_warning": ci_fix_warning}, request_id)
 
+    def configure_base_updates(self, mode="manual", *, request_id=None):
+        return self.command("delivery_base_update", {"mode": mode}, request_id)
+
     def retry_approval_review(self, request, *, request_id=None):
         ref = request.ref if hasattr(request, "ref") else request
         if ref.target.kind != "service" or ref.target.id != self.id:

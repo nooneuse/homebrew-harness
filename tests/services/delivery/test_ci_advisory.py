@@ -114,6 +114,9 @@ class CIAdvisoryTests(unittest.TestCase):
     def test_default_repair_after_two_attempts_needs_no_extra_budget_flag(self):
         from tests.services.delivery.test_target_refresh import TargetRefreshTests
         service, work, old = self.manual()
+        service.pause('all')
+        service.configure_base_updates('automatic', request_id='explicit-ci-integration')
+        service.resume()
         TargetRefreshTests.advance_target(self, 'src/value.txt', '3\n')
         request = eventually(lambda: next((r for r in service.requests() if r.kind == 'ci_repair'), None), 30)
         service.pause('all')

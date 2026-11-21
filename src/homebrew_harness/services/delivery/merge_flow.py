@@ -166,7 +166,10 @@ def observe(delivery, row):
             row["id"],
             state="integration_required",
             error="target_base_changed",
-            error_detail="The PR target advanced; its candidate needs current-base integration.",
+            error_detail=("The PR target advanced. The published candidate and its fixed-base "
+                          "quality evidence are retained; explicitly refresh delivery when integration is authorized."
+                          if delivery.spec.get("base_update", "manual") == "manual" else
+                          "The PR target advanced; automatic current-base integration is configured."),
             error_info=None, next_validation=0,
         )
         delivery.store.invalidate_merges(row["id"])

@@ -29,8 +29,8 @@ class MergeFlowTests(unittest.TestCase):
             )
         return row if row and row["state"] == "merge_ready" else None
 
-    def manual(self):
-        service = self.start(merge={"poll_seconds": 0.1})
+    def manual(self, **options):
+        service = self.start(merge={"poll_seconds": 0.1}, **options)
         work = service.work.submit("Implement the bounded value.")
         row = eventually(lambda: self.ready(service, work), 45)
         return service, work, row
@@ -103,7 +103,7 @@ class MergeFlowTests(unittest.TestCase):
         self.authorized("rebase")
 
     def test_target_advance_before_manual_merge_is_included_in_actual_sync(self):
-        service, work, row = self.manual()
+        service, work, row = self.manual(base_update="automatic")
         repo = "--git-dir=" + str(self.remote)
         before = row["candidate"]["target_base"]
         # A maintainer advances the target independently using another file.
@@ -212,8 +212,7 @@ class MergeFlowTests(unittest.TestCase):
         self.run_git(repo, "fetch", str(self.workspace), "HEAD")
         self.run_git(repo, "update-ref", "refs/heads/main", base, before)
         eventually(
-            lambda: service.runtime.maintenance.delivery.store.get("changesets", row["id"])["candidate"]["target_base"] == base
-                and self.ready(service, work), 45
+            lambda: service.runtime.maintenance.delivery.store.get("changesets", row["id"])["state"] == "integration_required", 15
         )
         service.refresh_delivery(row["id"], request_id="refresh-base")
         refreshed = eventually(lambda: self.ready(service, work), 45)

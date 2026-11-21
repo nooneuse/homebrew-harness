@@ -222,7 +222,12 @@ class GitBackend:
             not within(name, work["run_spec"]["write_paths"]) for name in input_changes
         ):
             raise ValueError("Work changes exceed its approved paths.")
-        base = previous["commit"] if previous else self.ref(self.spec["target_branch"])
+        if previous:
+            base = previous["commit"]
+        elif self.spec.get("base_update", "manual") == "manual" and baseline.get("head"):
+            base = baseline["head"]
+        else:
+            base = self.ref(self.spec["target_branch"])
         if not base:
             raise ValueError("Delivery target branch is missing.")
         self.run(["init", "--bare", "--template=", str(repo)])

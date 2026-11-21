@@ -46,7 +46,9 @@ CI 绑定当前 head 和可信应用。诊断区分代码、基线、偶发、�
 
 冲突修复 Run 会在 `.harness/service-inputs` 获得只读 Git 源码快照索引，绑定确切目标基线、原候选 head 和报告的冲突路径，提供 blob 标识、校验值与可读文件位置。模型使用现有文件工具比较版本，工作草稿继续可编辑；缺失或因预算省略的证据交由模型判断。快照不改变范围，也不授予发布权限。
 
-head 或目标基线变化进入 integration_required。显式 delivery refresh 可以把已接受差量与最新基线合成，或仅在内容相同的确定性集成条件下接纳平台更新的分支。它保留 PR 和原条件，重新测试与审查；其他新代码需要 Work 决定。服务 rebase 刷新可通过绑定确切旧 head 的条件租约替换其审查分支，目标分支仍不可直接写入。
+默认采用固定 Git 输入基线开发（`base_update="manual"`）。准备候选时使用 Work 记录的输入 commit；输入未记录 Git commit 时，在首次准备时确定基线。候选测试与独立审查对应确切的代码树。目标分支推进不会改写开发源码，也不会作废这些固定版本的回执。PR 发布与最新目标分支集成属于不同阶段。
+
+head 或目标基线变化进入 integration_required。默认仅记录观察并保留已发布 head、候选和验证历史，不自动刷新或创建冲突修复 Run。显式 `delivery refresh` 授权后续一次集成准备。设置 `base_update="automatic"` 可以主动选择最新目标基线准备和目标变化后的自动刷新。已发布 head 的真实 CI 失败仍走模型研判与既有修复授权。合并动作仍要求当前目标、CI、审查和平台策略证据。显式 delivery refresh 可以把已接受差量与最新基线合成，或仅在内容相同的确定性集成条件下接纳平台更新的分支。它保留 PR 和原条件，重新测试与审查；其他新代码需要 Work 决定。服务 rebase 刷新可通过绑定确切旧 head 的条件租约替换其审查分支，目标分支仍不可直接写入。
 
 未合并的关闭保存为 closed_unmerged；重开由平台事实观察。源分支在合并后删除不会丢失已记录 SHA。暂时的 PR／CI 读取故障保留状态并退避读取，不重新合并，也不持续调用模型。
 
@@ -84,3 +86,5 @@ python examples/delivery_demo.py --output /tmp/harness-service-merge-demo --serv
 使用新的输出目录。分别模拟维护者合并和明确批准后的服务合并，覆盖 CI 修复、复用 PR、重启、实际结果核验、独立评论批准和资源关闭。真实 Git 合并由测试平台一侧构造，产品代码不推主分支，也不调用付费模型。
 
 当前适配 GitHub，其他平台接入同一观察／固定计划／回执合同。原生队列或 stacked PR 执行、release/tag 和 Issue 关闭仍是独立能力。升级部署前先收尾或查证旧直接目标动作，原批准不转换为原生合并授权。项目的日常贡献流程见[贡献指南](../CONTRIBUTING.zh-CN.md)。
+
+暂停所有 Service 活动并等待准备结束后，可通过 `service.configure_base_updates("manual", request_id="fixed-base-1")` 或 `homebrew-harness service delivery SERVICE_ID base-updates manual --request-id fixed-base-1` 修改调度模式。现有候选、冻结回执、动作授权与 Work 执行范围保持有效。此设置不会取消已经启动的冲突修复；延后该次集成时应显式暂停对应 Work，保留草稿和历史。暂停不代表已完成或已合并。

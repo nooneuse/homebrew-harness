@@ -82,19 +82,24 @@ def command(delivery, method, payload, request_id):
 
     def apply(conn):
         meta = runtime.store.guard(conn, runtime.header)
-        if method == "delivery_ci_limits":
+        if method in {"delivery_ci_limits", "delivery_base_update"}:
             import copy, json
-            from .spec import validate_ci_limits
+            from .spec import validate_ci_limits, validate_base_update
             from homebrew_harness.services.protocol import fingerprint
-            if set(payload) != {"ci_fix_limit", "ci_fix_warning"}:
-                raise ValueError("CI limits require both an explicit nullable budget and warning threshold.")
-            limits = validate_ci_limits(payload["ci_fix_limit"], payload["ci_fix_warning"])
+            if method == "delivery_base_update":
+                if set(payload) != {"mode"}:
+                    raise ValueError("Base updates require an explicit mode.")
+                limits = validate_base_update(payload["mode"])
+            else:
+                if set(payload) != {"ci_fix_limit", "ci_fix_warning"}:
+                    raise ValueError("CI limits require both an explicit nullable budget and warning threshold.")
+                limits = validate_ci_limits(payload["ci_fix_limit"], payload["ci_fix_warning"])
             if (meta["state"] != "paused" or meta["scope"] != "all" or delivery.preparing
                     or meta.get("active_run") or conn.execute(
                         "SELECT 1 FROM records WHERE section='service_jobs_model' AND owner=? "
                         "AND json_extract(value,'$.state') IN ('running','preparing') LIMIT 1",
                         ("service:" + runtime.id,)).fetchone()):
-                raise ValueError("Pause all Service activity and wait for preparation before updating CI limits.")
+                raise ValueError("Pause all Service activity and wait for preparation before updating delivery settings.")
             for key, raw in conn.execute(
                     "SELECT key,value FROM records WHERE section='service_changesets' AND owner=?",
                     ("service:" + runtime.id,)).fetchall():
@@ -140,11 +145,12 @@ def command(delivery, method, payload, request_id):
         raise ValueError("Unknown delivery control.")
 
     result = runtime.store.command(runtime.header, method, payload, request_id, apply)
-    if method == "delivery_ci_limits":
+    if method in {"delivery_ci_limits", "delivery_base_update"}:
         from homebrew_harness.services.protocol import fingerprint
         meta = runtime.store.get(runtime.id)
-        delivery.spec.update({k: meta["spec"]["delivery"][k] for k in ("ci_fix_limit", "ci_fix_warning")})
-        delivery.store.legacy_policy = fingerprint({k: v for k, v in delivery.spec.items() if k != "ci_fix_warning"})
+        fields = ("base_update",) if method == "delivery_base_update" else ("ci_fix_limit", "ci_fix_warning")
+        delivery.spec.update({k: meta["spec"]["delivery"][k] for k in fields})
+        delivery.store.legacy_policy = fingerprint({k: v for k, v in delivery.spec.items() if k not in {"ci_fix_warning", "base_update"}})
         runtime.saved_model_bindings = meta["binding"]
     return result
 
