@@ -94,6 +94,8 @@ External host settings can enable [Approval review](APPROVALS.md). Native Runs r
 
 Service approval uses the current accepted Work requirements and execution instructions, the frozen action, candidate identity, and recorded review and verification facts. It shares the Work evidence projection with reasoning jobs; repository contents are located through the candidate evidence navigation.
 
+A waiting change request follows changes to its target branch. Clean integrations return to verification and review; conflicting integrations supply a fixed private candidate and the conflicting paths to the existing diagnosis job. Earlier review and verification remain historical facts. Repair authority, limits and exact publication approval still apply, and updates keep the same change request.
+
 Delivery approval receives one exact action plan; identical copies in request and publication metadata point to that plan. Each reviewer round reports remaining input space so the model can choose relevant reads and page sizes.
 
 `exit` or EOF disconnects the UI and leaves a detached service running. Ctrl-C cancels the current input/observation. `stop` explicitly requests service shutdown. Output is plain JSON/text; external terminal control characters are escaped. No terminal UI library is required. Text UI and individual control commands use the same authenticated HTTP API.

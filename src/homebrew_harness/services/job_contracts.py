@@ -45,7 +45,7 @@ HANDLERS = {
     ),
     "ci_triage": JobHandler(
         "changesets",
-        "Read fixed candidate code and local quality/CI observations. The input work_context contains current execution instructions, accepted scope and handoff facts; validation_history contains prior actual failures for this candidate. Use them before repeating an investigation. Published fix references are source evidence, not passing receipts for this candidate. quality[].outputs lists exact output IDs; use service_read(kind='quality_output', identity=that ID) and next_offset to inspect current or historical recorded logs. service_read kinds are changesets (job.target), work (work_context.id), requirements, events, evidence, policy, job, project_context and quality_output; do not invent kinds. Provide classification (code/baseline/flaky/infrastructure/unknown), reason and a bounded plan. Local flaky/infrastructure diagnoses request a bounded recheck of this same candidate; baseline/unknown require operator action. A code diagnosis proposes scoped repair. A passing isolated test does not by itself establish load-flakiness. This does not publish, waive failed checks or grant repair authority.",
+        "Read fixed candidate code and local quality/CI observations. The input work_context contains current execution instructions, accepted scope and handoff facts; validation_history contains prior actual failures for this candidate. Use them before repeating an investigation. Published fix references are source evidence, not passing receipts for this candidate. quality[].outputs lists exact output IDs; use service_read(kind='quality_output', identity=that ID) and next_offset to inspect current or historical recorded logs. service_read kinds are changesets (job.target), work (work_context.id), requirements, events, evidence, policy, job, project_context and quality_output; do not invent kinds. Provide classification (code/baseline/flaky/infrastructure/unknown), reason and a bounded plan. Local flaky/infrastructure diagnoses request a bounded recheck of this same candidate; baseline/unknown require operator action. A code diagnosis proposes scoped repair. A candidate_merge_conflict observation identifies the current target_base and exact conflicting paths in this fixed candidate; conflict markers are evidence to resolve, not validated feature code. prior_integration retains the old candidate review and test facts; they do not verify the changed integration. For this conflict, a baseline classification can also propose scoped integration repair. A passing isolated test does not by itself establish load-flakiness. This does not publish, waive failed checks or grant repair authority.",
         ("ci-failure-triage",),
         job_results.ci_triage,
         job_results.apply_delivery,
@@ -151,6 +151,11 @@ class JobContract:
             if self.kind == "review" and primary.get("previous"):
                 value["candidate"]["repair_delta"] = value["candidate"]["delta"]
                 value["candidate"]["delta"] = self.store.delivery.git.proposed_delta(primary["candidate"])
+            if primary.get("candidate_history"):
+                previous = primary["candidate_history"][-1]
+                value["prior_integration"] = {key: copy.deepcopy(previous.get(key)) for key in
+                    ("commit", "target_base", "review", "frozen", "attempt")}
+                value["prior_integration"]["quality"] = self.quality(previous.get("quality"))
             value["quality"] = self.quality(primary.get("quality"))
             value["validation_history"] = [
                 {k: copy.deepcopy(record.get(k)) for k in

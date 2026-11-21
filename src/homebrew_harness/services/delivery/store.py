@@ -68,6 +68,9 @@ class DeliveryStore:
             "source_workspace": work.get("run_workspace")
             or self.runtime.spec.workspace,
         }
+        if value["previous"]:
+            previous = self.get("changesets", value["previous"], conn)
+            value["publish_base"] = previous.get("publish_base") or previous.get("review_commit")
         self.put(conn, "changesets", value)
         work["changeset_id"] = identity
         work["revision"] += 1

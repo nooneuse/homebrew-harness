@@ -114,7 +114,8 @@ class MergeFlowTests(unittest.TestCase):
         self.run_git(repo, "fetch", str(self.workspace), "HEAD")
         self.run_git(repo, "update-ref", "refs/heads/main", later, before)
         eventually(
-            lambda: service.delivery(row["id"])["state"] == "integration_required", 10
+            lambda: service.runtime.maintenance.delivery.store.get("changesets", row["id"])["candidate"]["target_base"] == later
+                and self.ready(service, work), 45
         )
         self.peer.merge_pull(1)
         eventually(lambda: work.snapshot().state == "delivered", 40)
@@ -211,7 +212,8 @@ class MergeFlowTests(unittest.TestCase):
         self.run_git(repo, "fetch", str(self.workspace), "HEAD")
         self.run_git(repo, "update-ref", "refs/heads/main", base, before)
         eventually(
-            lambda: service.delivery(row["id"])["state"] == "integration_required", 10
+            lambda: service.runtime.maintenance.delivery.store.get("changesets", row["id"])["candidate"]["target_base"] == base
+                and self.ready(service, work), 45
         )
         service.refresh_delivery(row["id"], request_id="refresh-base")
         refreshed = eventually(lambda: self.ready(service, work), 45)

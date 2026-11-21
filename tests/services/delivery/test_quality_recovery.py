@@ -50,6 +50,10 @@ class QualityRecoveryTests(unittest.TestCase):
         historical['validation_history'][0]['candidate_commit'] = 'f' * 40
         with self.assertRaises(ValueError):
             quality.read_output(historical, output['id'], 0, 60)
+        relocated = {**first, 'quality': [], 'candidate': {**first['candidate'],
+            'commit': 'f' * 40, 'workspace': str(self.control)}, 'candidate_history': [{'workspace': first['candidate']['workspace'],
+            'commit': first['candidate']['commit'], 'quality': first['quality']}]}
+        self.assertEqual(quality.read_output(relocated, output['id'], 0, 60), read)
         agent = service.runtime.maintenance.agent
         contract = JobContract(agent.store, {'kind': 'ci_triage', 'target': first['id']})
         contract.authorize('quality_output', output['id'])

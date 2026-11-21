@@ -158,7 +158,7 @@ def observe(delivery, row):
         return True
     delivery.store.observation(row["id"], observed, time.time() + delay)
     if (
-        row["state"] == "merge_ready"
+        row["state"] in {"ci_waiting", "review_waiting", "merge_ready"}
         and observed["base"] != row["candidate"]["target_base"]
     ):
         delivery.store.update(
@@ -166,8 +166,11 @@ def observe(delivery, row):
             row["id"],
             state="integration_required",
             error="target_base_changed",
+            error_detail="The PR target advanced; its candidate needs current-base integration.",
+            error_info=None, next_validation=0,
         )
         delivery.store.invalidate_merges(row["id"])
+        return True
     return False
 
 
@@ -236,6 +239,49 @@ def verify_result(delivery, row):
             delivery.preparing = False
 
 
+def refresh_fence(delivery, row, conn):
+    """Do not replace a candidate while its external publication is uncertain."""
+    from homebrew_harness.runtime.errors import boundary_error
+    delivery.runtime.store.guard(conn, delivery.runtime.header)
+    current = delivery.store.get("changesets", row["id"], conn)
+    delivery.store.current(current, conn)
+    if current.get("frozen") != row.get("frozen") or current.get("merge"):
+        raise ValueError("Delivery changed while refreshing the fixed candidate.")
+    pending = conn.execute(
+        "SELECT key FROM records WHERE section='service_actions' AND owner=? "
+        "AND json_extract(value,'$.work_id')=? "
+        "AND json_extract(value,'$.kind') IN ('publish_branch','ensure_change_request','merge_change_request') "
+        "AND json_extract(value,'$.state') IN ('started','unknown') LIMIT 1",
+        ("service:" + delivery.ms.id, row["work_id"]),
+    ).fetchone()
+    if pending:
+        raise boundary_error(ValueError, "integration_effect_unknown",
+            "Inspect the uncertain publication before refreshing its candidate.", action_id=pending[0])
+    return current
+
+
+def refresh_waiting(delivery, row):
+    """Resume a target-change preparation on the existing delivery worker."""
+    from homebrew_harness.execution.execution_control import cleanup_scope
+    from .git import StaleDelivery
+    try:
+        refresh(delivery, row["id"])
+    except StaleDelivery:
+        raise
+    except Exception as error:
+        if delivery.stop.is_set():
+            return
+        with cleanup_scope():
+            delivery.store.read_failure(row["id"], "integration", error)
+            with delivery.ms.db.write() as conn:
+                delivery.runtime.store.guard(conn, delivery.runtime.header)
+                current = delivery.store.get("changesets", row["id"], conn)
+                if (current["state"] == "integration_required"
+                        and current["candidate"]["commit"] == row["candidate"]["commit"]):
+                    current["next_validation"] = time.time() + delivery.spec["ci_poll_seconds"]
+                    delivery.store.put(conn, "changesets", current)
+
+
 def refresh(delivery, identity):
     from homebrew_harness.execution.execution_control import (
         cleanup_scope,
@@ -263,6 +309,8 @@ def refresh(delivery, identity):
     }:
         raise ValueError("Refresh a waiting PR or a blocked integration verification.")
     delivery.store.current(row)
+    with delivery.ms.db.write() as conn:
+        refresh_fence(delivery, row, conn)
     with delivery.runtime.lock:
         if delivery.preparing:
             raise ValueError("Delivery already owns a slow preparation.")
@@ -306,6 +354,8 @@ def refresh(delivery, identity):
                 / ".harness/delivery/candidates"
                 / row["id"]
                 / str(attempts)
+                / fingerprint([row["candidate"]["commit"], observed["head"], observed["base"],
+                               delivery.spec["merge"].get("method")])
             )
             candidate, published = refresh_candidate(
                 delivery.git,
@@ -315,13 +365,7 @@ def refresh(delivery, identity):
                 linear=delivery.spec["merge"].get("method") == "rebase",
             )
             with delivery.ms.db.write() as conn:
-                delivery.runtime.store.guard(conn, delivery.runtime.header)
-                current = delivery.store.get("changesets", identity, conn)
-                delivery.store.current(current, conn)
-                if current["frozen"] != row["frozen"] or current.get("merge"):
-                    raise ValueError(
-                        "Delivery changed while refreshing the fixed candidate."
-                    )
+                current = refresh_fence(delivery, row, conn)
                 history = {
                     k: row["candidate"][k]
                     for k in (
@@ -334,13 +378,22 @@ def refresh(delivery, identity):
                     )
                 }
                 history["attempt"] = row["attempts"]
+                history.update(quality=row.get("quality"), review=row.get("review"),
+                               publication=row.get("publication"), frozen=row.get("frozen"),
+                               ci=row.get("ci"), goal_evidence=row.get("goal_evidence"))
+                conflicts = candidate.get("conflicts")
                 current.update(
                     candidate=candidate,
                     candidate_history=[*current.get("candidate_history", []), history],
                     attempts=attempts,
-                    state="validating",
+                    state="ci_diagnosing" if conflicts else "validating",
                     quality=None,
                     review=None,
+                    goal_evidence=None,
+                    ci=None,
+                    ci_diagnosis=None,
+                    publication=None,
+                    publication_feedback=None,
                     frozen=None,
                     revision=current["revision"] + 1,
                     publish_base=published,
@@ -348,8 +401,19 @@ def refresh(delivery, identity):
                     next_merge=0,
                     next_ci=0,
                     error=None,
+                    error_detail=None, error_info=None,
                 )
+                if conflicts:
+                    current["ci"] = {"kind": "candidate_merge_conflict",
+                        "head": candidate["commit"], "base": candidate["target_base"],
+                        "previous_head": row["candidate"]["commit"], "conflicts": conflicts}
+                    current.pop("ci_diagnosis", None)
+                current.setdefault("read_errors", {}).pop("integration", None)
                 delivery.store.put(conn, "changesets", current)
+                if conflicts:
+                    delivery.ms.job(conn, "ci_triage", identity, current["revision"], {},
+                                    identity + ":integration:" + candidate["commit"])
+                delivery.ms.changed(conn, current["work_id"])
             delivery.store.invalidate_merges(identity)
             return current
     finally:

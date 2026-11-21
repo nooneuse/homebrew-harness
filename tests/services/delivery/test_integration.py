@@ -206,3 +206,77 @@ class IntegrationTests(unittest.TestCase):
         self.backend.publish(refreshed, "harness/proof", previous)
         self.assertEqual(self.backend.ref("main"), base)
         self.assertEqual(self.backend.ref("harness/proof"), refreshed["commit"])
+
+    def test_conflicted_refresh_materializes_evidence_without_publishing(self):
+        from homebrew_harness.services.delivery.integration import refresh_candidate
+        candidate = self.candidate()
+        self.publish(candidate)
+        (self.workspace / "module.py").write_text("value=3\n")
+        self.run_git("add", "module.py", cwd=self.workspace)
+        self.run_git("commit", "-qm", "target change", cwd=self.workspace)
+        base = self.run_git("rev-parse", "HEAD", cwd=self.workspace).decode().strip()
+        repo = "--git-dir=" + str(self.remote)
+        self.run_git(repo, "fetch", str(self.workspace), "HEAD")
+        self.run_git(repo, "update-ref", "refs/heads/main", base)
+        refreshed, published = refresh_candidate(self.backend, candidate,
+            {"head": candidate["commit"], "base": base, "source_branch": "harness/proof"},
+            self.base / "conflicted")
+        self.assertEqual(refreshed["conflicts"], ["module.py"])
+        self.assertEqual(refreshed["target_base"], base)
+        self.assertIn("<<<<<<<", (Path(refreshed["workspace"]) / "module.py").read_text())
+        self.assertEqual(published, candidate["commit"])
+        self.assertEqual(self.backend.ref("harness/proof"), candidate["commit"])
+        self.backend.verify(candidate)
+        self.backend.verify(refreshed)
+
+    def test_conflicted_rebase_repair_keeps_the_expected_publication_head(self):
+        from homebrew_harness.services.delivery.integration import refresh_candidate
+        from homebrew_harness.execution.source_snapshot import snapshot
+        candidate = self.candidate()
+        self.publish(candidate)
+        (self.workspace / "module.py").write_text("value=3\n")
+        self.run_git("add", "module.py", cwd=self.workspace)
+        self.run_git("commit", "-qm", "target change", cwd=self.workspace)
+        base = self.run_git("rev-parse", "HEAD", cwd=self.workspace).decode().strip()
+        repo = "--git-dir=" + str(self.remote)
+        self.run_git(repo, "fetch", str(self.workspace), "HEAD")
+        self.run_git(repo, "update-ref", "refs/heads/main", base)
+        refreshed, published = refresh_candidate(self.backend, candidate,
+            {"head": candidate["commit"], "base": base, "source_branch": "harness/proof"},
+            self.base / "conflicted-rebase", linear=True)
+        workspace = Path(refreshed["workspace"])
+        baseline = {"files": snapshot(workspace), "head": refreshed["commit"]}
+        (workspace / "module.py").write_text("value=4\n")
+        repaired = self.backend.prepare(self.work, workspace, baseline,
+            self.base / "rebase-repair", previous=refreshed)
+        self.assertTrue(repaired["review_rewrite"])
+        self.assertEqual(repaired["origin_candidate"], published)
+        self.assertEqual(repaired["target_base"], base)
+        self.backend.publish(repaired, "harness/proof", published)
+        self.assertEqual(self.backend.ref("harness/proof"), repaired["commit"])
+        self.assertEqual(self.backend.ref("main"), base)
+
+    def test_refreshed_repair_keeps_the_complete_original_feature_delta(self):
+        from homebrew_harness.services.delivery.integration import refresh_candidate
+        from homebrew_harness.execution.source_snapshot import snapshot
+        (self.workspace / "feature.py").write_text("feature=True\n")
+        first = self.candidate()
+        self.publish(first)
+        baseline = {"files": snapshot(self.workspace), "head": first["commit"]}
+        (self.workspace / "module.py").write_text("value=4\n")
+        repaired = self.backend.prepare(self.work, self.workspace, baseline,
+            self.base / "repaired-feature", previous=first)
+        self.assertEqual(set(repaired["delta"]), {"module.py"})
+        self.backend.publish(repaired, "harness/proof", first["commit"])
+        (self.workspace / "upstream.txt").write_text("target addition\n")
+        self.run_git("add", "upstream.txt", cwd=self.workspace)
+        self.run_git("commit", "-qm", "target addition", cwd=self.workspace)
+        base = self.run_git("rev-parse", "HEAD", cwd=self.workspace).decode().strip()
+        repo = "--git-dir=" + str(self.remote)
+        self.run_git(repo, "fetch", str(self.workspace), "HEAD")
+        self.run_git(repo, "update-ref", "refs/heads/main", base)
+        refreshed, _ = refresh_candidate(self.backend, repaired,
+            {"head": repaired["commit"], "base": base, "source_branch": "harness/proof"},
+            self.base / "complete-feature-refresh")
+        self.assertEqual(set(refreshed["delta"]), {"feature.py", "module.py"})
+        self.assertEqual((Path(refreshed["workspace"]) / "feature.py").read_text(), "feature=True\n")

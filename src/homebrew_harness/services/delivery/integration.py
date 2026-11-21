@@ -309,7 +309,14 @@ def refresh_candidate(git, candidate, observed, directory, *, linear=False):
     published = _oid(git, repo, "FETCH_HEAD")
     if published != observed["head"] or base != observed["base"]:
         raise ValueError("PR changed during candidate refresh.")
-    tree = _merge_tree(git, repo, base, candidate["commit"])
+    merged = _git(git, repo, "merge-tree", "--write-tree", "--name-only", "-z",
+                  base, candidate["commit"], accepted_codes=(0, 1)).split(b"\0")
+    tree = commit(merged[0].decode().strip())
+    conflicts = []
+    for path in merged[1:]:
+        if not path:
+            break
+        conflicts.append(path.decode())
     cached = directory / "manifest.json"
     prepared = json.loads(cached.read_text()) if cached.exists() else None
     if (
@@ -321,6 +328,8 @@ def refresh_candidate(git, candidate, observed, directory, *, linear=False):
         git.verify(prepared)
         head = prepared["commit"]
     elif published != candidate["commit"]:
+        if conflicts:
+            raise ValueError("A changed PR head cannot be adopted through a conflicted integration.")
         if _oid(git, repo, published + "^{tree}") != tree or not _ancestor(
             git, repo, base, published
         ):
@@ -363,6 +372,7 @@ def refresh_candidate(git, candidate, observed, directory, *, linear=False):
             "parent": published,
             "origin_candidate": candidate["commit"],
             "review_rewrite": linear and published == candidate["commit"],
+            "conflicts": conflicts,
         },
     )
     before = git.tree(repo, base)
@@ -377,6 +387,6 @@ def refresh_candidate(git, candidate, observed, directory, *, linear=False):
         for name in set(before) | set(after)
         if before.get(name) != after.get(name)
     }
-    if set(result["delta"]) - set(candidate["delta"]):
+    if set(result["delta"]) - set(git.proposed_delta(candidate)):
         raise ValueError("Refreshed integration widens the accepted work delta.")
     return result, published

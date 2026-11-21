@@ -262,8 +262,14 @@ class Delivery:
             if row["state"] in OBSERVING and row["state"] not in {
                 "ci_waiting",
                 "review_waiting",
+                "integration_required",
             }:
                 return
+        if row["state"] == "integration_required" and row.get("error") == "target_base_changed":
+            if row.get("next_validation", 0) <= time.time():
+                from .merge_flow import refresh_waiting
+                refresh_waiting(self, row)
+            return
         if row["state"] in {"review_branch_ready", "publication_denied", "publication_attention"}:
             from .publication import prepare
             if prepare(self, row):

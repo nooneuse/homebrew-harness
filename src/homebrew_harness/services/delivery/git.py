@@ -461,6 +461,8 @@ class GitBackend:
             "conflicts": conflicts,
             "initial_input_changes": sorted(initial_dirty),
             "snapshot_limits": work["run_spec"]["snapshot_limits"],
+            **({"review_rewrite": True, "origin_candidate": previous["origin_candidate"]}
+               if previous and previous.get("review_rewrite") else {}),
         }
 
     def verify(self, candidate):

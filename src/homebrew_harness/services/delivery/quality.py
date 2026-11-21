@@ -42,12 +42,17 @@ def output_reference(row, identity):
         for output in receipt.get("outputs", {}).values():
             if output["id"] == identity:
                 return output
+    for historical in row.get("candidate_history", []):
+        for receipt in historical.get("quality") or []:
+            for output in receipt.get("outputs", {}).values():
+                if output["id"] == identity:
+                    return {**output, "_workspace": historical["workspace"]}
     raise ValueError("Test output is outside this candidate's recorded evidence.")
 
 
 def read_output(row, identity, offset, limit):
     output = output_reference(row, identity)
-    with SafeFile(Path(row["candidate"]["workspace"]), output["path"]) as target:
+    with SafeFile(Path(output.get("_workspace", row["candidate"]["workspace"])), output["path"]) as target:
         raw = target.snapshot(max_bytes=output["bytes"])[0]
     if raw is None or hashlib.sha256(raw).hexdigest() != output["sha256"]:
         raise ValueError("Recorded test output changed or is unavailable.")
