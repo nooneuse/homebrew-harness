@@ -57,6 +57,10 @@ A stopped wait, no new output, and a running execution are observations, not suc
 
 Input capability depends on the operation. Bash pipes accept stdin; subagent tasks accept steering for subsequent model steps. Test commands usually have no interactive input. To change a command or test selection, stop or finish the old attempt and start a new one with revised arguments. Input request IDs prevent duplicate application, and input state distinguishes acceptance from application or rejection.
 
+## Saved file output
+
+`read_file` recognizes file-shaped results saved by the current context or explicitly inherited by it. It returns the recorded content without nesting another JSON file response and labels its historical source path, version and position in `source`. The archive remains unchanged; use `raw=true` to inspect its literal contents. Views use Unicode character offsets within the recorded content, so restart at offset 0 when opening an older saved output after an upgrade. Follow `next_offset` and the returned archive `version`; historical source metadata does not prove the current working file is unchanged. The complete JSON response, including escaping and metadata, fits the file-output budget.
+
 ## Selecting tests
 
 A registered test recipe can provide a selector adapter. The host retains its launcher, environment, test roots, roles, and resource policy; the model chooses targets within that scope.

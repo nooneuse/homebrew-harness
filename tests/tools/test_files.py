@@ -61,10 +61,17 @@ class FileToolTests(unittest.TestCase):
     def test_read_character_budget_reports_truncation(self):
         self.invoke("write_file", path="long.txt", content="x" * 10_001)
         result = self.invoke("read_file", path="long.txt")
-        self.assertEqual(len(result["content"]), 10_000)
+        self.assertLessEqual(len(json.dumps(result, ensure_ascii=False)), 10_000)
         self.assertTrue(result["truncated"])
         self.invoke("write_file", path="exact.txt", content="x" * 10_000)
-        self.assertFalse(self.invoke("read_file", path="exact.txt")["truncated"])
+        pieces = [];offset = 0;version = None
+        while offset is not None:
+            page = self.invoke("read_file", path="exact.txt", offset=offset,
+                               **({"expected_version": version} if version is not None else {}))
+            version = page["version"]
+            pieces.append(page["content"])
+            offset = page["next_offset"]
+        self.assertEqual("".join(pieces), "x" * 10_000)
 
     def test_edit_replaces_first_exact_match_and_preserves_line_endings(self):
         original = "你好\r\nold old\r\n"

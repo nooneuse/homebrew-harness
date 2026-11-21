@@ -227,7 +227,7 @@ TOOLS = [
     ),
     define_tool(
         "read_file",
-        "Read current UTF-8 source; symlinks are rejected. Use next_offset for pages and pass the returned version as expected_version to detect changes. The version is a filesystem snapshot marker, not a content hash.",
+        "Read UTF-8 source or a readable view of your owned saved file-output content. Saved views label historical source metadata separately; raw=true reads the unchanged archive. Use next_offset for pages and the returned version as expected_version. Symlinks are rejected.",
         {
             "path": NONEMPTY_STRING,
             "limit": {
@@ -245,6 +245,7 @@ TOOLS = [
                 "pattern": "^[a-f0-9]{64}$",
                 "description": "Version from a previous page/read; a changed snapshot returns an error before content.",
             },
+            "raw": {"type": "boolean", "description": "Read a saved file literally instead of its recorded-content view; ordinary source files are always literal."},
         },
         ["path"],
     ),

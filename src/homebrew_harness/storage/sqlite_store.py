@@ -298,10 +298,15 @@ class SQLiteDatabase:
                             if connection.execute(
                                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'"
                             ).fetchone():
-                                raise RecoveryRequired(
-                                    "Unrecognized database without a current schema identifier."
-                                )
-                            connection.execute("PRAGMA journal_mode=WAL")
+                                # The first schema read can predate another
+                                # initializer's atomic table/version commit.
+                                schema = connection.execute("PRAGMA user_version").fetchone()[0]
+                                if schema == 0:
+                                    raise RecoveryRequired(
+                                        "Unrecognized database without a current schema identifier."
+                                    )
+                            if schema == 0:
+                                connection.execute("PRAGMA journal_mode=WAL")
                         break
                     except sqlite3.OperationalError as error:
                         if not any(

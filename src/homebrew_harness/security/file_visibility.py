@@ -69,6 +69,13 @@ def file_access_scope(archive_store=None, *, restrict_archives=False):
         _ACCESS.reset(token)
 
 
+def current_archive_store(root):
+    access = _ACCESS.get()
+    if access and access[0] is not None and canonical_root(Path(access[0].workdir)) == canonical_root(Path(root)):
+        return access[0]
+    return None
+
+
 def visible(root, path):
     try:
         root, parts = model_parts(root, path)

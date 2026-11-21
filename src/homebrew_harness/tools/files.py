@@ -34,9 +34,16 @@ def safe_path(path: str, workdir: Path) -> Path:
 
 def run_read(
     path: str, workdir: Path, limit: int | None = None, offset: int = 0,
-    expected_version: str | None = None,
+    expected_version: str | None = None, raw: bool = False,
 ) -> str:
     assert_visible(workdir, path)
+    if type(raw) is not bool:
+        raise ValueError("raw must be Boolean.")
+    if not raw:
+        from .saved_output import read_view
+        view = read_view(workdir, path, offset, limit, expected_version)
+        if view is not None:
+            return read_response(view)
     with SafeFile(workdir, path) as target, target.open_read() as stream:
         import io
 
@@ -68,7 +75,7 @@ def run_read(
     )
     shown = selected[:OUTPUT_CHAR_LIMIT]
     truncated = len(selected) < len(content) or len(selected) > OUTPUT_CHAR_LIMIT
-    return json.dumps(
+    return read_response(
         {
             "path": relative,
             "version": version,
@@ -77,8 +84,43 @@ def run_read(
             "truncated": truncated,
             "next_offset": offset + len(shown) if truncated else None,
         },
-        ensure_ascii=False,
     )
+
+
+def read_response(value):
+    """Bound the complete JSON response, including escaping and metadata."""
+    content = value["content"][:OUTPUT_CHAR_LIMIT]
+    original_size = len(value["content"])
+    source = value.get("source")
+
+    def encode(size):
+        truncated = value["truncated"] or size < original_size
+        result = {**value, "content": content[:size], "truncated": truncated,
+                  "next_offset": value["offset"] + size if truncated else None}
+        if source is not None:
+            start = source["offset"] + value["offset"]
+            remaining = truncated or source.get("truncated", False)
+            result["source"] = {**source, "offset": start, "truncated": remaining,
+                                "next_offset": start + size if remaining else None}
+        return json.dumps(result, ensure_ascii=False)
+
+    full = encode(len(content))
+    if len(full) <= OUTPUT_CHAR_LIMIT:
+        return full
+    if len(encode(0)) > OUTPUT_CHAR_LIMIT:
+        raise boundary_error(ValueError, "file_read_response_limit", "File-read metadata exceeds the response budget.",
+            limit_name="file_read_response_characters", limit_value=OUTPUT_CHAR_LIMIT, observed_value=len(encode(0)), unit="characters", file_path=value["path"])
+    low, high = 0, len(content)
+    while low < high:
+        middle = (low + high + 1) // 2
+        if len(encode(middle)) <= OUTPUT_CHAR_LIMIT:
+            low = middle
+        else:
+            high = middle - 1
+    if not low and content:
+        raise boundary_error(ValueError, "file_read_response_limit", "File-read metadata leaves no room for a content page.",
+            limit_name="file_read_response_characters", limit_value=OUTPUT_CHAR_LIMIT, observed_value=len(encode(0)), unit="characters", file_path=value["path"])
+    return encode(low)
 
 
 @contextmanager
