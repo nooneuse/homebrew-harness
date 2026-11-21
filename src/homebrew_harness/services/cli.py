@@ -300,6 +300,7 @@ def commands(parser, *, attach=True):
     decide.add_argument("identity")
     decide.add_argument("--approve", nargs="*", default=[])
     decide.add_argument("--deny", nargs="*", default=[])
+    decide.add_argument("--allow-extra-attempt", nargs="*", default=[], metavar="REQUEST_ID")
     decide.add_argument("--revision", type=int, default=0)
     decide.add_argument("--request-id")
     tasks = work.add_subparsers(dest="work_command", required=True)
@@ -345,6 +346,9 @@ def commands(parser, *, attach=True):
             item.add_argument("--decision-id")
         if name == "answer":
             item.add_argument("text")
+        if name == "approve":
+            item.add_argument("--allow-extra-attempt", action="store_true",
+                              help="Grant one next attempt for this CI repair beyond its default ceiling")
         if name == "renew-tests":
             item.add_argument("--runs", type=int, required=True)
             item.add_argument("--seconds", type=float, required=True)
@@ -486,9 +490,13 @@ def operate(service, args):
             )
         if args.batch_command == "show":
             return service.delivery(args.identity, kind="batches")
+        extra = set(getattr(args, "allow_extra_attempt", []))
+        if extra - set(args.approve):
+            raise ValueError("Extra attempts must name approved CI repair requests in this batch.")
         return service.decide_batch(
             args.identity,
-            [{"id": i, "decision": "approve"} for i in args.approve]
+            [{"id": i, "decision": "approve", **({"allow_extra_attempt": True} if i in extra else {})}
+             for i in args.approve]
             + [{"id": i, "decision": "deny"} for i in args.deny],
             revision=args.revision,
             request_id=args.request_id,
@@ -640,6 +648,8 @@ def operate(service, args):
         values = {}
         if args.command == "answer":
             values["text"] = args.text
+        if args.command == "approve" and getattr(args, "allow_extra_attempt", False):
+            values["allow_extra_attempt"] = True
         if args.command == "renew-tests":
             values.update(runs=args.runs, seconds=args.seconds)
         return service.decide(

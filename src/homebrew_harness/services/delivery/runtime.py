@@ -656,8 +656,11 @@ class Delivery:
             return self.store.settle_action(action, "unknown", error=error)
 
     def repair(self, row, work):
-        if work.get("ci_fix_attempts", 0) >= self.spec["ci_fix_limit"]:
-            raise ValueError("CI repair limit exhausted.")
+        if not self.store.repair_allowed(row, work):
+            from homebrew_harness.runtime.errors import boundary_error
+            raise boundary_error(ValueError, "ci_repair_limit", "The current scoped repair lacks its next-attempt authority.",
+                limit_name="ci_fix_limit", limit_value=self.spec["ci_fix_limit"],
+                observed_value=work.get("ci_fix_attempts", 0), unit="repair_attempts")
         if not self.ms.valid_authority(work):
             with self.ms.db.write() as conn:
                 current = self.store.get("changesets", row["id"], conn)

@@ -59,10 +59,13 @@ class DecisionBatches:
             or len(decisions) > 100
             or any(
                 not isinstance(d, dict)
-                or set(d) != {"id", "decision"}
+                or not {"id", "decision"} <= set(d)
+                or set(d) - {"id", "decision", "allow_extra_attempt"}
                 or not isinstance(d["id"], str)
                 or not isinstance(d["decision"], str)
                 or d["decision"] not in {"approve", "deny"}
+                or ("allow_extra_attempt" in d and type(d["allow_extra_attempt"]) is not bool)
+                or (d.get("allow_extra_attempt") and d["decision"] != "approve")
                 for d in decisions
             )
         ):
@@ -111,6 +114,8 @@ class DecisionBatches:
                             "id": ref["id"],
                             "revision": ref["revision"],
                             "decision": decision["decision"],
+                            **({"allow_extra_attempt": decision["allow_extra_attempt"]}
+                               if "allow_extra_attempt" in decision else {}),
                         },
                         control_id,
                     )
@@ -123,9 +128,11 @@ class DecisionBatches:
                     )
                 item = {"state": "confirmed", "result": result, "decision_id": child_id}
             except ValueError as error:
+                from homebrew_harness.runtime.errors import error_info, error_message
                 item = {
                     "state": "expired" if "expired" in str(error).lower() else "stale",
                     "error": type(error).__name__,
+                    "error_info": error_info(error), "error_detail": error_message(error),
                     "decision_id": child_id,
                 }
             except Exception as error:

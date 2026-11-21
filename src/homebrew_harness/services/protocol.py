@@ -77,7 +77,7 @@ MAINTENANCE_COMMANDS = {
     "batch_create": {"refs"},
     "batch_decide": {"id", "revision", "decisions"},
     "conversation_submit": {"text", "context", "work_id", "revision"},
-    "service_decide": {"id", "revision", "decision", "text"},
+    "service_decide": {"id", "revision", "decision", "text", "allow_extra_attempt"},
     "report_create": set(),
     "report_ack": {"id", "context"},
     "job_retry": {"id"},

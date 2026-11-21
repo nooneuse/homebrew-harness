@@ -291,7 +291,10 @@ def refresh(delivery, identity):
     from .integration import refresh_candidate
 
     row = delivery.store.get("changesets", identity)
-    if (row["state"] == "failed" and (row.get("ci_diagnosis") or {}).get("classification") == "code"):
+    from .store import scoped_repair
+    if row["state"] == "repair_waiting":
+        return delivery.store.renew_repair_request(row)
+    if row["state"] == "failed" and scoped_repair(row):
         return delivery.store.retry_unstarted_repair(row)
     if not row.get("change_request") and row.get("candidate"):
         return delivery.store.retry_validation(row)

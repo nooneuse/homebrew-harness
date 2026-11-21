@@ -318,11 +318,11 @@ class Peer:
                             "body": "Restore the value and preserve the fixed unit-test contract.",
                         })
                     elif kind == "ci_triage":
-                        proposal = {
+                        proposal = getattr(outer, "ci_value", {
                             "classification": "code",
                             "reason": "Confirmed current-candidate regression.",
                             "plan": "Set src/value.txt to 2 and preserve the fixed tests.",
-                        }
+                        })
                     else:
                         proposal = {"text": "Delivery status recorded."}
                     self.emit(

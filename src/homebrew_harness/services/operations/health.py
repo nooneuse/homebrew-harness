@@ -63,7 +63,7 @@ def snapshot(runtime):
                 denial = (json.loads(value[0]).get("verdict") or {}).get("reason") if value else None
         issues.append({"code": "delivery_blocked", "target": row["work_id"],
                        "changeset_id": row["id"], "state": row["state"],
-                       "message": denial or row.get("error_detail") or row.get("error") or "Delivery awaits a current repair decision.",
+                       "message": denial or row.get("error_detail") or row.get("error") or (row.get("ci_diagnosis") or {}).get("reason") or "Delivery awaits a current repair decision.",
                        "reason_code": (row.get("error_info") or {}).get("code"),
                        "reasoning_job_id": row.get("reasoning_job_id"),
                        "action_id": row.get("denied_action_id"), "request_id": row.get("denied_request_id"),

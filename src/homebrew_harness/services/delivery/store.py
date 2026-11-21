@@ -7,6 +7,12 @@ from homebrew_harness.services.maintenance_spec import text
 from .git import StaleDelivery
 
 
+def scoped_repair(row):
+    classification = (row.get("ci_diagnosis") or {}).get("classification")
+    return classification == "code" or (
+        classification == "baseline" and bool((row.get("candidate") or {}).get("conflicts")))
+
+
 class DeliveryStore:
     def __init__(self, runtime, maintenance, spec):
         self.runtime, self.ms, self.spec = runtime, maintenance, spec
@@ -25,6 +31,54 @@ class DeliveryStore:
             value = self.get(kind, identity, conn)
             value.update(changes, revision=value["revision"] + 1)
             return self.put(conn, kind, value)
+
+    def repair_decision(self, row, conn=None):
+        identity = "request_" + request_key("ci-repair", self.id,
+            row["id"] + ":" + fingerprint(row.get("ci_diagnosis") or {}))
+        return (self.db._get(conn, "service_decisions", identity) if conn is not None
+                else self.db.get("service_decisions", identity))
+
+    def repair_allowed(self, row, work, conn=None):
+        used = work.get("ci_fix_attempts", 0)
+        decision = self.repair_decision(row, conn)
+        accepted = (decision and decision["state"] == "approved"
+            and decision["requirements_revision"] == row["requirements_revision"]
+            and decision["candidate"]["plan"] == row["ci_diagnosis"]["plan"]
+            and decision.get("authorized_attempt", used + 1) == used + 1)
+        if accepted:
+            return used < self.spec["ci_fix_limit"] or decision.get("extra_attempt") is True
+        return self.spec["auto_ci_fix"] and used < self.spec["ci_fix_limit"]
+
+    def repair_request(self, conn, row, *, renew=False):
+        result = row["ci_diagnosis"]
+        identity = "request_" + request_key("ci-repair", self.id, row["id"] + ":" + fingerprint(result))
+        old = self.db._get(conn, "service_decisions", identity)
+        if old:
+            if renew and old["state"] == "pending" and old["expires_at"] <= time.time():
+                old.update(revision=old["revision"] + 1,
+                           expires_at=time.time() + self.spec["authorization_seconds"])
+                return self.put(conn, "decisions", old)
+            return old
+        return self.put(conn, "decisions", {
+            "id": identity, "kind": "ci_repair", "work_id": row["work_id"],
+            "requirements_revision": row["requirements_revision"], "changeset_id": row["id"],
+            "revision": 0, "state": "pending", "created_at": time.time(),
+            "expires_at": time.time() + self.spec["authorization_seconds"],
+            "candidate": {"scope": "ci-repair", "plan": result["plan"], "reason": result["reason"]},
+            "reason": result["reason"],
+        })
+
+    def renew_repair_request(self, row):
+        with self.db.write() as conn:
+            self.runtime.store.guard(conn, self.runtime.header)
+            current = self.get("changesets", row["id"], conn)
+            self.current(current, conn)
+            if current["state"] != "repair_waiting" or not scoped_repair(current):
+                raise ValueError("Renew only a current pending scoped repair decision.")
+            request = self.repair_request(conn, current, renew=True)
+            if request["state"] != "pending":
+                raise ValueError("The repair decision is already settled.")
+            return current
 
     def create(self, conn, work):
         identity = "changeset_" + request_key(
@@ -139,19 +193,11 @@ class DeliveryStore:
             work = self.current(current, conn)
             diagnosis = current.get("ci_diagnosis") or {}
             if (current["revision"] != row["revision"] or current["state"] != "failed"
-                    or diagnosis.get("classification") != "code"
+                    or not scoped_repair(current)
                     or work.get("run_id") != current["run_id"]
-                    or work.get("repair_of") == current["id"]
-                    or work.get("ci_fix_attempts", 0) >= self.spec["ci_fix_limit"]):
+                    or work.get("repair_of") == current["id"]):
                 raise ValueError("Retry only a current CI repair that has not created a Run.")
-            request_id = "request_" + request_key(
-                "ci-repair", self.id, current["id"] + ":" + fingerprint(diagnosis))
-            decision = self.db._get(conn, "service_decisions", request_id)
-            if not self.spec["auto_ci_fix"] and not (
-                decision and decision["state"] == "approved"
-                and decision["requirements_revision"] == current["requirements_revision"]
-                and decision["candidate"]["plan"] == diagnosis["plan"]
-            ):
+            if not self.repair_allowed(current, work, conn):
                 raise ValueError("CI repair still requires its current accepted decision.")
             current.update(
                 state="repair_approved", error=None, error_detail=None, error_info=None,
@@ -382,16 +428,32 @@ class DeliveryStore:
     def decide(self, conn, request, payload, decision_id):
         if request["kind"] == "ci_repair":
             row = self.get("changesets", request["changeset_id"], conn)
-            self.current(row)
+            work = self.current(row, conn)
+            extra = payload.get("allow_extra_attempt", False)
             if (
                 request["state"] != "pending"
                 or request["revision"] != payload["revision"]
                 or request["expires_at"] <= time.time()
+                or row["state"] != "repair_waiting"
+                or not scoped_repair(row)
+                or request["requirements_revision"] != work["requirements_revision"]
+                or request["candidate"]["plan"] != row["ci_diagnosis"]["plan"]
+                or (self.repair_decision(row, conn) or {}).get("id") != request["id"]
             ):
                 raise boundary_error(
                     ValueError, "delivery_contract", "CI decision is stale or expired."
                 )
+            if type(extra) is not bool or (extra and payload["decision"] != "approve") or "text" in payload:
+                raise ValueError("A CI repair expects approve/deny and an optional Boolean extra-attempt grant.")
             if payload["decision"] == "approve":
+                used = work.get("ci_fix_attempts", 0)
+                if used >= self.spec["ci_fix_limit"] and not extra:
+                    raise boundary_error(ValueError, "ci_repair_limit",
+                        "The current repair needs an explicit one-attempt extension before approval.",
+                        limit_name="ci_fix_limit", limit_value=self.spec["ci_fix_limit"],
+                        observed_value=used, unit="repair_attempts")
+                request.update(authorized_attempt=used + 1,
+                               extra_attempt=extra and used >= self.spec["ci_fix_limit"])
                 row.update(state="repair_approved")
             elif payload["decision"] == "deny":
                 row.update(state="blocked", error="repair_denied")
@@ -403,6 +465,7 @@ class DeliveryStore:
                 state="approved" if payload["decision"] == "approve" else "denied",
                 revision=request["revision"] + 1,
             )
+            row["revision"] += 1
             self.put(conn, "changesets", row)
             self.put(conn, "decisions", request)
             return {
@@ -639,38 +702,14 @@ class DeliveryStore:
                 row["frozen"] = self.freeze(row)
         elif job["kind"] == "ci_triage":
             row["ci_diagnosis"] = result
-            if result["classification"] == "code" or (
-                result["classification"] == "baseline"
-                and row.get("candidate", {}).get("conflicts")
-            ):
-                if self.spec["auto_ci_fix"]:
+            row["reasoning_job_id"] = job["id"]
+            if scoped_repair(row):
+                work = self.current(row, conn)
+                if self.spec["auto_ci_fix"] and work.get("ci_fix_attempts", 0) < self.spec["ci_fix_limit"]:
                     row["state"] = "repair_approved"
                 else:
                     row["state"] = "repair_waiting"
-                    identity = "request_" + request_key(
-                        "ci-repair", self.id, row["id"] + ":" + fingerprint(result)
-                    )
-                    self.put(
-                        conn,
-                        "decisions",
-                        {
-                            "id": identity,
-                            "kind": "ci_repair",
-                            "work_id": row["work_id"],
-                            "requirements_revision": row["requirements_revision"],
-                            "changeset_id": row["id"],
-                            "revision": 0,
-                            "state": "pending",
-                            "expires_at": time.time()
-                            + self.spec["authorization_seconds"],
-                            "candidate": {
-                                "scope": "ci-repair",
-                                "plan": result["plan"],
-                                "reason": result["reason"],
-                            },
-                            "reason": result["reason"],
-                        },
-                    )
+                    self.repair_request(conn, row)
             elif row.get("test_failure") and result["classification"] in {"flaky", "infrastructure"}:
                 rechecks = row.get("validation_rechecks", 0)
                 if rechecks >= self.spec["ci_fix_limit"]:

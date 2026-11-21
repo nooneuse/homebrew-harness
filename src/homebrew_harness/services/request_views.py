@@ -63,6 +63,24 @@ def _project(maintenance, value, work_id):
                 head=action["plan"]["commit"],
                 method=action["plan"].get("method"),
             )
+        elif value["kind"] == "ci_repair":
+            delivery = maintenance.delivery
+            if delivery is None:
+                return None, "delivery_not_configured"
+            row = store.get("changesets", value["changeset_id"])
+            try:
+                delivery.store.current(row)
+            except ValueError:
+                return None, "candidate_changed"
+            if (row["state"] != "repair_waiting"
+                    or value["candidate"]["plan"] != (row.get("ci_diagnosis") or {}).get("plan")
+                    or (delivery.store.repair_decision(row) or {}).get("id") != value["id"]):
+                return None, "repair_changed"
+            used, limit = work.get("ci_fix_attempts", 0), delivery.spec["ci_fix_limit"]
+            arguments.update(changeset_id=row["id"], repair_attempts={
+                "used": used, "limit": limit, "extra_required": used >= limit})
+            if used >= limit:
+                question = "This scoped repair needs one additional attempt beyond ci_fix_limit=" + str(limit) + ". Explicitly allow that attempt when approving."
     expired = value.get("expires_at") is not None and value["expires_at"] <= time.time()
     return {
         "ref": {

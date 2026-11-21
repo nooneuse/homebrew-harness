@@ -805,6 +805,8 @@ class MaintenanceStore:
 
     def decide(self, conn, payload, request_id):
         decision = self.get("decisions", payload["id"], conn)
+        if "allow_extra_attempt" in payload and decision["kind"] != "ci_repair":
+            raise ValueError("Extra-attempt authority applies only to a current CI repair decision.")
         if (
             type(payload["revision"]) is not int
             or payload["revision"] != decision["revision"]

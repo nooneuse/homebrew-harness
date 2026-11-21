@@ -300,7 +300,7 @@ class ServiceControls:
         decision_id = decision_id or "decision_" + uuid.uuid4().hex
         control_id = "decision_" + request_key("decision", str(ref.data()), decision_id)
         if ref.target.kind == "service":
-            if ref.target.id != self.id or not ref.durable or set(values) - {"text"}:
+            if ref.target.id != self.id or not ref.durable or set(values) - {"text", "allow_extra_attempt"}:
                 raise ValueError("Invalid service authority target or decision fields.")
             return self.command(
                 "service_decide",
