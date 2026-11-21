@@ -1,7 +1,9 @@
 """Current target integration uses existing diagnosis and same-PR delivery."""
 
 import copy
+import json
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 from homebrew_harness.contracts import SDKError
 
@@ -68,6 +70,16 @@ class TargetRefreshTests(unittest.TestCase):
         self.assertTrue(repaired["quality"])
         self.assertTrue(repaired["review"])
         self.assertFalse(repaired["candidate"].get("conflicts"))
+        saved = service.store.work(work.id)
+        evidence_root = Path(saved["run_workspace"]) / ".harness/service-inputs"
+        indexes = list(evidence_root.glob("ci-source-*/index.json"))
+        self.assertEqual(len(indexes), 1)
+        sources = json.loads(indexes[0].read_text())
+        self.assertEqual(sources["versions"]["target_base"]["commit"], later)
+        self.assertEqual(sources["versions"]["proposed_head"]["commit"], old["candidate"]["commit"])
+        base = sources["versions"]["target_base"]["files"][0]
+        self.assertEqual((Path(saved["run_workspace"]) / base["snapshot"]).read_text(), "3\n")
+        self.assertIn("Read-only conflict source evidence", saved["run_spec"]["prompt"])
         for identity, action in old_actions.items():
             self.assertEqual(delivery.store.get("actions", identity), action)
 

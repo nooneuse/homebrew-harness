@@ -716,12 +716,16 @@ class Delivery:
         )
         (workspace / ".git").write_text("gitdir: " + str(repo) + "\n")
         self.git.run(["--git-dir=" + str(repo), "read-tree", row["candidate"]["commit"]])
+        from .source_evidence import install, instruction
+
+        source_inputs = install(self.git, row["candidate"], work, workspace)
         from homebrew_harness.runs.spec import RunSpec
 
         def prompt(current):
             original = current["run_spec"]["prompt"]
             context = [note for note in current.get("execution_context", []) if note not in original]
             return (original + "\n\nConfirmed CI repair plan:\n" + row["ci_diagnosis"]["plan"]
+                    + (instruction(source_inputs) if source_inputs else "")
                     + ("\n\nCurrent operator execution context (not a requirements amendment):\n" +
                        "\n\n".join(context) if context else ""))
 
