@@ -147,3 +147,34 @@ class TargetRefreshTests(unittest.TestCase):
         self.assertEqual(len(jobs), 1)
         self.assertEqual(current["state"], "ci_diagnosing")
         self.assertEqual(jobs[0]["revision"], current["revision"])
+
+    def test_stale_pr_base_snapshot_still_reaches_current_target_diagnosis(self):
+        service, work, old = self.manual()
+        self.peer.stale_base_sha = old["candidate"]["target_base"]
+        later = self.advance_target("src/value.txt", "3\n")
+        request = eventually(lambda: self.conflict_request(service), 40)
+        self.assertEqual(request.kind, "ci_repair")
+        current = self.row(service, work)
+        self.assertEqual(current["candidate"]["target_base"], later)
+        self.assertEqual(current["ci"]["conflicts"], ["src/value.txt"])
+        self.assertFalse((current.get("read_errors") or {}).get("integration"))
+
+    def test_refresh_race_reports_observed_and_fetched_refs_without_publication(self):
+        from homebrew_harness.services.delivery.integration import refresh_candidate
+        from homebrew_harness.runtime.errors import error_info
+        service, work, old = self.manual()
+        service.pause("all")
+        delivery = service.runtime.maintenance.delivery
+        observed = delivery.adapter.metadata(old["change_request"])
+        later = self.advance_target("upstream.txt", "new target\n")
+        with self.assertRaises(ValueError) as caught:
+            refresh_candidate(delivery.git, old["candidate"], observed, self.base / "raced-refresh")
+        info = error_info(caught.exception)
+        self.assertEqual(info["code"], "pr_version_changed")
+        expected = "head=" + old["candidate"]["commit"] + ";base=" + observed["base"]
+        current = "head=" + old["candidate"]["commit"] + ";base=" + later
+        self.assertEqual(info["details"]["expected_version"], expected)
+        self.assertEqual(info["details"]["observed_version"], current)
+        self.assertIn("expected_version=" + expected, str(caught.exception))
+        self.assertIn("observed_version=" + current, info["message"])
+        self.assertEqual(delivery.git.ref(old["branch"]), old["candidate"]["commit"])

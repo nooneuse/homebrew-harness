@@ -6,7 +6,7 @@ import subprocess
 import threading
 import tempfile
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, unquote
 
 
 def completion(content=None, tool=None, arguments=None):
@@ -162,7 +162,7 @@ class Peer:
                     },
                     "base": {
                         **row["base"],
-                        "sha": self.ref(row["base"]["ref"]),
+                        "sha": getattr(outer, "stale_base_sha", None) or self.ref(row["base"]["ref"]),
                         "repo": {"full_name": "example/project"},
                     },
                     "draft": row.get("draft", False),
@@ -175,7 +175,11 @@ class Peer:
 
             def do_GET(self):
                 uri = urlsplit(self.path)
-                if uri.path == "/repos/example/project":
+                if "/git/ref/heads/" in uri.path:
+                    name = unquote(uri.path.split("/git/ref/heads/", 1)[1])
+                    self.emit({"ref": "refs/heads/" + name,
+                               "object": {"type": "commit", "sha": self.ref(name)}})
+                elif uri.path == "/repos/example/project":
                     self.emit(
                         {
                             "allow_merge_commit": True,

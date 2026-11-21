@@ -1,6 +1,7 @@
 """GitHub native merge operations and conservative server-side rule evidence."""
 
-from homebrew_harness.platforms.contracts import ObjectRef, digest
+from homebrew_harness.platforms.contracts import ObjectRef, digest, bounded
+from urllib.parse import quote
 from homebrew_harness.platforms.http import RemoteFailure
 from homebrew_harness.platforms.merges import commit, receipt, validate_plan
 
@@ -27,9 +28,19 @@ def metadata(adapter, subject):
         and row["state"] != "closed"
     ):
         raise ValueError("Invalid native PR state.")
+    base_sha = commit(base.get("sha"))
+    if row["state"] == "open" and not row["merged"]:
+        name = base.get("ref")
+        bounded(name, "PR target branch", 200)
+        current = adapter.request("GET", adapter.prefix + "/git/ref/heads/" + quote(name, safe=""))
+        if (not isinstance(current, dict) or current.get("ref") != "refs/heads/" + name
+                or not isinstance(current.get("object"), dict)
+                or current["object"].get("type") != "commit"):
+            raise ValueError("Invalid current PR target reference.")
+        base_sha = commit(current["object"].get("sha"))
     value = {
         "head": commit(head.get("sha")),
-        "base": commit(base.get("sha")),
+        "base": base_sha,
         "source_project": source,
         "source_branch": head.get("ref"),
         "base_project": target,

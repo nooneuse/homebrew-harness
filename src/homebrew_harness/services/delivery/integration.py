@@ -308,7 +308,13 @@ def refresh_candidate(git, candidate, observed, directory, *, linear=False):
     )
     published = _oid(git, repo, "FETCH_HEAD")
     if published != observed["head"] or base != observed["base"]:
-        raise ValueError("PR changed during candidate refresh.")
+        from homebrew_harness.runtime.errors import boundary_error
+        expected = "head=" + observed["head"] + ";base=" + observed["base"]
+        current = "head=" + published + ";base=" + base
+        raise boundary_error(ValueError, "pr_version_changed",
+            "PR refs changed during candidate refresh: expected_version=" + expected
+            + ", observed_version=" + current + ".",
+            expected_version=expected, observed_version=current)
     merged = _git(git, repo, "merge-tree", "--write-tree", "--name-only", "-z",
                   base, candidate["commit"], accepted_codes=(0, 1)).split(b"\0")
     tree = commit(merged[0].decode().strip())
