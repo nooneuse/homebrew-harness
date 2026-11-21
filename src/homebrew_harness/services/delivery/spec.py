@@ -34,6 +34,14 @@ def branch(value, *, prefix=False):
     return value
 
 
+def validate_ci_limits(limit, warning):
+    if limit is not None:
+        number(limit, "ci_fix_limit", 0, 10, integer=True)
+    if warning is not None:
+        number(warning, "ci_fix_warning", 1, 1024, integer=True)
+    return {"ci_fix_limit": limit, "ci_fix_warning": warning}
+
+
 def validate(raw):
     if raw == {}:
         return {}
@@ -55,7 +63,8 @@ def validate(raw):
         "authorization_seconds": 3600,
         "ci_poll_seconds": 30,
         "ci_wait_seconds": 3600,
-        "ci_fix_limit": 2,
+        "ci_fix_limit": None,
+        "ci_fix_warning": 2,
         "auto_ci_fix": False,
         "credentials_file": None,
         "git_token_env": None,
@@ -161,9 +170,9 @@ def validate(raw):
         ("authorization_seconds", 1, 31536000),
         ("ci_poll_seconds", 0.1, 86400),
         ("ci_wait_seconds", 1, 31536000),
-        ("ci_fix_limit", 0, 10),
     ):
-        number(value[key], key, minimum, maximum, integer=key == "ci_fix_limit")
+        number(value[key], key, minimum, maximum)
+    validate_ci_limits(value["ci_fix_limit"], value["ci_fix_warning"])
     from homebrew_harness.platforms.registry import PROVIDERS
 
     if (

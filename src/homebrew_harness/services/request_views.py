@@ -78,8 +78,10 @@ def _project(maintenance, value, work_id):
                 return None, "repair_changed"
             used, limit = work.get("ci_fix_attempts", 0), delivery.spec["ci_fix_limit"]
             arguments.update(changeset_id=row["id"], repair_attempts={
-                "used": used, "limit": limit, "extra_required": used >= limit})
-            if used >= limit:
+                "used": used, "limit": limit, "extra_required": delivery.store.limit_reached(used)})
+            if limit is None:
+                arguments["repair_attempts"]["warning_after"] = delivery.spec.get("ci_fix_warning", 2)
+            if delivery.store.limit_reached(used):
                 question = "This scoped repair needs one additional attempt beyond ci_fix_limit=" + str(limit) + ". Explicitly allow that attempt when approving."
     expired = value.get("expires_at") is not None and value["expires_at"] <= time.time()
     return {

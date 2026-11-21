@@ -284,9 +284,11 @@ python examples/maintenance_demo.py --output /tmp/harness-maintenance-demo
 
 可选 delivery 从已完成开发的工作准备私有 Git 候选，重新验证固定测试和原始 Goal 硬条件，进行独立审查，发布审查分支及变更请求，并等待确切 SHA 的 CI。默认等待维护者通过平台合并 PR；service_approved 模式在明确授权后执行原生合并，核验实际结果再完成 Work。公开评论另行批准。代码修复复用原生 Run，保留范围并累计次数。分组决定、动作回执和重启恢复共用 HTTP/SDK/Text UI。配置及离线演示见 [仓库交付](DELIVERY.zh-CN.md)。
 
+CI 次数默认作为进度观察：`ci_fix_limit=null`、`ci_fix_warning=2`。研判任务收到修复和重测进度，由模型决定是否继续或修订方案；部署者明确配置整数预算时仍执行硬上限。已有整数配置继续保留该上限；将其设为 `null` 才采用进度观察模式。Service 以 `all` 范围暂停后，可用 `service.configure_ci_limits()` 或 `delivery ci-limits --limit null --warning 2` 更新这些设置，保留已接受的候选和发布事实。
+
 范围内的 CI 修复可请求超出配置上限的一次额外尝试。使用 `service.decide(request, "approve", allow_extra_attempt=True)` 或 CLI／Text UI 的 `approve ... --allow-extra-attempt` 明确授权；扩展只属于当前方案的下一次尝试。`service.refresh_delivery()` 可续期已过期且尚未决定的 CI 请求，或继续已接受的准备过程，包括基线冲突修复。此前的 Run、验证与决定继续保留为历史记录。
 
-候选测试失败时保留回执和可读输出，由模型研判原因。代码修复使用有授权的原生 Run；本地临时故障可以请求同一候选重测，自动重测次数由 `ci_fix_limit` 限制。候选检查通过后才能发布。`work.progress()` 显示交付状态，健康检查提示当前阻塞候选。解决阻塞后，可用 `service.refresh_delivery(changeset_id)` 显式重新核验已收尾、尚未发布的候选，保留失败历史。后续需求修订使用经验证且已同步的集成结果作为本轮基线，历史交付记录继续保留。
+候选测试失败时保留回执和可读输出，由模型研判原因。代码修复使用有授权的原生 Run；本地临时故障可以请求同一候选重测，只有明确配置 `ci_fix_limit` 时才限制自动重测次数。候选检查通过后才能发布。`work.progress()` 显示交付状态，健康检查提示当前阻塞候选。解决阻塞后，可用 `service.refresh_delivery(changeset_id)` 显式重新核验已收尾、尚未发布的候选，保留失败历史。后续需求修订使用经验证且已同步的集成结果作为本轮基线，历史交付记录继续保留。
 
 若已批准的 CI 修复在创建 Run 前准备失败，同一操作会继续该准备过程，保留原候选验证记录；尚未批准或已经创建修复 Run 的情况仍走对应原生流程。
 

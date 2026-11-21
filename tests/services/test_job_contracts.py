@@ -34,6 +34,8 @@ class JobContracts(unittest.TestCase):
         return json.loads(self.agent.read(kind, identity, **kwargs))
 
     def candidate_job(self):
+        # A synthetic CI job needs the delivery policy normally supplied by DeliveryRuntime.
+        self.store.delivery = SimpleNamespace(spec={"ci_fix_limit": None, "ci_fix_warning": 2})
         work = self.service.work.submit("Keep the original feature requirement.")
         with self.store.db.write() as conn:
             saved = self.store.get("work", work.id, conn)

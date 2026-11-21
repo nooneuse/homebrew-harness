@@ -15,6 +15,22 @@ class PolicyTests(unittest.TestCase):
     setUp = fixture.GitTests.setUp
     run_git = fixture.GitTests.run_git
 
+    def test_ci_counts_default_to_advisory_and_explicit_budgets_remain_bounded(self):
+        raw = {k: v for k, v in self.spec.items() if k not in {'ci_fix_limit', 'ci_fix_warning'}}
+        default = validate(raw)
+        self.assertIsNone(default['ci_fix_limit'])
+        self.assertEqual(default['ci_fix_warning'], 2)
+        for limit in (None, 0, 2, 10):
+            with self.subTest(limit=limit):
+                self.assertEqual(validate({**raw, 'ci_fix_limit': limit})['ci_fix_limit'], limit)
+        for limit in (True, -1, 11, 2.5):
+            with self.subTest(limit=limit), self.assertRaises(ValueError):
+                validate({**raw, 'ci_fix_limit': limit})
+        self.assertIsNone(validate({**raw, 'ci_fix_warning': None})['ci_fix_warning'])
+        for warning in (True, 0, 2.5):
+            with self.subTest(warning=warning), self.assertRaises(ValueError):
+                validate({**raw, 'ci_fix_warning': warning})
+
     def test_connection_values_use_external_references(self):
         for values in (
             {"mode": []},

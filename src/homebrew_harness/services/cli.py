@@ -258,6 +258,10 @@ def commands(parser, *, attach=True):
     if attach:
         delivery.add_argument("service_id")
     delivery_ops = delivery.add_subparsers(dest="delivery_command", required=True)
+    limits = delivery_ops.add_parser("ci-limits")
+    limits.add_argument("--limit", type=json.loads, default=None, help="null for advisory counts; an integer for a hard budget")
+    limits.add_argument("--warning", type=json.loads, default=2, help="Progress threshold, or null to disable")
+    limits.add_argument("--request-id")
     listing = delivery_ops.add_parser("list")
     listing.add_argument("--cursor", type=int, default=0)
     listing.add_argument("--limit", type=int, default=20)
@@ -450,6 +454,9 @@ def operate(service, args):
         return getattr(service, methods[op])(*arguments, **values)
     if args.command == "delivery":
         op = args.delivery_command
+        if op == "ci-limits":
+            return service.configure_ci_limits(ci_fix_limit=args.limit,
+                ci_fix_warning=args.warning, request_id=args.request_id)
         if op == "list":
             return service.records(
                 "changesets", cursor=args.cursor, limit=args.limit, state=args.state

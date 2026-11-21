@@ -37,7 +37,7 @@ def view(runtime, work):
         candidate
         and candidate["state"] != "superseded"
         and candidate["requirements_revision"] == work["requirements_revision"]
-        and candidate["policy"] == runtime.maintenance.delivery.store.policy
+        and runtime.maintenance.delivery.store.policy_matches(candidate)
     )
     phase = (
         "delivery"
@@ -203,7 +203,7 @@ def route(runtime, work):
         candidate
         and candidate.get("candidate")
         and candidate["requirements_revision"] == work["requirements_revision"]
-        and candidate["policy"] == runtime.maintenance.delivery.store.policy
+        and runtime.maintenance.delivery.store.policy_matches(candidate)
         and (
             candidate.get("handoff_ref") == record["id"]
             or not candidate.get("handoff_ref")

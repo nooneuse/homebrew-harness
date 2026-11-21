@@ -32,7 +32,8 @@ Add `delivery` to an external `repository_maintenance` ServiceSpec. Keep connect
   "auto_actions": ["publish_branch", "ensure_change_request"],
   "merge": {"mode": "manual", "poll_seconds": 300},
   "auto_ci_fix": false,
-  "ci_fix_limit": 2
+  "ci_fix_limit": null,
+  "ci_fix_warning": 2
 }
 ```
 
@@ -74,7 +75,7 @@ Tests and original Goal hard conditions verify a materialized, fixed result. Inc
 
 ## CI, review and base updates
 
-CI feedback belongs to the exact published head and admitted apps. CI diagnosis distinguishes code, baseline, flaky, infrastructure and unknown failures. Bounded code repair uses native Runs, the original scope, valid Work authority and cumulative attempts; the next candidate updates the same PR and repeats its checks.
+CI feedback belongs to the exact published head and admitted apps. CI diagnosis distinguishes code, baseline, flaky, infrastructure and unknown failures. Code repair uses native Runs, the original scope, valid Work authority and cumulative attempts; the next candidate updates the same PR and repeats its checks. The default `ci_fix_limit=null` and `ci_fix_warning=2` report repair and recheck progress for the model to decide whether to continue, change its plan or request help. Only an explicitly configured integer `ci_fix_limit` enforces an attempt ceiling.
 
 A changed PR head or target base enters `integration_required`. Explicit `delivery refresh` can integrate the accepted delta with the current target, or adopt a platform branch update only when its content is the same deterministic integration. It preserves the PR and original conditions and repeats tests/review. New code outside that delta requires a Work decision. A service rebase refresh may replace its review head using an exact-head conditional lease; target-branch writes remain unavailable.
 

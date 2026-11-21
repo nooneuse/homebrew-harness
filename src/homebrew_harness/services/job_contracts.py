@@ -164,8 +164,18 @@ class JobContract:
                 for record in primary.get("validation_history", [])]
             for record in value["validation_history"]:
                 record["quality"] = self.quality(record.get("quality"))
-            value["work_context"] = self.work_context(
-                self.store.store.work(primary["work_id"], self.store.id))
+            work = self.store.store.work(primary["work_id"], self.store.id)
+            value["work_context"] = self.work_context(work)
+            if self.kind == "ci_triage":
+                policy = self.store.delivery.spec
+                used, rechecks = work.get("ci_fix_attempts", 0), primary.get("validation_rechecks", 0)
+                warning = policy.get("ci_fix_warning", 2)
+                value["ci_progress"] = {
+                    "repair_attempts": used, "candidate_rechecks": rechecks,
+                    "hard_limit": policy["ci_fix_limit"], "warning_after": warning,
+                    "warning_reached": warning is not None and max(used, rechecks) >= warning,
+                    "instruction": "These counts are progress observations. Only an explicitly configured integer hard_limit stops further automatic attempts. Assess current progress and evidence, then choose to continue, change the repair plan or ask the operator. A warning does not require approval, termination or a premature conclusion.",
+                }
             return value
         return {k: copy.deepcopy(v) for k, v in primary.items() if k not in {
             "run_spec", "result", "facts", "candidate", "baseline", "files", "workspace", "plans",

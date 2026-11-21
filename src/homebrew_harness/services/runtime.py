@@ -890,7 +890,7 @@ class ServiceRuntime:
                     candidate
                     and candidate["requirements_revision"]
                     == target["requirements_revision"]
-                    and candidate["policy"] == self.maintenance.delivery.store.policy
+                    and self.maintenance.delivery.store.policy_matches(candidate)
                     or progress
                     and progress["complete"]
                 )

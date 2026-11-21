@@ -17,7 +17,16 @@ class DeliveryStore:
     def __init__(self, runtime, maintenance, spec):
         self.runtime, self.ms, self.spec = runtime, maintenance, spec
         self.db, self.id = maintenance.db, maintenance.id
-        self.policy = fingerprint(spec)
+        self.policy = fingerprint({k: v for k, v in spec.items()
+                                   if k not in {"ci_fix_limit", "ci_fix_warning"}})
+        self.legacy_policy = fingerprint({k: v for k, v in spec.items() if k != "ci_fix_warning"})
+
+    def policy_matches(self, row):
+        return row["policy"] in {self.policy, self.legacy_policy} or row.get("policy_scope") == self.policy
+
+    def limit_reached(self, used):
+        limit = self.spec["ci_fix_limit"]
+        return limit is not None and used >= limit
 
     def get(self, kind, identity, conn=None):
         return self.ms.get(kind, identity, conn)
@@ -46,8 +55,8 @@ class DeliveryStore:
             and decision["candidate"]["plan"] == row["ci_diagnosis"]["plan"]
             and decision.get("authorized_attempt", used + 1) == used + 1)
         if accepted:
-            return used < self.spec["ci_fix_limit"] or decision.get("extra_attempt") is True
-        return self.spec["auto_ci_fix"] and used < self.spec["ci_fix_limit"]
+            return not self.limit_reached(used) or decision.get("extra_attempt") is True
+        return self.spec["auto_ci_fix"] and not self.limit_reached(used)
 
     def repair_request(self, conn, row, *, renew=False):
         result = row["ci_diagnosis"]
@@ -218,7 +227,7 @@ class DeliveryStore:
         )
         if (
             row["requirements_revision"] != work["requirements_revision"]
-            or row["policy"] != self.policy
+            or not self.policy_matches(row)
             or work.get("changeset_id") != row["id"]
             or (
                 row.get("handoff_ref") is not None
@@ -447,13 +456,13 @@ class DeliveryStore:
                 raise ValueError("A CI repair expects approve/deny and an optional Boolean extra-attempt grant.")
             if payload["decision"] == "approve":
                 used = work.get("ci_fix_attempts", 0)
-                if used >= self.spec["ci_fix_limit"] and not extra:
+                if self.limit_reached(used) and not extra:
                     raise boundary_error(ValueError, "ci_repair_limit",
                         "The current repair needs an explicit one-attempt extension before approval.",
                         limit_name="ci_fix_limit", limit_value=self.spec["ci_fix_limit"],
                         observed_value=used, unit="repair_attempts")
                 request.update(authorized_attempt=used + 1,
-                               extra_attempt=extra and used >= self.spec["ci_fix_limit"])
+                               extra_attempt=extra and self.limit_reached(used))
                 row.update(state="repair_approved")
             elif payload["decision"] == "deny":
                 row.update(state="blocked", error="repair_denied")
@@ -705,14 +714,14 @@ class DeliveryStore:
             row["reasoning_job_id"] = job["id"]
             if scoped_repair(row):
                 work = self.current(row, conn)
-                if self.spec["auto_ci_fix"] and work.get("ci_fix_attempts", 0) < self.spec["ci_fix_limit"]:
+                if self.spec["auto_ci_fix"] and not self.limit_reached(work.get("ci_fix_attempts", 0)):
                     row["state"] = "repair_approved"
                 else:
                     row["state"] = "repair_waiting"
                     self.repair_request(conn, row)
             elif row.get("test_failure") and result["classification"] in {"flaky", "infrastructure"}:
                 rechecks = row.get("validation_rechecks", 0)
-                if rechecks >= self.spec["ci_fix_limit"]:
+                if self.limit_reached(rechecks):
                     row.update(state="blocked", error="candidate_recheck_limit",
                                error_detail="Model-requested candidate rechecks reached ci_fix_limit=" + str(self.spec["ci_fix_limit"]))
                 else:

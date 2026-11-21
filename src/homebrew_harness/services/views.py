@@ -195,6 +195,10 @@ class ServiceControls:
     def models(self):
         return self.query("service_models")
 
+    def configure_ci_limits(self, *, ci_fix_limit=None, ci_fix_warning=2, request_id=None):
+        return self.command("delivery_ci_limits",
+            {"ci_fix_limit": ci_fix_limit, "ci_fix_warning": ci_fix_warning}, request_id)
+
     def retry_approval_review(self, request, *, request_id=None):
         ref = request.ref if hasattr(request, "ref") else request
         if ref.target.kind != "service" or ref.target.id != self.id:
