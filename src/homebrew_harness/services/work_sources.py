@@ -118,15 +118,24 @@ class WorkSources:
             "current_run": work.get("run_id"),
             "pause_requested": work.get("pause_requested"),
             "published_head": self._published(work),
+            "observed_pr_head": self._observed(work),
             "target_branch": self.runtime.spec.delivery["target_branch"],
             "instruction": "Source roles are facts. Choose the draft or a recorded candidate explicitly; target movement does not replace your source.",
         }
+
+    def _observed(self, work):
+        if not work.get("changeset_id"):
+            return None
+        row = self.store.get("changesets", work["changeset_id"])
+        return (row.get("observed") or {}).get("head")
 
     def _published(self, work):
         if not work.get("changeset_id"):
             return None
         row = self.store.get("changesets", work["changeset_id"])
-        return (row.get("observed") or {}).get("head") or row.get("review_commit")
+        # A read observation is not an owned publication receipt. A rewrite
+        # binds to the confirmed previous head, even if old PR observations differ.
+        return row.get("review_commit") or row.get("publish_base")
 
     def resolve(self, identity, reference):
         work = self.work(identity)

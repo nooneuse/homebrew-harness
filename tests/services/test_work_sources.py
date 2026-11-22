@@ -190,3 +190,34 @@ class WorkSourcesTests(unittest.TestCase):
             work.compare_sources(candidate, "draft:" + work.id, path="src/value.txt")
         with self.assertRaises(Exception):
             work.compare_sources(candidate, "draft:" + work.id, path="../missing-file")
+
+    def test_observed_pr_head_does_not_replace_confirmed_publication_basis(self):
+        service, work, candidate = self.ready()
+        store = service.runtime.maintenance.delivery.store
+        work_row = service.store.work(work.id)
+        row = store.get("changesets", work_row["changeset_id"])
+        confirmed = row["review_commit"]
+        store.update("changesets", row["id"], observed={"head": "f" * 40})
+        directory = work.sources()
+        self.assertEqual(directory["published_head"], confirmed)
+        self.assertEqual(directory["observed_pr_head"], "f" * 40)
+        # A second repair inherits the latest confirmed publication, not the
+        # older baseline that admitted its parent repair. Roll back this metadata
+        # probe; it neither runs nor claims acceptance of another candidate.
+        import copy
+
+        with store.db.write() as conn:
+            conn.execute("SAVEPOINT publication_basis_probe")
+            previous = store.get("changesets", row["id"], conn)
+            previous["publish_base"] = "0" * 40
+            store.put(conn, "changesets", previous)
+            successor = {
+                **copy.deepcopy(work_row),
+                "repair_of": row["id"],
+                "progress_ref": "probe_next_handoff",
+            }
+            created = store.create(conn, successor)
+            self.assertEqual(created["publish_base"], confirmed)
+            conn.execute("ROLLBACK TO publication_basis_probe")
+            conn.execute("RELEASE publication_basis_probe")
+        self.assertEqual(work.read_source(candidate, "src/value.txt")["text"], "1\n")

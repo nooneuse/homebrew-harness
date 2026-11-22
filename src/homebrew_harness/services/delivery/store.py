@@ -161,7 +161,7 @@ class DeliveryStore:
         }
         if value["previous"]:
             previous = self.get("changesets", value["previous"], conn)
-            value["publish_base"] = previous.get("publish_base") or previous.get("review_commit")
+            value["publish_base"] = previous.get("review_commit") or previous.get("publish_base")
         self.put(conn, "changesets", value)
         work["changeset_id"] = identity
         work["revision"] += 1

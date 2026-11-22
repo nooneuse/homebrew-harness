@@ -43,3 +43,5 @@ Legacy `service.refresh_delivery(...)` and publication `inspect_*` reconciliatio
 An explicit failed-job retry opens a fresh call window and retains cumulative attempts, previous errors, dialogue and tool observations. Replaying an admitted stopped-budget change reapplies only its requested fields to current settings; it preserves unrelated newer settings and Work instructions. It remains bound to the original paused Run and does not renew authority.
 
 Recovery, review and other proposal jobs can observe source/execution facts; their tool contracts do not apply Git changes or stop/steer executions during a read-only proposal. An owning development Run and an explicit focused conversation use the control variants within the same Work. A recovery choice is applied through the native versioned action when requested, preserving the distinction between deciding and executing.
+
+`published_head` names the last confirmed harness branch publication; `observed_pr_head` is the latest recorded PR observation. A branch rewrite binds to the confirmed publication receipt, while a different remote head still requires inspection.
