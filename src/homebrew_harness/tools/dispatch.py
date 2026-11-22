@@ -221,7 +221,7 @@ def execute_tool(
             handle = operations.start(call.name, raw, execute,
                                       execution={k:v for k,v in settings.items() if k != "wait_seconds" or settings["mode"] == "interactive"},
                                       request_id=execution_request_id, deadline=run.deadline() if run is not None else None,
-                                      read_only=is_read_only(call.name, binding), checkpoint=writer.key if writer else None,
+                                      read_only=is_read_only(call.name, binding, raw), checkpoint=writer.key if writer else None,
                                       settled=resources_settled if writer is not None else None)
             seconds = settings['wait_seconds'] if settings['mode'] == 'interactive' else None
             row = operations.wait_for(handle.id, seconds)
@@ -702,7 +702,7 @@ def _execute_tool(
                 workdir,
                 track=True,
                 guard=getattr(before_start, "token", None),
-                read_only=is_read_only(call.name, binding),
+                read_only=is_read_only(call.name, binding, arguments),
             )
             if writer
             else None

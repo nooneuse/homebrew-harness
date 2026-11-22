@@ -256,6 +256,11 @@ def check_rules(tool_name: str, arguments: dict, workdir: Path) -> PermissionDec
             "allow",
             "Archive and summarize the current conversation after this tool batch.",
         )
+    from homebrew_harness.services.model_work_tools import NAMES as WORK_TOOLS
+    if tool_name in WORK_TOOLS:
+        return PermissionDecision(
+            "allow", "Bound Work tools retain native source ownership, job control scope and execution authority checks."
+        )
     if tool_name in {"service_read", "service_read_code", "service_propose"}:
         return PermissionDecision(
             "allow", "Prepared service queries and non-authorizing proposals only."

@@ -693,4 +693,6 @@ SUB_TOOLS.append(INVOKE_TOOL)
 TEAMMATE_TOOLS.append(INVOKE_TOOL)
 
 from homebrew_harness.services.model_work_tools import definitions as _work_definitions
-SERVICE_TOOL_DEFINITIONS.extend(_work_definitions())
+_WORK_TOOL_DEFINITIONS = _work_definitions()
+SERVICE_TOOL_DEFINITIONS.extend(_WORK_TOOL_DEFINITIONS)
+TOOL_SCHEMAS.update({tool["function"]["name"]: tool["function"]["parameters"] for tool in _WORK_TOOL_DEFINITIONS})
