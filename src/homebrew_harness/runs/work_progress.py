@@ -31,7 +31,8 @@ def submit(
         or not isinstance(remaining, (list, tuple))
         or (current_limits().progress_items is not None and len(remaining) > current_limits().progress_items)
         or any(
-            not isinstance(v, str) or not v.strip() or len(v) > 2000 for v in remaining
+                not isinstance(v, str) or not v.strip()
+                or current_limits().progress_item_chars is not None and len(v) > current_limits().progress_item_chars for v in remaining
         )
         or sum(len(v) for v in remaining) > current_limits().progress_remaining_chars
     ):
@@ -45,7 +46,7 @@ def submit(
     if (
         not isinstance(evidence_refs, (list, tuple))
         or (current_limits().progress_items is not None and len(evidence_refs) > current_limits().progress_items)
-        or any(not isinstance(v, str) or len(v) > 100 for v in evidence_refs)
+        or any(not isinstance(v, str) or current_limits().progress_ref_chars is not None and len(v) > current_limits().progress_ref_chars for v in evidence_refs)
     ):
         raise ValueError("Progress evidence references are invalid.")
     if (

@@ -226,7 +226,7 @@ class FlowTests(unittest.TestCase):
                 (
                     r
                     for r in service.records("changesets")["items"]
-                    if r["state"] == "quality_failed"
+                    if r.get("error") == "candidate_goal_failed"
                 ),
                 None,
             ),

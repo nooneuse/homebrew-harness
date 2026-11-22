@@ -299,6 +299,9 @@ def refresh(delivery, identity):
         return delivery.store.renew_repair_request(row)
     if row["state"] == "failed" and scoped_repair(row):
         return delivery.store.retry_unstarted_repair(row)
+    if row['state']=='failed':
+        if row.get('candidate'):return delivery.store.retry_validation(row)
+        return delivery.store.update('changesets',identity,state='queued',error=None,next_validation=0)
     if not row.get("change_request") and row.get("candidate"):
         return delivery.store.retry_validation(row)
     if row["state"] == "verification_blocked" and row.get("merge"):

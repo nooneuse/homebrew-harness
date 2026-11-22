@@ -31,7 +31,8 @@ RUN_CONTROL_TOOLS = frozenset(
 )
 RUN_STAGE_TOOLS = frozenset({"get_handoff", "integrate_stage", "publish_stage"})
 RUN_RECOVERY_TOOLS = frozenset({"report_run_blocker"})
-RUN_WORK_TOOLS = frozenset({"submit_work_progress", "get_work_progress"})
+from homebrew_harness.services.model_work_tools import NAMES as SERVICE_WORK_TOOLS
+RUN_WORK_TOOLS = frozenset({"submit_work_progress", "get_work_progress"}) | SERVICE_WORK_TOOLS
 RUN_TOOLS = RUN_CONTROL_TOOLS | RUN_RECOVERY_TOOLS | RUN_STAGE_TOOLS | RUN_WORK_TOOLS
 DEFAULT_TOOLS = tuple(
     sorted(

@@ -28,7 +28,7 @@ Run Episode call/time windows yield another Episode of the same Run. They do not
 
 Delivery asks for `validation_plan={tests, selections, review, reason}` for the fixed candidate. The model may select authorized full or local checks, static verification, and independent review. `required_tests`, `require_review=true`, explicit Goal predicates, trusted platform checks and merge policy are operator acceptance; they cannot be skipped or recorded as passing without real evidence. A static proposal records an empty test list and `review.mode=not_performed` when applicable. It does not manufacture a pass.
 
-CI diagnosis requires `classification` and a separate `next_action`. Classification describes the observation; it does not determine execution. Actions are `repair`, `recheck`, `reobserve`, `wait`, `defer`, `stop`, `human_required`, `plan_validation`, `reconsider_review`, and `proceed`. Optional `wait_seconds` selects when to reconsider. `plan_validation` keeps the failed evidence and asks for a new validation choice. Blocking review findings return to Lead: it may repair, request an evidence-based second review, or proceed if review is advisory and explicit acceptance is already met. Historical diagnoses without `next_action` retain their legacy interpretation during recovery. Declared fallback models can receive a settled failed request before any hard retry ceiling; model-use history does not blacklist an eligible profile, and retry backoff still applies.
+CI diagnosis requires `classification` and a separate `next_action`. Classification describes the observation; it does not determine execution. Actions are `repair`, `recheck`, `reobserve`, `wait`, `defer`, `stop`, `human_required`, `plan_validation`, `reconsider_review`, `proceed`, and `retry_prepare`. Optional `wait_seconds` selects when to reconsider. `plan_validation` keeps the failed evidence and asks for a new validation choice. Blocking review findings return to Lead: it may repair, request an evidence-based second review, or proceed if review is advisory and explicit acceptance is already met. Historical diagnoses without `next_action` retain their legacy interpretation during recovery. Declared fallback models can receive a settled failed request before any hard retry ceiling; model-use history does not blacklist an eligible profile, and retry backoff still applies.
 
 ## Configuring limits
 
@@ -78,6 +78,8 @@ The complete programmatic reference is `RuntimeLimits` in `homebrew_harness.runt
 | Field | Default |
 |---|---:|
 | `transport_attempts` | `3` |
+| `control_request_seconds` | `30` |
+| `control_socket_seconds` | `5` |
 | `transport_delay_seconds` | `0.1` |
 | `transport_delay_cap_seconds` | `1` |
 | `config_file_bytes` | `65536` |
@@ -118,6 +120,8 @@ The complete programmatic reference is `RuntimeLimits` in `homebrew_harness.runt
 | `git_status_entries` | `200` |
 | `git_diff_files` | `32` |
 | `git_diff_chars` | `12000` |
+| `git_output_bytes` | `64000000` |
+| `git_error_bytes` | `65536` |
 | `git_diff_file_bytes` | `1000000` |
 | `operation_input_chars` | `16000` |
 | `operation_read_chars` | `16000` |
@@ -254,3 +258,11 @@ The complete programmatic reference is `RuntimeLimits` in `homebrew_harness.runt
 | `project_context_chars` | `8000` |
 | `project_context_paths` | `16` |
 | `review_hint_paths` | `16` |
+| `service_page_rows` | `100` |
+| `service_job_batch` | `32` |
+| `execution_slots` | `8` |
+| `platform_query_pages` | `null` |
+| `blocker_reason_chars` | `null` |
+| `blocker_action_chars` | `null` |
+| `progress_item_chars` | `null` |
+| `progress_ref_chars` | `null` |

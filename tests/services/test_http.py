@@ -32,7 +32,15 @@ class HTTPControl(unittest.TestCase):
     def service(self, replies=()):
         host, model = self.host(list(replies))
         service = host.services.start(self.spec())
-        self.addCleanup(service.close)
+
+        def close_service():
+            service.close()
+            self.assertTrue(
+                service.wait_closed(30),
+                "Service must finish cleanup before removing the fixture.",
+            )
+
+        self.addCleanup(close_service)
         credentials = ControlClient(self.control).credentials()
         return host, model, service, credentials
 
@@ -693,3 +701,26 @@ print('portable client imports')
             timeout=10,
         )
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_control_request_uses_configured_transport_window_without_a_fixed_ceiling(
+        self,
+    ):
+        from homebrew_harness.runtime.limits import limits_scope
+
+        _, _, owner, credentials = self.service()
+        client = ControlClient(connection=credentials)
+        self.addCleanup(client.close)
+        observed = []
+        original = client._http().stream
+
+        def stream(*args, **kwargs):
+            observed.append(kwargs["timeout"])
+            return original(*args, **kwargs)
+
+        with (
+            patch.object(client._http(), "stream", stream),
+            limits_scope({"control_request_seconds": 90}),
+        ):
+            client.call(owner.id, "snapshot")
+            client.call(owner.id, "snapshot", timeout=120)
+        self.assertEqual(observed, [90, 120])

@@ -249,8 +249,11 @@ def install_context(runtime, work):
     values = receipts(runtime, work)
     context = {
         "service_id": runtime.id,
+        "control_root": str(runtime.store.root),
         "work_id": work["id"],
         "requirements_revision": work["requirements_revision"],
+        "continuation": work.get("continuation"),
+        "progress_history": work.get("progress_history",[]),
         "progress": seed(runtime.store.runtime, work),
         "verification": [
             {
@@ -265,7 +268,7 @@ def install_context(runtime, work):
                 )
                 if k in v
             }
-            for v in values[-8:]
+            for v in values
         ],
     }
     target = runtime.child_for(work).store

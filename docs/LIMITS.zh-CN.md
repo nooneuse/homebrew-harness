@@ -78,6 +78,8 @@ CI 研判要求分别返回 `classification` 与 `next_action`：前者描述现
 | 字段 | 默认值 |
 |---|---:|
 | `transport_attempts` | `3` |
+| `control_request_seconds` | `30` |
+| `control_socket_seconds` | `5` |
 | `transport_delay_seconds` | `0.1` |
 | `transport_delay_cap_seconds` | `1` |
 | `config_file_bytes` | `65536` |
@@ -118,6 +120,8 @@ CI 研判要求分别返回 `classification` 与 `next_action`：前者描述现
 | `git_status_entries` | `200` |
 | `git_diff_files` | `32` |
 | `git_diff_chars` | `12000` |
+| `git_output_bytes` | `64000000` |
+| `git_error_bytes` | `65536` |
 | `git_diff_file_bytes` | `1000000` |
 | `operation_input_chars` | `16000` |
 | `operation_read_chars` | `16000` |
@@ -254,3 +258,11 @@ CI 研判要求分别返回 `classification` 与 `next_action`：前者描述现
 | `project_context_chars` | `8000` |
 | `project_context_paths` | `16` |
 | `review_hint_paths` | `16` |
+| `service_page_rows` | `100` |
+| `service_job_batch` | `32` |
+| `execution_slots` | `8` |
+| `platform_query_pages` | `null` |
+| `blocker_reason_chars` | `null` |
+| `blocker_action_chars` | `null` |
+| `progress_item_chars` | `null` |
+| `progress_ref_chars` | `null` |

@@ -45,6 +45,8 @@ def command(delivery, method, payload, request_id):
                 )
 
             return perform(runtime, method, payload, request_id, inspect)
+        if payload.get("execution") is not None:
+            raise ValueError("Execution options apply to reconciliation, not immediate non-execution confirmation.")
         if (
             payload["conclusion"] != "retry_not_executed"
             or payload.get("confirmed") is not True
@@ -147,6 +149,7 @@ def command(delivery, method, payload, request_id):
                 payload["kind"],
                 body=payload.get("body"),
                 subject=payload.get("subject"),
+                draft=payload.get('draft',False),publication=payload.get('publication'),
             )
         if method == "delivery_request":
             action = delivery.store.get("actions", payload["id"], conn)

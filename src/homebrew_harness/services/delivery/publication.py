@@ -63,7 +63,7 @@ def prepare(delivery, row):
         store.current(current, conn)
         if current["revision"] != row["revision"]:
             raise StaleDelivery("Candidate changed before publication preparation.")
-        if current.get("change_request"):
+        if current.get('change_request') and current['state'] not in {'publication_denied','publication_attention'}:
             return False
         rejected = feedback(store, current, conn)
         publication = content(current)
@@ -80,7 +80,7 @@ def prepare(delivery, row):
         if current["state"] == "publication_attention" and current.get("publication_basis") == signature:
             return True
         existing = actions(store, current, conn)
-        if any(action["state"] in {"started", "unknown", "confirmed"} for action in existing):
+        if any(action["state"] in {"started", "unknown"} for action in existing):
             raise boundary_error(ValueError, "delivery_contract", "Publication effects must settle before changing their wording.")
         for action in existing:
             if action["state"] in {"queued", "awaiting_approval"}:
@@ -101,8 +101,8 @@ def prepare(delivery, row):
 def accept(store, row, job, result, conn):
     if row["state"] != "publication_drafting":
         raise StaleDelivery("Publication job is no longer current.")
-    if row.get("change_request") or any(action["state"] in {"started", "unknown", "confirmed"}
-                                      for action in actions(store, row, conn)):
+    if any(action["state"] in {"started", "unknown"}
+           for action in actions(store,row,conn)):
         raise boundary_error(ValueError, "delivery_contract", "Publication already has an accepted external effect.")
     rejected = job["input"].get("feedback")
     if result.get("human_required"):

@@ -40,6 +40,8 @@ def minimum(*values):
 @dataclass(frozen=True)
 class RuntimeLimits:
     transport_attempts: int = 3
+    control_request_seconds: float = 30
+    control_socket_seconds: float = 5
     transport_delay_seconds: float = 0.1
     transport_delay_cap_seconds: float = 1
     config_file_bytes: int = 65536
@@ -80,6 +82,8 @@ class RuntimeLimits:
     git_status_entries: int = 200
     git_diff_files: int = 32
     git_diff_chars: int = 12000
+    git_output_bytes: int = 64_000_000
+    git_error_bytes: int = 65536
     git_diff_file_bytes: int = 1_000_000
     operation_input_chars: int = 16000
     operation_read_chars: int = 16000
@@ -216,6 +220,14 @@ class RuntimeLimits:
     project_context_chars: int = 8000
     project_context_paths: int = 16
     review_hint_paths: int = 16
+    service_page_rows: int = 100
+    service_job_batch: int = 32
+    execution_slots: int = 8
+    platform_query_pages: int | None = None
+    blocker_reason_chars: int | None = None
+    blocker_action_chars: int | None = None
+    progress_item_chars: int | None = None
+    progress_ref_chars: int | None = None
 
     def __post_init__(self):
         nullable = {"benchmark_task_seconds", "benchmark_model_call_warning", "goal_evidence_records", "goal_reason_chars", "approval_reason_chars", "workflow_batch_items", "review_tracked_paths", "source_batch_events", "source_recovery_events", "manual_approval_seconds", "memory_record_chars", "todo_active_items", "progress_items", "goal_predicates", "goal_condition_chars", "test_selection_targets", "fixed_argv_items", "binding_catalog_entries", "routing_items", "communication_inline_comments", "communication_question_ids", "archive_inherited_ids", "model_tool_calls", "model_stream_events", "tool_pool_size", "todo_items", "service_sources", "service_scopes", "service_schedules", "service_text_chars", "review_evidence_paths", "run_retry_windows", "managed_members", "summary_chunks", "saved_output_links",
@@ -223,7 +235,7 @@ class RuntimeLimits:
                     "artifact_files", "artifact_profiles", "hard_context_chars",
                     "review_files", "review_pages", "mcp_selected_servers", "mcp_selected_tools", "mcp_server_tools", "team_members",
                     "mcp_discovery_pages", "mcp_discovery_tools", "subagent_call_warning", "declared_stages", "stage_read_paths", "stage_inputs", "batch_decisions",
-                    "user_input_queue", "backup_manifest_files", "merge_history_commits", "discussion_source_refs", "assessment_evidence_paths", "operation_audit_patterns", "upgrade_candidates", "delivery_batch_items", "storage_reference_depth", "workflow_output_attempts", "workflow_output_warning", "communication_poll_attempts"}
+                    "user_input_queue", "backup_manifest_files", "merge_history_commits", "discussion_source_refs", "assessment_evidence_paths", "operation_audit_patterns", "upgrade_candidates", "delivery_batch_items", "storage_reference_depth", "workflow_output_attempts", "workflow_output_warning", "communication_poll_attempts", "platform_query_pages", "blocker_reason_chars", "blocker_action_chars", "progress_item_chars", "progress_ref_chars"}
         for name, value in asdict(self).items():
             if name == "auto_compact":
                 if type(value) is not bool:

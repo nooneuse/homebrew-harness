@@ -46,6 +46,7 @@ class ControlServer(ThreadingHTTPServer):
         from homebrew_harness.security.data_boundary import register_private_values
 
         from homebrew_harness.runtime.limits import RuntimeLimits
+
         self.runtime_limits = RuntimeLimits.parse(runtime_limits)
         self.root = Path(root)
         self.dispatch = dispatch
@@ -94,7 +95,7 @@ class ControlServer(ThreadingHTTPServer):
 
             def setup(self):
                 super().setup()
-                self.connection.settimeout(5)
+                self.connection.settimeout(server.runtime_limits.control_socket_seconds)
                 with server.connection_lock:
                     server.connections.add(self.connection)
                     closing = server.closing
@@ -273,8 +274,11 @@ class ControlServer(ThreadingHTTPServer):
             def invoke(self, method, payload, request_id):
                 try:
                     from homebrew_harness.runtime.limits import limits_scope
+
                     with limits_scope(server.runtime_limits):
-                        result = server.dispatch(server.service_id, method, payload, request_id)
+                        result = server.dispatch(
+                            server.service_id, method, payload, request_id
+                        )
                 except Exception as error:
                     from homebrew_harness.security.data_boundary import redact
 
@@ -282,7 +286,11 @@ class ControlServer(ThreadingHTTPServer):
                     self.reply(
                         409 if code == "stale_reference" else 400,
                         code=code,
-                        message=redact(str(error)) if isinstance(error, ValueError) else error_message(error),
+                        message=(
+                            redact(str(error))
+                            if isinstance(error, ValueError)
+                            else error_message(error)
+                        ),
                         details=error_info(error),
                     )
                     return

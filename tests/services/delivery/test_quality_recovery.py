@@ -138,11 +138,16 @@ class QualityRecoveryTests(unittest.TestCase):
             if calls == 1:
                 raise RuntimeError('Synthetic verifier failure')
             return original(delivery, candidate, work)
-        with patch.object(quality, 'verify', verify):
+        original_propose=ServiceAgent.propose
+        def propose(agent,proposal,**kwargs):
+            if agent.job['kind']=='ci_triage':
+                proposal=json.dumps({'classification':'unknown','next_action':'defer','reason':'Synthetic verifier failure needs inspection.','plan':'Keep the fixed candidate and inspect the failure.'})
+            return original_propose(agent,proposal,**kwargs)
+        with patch.object(quality,'verify',verify),patch.object(ServiceAgent,'propose',propose):
             service = self.start(merge={'mode': 'manual', 'poll_seconds': .1})
             work = service.work.submit('Fix the scoped value.')
             row = eventually(lambda: next((r for r in service.runtime.maintenance.delivery.rows('changesets')
-                if r['state'] == 'failed'), None), 30)
+                if r['state'] == 'blocked' and r.get('error')=='model_defer'), None), 30)
             self.assertFalse(service.health()['ready'])
             issue = next(i for i in service.health()['issues'] if i['code'] == 'delivery_blocked')
             self.assertEqual(issue['changeset_id'], row['id'])
@@ -154,7 +159,7 @@ class QualityRecoveryTests(unittest.TestCase):
         current = service.runtime.maintenance.store.get('changesets', row['id'])
         self.assertEqual(current['candidate']['commit'], row['candidate']['commit'])
         self.assertEqual(service.store.work(work.id)['run_id'], run_id)
-        self.assertEqual(current['validation_history'][0]['error'], 'RuntimeError')
+        self.assertEqual(current['validation_history'][0]['error'], 'model_defer')
         self.assertFalse(any(i['code'] == 'delivery_blocked' for i in service.health()['issues']))
         store = service.runtime.maintenance.store
         with store.db.write() as conn:

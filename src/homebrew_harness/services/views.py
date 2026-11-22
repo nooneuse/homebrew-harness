@@ -102,9 +102,104 @@ class WorkHandle(Handle):
     def context(self, text, **kw):
         return self._control("work_context", text=text, **kw)
 
-    def plan_recovery(self, text="", **kw):
+    def plan_recovery(self, text="", *, execute=False, revision=None, request_id=None):
         """Request a read-only Lead proposal, without resuming execution."""
-        return self._control("work_recovery_plan", text=text, **kw)
+        return self.service.command(
+            "work_recovery_plan",
+            {
+                "id": self.id,
+                "revision": self.snapshot().revision if revision is None else revision,
+                "text": text,
+                "execute": execute,
+            },
+            request_id,
+        )
+
+    def sources(self):
+        return self.service.query("work_sources", {"id": self.id})
+
+    def read_source(
+        self, source_ref, path, *, offset=0, limit=10000, expected_version=None
+    ):
+        return self.service.query(
+            "work_source_read",
+            {
+                "id": self.id,
+                "source_ref": source_ref,
+                "path": path,
+                "offset": offset,
+                "limit": limit,
+                "expected_version": expected_version,
+            },
+        )
+
+    def compare_sources(
+        self, before, after, *, offset=0, limit=100, path=None, expected_version=None
+    ):
+        return self.service.query(
+            "work_source_compare",
+            {
+                "id": self.id,
+                "before": before,
+                "after": after,
+                "offset": offset,
+                "limit": limit,
+                "path": path,
+                "expected_version": expected_version,
+            },
+        )
+
+    def observe_target(self, *, execution=None, request_id=None):
+        return self.service.command(
+            "work_observe_target", {"id": self.id, "execution": execution}, request_id
+        )
+
+    def continue_from(self, action, *, revision=None, execution=None, request_id=None):
+        return self.service.command(
+            "work_continue",
+            {
+                "id": self.id,
+                "action": action,
+                "revision": self.snapshot().revision if revision is None else revision,
+                "execution": execution,
+            },
+            request_id,
+        )
+
+    def apply_recovery(
+        self,
+        *,
+        job_id=None,
+        start=False,
+        revision=None,
+        execution=None,
+        request_id=None,
+    ):
+        return self.service.command(
+            "work_apply_recovery",
+            {
+                "id": self.id,
+                "job_id": job_id,
+                "start": start,
+                "revision": self.snapshot().revision if revision is None else revision,
+                "execution": execution,
+            },
+            request_id,
+        )
+
+    def control_integration(
+        self, operation, *, revision=None, execution=None, request_id=None
+    ):
+        return self.service.command(
+            "work_integration_control",
+            {
+                "id": self.id,
+                "operation": operation,
+                "revision": self.snapshot().revision if revision is None else revision,
+                "execution": execution,
+            },
+            request_id,
+        )
 
     def progress(self):
         return self.service.query("work_progress", {"id": self.id})
@@ -112,8 +207,16 @@ class WorkHandle(Handle):
     def revise(self, text, **kw):
         return self._control("work_revise", text=text, **kw)
 
-    def executions(self):
-        return self.service.query("work_executions", {"id": self.id})
+    def executions(self, *, cursor=0, limit=20):
+        return self.service.query(
+            "work_executions", {"id": self.id, "cursor": cursor, "limit": limit}
+        )
+
+    def wait_execution(self, identity, seconds=10):
+        return self.service.query(
+            "work_execution_wait",
+            {"id": self.id, "execution_id": identity, "seconds": seconds},
+        )
 
     def execution(self, identity):
         return self.service.query(
@@ -199,9 +302,14 @@ class ServiceControls:
     def models(self):
         return self.query("service_models")
 
-    def configure_ci_limits(self, *, ci_fix_limit=None, ci_fix_warning=2, request_id=None):
-        return self.command("delivery_ci_limits",
-            {"ci_fix_limit": ci_fix_limit, "ci_fix_warning": ci_fix_warning}, request_id)
+    def configure_ci_limits(
+        self, *, ci_fix_limit=None, ci_fix_warning=2, request_id=None
+    ):
+        return self.command(
+            "delivery_ci_limits",
+            {"ci_fix_limit": ci_fix_limit, "ci_fix_warning": ci_fix_warning},
+            request_id,
+        )
 
     def configure_base_updates(self, mode="manual", *, request_id=None):
         return self.command("delivery_base_update", {"mode": mode}, request_id)
@@ -311,7 +419,11 @@ class ServiceControls:
         decision_id = decision_id or "decision_" + uuid.uuid4().hex
         control_id = "decision_" + request_key("decision", str(ref.data()), decision_id)
         if ref.target.kind == "service":
-            if ref.target.id != self.id or not ref.durable or set(values) - {"text", "allow_extra_attempt"}:
+            if (
+                ref.target.id != self.id
+                or not ref.durable
+                or set(values) - {"text", "allow_extra_attempt"}
+            ):
                 raise ValueError("Invalid service authority target or decision fields.")
             return self.command(
                 "service_decide",
@@ -406,9 +518,15 @@ class ServiceControls:
         conclusion="reconcile",
         confirmed=False,
         revision=None,
+        execution=None,
         request_id=None,
     ):
-        payload = {"id": identity, "conclusion": conclusion, "confirmed": confirmed}
+        payload = {
+            "id": identity,
+            "conclusion": conclusion,
+            "confirmed": confirmed,
+            "execution": execution,
+        }
         if conclusion != "reconcile":
             payload["revision"] = (
                 self.communication(identity)["revision"]
@@ -429,7 +547,16 @@ class ServiceControls:
         )
 
     def plan_delivery(
-        self, identity, kind, *, revision=None, body=None, subject=None, request_id=None
+        self,
+        identity,
+        kind,
+        *,
+        revision=None,
+        body=None,
+        subject=None,
+        draft=False,
+        publication=None,
+        request_id=None,
     ):
         revision = self.delivery(identity)["revision"] if revision is None else revision
         return self.command(
@@ -440,24 +567,75 @@ class ServiceControls:
                 "kind": kind,
                 "body": body,
                 "subject": subject,
+                "draft": draft,
+                "publication": publication,
             },
             request_id,
         )
 
     def inspect_delivery(
-        self, identity, *, conclusion="reconcile", confirmed=False, request_id=None
+        self,
+        identity,
+        *,
+        conclusion="reconcile",
+        confirmed=False,
+        execution=None,
+        request_id=None,
     ):
         return self.command(
             "delivery_inspect",
-            {"id": identity, "conclusion": conclusion, "confirmed": confirmed},
+            {
+                "id": identity,
+                "conclusion": conclusion,
+                "confirmed": confirmed,
+                "execution": execution,
+            },
             request_id,
         )
 
     def request_delivery(self, identity, *, request_id=None):
         return self.command("delivery_request", {"id": identity}, request_id)
 
-    def refresh_delivery(self, identity, *, request_id=None):
-        return self.command("delivery_refresh", {"id": identity}, request_id)
+    def refresh_delivery(self, identity, *, execution=None, request_id=None):
+        return self.command(
+            "delivery_refresh", {"id": identity, "execution": execution}, request_id
+        )
+
+    def executions(self, *, cursor=0, limit=20):
+        return self.query("service_executions", {"cursor": cursor, "limit": limit})
+
+    def execution(self, identity):
+        return self.query("service_execution_get", {"execution_id": identity})
+
+    def wait_execution(self, identity, seconds=10):
+        return self.query(
+            "service_execution_wait", {"execution_id": identity, "seconds": seconds}
+        )
+
+    def execution_output(self, identity, *, cursor=0, limit=16000, stream="output"):
+        return self.query(
+            "service_execution_output",
+            {
+                "execution_id": identity,
+                "cursor": cursor,
+                "limit": limit,
+                "stream": stream,
+            },
+        )
+
+    def stop_execution(self, identity, *, execution_revision=None, request_id=None):
+        return self.command(
+            "service_execution_stop",
+            {"execution_id": identity, "execution_revision": execution_revision},
+            request_id,
+        )
+
+    def send_execution_input(self, identity, text, *, request_id=None):
+        return self.command(
+            "service_execution_input",
+            {"execution_id": identity, "text": text},
+            request_id,
+        )
 
     def batch(self, requests, *, request_id=None):
         return self.command(
@@ -488,10 +666,16 @@ class ServiceControls:
             {"kind": kind, "cursor": cursor, "limit": limit, "state": state},
         )
 
-    def record(self, kind, identity, *, offset=0, limit=4000):
+    def record(self, kind, identity, *, offset=0, limit=4000, expected_version=None):
         return self.query(
             "service_read",
-            {"kind": kind, "identity": identity, "offset": offset, "limit": limit},
+            {
+                "kind": kind,
+                "identity": identity,
+                "offset": offset,
+                "limit": limit,
+                "expected_version": expected_version,
+            },
         )
 
     def converse(
@@ -533,6 +717,12 @@ class ServiceControls:
 
     def job(self, identity):
         return self.query("job_get", {"id": identity})
+
+    def control_job(self, identity, operation, *, text=None, request_id=None):
+        payload = {"id": identity, "operation": operation}
+        if text is not None:
+            payload["text"] = text
+        return self.command("job_control", payload, request_id)
 
     def schedules(self, *, cursor=0, limit=20):
         return self.query("schedules", {"cursor": cursor, "limit": limit})

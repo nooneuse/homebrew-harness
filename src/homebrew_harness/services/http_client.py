@@ -100,6 +100,7 @@ class ControlConnection:
 
     def __post_init__(self):
         from homebrew_harness.runtime.limits import positive
+
         positive(self.max_frame_bytes, "control.max_frame_bytes", integer=True)
         object.__setattr__(self, "endpoint", validate_endpoint(self.endpoint))
         if not isinstance(self.service_id, str) or not SERVICE_ID.fullmatch(
@@ -163,7 +164,13 @@ class ControlConnection:
             ):
                 raise ValueError("Invalid control credential environment reference.")
             token = os.environ.get(name)
-        return cls(value["endpoint"], value["service_id"], token, value.get("instance"), value.get("max_frame_bytes", 256 * 1024))
+        return cls(
+            value["endpoint"],
+            value["service_id"],
+            token,
+            value.get("instance"),
+            value.get("max_frame_bytes", 256 * 1024),
+        )
 
 
 def descriptor_path(root):
@@ -199,11 +206,16 @@ class ControlClient:
                 self._client = httpx.Client(trust_env=False, follow_redirects=False)
             return self._client
 
-    def call(self, service_id, method, payload=None, request_id=None, timeout=10):
+    def call(self, service_id, method, payload=None, request_id=None, timeout=None):
+        from homebrew_harness.runtime.limits import current_limits
+
+        timeout = (
+            current_limits().control_request_seconds if timeout is None else timeout
+        )
         if (
             type(timeout) not in {int, float}
             or not math.isfinite(timeout)
-            or not 0 < timeout <= 60
+            or timeout <= 0
         ):
             raise ValueError("Invalid control timeout.")
         if method in COMMAND_METHODS and request_id is None:
@@ -215,7 +227,11 @@ class ControlClient:
             "payload": payload if payload is not None else {},
             "request_id": request_id,
         }
-        details = {"request_id": request_id, "method": method}
+        details = {
+            "request_id": request_id,
+            "method": method,
+            "timeout_seconds": timeout,
+        }
         try:
             validate_envelope(value)
         except ValueError as error:
@@ -307,7 +323,11 @@ class ControlClient:
                 result.get("message", "Control command failed."),
                 code=result.get("code", "control_error"),
                 ref=ExecutionRef("service", service_id),
-                details={**details, "status": status, "error_info": result.get("details")},
+                details={
+                    **details,
+                    "status": status,
+                    "error_info": result.get("details"),
+                },
             )
         if status != 200 or "result" not in result:
             raise SDKError(

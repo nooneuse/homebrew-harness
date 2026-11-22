@@ -336,12 +336,14 @@ TOOLS = [
     ),
     define_tool(
         "update_task",
-        "Add predecessor task IDs to a pending unowned task. Use exact IDs returned by create_task; self-dependencies, missing tasks and cycles are rejected.",
+        "Add/remove or replace dependencies of a pending unowned model task. Explicit host stages keep their contract; self-dependencies, missing tasks and cycles are rejected.",
         {
             "task_id": NONEMPTY_STRING,
             "addBlockedBy": {"type": "array", "items": NONEMPTY_STRING},
+            "removeBlockedBy": {"type": "array", "items": NONEMPTY_STRING},
+            "blockedBy": {"type": "array", "items": NONEMPTY_STRING},
         },
-        ["task_id", "addBlockedBy"],
+        ["task_id"],
     ),
     define_tool(
         "list_tasks",
@@ -689,3 +691,6 @@ TEAMMATE_TOOL_NAMES = TEAMMATE_TOOL_NAMES | {"invoke_tool"}
 TOOLS.append(INVOKE_TOOL)
 SUB_TOOLS.append(INVOKE_TOOL)
 TEAMMATE_TOOLS.append(INVOKE_TOOL)
+
+from homebrew_harness.services.model_work_tools import definitions as _work_definitions
+SERVICE_TOOL_DEFINITIONS.extend(_work_definitions())

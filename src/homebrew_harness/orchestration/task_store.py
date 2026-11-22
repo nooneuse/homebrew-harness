@@ -280,12 +280,19 @@ class TaskStore:
             pending.extend(self._load(current).blockedBy)
         return False
 
-    def update_dependencies(self, task_id: str, add_blocked_by: list[str]) -> Task:
+    def update_dependencies(self, task_id: str, add_blocked_by=None, *, remove_blocked_by=None, blocked_by=None) -> Task:
         self._id(task_id)
+        add_blocked_by=[] if add_blocked_by is None else add_blocked_by
+        remove_blocked_by=[] if remove_blocked_by is None else remove_blocked_by
+        if blocked_by is not None and (add_blocked_by or remove_blocked_by):
+            raise ValueError('Replace dependencies separately from add/remove.')
+        if not isinstance(remove_blocked_by,list) or blocked_by is not None and not isinstance(blocked_by,list):
+            raise ValueError('Dependency updates require arrays of task IDs.')
         if not isinstance(add_blocked_by, list):
             raise ValueError("addBlockedBy must be an array of task IDs.")
         for dependency in add_blocked_by:
             self._id(dependency)
+        for dependency in [*remove_blocked_by,*(blocked_by or [])]:self._id(dependency)
         with self._lock():
             task = self._load(task_id)
             if task.stage is not None:
@@ -294,9 +301,9 @@ class TaskStore:
                 raise ValueError(
                     "Dependencies can only be updated while pending and unowned."
                 )
-            edges = list(task.blockedBy)
+            edges = [] if blocked_by is not None else [v for v in task.blockedBy if v not in remove_blocked_by]
             # Validate the entire proposal before publishing any of its edges.
-            for dependency in dict.fromkeys(add_blocked_by):
+            for dependency in dict.fromkeys(blocked_by if blocked_by is not None else add_blocked_by):
                 if dependency == task_id:
                     raise ValueError("Task cannot depend on itself.")
                 self._load(dependency)
@@ -550,7 +557,8 @@ class TaskStore:
             result = self.create(**arguments).to_dict()
         elif name == "update_task":
             result = self.update_dependencies(
-                arguments["task_id"], arguments["addBlockedBy"]
+                arguments["task_id"], arguments.get("addBlockedBy",[]),
+                remove_blocked_by=arguments.get('removeBlockedBy'), blocked_by=arguments.get('blockedBy')
             ).to_dict()
         elif name == "get_task":
             result = self.load(arguments["task_id"]).to_dict()

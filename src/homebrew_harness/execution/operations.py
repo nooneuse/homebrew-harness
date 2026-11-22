@@ -113,20 +113,23 @@ class OperationHandle(Handle):
         self._require_result()
         return self.manager.get(self.id)['result']
 
-    def output(self, cursor=0, limit=16000):
-        return self.manager.output(self.id, cursor, limit)
+    def output(self, cursor=0, limit=16000, *, stream='output'):
+        return self.manager.output(self.id, cursor, limit, stream=stream)
+
+    def input(self, text, *, request_id=None):
+        return self.manager.input(self.id,text,request_id or uuid.uuid4().hex,trusted_host=True)
 
     def stop(self, revision=None, request_id=None):
         return self.manager.stop(self.id, revision, request_id)
 
 
 class Operations:
-    def __init__(self, workdir, owner, *, leases=None, parent=None, max_running=8):
+    def __init__(self, workdir, owner, *, leases=None, parent=None, max_running=None):
         self.root, self.owner = Path(workdir).resolve(), owner
         self.store = DurableStore(self.root)
         self._owns_leases = leases is None
         self.leases = leases or ExecutionLeases(self.root)
-        self.parent, self.max_running = parent, max_running
+        self.parent, self.max_running = parent, current_limits().execution_slots if max_running is None else max_running
         self.changed = threading.Event()
         self.lock = threading.RLock()
         self.workers = Workers()
@@ -343,10 +346,11 @@ class Operations:
         text = row['output'][start-row['output_base']:start-row['output_base']+limit]
         return {'id': identity, 'state': row['state'], 'content': text, 'next_cursor': start+len(text), 'omitted_before': row['output_base'], 'execution_pending': row['execution_pending']}
 
-    def start(self, name, arguments, execute, *, execution=None, request_id=None, deadline=None, read_only=False, checkpoint=None, settled=None):
+    def start(self, name, arguments, execute, *, execution=None, request_id=None, deadline=None, read_only=False, checkpoint=None, settled=None, resume_interrupted=False):
         config = options(execution)
         signature = hashlib.sha256(json.dumps([name, arguments, config], sort_keys=True).encode()).hexdigest()
         identity = 'exec_' + hashlib.sha256((self.owner + ':' + (request_id or uuid.uuid4().hex)).encode()).hexdigest()[:32]
+        recovered=[]
         with self.lock:
             previous = self.store.get('executions', identity)
             if identity not in self.rows and previous is not None:
@@ -354,7 +358,11 @@ class Operations:
             if identity in self.rows:
                 if self.rows[identity]['signature'] != signature:
                     raise ValueError('Execution request_id already has different arguments.')
-                return self.handle(identity)
+                if resume_interrupted and self.rows[identity]['state']=='interrupted':
+                    previous=self.rows.pop(identity)
+                    recovered=[*previous.get('recovery_history',[]),{k:previous.get(k) for k in ('instance','state','created_at','finished_at','result','cleanup')}]
+                else:
+                    return self.handle(identity)
             if self.closed:
                 raise ValueError('Execution owner is closed.')
             if sum(row['execution_pending'] for row in self.rows.values()) >= self.max_running:
@@ -366,6 +374,7 @@ class Operations:
                    'execution_pending': True, 'cleanup': {'complete': False}, 'effect_state': 'not_started',
                    'read_only': read_only, 'output': '', 'output_base': 0, 'last_output_at': None,
                    'accepts_input': False, 'result': None, 'delivered': False, 'controls': {}, 'timeout_seconds': config['timeout_seconds']}
+            if recovered:row['recovery_history']=recovered
             self.rows[identity] = row
             cancel, done = threading.Event(), threading.Event()
             self.cancel[identity], self.done[identity] = cancel, done

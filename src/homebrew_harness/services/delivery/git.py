@@ -66,11 +66,17 @@ class GitBackend:
         data=None,
         credentials=False,
         deadline=None,
-        max_output=64_000_000,
+        max_output=None,
         env_extra=None,
         accepted_codes=(0,),
     ):
         from homebrew_harness.execution.test_runner import executable_identity
+        from homebrew_harness.runtime.errors import boundary_error
+        from homebrew_harness.security.data_boundary import redact
+
+        max_output = (
+            current_limits().git_output_bytes if max_output is None else max_output
+        )
 
         if executable_identity(self.spec["git_executable"]) != self.executable:
             raise ValueError("Delivery Git executable changed.")
@@ -135,12 +141,32 @@ class GitBackend:
             stdout.seek(0)
             out = stdout.read(max_output + 1)
             stderr.seek(0)
-            stderr.read(65536)
+            detail = redact(
+                stderr.read(current_limits().git_error_bytes).decode(
+                    "utf-8", errors="replace"
+                )
+            ).strip()
             if len(out) > max_output:
-                raise ValueError("Git output exceeds its bound.")
+                raise boundary_error(
+                    ValueError,
+                    "git_output_limit",
+                    "Git output exceeds its configured read buffer.",
+                    limit_name="runtime_limits.git_output_bytes",
+                    limit_value=max_output,
+                    observed_value=stdout.seek(0, 2),
+                    unit="bytes",
+                )
             if process.returncode not in accepted_codes:
-                raise ValueError(
-                    "Controlled Git operation failed (" + str(process.returncode) + ")."
+                raise boundary_error(
+                    ValueError,
+                    "git_command_failed",
+                    "Controlled Git operation failed ("
+                    + str(process.returncode)
+                    + ")."
+                    + (" " + detail if detail else ""),
+                    exit_code=process.returncode,
+                    stderr=detail,
+                    stderr_limit_bytes=current_limits().git_error_bytes,
                 )
             return out
 
@@ -192,8 +218,12 @@ class GitBackend:
         head = self.tree(candidate["repo"], candidate["commit"])
         return {
             path: (
-                {"deleted": True} if path not in head else
-                {key: candidate["files"][path][key] for key in ("sha256", "executable")}
+                {"deleted": True}
+                if path not in head
+                else {
+                    key: candidate["files"][path][key]
+                    for key in ("sha256", "executable")
+                }
             )
             for path in sorted(set(base) | set(head))
             if base.get(path) != head.get(path)
@@ -203,6 +233,10 @@ class GitBackend:
         return self.run(["--git-dir=" + str(repo), "cat-file", "blob", oid])
 
     def prepare(self, work, workspace, baseline, directory, *, previous=None):
+        if work.get("continuation"):
+            from .selected_source import prepare
+
+            return prepare(self, work, workspace, baseline, directory)
         directory = Path(directory)
         directory.mkdir(parents=True, exist_ok=True)
         repo = directory / "repo.git"
@@ -225,7 +259,9 @@ class GitBackend:
             raise ValueError("Work changes exceed its approved paths.")
         if previous:
             base = previous["commit"]
-        elif self.spec.get("base_update", "manual") == "manual" and baseline.get("head"):
+        elif self.spec.get("base_update", "manual") == "manual" and baseline.get(
+            "head"
+        ):
             base = baseline["head"]
         else:
             base = self.ref(self.spec["target_branch"])
@@ -467,8 +503,14 @@ class GitBackend:
             "conflicts": conflicts,
             "initial_input_changes": sorted(initial_dirty),
             "snapshot_limits": work["run_spec"]["snapshot_limits"],
-            **({"review_rewrite": True, "origin_candidate": previous["origin_candidate"]}
-               if previous and previous.get("review_rewrite") else {}),
+            **(
+                {
+                    "review_rewrite": True,
+                    "origin_candidate": previous["origin_candidate"],
+                }
+                if previous and previous.get("review_rewrite")
+                else {}
+            ),
         }
 
     def verify(self, candidate):

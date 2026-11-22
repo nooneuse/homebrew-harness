@@ -22,7 +22,11 @@ from .maintenance_spec import number
 from .job_contracts import JobContract
 from .protocol import fingerprint
 
-SERVICE_TOOLS = frozenset({"service_read", "service_propose", "service_read_code"})
+from .model_work_tools import NAMES as WORK_TOOLS
+
+SERVICE_TOOLS = (
+    frozenset({"service_read", "service_propose", "service_read_code"}) | WORK_TOOLS
+)
 
 
 class ServiceAgent:
@@ -71,9 +75,12 @@ class ServiceAgent:
         self.used_phases = set()
         self.code_evidence = {}
         from .communication.prompts import defaults, identity
+
         self.builtin_prompts = defaults()
         self.discussion_prompts = None
-        self.prompt_identity = identity(runtime.spec.communication.get("prompt_files", {}), self.builtin_prompts)
+        self.prompt_identity = identity(
+            runtime.spec.communication.get("prompt_files", {}), self.builtin_prompts
+        )
         self.override_bindings = {}
         from .model_control import ServiceModels
 
@@ -120,18 +127,72 @@ class ServiceAgent:
                 properties[name] = {
                     key: item for key, item in value.items() if key != "pattern"
                 }
-            if function.get("name") == "service_read" and self.job and self.job["kind"] in {"review", "ci_triage", "publication", "validation_plan"}:
-                properties["kind"]["enum"] = ["changesets", "work", "requirements", "events", "evidence",
-                                                "policy", "job", "project_context", "quality_output"]
-                properties["identity"]["description"] = "Use exact IDs from input: changesets=job.target, work=input.work_context.id, quality_output=quality[].outputs[].id."
-            if function.get("name") != "service_read" or not self.job or self.job["kind"] != "discussion":
+            if self.job and self.job["kind"] != "conversation":
+                if function.get("name") == "service_manage_execution":
+                    properties["operation"]["enum"] = [
+                        "list",
+                        "inspect",
+                        "read",
+                        "wait",
+                    ]
+                    function["description"] = (
+                        "Observe owned Work executions and their real results. This proposal job cannot stop or steer execution."
+                    )
+                elif function.get("name") == "service_integration_control":
+                    properties["operation"]["enum"] = ["inspect"]
+                    function["description"] = (
+                        "Inspect the selected Git integration. Apply changes only through an admitted Work action, not a read-only proposal."
+                    )
+            if (
+                function.get("name") == "service_read"
+                and self.job
+                and self.job["kind"]
+                in {
+                    "review",
+                    "ci_triage",
+                    "publication",
+                    "validation_plan",
+                    "recovery_plan",
+                }
+            ):
+                properties["kind"]["enum"] = [
+                    "changesets",
+                    "work",
+                    "requirements",
+                    "events",
+                    "evidence",
+                    "policy",
+                    "job",
+                    "project_context",
+                    "quality_output",
+                ]
+                properties["identity"][
+                    "description"
+                ] = "Use exact IDs from input: changesets=job.target, work=input.work_context.id, quality_output=quality[].outputs[].id."
+            if (
+                function.get("name") != "service_read"
+                or not self.job
+                or self.job["kind"] != "discussion"
+            ):
                 continue
             properties["kind"]["enum"] = [
-                "discussions", "discussion_events", "events", "rounds", "review_snapshots",
-                "review_operations", "communication_actions", "decisions", "requirements",
-                "work", "policy", "job", "project_context",
+                "discussions",
+                "discussion_events",
+                "events",
+                "rounds",
+                "review_snapshots",
+                "review_operations",
+                "communication_actions",
+                "decisions",
+                "requirements",
+                "work",
+                "policy",
+                "job",
+                "project_context",
             ]
-            properties["identity"]["description"] = "Use the exact current job/topic ID or an ID returned by the frozen evidence directory. Never invent placeholders."
+            properties["identity"][
+                "description"
+            ] = "Use the exact current job/topic ID or an ID returned by the frozen evidence directory. Never invent placeholders."
             ids = {"", self.job["id"], self.job["target"]}
             ids.update(self.job["input"].get("events", []))
             for field in ("review_id", "work_id"):
@@ -141,13 +202,39 @@ class ServiceAgent:
                 for item in self.job["input"]["projection"].get(field, []):
                     ids.update(item.get("sources", []))
             with self.store.db.connection() as conn:
-                count = conn.execute("SELECT count(*) FROM records WHERE section='service_events' AND owner=? AND json_extract(value,'$.discussion_id')=? AND json_extract(value,'$.sequence')<=?", ("service:" + self.store.id, self.job["target"], self.job["input"]["seq"])).fetchone()[0]
+                count = conn.execute(
+                    "SELECT count(*) FROM records WHERE section='service_events' AND owner=? AND json_extract(value,'$.discussion_id')=? AND json_extract(value,'$.sequence')<=?",
+                    (
+                        "service:" + self.store.id,
+                        self.job["target"],
+                        self.job["input"]["seq"],
+                    ),
+                ).fetchone()[0]
             if count <= 32 and len(ids) <= 32:
                 with self.store.db.connection() as conn:
-                    ids.update(row[0] for row in conn.execute("SELECT key FROM records WHERE section='service_events' AND owner=? AND json_extract(value,'$.discussion_id')=? AND json_extract(value,'$.sequence')<=?", ("service:" + self.store.id, self.job["target"], self.job["input"]["seq"])))
-                for section in ("service_decisions", "service_requirements", "service_communication_actions", "service_review_operations", "service_discussion_rounds"):
+                    ids.update(
+                        row[0]
+                        for row in conn.execute(
+                            "SELECT key FROM records WHERE section='service_events' AND owner=? AND json_extract(value,'$.discussion_id')=? AND json_extract(value,'$.sequence')<=?",
+                            (
+                                "service:" + self.store.id,
+                                self.job["target"],
+                                self.job["input"]["seq"],
+                            ),
+                        )
+                    )
+                for section in (
+                    "service_decisions",
+                    "service_requirements",
+                    "service_communication_actions",
+                    "service_review_operations",
+                    "service_discussion_rounds",
+                ):
                     with self.store.db.connection() as conn:
-                        rows = conn.execute("SELECT key FROM records WHERE section=? AND owner=? AND json_extract(value,'$.discussion_id')=? LIMIT 33", (section, "service:" + self.store.id, self.job["target"])).fetchall()
+                        rows = conn.execute(
+                            "SELECT key FROM records WHERE section=? AND owner=? AND json_extract(value,'$.discussion_id')=? LIMIT 33",
+                            (section, "service:" + self.store.id, self.job["target"]),
+                        ).fetchall()
                     ids.update(row[0] for row in rows)
                 if len(ids) <= 32:
                     properties["identity"]["enum"] = sorted(ids)
@@ -160,38 +247,68 @@ class ServiceAgent:
             "service_read_code": self.read_code,
             "glob": self.glob,
             "search_text": self.search,
+            **self.work_tools(),
         }
 
-    def read(self, kind, identity="", offset=0, limit=4000, workdir=None):
+    def read(
+        self,
+        kind,
+        identity="",
+        offset=0,
+        limit=4000,
+        expected_version=None,
+        workdir=None,
+    ):
         contract = JobContract(self.store, self.job)
         contract.authorize(kind, identity)
         number(offset, "offset", 0, 2**63 - 1, integer=True)
         number(limit, "limit", 1, 16000, integer=True)
         if kind == "quality_output":
             from .delivery.quality import read_output
-            return json.dumps(read_output(contract.primary(), identity, offset, limit), ensure_ascii=False)
+
+            primary = contract.primary()
+            if contract.kind == "recovery_plan":
+                primary = self.store.get("changesets", primary["changeset_id"])
+            return json.dumps(
+                read_output(primary, identity, offset, limit), ensure_ascii=False
+            )
         if kind == "evidence":
             record = self.store.get(kind, identity)
             if record.get("kind") == "published_source_reference":
                 text = record["text"]
-                return json.dumps({"id": identity, "source_commit": record.get("source_commit"),
-                    "offset": offset, "length": len(text), "text": text[offset:offset + limit],
-                    "next_offset": offset + limit if offset + limit < len(text) else None}, ensure_ascii=False)
+                return json.dumps(
+                    {
+                        "id": identity,
+                        "source_commit": record.get("source_commit"),
+                        "offset": offset,
+                        "length": len(text),
+                        "text": text[offset : offset + limit],
+                        "next_offset": (
+                            offset + limit if offset + limit < len(text) else None
+                        ),
+                    },
+                    ensure_ascii=False,
+                )
         if kind == "project_context":
             raw = json.dumps(self.project_context, ensure_ascii=False)
-            return json.dumps({"text": raw[offset:offset + limit], "length": len(raw),
-                               "next_offset": offset + limit if offset + limit < len(raw) else None})
-        override = contract.override(kind, identity)
-        if override is not None:
-            raw = json.dumps(override, ensure_ascii=False)
             return json.dumps(
                 {
                     "text": raw[offset : offset + limit],
                     "length": len(raw),
-                    "next_offset": offset + limit
-                    if offset + limit < len(raw)
-                    else None,
-                },
+                    "next_offset": (
+                        offset + limit if offset + limit < len(raw) else None
+                    ),
+                }
+            )
+        override = contract.override(kind, identity)
+        if override is not None:
+            raw = json.dumps(override, ensure_ascii=False)
+            from .record_pages import RecordPages
+
+            if not hasattr(self, "record_pages"):
+                self.record_pages = RecordPages()
+            return json.dumps(
+                self.record_pages.page(raw, offset, limit, expected_version),
                 ensure_ascii=False,
             )
         if (
@@ -247,7 +364,13 @@ class ServiceAgent:
             "requirements",
         }:
             return json.dumps(
-                self.store.read(kind, identity, offset=offset, limit=limit),
+                self.store.read(
+                    kind,
+                    identity,
+                    offset=offset,
+                    limit=limit,
+                    expected_version=expected_version,
+                ),
                 ensure_ascii=False,
             )
         elif kind == "history":
@@ -255,12 +378,12 @@ class ServiceAgent:
         else:
             raise ValueError("Unsupported service read kind.")
         raw = json.dumps(value, ensure_ascii=False)
+        from .record_pages import RecordPages
+
+        if not hasattr(self, "record_pages"):
+            self.record_pages = RecordPages()
         return json.dumps(
-            {
-                "text": raw[offset : offset + limit],
-                "length": len(raw),
-                "next_offset": offset + limit if offset + limit < len(raw) else None,
-            },
+            self.record_pages.page(raw, offset, limit, expected_version),
             ensure_ascii=False,
         )
 
@@ -300,12 +423,17 @@ class ServiceAgent:
             )
         if self.job and self.job["kind"] == "audit":
             return Path(self.store.get("audits", self.job["target"])["workspace"])
-        if self.job and self.job["kind"] in {"review", "ci_triage", "publication", "validation_plan"}:
-            return Path(
-                self.store.get("changesets", self.job["target"])["candidate"][
-                    "workspace"
-                ]
-            )
+        if self.job and self.job["kind"] in {
+            "review",
+            "ci_triage",
+            "publication",
+            "validation_plan",
+        }:
+            row = self.store.get("changesets", self.job["target"])
+            if row.get("candidate"):
+                return Path(row["candidate"]["workspace"])
+            work = self.store.store.work(row["work_id"], self.store.id)
+            return Path(work.get("run_workspace") or self.runtime.spec.workspace)
         return Path(self.runtime.spec.workspace)
 
     def glob(self, pattern, workdir=None):
@@ -336,7 +464,9 @@ class ServiceAgent:
 
         root = self.code_root()
         if path == "project_context" and not (root / path).is_file():
-            raise ValueError("project_context is JSON evidence, not a file. Use service_read(kind='project_context') or a real file path from its documents/subcommands.")
+            raise ValueError(
+                "project_context is JSON evidence, not a file. Use service_read(kind='project_context') or a real file path from its documents/subcommands."
+            )
         if path.startswith("@base/"):
             if (
                 not self.job
@@ -355,28 +485,47 @@ class ServiceAgent:
         number(limit, "limit", 1, 500, integer=True)
         if self.stage != "reply":
             from .project_context import file_version
+
             try:
                 self.code_evidence[path] = file_version(root, path)
             except (OSError, ValueError):
                 self.code_evidence[path] = None
-        return run_read(path=path, offset=offset, limit=limit, expected_version=expected_version, workdir=root)
+        return run_read(
+            path=path,
+            offset=offset,
+            limit=limit,
+            expected_version=expected_version,
+            workdir=root,
+        )
 
     def propose(self, proposal, workdir=None):
         self.proposal = None
         raw = json.loads(proposal)
         selected = raw.pop("evidence_paths", None) if isinstance(raw, dict) else None
         allowed = set(self.code_evidence)
-        allowed.update(d["path"] for d in (self.project_context or {}).get("documents", []))
+        allowed.update(
+            d["path"] for d in (self.project_context or {}).get("documents", [])
+        )
         evidence_limit = current_limits().assessment_evidence_paths
-        if selected is not None and (not isinstance(selected, list) or evidence_limit is not None and len(selected) > evidence_limit
-                or any(not isinstance(path, str) or path not in allowed for path in selected)):
-            raise ValueError("evidence_paths must select provided or read project files.")
+        if selected is not None and (
+            not isinstance(selected, list)
+            or evidence_limit is not None
+            and len(selected) > evidence_limit
+            or any(
+                not isinstance(path, str) or path not in allowed for path in selected
+            )
+        ):
+            raise ValueError(
+                "evidence_paths must select provided or read project files."
+            )
         self.selected_evidence = selected
         if self.stage == "assessment":
             from .communication.reasoning import assessment
+
             self.proposal = assessment(self.store, self.job, raw)
         elif self.stage == "reply":
             from .communication.reasoning import reply
+
             self.proposal = reply(self.assessment_plan, raw, self.store, self.job)
         else:
             self.proposal = JobContract(self.store, self.job).validate(raw)
@@ -388,18 +537,40 @@ class ServiceAgent:
         count = self.phase_counts.get(self.phase_key, 0)
         limit = self.store.policy["job_turns"]
         if limit is not None and count >= limit:
-            raise boundary_error(ValueError, "service_job_turn_limit", "Service phase model-call limit reached.",
-                limit_name="maintenance.job_turns", limit_value=self.store.policy["job_turns"],
-                observed_value=count, unit="model_calls", phase=self.phase_key)
+            raise boundary_error(
+                ValueError,
+                "service_job_turn_limit",
+                "Service phase model-call limit reached.",
+                limit_name="maintenance.job_turns",
+                limit_value=self.store.policy["job_turns"],
+                observed_value=count,
+                unit="model_calls",
+                phase=self.phase_key,
+            )
         self.phase_counts[self.phase_key] = count + 1
 
     def observe_calls(self, messages):
         import time
         from homebrew_harness.runtime.limits import observe
-        observe(messages, [("job_attempts", self.job["attempts"], self.store.policy["job_attempt_warning"], "attempts"),
-                           ("job_elapsed", time.time() - self.job.get("started_at", time.time()),
-                            self.store.policy["job_warning_seconds"], "seconds")],
-                self.__dict__.setdefault("advisory_seen", {}))
+
+        observe(
+            messages,
+            [
+                (
+                    "job_attempts",
+                    self.job["attempts"],
+                    self.store.policy["job_attempt_warning"],
+                    "attempts",
+                ),
+                (
+                    "job_elapsed",
+                    time.time() - self.job.get("started_at", time.time()),
+                    self.store.policy["job_warning_seconds"],
+                    "seconds",
+                ),
+            ],
+            self.__dict__.setdefault("advisory_seen", {}),
+        )
         warning = self.store.policy["job_call_warning"]
         if warning is None:
             return
@@ -408,13 +579,19 @@ class ServiceAgent:
         if count < threshold:
             return
         from homebrew_harness.context.tracked_history import set_context
-        set_context(messages, "service_call_observation", {
-            "role": "user", "name": "service_call_observation",
-            "content": f"This Service phase has made {count} model calls, passing its advisory threshold of {warning}. "
+
+        set_context(
+            messages,
+            "service_call_observation",
+            {
+                "role": "user",
+                "name": "service_call_observation",
+                "content": f"This Service phase has made {count} model calls, passing its advisory threshold of {warning}. "
                 "This is an observation, not a stop condition or a request to approve unfinished work. "
                 "Assess current progress and remaining evidence; choose whether to continue or submit your conclusion. "
                 "Existing deadlines, authorization, verification and publication requirements still apply.",
-        })
+            },
+        )
         while threshold <= count:
             threshold *= 2
         self.phase_warning_at[self.phase_key] = threshold
@@ -422,59 +599,161 @@ class ServiceAgent:
     def complete_phase(self, calls, messages):
         from .phase_output import overview_signature, versions
         from .project_context import build
+
         if len(calls) != 1 or calls[0].name != "service_propose":
             if any(call.name == "service_propose" for call in calls):
                 self.proposal = None
-            messages.append({"role": "user", "content":
-                "Read the necessary results, then call service_propose by itself with the final phase candidate. Free text does not complete this phase."})
+            messages.append(
+                {
+                    "role": "user",
+                    "content": "Read the necessary results, then call service_propose by itself with the final phase candidate. Free text does not complete this phase.",
+                }
+            )
             return False
         if self.proposal is None:
             return False
-        if self.job["kind"] in {"review", "ci_triage", "publication", "validation_plan"}:
+        if self.job["kind"] in {
+            "review",
+            "ci_triage",
+            "publication",
+            "validation_plan",
+        }:
             latest = JobContract(self.store, self.job).input()
             signature = fingerprint(latest)
             if signature != self.phase_signature["primary"]:
                 self.phase_signature["primary"] = signature
                 self.proposal = None
-                messages.append({"role": "user", "content": json.dumps({"input": latest,
-                    "instruction": "Current Work instructions or candidate evidence changed during reasoning. Re-evaluate this current input and submit a new proposal; no authority is granted."}, ensure_ascii=False)})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "input": latest,
+                                "instruction": "Current Work instructions or candidate evidence changed during reasoning. Re-evaluate this current input and submit a new proposal; no authority is granted.",
+                            },
+                            ensure_ascii=False,
+                        ),
+                    }
+                )
                 return False
         if self.job["kind"] == "discussion":
             from .communication.reasoning import work_status
+
             latest = work_status(self.store, self.job)
             if latest != self.phase_work_status:
                 self.phase_work_status = latest
                 self.proposal = None
-                self.phase_signature["primary"] = fingerprint({**JobContract(self.store, self.job).primary(), "work_status": latest})
-                messages.append({"role": "user", "content": json.dumps({"work_status": latest,
-                    "instruction": "The recorded work state changed. Re-evaluate the public progress and submit a current candidate; original requirements are unchanged."})})
+                self.phase_signature["primary"] = fingerprint(
+                    {
+                        **JobContract(self.store, self.job).primary(),
+                        "work_status": latest,
+                    }
+                )
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "work_status": latest,
+                                "instruction": "The recorded work state changed. Re-evaluate the public progress and submit a current candidate; original requirements are unchanged.",
+                            }
+                        ),
+                    }
+                )
                 return False
         basis = dict(self.code_evidence)
         for document in (self.project_context or {}).get("documents", []):
-            if self.selected_evidence is not None and document["path"] in self.selected_evidence:
+            if (
+                self.selected_evidence is not None
+                and document["path"] in self.selected_evidence
+            ):
                 basis.setdefault(document["path"], document["sha256"])
         if self.selected_evidence is not None:
-            basis = {path: value for path, value in basis.items() if path in self.selected_evidence}
+            basis = {
+                path: value
+                for path, value in basis.items()
+                if path in self.selected_evidence
+            }
         root = self.code_root() if self.project_context is not None else None
-        current = build(root, self.runtime.spec.communication or {}) if root is not None else None
+        current = (
+            build(root, self.runtime.spec.communication or {})
+            if root is not None
+            else None
+        )
         observed = versions(root, basis)
-        changed = [{"path": path, "previous": value, "current": observed[path]}
-                   for path, value in basis.items() if value != observed[path]]
-        if overview_signature(current) != overview_signature(self.project_context) or changed:
+        changed = [
+            {"path": path, "previous": value, "current": observed[path]}
+            for path, value in basis.items()
+            if value != observed[path]
+        ]
+        if (
+            overview_signature(current) != overview_signature(self.project_context)
+            or changed
+        ):
             self.project_context = current
             self.code_evidence.update(observed)
             self.proposal = None
-            messages.append({"role": "user", "content": json.dumps({
-                "project_evidence_update": current, "changed_files": changed,
-                "instruction": "These are current repository observations, not new user requirements. Re-read relevant files, ignore irrelevant evidence explicitly with evidence_paths, or revise your candidate; then submit a current final phase candidate."}, ensure_ascii=False)})
+            messages.append(
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "project_evidence_update": current,
+                            "changed_files": changed,
+                            "instruction": "These are current repository observations, not new user requirements. Re-read relevant files, ignore irrelevant evidence explicitly with evidence_paths, or revise your candidate; then submit a current final phase candidate.",
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+            )
             return False
         saved = dict(self.store.job_get(self.job["id"]).get("phase_outputs", {}))
-        saved[self.phase_key] = {"signature": self.phase_signature,
-            "overview": overview_signature(current), "candidate": self.proposal,
-            "evidence": observed, "calls": self.phase_counts.get(self.phase_key, 0)}
+        saved[self.phase_key] = {
+            "signature": self.phase_signature,
+            "overview": overview_signature(current),
+            "candidate": self.proposal,
+            "evidence": observed,
+            "calls": self.phase_counts.get(self.phase_key, 0),
+        }
         self.store.prepare_job(self.job, phase_outputs=saved)
         self.code_evidence = observed
         return True
+
+    def bound_work(self):
+        if not self.job:
+            return None
+        kind = self.job["kind"]
+        if kind in {"triage", "recovery_plan"}:
+            return self.job["target"]
+        if kind in {"review", "ci_triage", "publication", "validation_plan"}:
+            return self.store.get("changesets", self.job["target"])["work_id"]
+        if kind == "conversation":
+            return self.store.get("messages", self.job["target"]).get("work_id")
+        return self.job.get("input", {}).get("work_id")
+
+    def work_tools(self):
+        from .model_work_tools import ModelWorkTools
+        from types import SimpleNamespace
+
+        work = self.bound_work()
+        if (
+            not work
+            or not self.runtime.maintenance.delivery
+            or getattr(self, "stage", None) == "reply"
+        ):
+            return {}
+        service = SimpleNamespace(
+            query=lambda name, args: self.runtime.dispatch(self.runtime.id, name, args),
+            command=lambda name, args, request_id=None: self.runtime.dispatch(
+                self.runtime.id,
+                name,
+                args,
+                request_id or __import__("uuid").uuid4().hex,
+            ),
+        )
+        return ModelWorkTools(
+            service, work, read_only=self.job["kind"] != "conversation"
+        ).tools()
 
     def run(self, job):
         self.advisory_seen = {}
@@ -494,11 +773,18 @@ class ServiceAgent:
         self.phase_warning_at = {}
         deadline = Deadline.after(self.store.policy["job_seconds"])
         with control_scope(deadline=deadline, cancel_events=(self.stop,)):
-            context = build(self.code_root(), self.runtime.spec.communication or {}) if JobContract(self.store, job).handler.code else None
+            context = (
+                build(self.code_root(), self.runtime.spec.communication or {})
+                if JobContract(self.store, job).handler.code
+                else None
+            )
             preparation = {"project_context": context}
             if job["kind"] == "discussion":
                 from .communication.prompts import load
-                self.discussion_prompts = self.store.job_get(job["id"]).get("discussion_prompts")
+
+                self.discussion_prompts = self.store.job_get(job["id"]).get(
+                    "discussion_prompts"
+                )
                 if self.discussion_prompts is None:
                     self.discussion_prompts = load(
                         self.runtime.spec.communication.get("prompt_files", {}),
@@ -508,29 +794,52 @@ class ServiceAgent:
                     preparation["discussion_prompts"] = self.discussion_prompts
             self.store.prepare_job(job, **preparation)
             from .phase_output import overview_signature, versions
+
             while True:
                 self.used_phases = set()
                 if job["kind"] == "discussion" and not job["input"].get("review_id"):
                     from .communication.reasoning import run
+
                     result = run(self, job, context, deadline)
                 else:
                     result = self._execute(job, project=context, deadline=deadline)
-                after = build(self.code_root(), self.runtime.spec.communication or {}) if context is not None else None
+                after = (
+                    build(self.code_root(), self.runtime.spec.communication or {})
+                    if context is not None
+                    else None
+                )
                 outputs = self.store.job_get(job["id"]).get("phase_outputs", {})
-                stale = [phase for phase in self.used_phases if phase in outputs and (
-                    outputs[phase]["overview"] != overview_signature(after)
-                    or outputs[phase]["evidence"] != versions(self.code_root() if context is not None else None, outputs[phase]["evidence"]))]
+                stale = [
+                    phase
+                    for phase in self.used_phases
+                    if phase in outputs
+                    and (
+                        outputs[phase]["overview"] != overview_signature(after)
+                        or outputs[phase]["evidence"]
+                        != versions(
+                            self.code_root() if context is not None else None,
+                            outputs[phase]["evidence"],
+                        )
+                    )
+                ]
                 assessment = self.store.job_get(job["id"]).get("discussion_assessment")
-                if assessment and (assessment["signature"]["project"] != overview_signature(after)
-                        or assessment.get("evidence", {}) != versions(self.code_root(), assessment.get("evidence", {}))):
+                if assessment and (
+                    assessment["signature"]["project"] != overview_signature(after)
+                    or assessment.get("evidence", {})
+                    != versions(self.code_root(), assessment.get("evidence", {}))
+                ):
                     stale.append("assessment")
                 if not stale:
                     return result
-                self.phase_feedback = {"changed_phases": stale,
-                    "instruction": "Repository observations changed after phase preparation. Saved candidates are available in this job's phase_outputs. Re-evaluate affected evidence; keep user requirements and fixed execution objects unchanged."}
+                self.phase_feedback = {
+                    "changed_phases": stale,
+                    "instruction": "Repository observations changed after phase preparation. Saved candidates are available in this job's phase_outputs. Re-evaluate affected evidence; keep user requirements and fixed execution objects unchanged.",
+                }
                 context = after
 
-    def _execute(self, job, *, project=None, stage=None, deadline=None, selected=None, plan=None):
+    def _execute(
+        self, job, *, project=None, stage=None, deadline=None, selected=None, plan=None
+    ):
         self.job, self.proposal = job, None
         self.project_context = project
         self.stage, self.assessment_plan, self.code_evidence = stage, plan, {}
@@ -542,35 +851,58 @@ class ServiceAgent:
         self.phase_work_status = None
         if kind == "discussion":
             from .communication.reasoning import work_status
+
             self.phase_work_status = work_status(self.store, job)
             primary = {**primary, "work_status": self.phase_work_status}
         if kind in {"review", "ci_triage", "publication", "validation_plan"}:
-            self.store.delivery.git.verify(primary["candidate"])
+            if primary.get("candidate"):
+                self.store.delivery.git.verify(primary["candidate"])
         if kind == "audit":
             from .operations.audit import verify
 
             verify(self.runtime, primary)
         from .phase_output import identity, valid
+
         self.phase_key = stage or ("combined" if kind == "discussion" else kind)
         self.used_phases.add(self.phase_key)
         preview = contract.input(primary)
-        self.phase_signature = {**identity(job, self.phase_key, self.binding, self.discussion_prompts, plan),
-                                "primary": fingerprint(preview if kind in {"review", "ci_triage", "publication", "validation_plan"} else primary)}
-        cached = self.store.job_get(job["id"]).get("phase_outputs", {}).get(self.phase_key)
+        self.phase_signature = {
+            **identity(
+                job, self.phase_key, self.binding, self.discussion_prompts, plan
+            ),
+            "primary": fingerprint(
+                preview
+                if kind in {"review", "ci_triage", "publication", "validation_plan"}
+                else primary
+            ),
+        }
+        cached = (
+            self.store.job_get(job["id"]).get("phase_outputs", {}).get(self.phase_key)
+        )
         root = self.code_root() if project is not None else None
         if valid(cached, self.phase_signature, project, root):
             try:
                 if stage == "assessment":
                     from .communication.reasoning import assessment
-                    candidate = assessment(self.store, job, {**cached["candidate"]["proposal"],
-                        "reply_required": cached["candidate"]["reply_required"]})
+
+                    candidate = assessment(
+                        self.store,
+                        job,
+                        {
+                            **cached["candidate"]["proposal"],
+                            "reply_required": cached["candidate"]["reply_required"],
+                        },
+                    )
                 elif stage == "reply":
                     from .communication.reasoning import reply
+
                     candidate = reply(plan, cached["candidate"], self.store, job)
                 else:
                     candidate = contract.validate(cached["candidate"])
             except (ValueError, KeyError, TypeError):
-                self.phase_feedback = {"instruction": "Saved phase output no longer matches the current contract; submit a current candidate."}
+                self.phase_feedback = {
+                    "instruction": "Saved phase output no longer matches the current contract; submit a current candidate."
+                }
             else:
                 self.code_evidence = dict(cached["evidence"])
                 self.proposal = candidate
@@ -586,6 +918,7 @@ class ServiceAgent:
         instruction = contract.instruction(self.skills)
         if stage in {"assessment", "reply"}:
             from .job_contracts import COMMON
+
             name = "assessment" if stage == "assessment" else "draft"
             instruction = COMMON + self.discussion_prompts["texts"][name]
         elif kind == "discussion":
@@ -599,14 +932,26 @@ class ServiceAgent:
                 event = self.store.get("events", identity)
                 body = event.get("content", {}).get("body", "")
                 text = body[:budget]
-                sources.append({"id": identity, "text": text, "body_length": len(body),
-                                "truncated": len(text) < len(body)})
+                sources.append(
+                    {
+                        "id": identity,
+                        "text": text,
+                        "body_length": len(body),
+                        "truncated": len(text) < len(body),
+                    }
+                )
                 budget -= len(text)
             preview["source_previews"] = list(reversed(sources))
-        if project and kind not in {"review", "ci_triage", "publication", "validation_plan"}:
+        if project and kind not in {
+            "review",
+            "ci_triage",
+            "publication",
+            "validation_plan",
+        }:
             preview["project_context"] = project
         if plan:
             from .communication.reasoning import public
+
             preview["lead_assessment"] = public(plan)
         messages = [
             {"role": "system", "content": instruction},
@@ -614,22 +959,115 @@ class ServiceAgent:
                 "role": "user",
                 "content": json.dumps(
                     {
-                        "job": {**{k: job[k] for k in ("id", "kind", "target", "revision")},
-                                **({"phase": stage} if stage else {})},
+                        "job": {
+                            **{k: job[k] for k in ("id", "kind", "target", "revision")},
+                            **({"phase": stage} if stage else {}),
+                        },
                         "policy": contract.policy(),
-                        "execution_limits": {"model_calls": self.store.policy["job_turns"],
-                                             "model_call_warning": self.store.policy["job_call_warning"],
-                                             "seconds": self.store.policy["job_seconds"]},
+                        "execution_limits": {
+                            "model_calls": self.store.policy["job_turns"],
+                            "model_call_warning": self.store.policy["job_call_warning"],
+                            "seconds": self.store.policy["job_seconds"],
+                        },
                         "input": preview,
-                        "previous_attempt": {key: job.get(key) for key in ("attempts", "error", "error_detail", "error_info", "unapplied_result")},
-                        **({"project_context": project} if project and kind in {"review", "ci_triage", "publication", "validation_plan"} else {}),
+                        "previous_attempt": {
+                            key: job.get(key)
+                            for key in (
+                                "attempts",
+                                "error",
+                                "error_detail",
+                                "error_info",
+                                "unapplied_result",
+                            )
+                        },
+                        **(
+                            {"project_context": project}
+                            if project
+                            and kind
+                            in {"review", "ci_triage", "publication", "validation_plan"}
+                            else {}
+                        ),
                     },
                     ensure_ascii=False,
                 ),
             },
         ]
         if self.phase_feedback:
-            messages.append({"role": "user", "content": json.dumps(self.phase_feedback, ensure_ascii=False)})
+            messages.append(
+                {
+                    "role": "user",
+                    "content": json.dumps(self.phase_feedback, ensure_ascii=False),
+                }
+            )
+        saved_checkpoint = (
+            self.store.job_get(job["id"])
+            .get("phase_checkpoints", {})
+            .get(self.phase_key)
+        )
+        if (
+            saved_checkpoint
+            and saved_checkpoint.get("signature", {}).get("input")
+            == self.phase_signature["input"]
+        ):
+            previous = copy.deepcopy(saved_checkpoint.get("messages", []))
+            if previous:
+                from homebrew_harness.storage.durable_runtime import repair_history
+
+                messages, _ = repair_history(previous, [])
+                messages[0] = {"role": "system", "content": instruction}
+                if saved_checkpoint.get("signature") != self.phase_signature:
+                    messages.append(
+                        {
+                            "role": "user",
+                            "name": "current_job_input",
+                            "content": json.dumps(
+                                {
+                                    "input": preview,
+                                    "instruction": "Current facts and instructions supersede earlier plans; keep completed tool observations as history.",
+                                },
+                                ensure_ascii=False,
+                            ),
+                        }
+                    )
+                same_window = saved_checkpoint.get("attempt") == job[
+                    "attempts"
+                ] and saved_checkpoint.get("retry_generation", 0) == job.get(
+                    "retry_generation", 0
+                )
+                self.phase_counts[self.phase_key] = (
+                    saved_checkpoint.get("calls", 0) if same_window else 0
+                )
+                if not same_window:
+                    messages.append(
+                        {
+                            "role": "user",
+                            "name": "retry_attempt",
+                            "content": json.dumps(
+                                {
+                                    "error": job.get("error_detail"),
+                                    "instruction": "This is a new explicitly admitted attempt. Preserve earlier tool facts and correct the failed response using the current contract.",
+                                },
+                                ensure_ascii=False,
+                            ),
+                        }
+                    )
+
+        def save_phase(messages, todo, intent, phase):
+            checkpoints = dict(
+                self.store.job_get(job["id"]).get("phase_checkpoints", {})
+            )
+            checkpoints[self.phase_key] = {
+                "signature": self.phase_signature,
+                "messages": copy.deepcopy(messages),
+                "calls": self.phase_counts.get(self.phase_key, 0),
+                "attempt": job["attempts"],
+                "retry_generation": job.get("retry_generation", 0),
+                "intent": intent.to_dict() if intent else None,
+            }
+            self.store.prepare_job(job, phase_checkpoints=checkpoints)
+
+        from homebrew_harness.storage.durable_runtime import boundary_observer
+
         components = LoopComponents(
             runtime_limits=self.runtime.core.config.settings.runtime_limits,
             model_call_warning=self.store.policy["job_call_warning"],
@@ -647,12 +1085,15 @@ class ServiceAgent:
                 {"service_read_code", "glob", "search_text"}
                 if contract.handler.code and stage != "reply"
                 else set()
-            ),
+            )
+            | frozenset(self.work_tools()),
             context_chars=self.binding.context_chars,
+            archive_namespace="job-" + job["id"] + "-" + self.phase_key,
             worker_output_tokens=self.binding.max_output_tokens,
         )
         with (
             output_scope(),
+            boundary_observer(save_phase),
             self.gateway.scope(
                 role="service",
                 context_id=job["id"],
@@ -667,13 +1108,18 @@ class ServiceAgent:
             limit = self.store.policy["job_turns"]
             loop.run(
                 messages,
-                max(1, limit - self.phase_counts.get(self.phase_key, 0)) if limit is not None else None,
+                (
+                    max(1, limit - self.phase_counts.get(self.phase_key, 0))
+                    if limit is not None
+                    else None
+                ),
                 active_request=contract.task(),
             )
         if self.proposal is None:
             raise ValueError("Service reasoning did not submit a structured proposal.")
         if kind in {"review", "ci_triage", "publication", "validation_plan"}:
-            self.store.delivery.git.verify(primary["candidate"])
+            if primary.get("candidate"):
+                self.store.delivery.git.verify(primary["candidate"])
         if kind == "audit":
             verify(self.runtime, primary)
         return self.proposal

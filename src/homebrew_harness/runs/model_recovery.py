@@ -63,8 +63,13 @@ def acknowledged(control):
 
 
 def block(control, *, workdir, reason, required_action=""):
-    if not isinstance(reason, str) or not reason.strip() or len(reason) > 2000 or not isinstance(required_action, str) or len(required_action) > 1000:
-        raise ValueError("A blocker requires a nonempty reason within 2000 characters and a next action within 1000 characters.")
+    from homebrew_harness.runtime.limits import current_limits
+    limits = current_limits()
+    if (not isinstance(reason, str) or not reason.strip()
+            or limits.blocker_reason_chars is not None and len(reason) > limits.blocker_reason_chars
+            or not isinstance(required_action, str)
+            or limits.blocker_action_chars is not None and len(required_action) > limits.blocker_action_chars):
+        raise ValueError("A blocker requires a nonempty reason and text next action within configured limits.")
     control.safe_point()
     latest = (control.state.get("model_feedback") or {}).get("latest") or {}
     blocker = redact({"reason": reason, "required_action": required_action, "error_ref": latest.get("id"), "at": time.time()})

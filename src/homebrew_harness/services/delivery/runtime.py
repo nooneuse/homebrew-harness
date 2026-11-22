@@ -1,4 +1,5 @@
 """Fixed delivery progression; model jobs supply evidence, never execute writes."""
+
 from homebrew_harness.runtime.limits import expired, minimum, remaining
 
 import json
@@ -34,8 +35,13 @@ class Delivery:
             try:
                 if set(self.spec["required_tests"]) - set(probe.recipes):
                     raise ValueError("Required delivery tests are not registered.")
-                if self.spec["mode"] == "isolated" and probe.backend.name != "container":
-                    raise ValueError("Credentialed test execution requires an isolated test backend.")
+                if (
+                    self.spec["mode"] == "isolated"
+                    and probe.backend.name != "container"
+                ):
+                    raise ValueError(
+                        "Credentialed test execution requires an isolated test backend."
+                    )
             finally:
                 probe.close()
         if (
@@ -88,16 +94,33 @@ class Delivery:
         if settings.test_config and Path(settings.test_config).is_file():
             runner = load_test_runner(settings.test_config, self.runtime.store.root)
             try:
-                admitted = set(work["run_spec"]["allow_tests"]) | set(self.spec["required_tests"])
-                if self.spec["mode"] == "isolated" and runner.backend.name != "container":
+                admitted = set(work["run_spec"]["allow_tests"]) | set(
+                    self.spec["required_tests"]
+                )
+                if (
+                    self.spec["mode"] == "isolated"
+                    and runner.backend.name != "container"
+                ):
                     unavailable = "isolated_test_backend_required"
                 else:
                     available = sorted(set(runner.recipes) & admitted)
-                    selectors = {name: {"framework": runner.recipes[name].selector, "roots": list(runner.recipes[name].test_roots)} for name in available}
+                    selectors = {
+                        name: {
+                            "framework": runner.recipes[name].selector,
+                            "roots": list(runner.recipes[name].test_roots),
+                        }
+                        for name in available
+                    }
             finally:
                 runner.close()
-        return {"available_tests": available, "selections": selectors, "unavailable_reason": unavailable, "required_tests": self.spec["required_tests"],
-                "required_review": self.spec["require_review"], "recommended_review": True}
+        return {
+            "available_tests": available,
+            "selections": selectors,
+            "unavailable_reason": unavailable,
+            "required_tests": self.spec["required_tests"],
+            "required_review": self.spec["require_review"],
+            "recommended_review": True,
+        }
 
     @property
     def test_runner(self):
@@ -122,15 +145,21 @@ class Delivery:
         files = snapshot(child.workdir, **work["run_spec"]["snapshot_limits"])
         head = self.git.head(child.workdir)
         sync = work.get("workspace_sync") or {}
-        if (child.workdir == Path(self.runtime.spec.workspace)
-                and sync.get("state") == "synchronized"):
+        if (
+            child.workdir == Path(self.runtime.spec.workspace)
+            and sync.get("state") == "synchronized"
+        ):
             prior = self.store.get("changesets", sync["changeset_id"])
             integration = prior.get("integration")
             if integration and all(
-                ((files.get(name) or {}).get("sha256"),
-                 (files.get(name) or {}).get("executable", False))
-                == ((integration["files"].get(name) or {}).get("sha256"),
-                    (integration["files"].get(name) or {}).get("executable", False))
+                (
+                    (files.get(name) or {}).get("sha256"),
+                    (files.get(name) or {}).get("executable", False),
+                )
+                == (
+                    (integration["files"].get(name) or {}).get("sha256"),
+                    (integration["files"].get(name) or {}).get("executable", False),
+                )
                 for name in set(files) | set(integration["files"])
                 if within(name, prior["write_paths"])
             ):
@@ -169,7 +198,11 @@ class Delivery:
                 from homebrew_harness.runtime.runtime_control import ClosePending
 
                 try:
-                    self.tests.settle()
+                    validating = self.runtime.work_executions.active(
+                        "candidate_validation"
+                    )
+                    if not validating:
+                        self.tests.settle()
                 except ClosePending:
                     continue
                 meta = self.runtime.store.get(self.ms.id)
@@ -193,13 +226,32 @@ class Delivery:
                             error=type(error).__name__,
                         )
                     except Exception as error:
-                        from homebrew_harness.runtime.errors import annotate_error, failure_fields
+                        from homebrew_harness.runtime.errors import (
+                            annotate_error,
+                            failure_fields,
+                        )
+
                         if getattr(error, "diagnostic_message", None) is None:
                             annotate_error(error, message=redact(str(error)))
-                        self.store.update(
-                            "changesets", row["id"], state="failed",
-                            **failure_fields(error, component="delivery", phase=row["state"]),
+                        diagnostic = failure_fields(
+                            error, component="delivery", phase=row["state"]
                         )
+                        changes = {
+                            "state": "ci_diagnosing",
+                            **diagnostic,
+                            "resume_phase": row["state"],
+                            "ci": {
+                                "kind": "execution_observation",
+                                "stage": row["state"],
+                                "error_info": diagnostic.get("error_info"),
+                            },
+                        }
+                        if row["state"] == "repair_approved":
+                            self.store.update(
+                                "changesets", row["id"], state="failed", **diagnostic
+                            )
+                        else:
+                            self.store.commit_feedback(row, changes, diagnose=True)
                 for action in self.rows("actions", active=True):
                     if self.stop.is_set():
                         break
@@ -276,10 +328,18 @@ class Delivery:
                 with self.ms.db.write() as conn:
                     current = self.store.get("changesets", row["id"], conn)
                     self.store.current(current, conn)
-                    current.update(state="ci_diagnosing", revision=current["revision"] + 1)
+                    current.update(
+                        state="ci_diagnosing", revision=current["revision"] + 1
+                    )
                     self.store.put(conn, "changesets", current)
-                    self.ms.job(conn, "ci_triage", row["id"], current["revision"], {},
-                                row["id"] + ":model-wait:" + str(current["revision"]))
+                    self.ms.job(
+                        conn,
+                        "ci_triage",
+                        row["id"],
+                        current["revision"],
+                        {},
+                        row["id"] + ":model-wait:" + str(current["revision"]),
+                    )
             return
         if row["state"] == "merged_verifying":
             verify_result(self, row)
@@ -293,17 +353,26 @@ class Delivery:
                 "integration_required",
             }:
                 return
-        if row["state"] == "integration_required" and row.get("error") == "target_base_changed":
+        if (
+            row["state"] == "integration_required"
+            and row.get("error") == "target_base_changed"
+        ):
             if self.spec.get("base_update", "manual") == "automatic":
                 if row.get("next_validation", 0) <= time.time():
                     from .merge_flow import refresh_waiting
+
                     refresh_waiting(self, row)
                 return
             # Continue exact published-head CI observation while its separate
             # target integration is deferred. This does not replace the candidate.
             row = {**row, "state": "ci_waiting"}
-        if row["state"] in {"review_branch_ready", "publication_denied", "publication_attention"}:
+        if row["state"] in {
+            "review_branch_ready",
+            "publication_denied",
+            "publication_attention",
+        }:
             from .publication import prepare
+
             if prepare(self, row):
                 return
         if row["state"] not in {
@@ -406,25 +475,99 @@ class Delivery:
             if row.get("validation_plan") is None:
                 with self.ms.db.write() as conn:
                     current = self.store.get("changesets", row["id"], conn)
-                    current.update(state="validation_planning", revision=current["revision"] + 1)
+                    current.update(
+                        state="validation_planning", revision=current["revision"] + 1
+                    )
                     self.store.put(conn, "changesets", current)
-                    self.ms.job(conn, "validation_plan", row["id"], current["revision"], {},
-                                row["id"] + ":validation-plan:" + str(current["revision"]))
+                    self.ms.job(
+                        conn,
+                        "validation_plan",
+                        row["id"],
+                        current["revision"],
+                        {},
+                        row["id"] + ":validation-plan:" + str(current["revision"]),
+                    )
                 return
             from .quality import verify
 
-            checked = verify(self, row["candidate"], {**work, "force_test_recheck": row.get("force_test_recheck", False), "validation_plan": row.get("validation_plan")})
+            execution_id = row.get("validation_execution")
+            if execution_id is None:
+                checked_work = {
+                    **work,
+                    "force_test_recheck": row.get("force_test_recheck", False),
+                    "validation_plan": row.get("validation_plan"),
+                }
+                accepted = self.runtime.work_executions.invoke(
+                    work["id"],
+                    "candidate_validation",
+                    {
+                        "changeset_id": row["id"],
+                        "commit": row["candidate"]["commit"],
+                        "validation_plan": row["validation_plan"],
+                    },
+                    lambda: verify(self, row["candidate"], checked_work),
+                    request_id=row["id"] + ":validation:" + str(row["revision"]),
+                    execution={"mode": "interactive", "wait_seconds": 0},
+                    read_only=True,
+                    settled=lambda: self.tests.runner is None,
+                )
+                self.store.update(
+                    "changesets",
+                    row["id"],
+                    validation_execution=accepted["execution_id"],
+                )
+                return
+            execution = self.runtime.work_executions.get(work["id"], execution_id)
+            state = execution.snapshot()
+            if state.execution_pending:
+                return
+            checked = execution.result()
+            if not isinstance(checked, dict) or "ok" not in checked:
+                with self.ms.db.write() as conn:
+                    current = self.store.get("changesets", row["id"], conn)
+                    current.update(
+                        state="ci_diagnosing",
+                        error="validation_execution_observation",
+                        error_detail=(checked or {}).get(
+                            "error", "Validation did not produce an acceptance receipt."
+                        ),
+                        ci={
+                            "kind": "execution_observation",
+                            "execution_id": execution_id,
+                            "observation": checked,
+                        },
+                        validation_execution=None,
+                        revision=current["revision"] + 1,
+                    )
+                    self.store.put(conn, "changesets", current)
+                    self.ms.job(
+                        conn,
+                        "ci_triage",
+                        current["id"],
+                        current["revision"],
+                        {},
+                        current["id"]
+                        + ":validation-observation:"
+                        + str(current["revision"]),
+                    )
+                return
             if not checked["ok"]:
                 if checked.get("test_failure"):
                     self.store.test_failure(row, checked)
                     return
-                self.store.update(
-                    "changesets",
-                    row["id"],
-                    state="quality_failed",
-                    quality=checked["quality"],
-                    goal_evidence=checked["goal_evidence"],
-                    error="candidate_goal_failed",
+                self.store.commit_feedback(
+                    row,
+                    {
+                        "state": "ci_diagnosing",
+                        "quality": checked["quality"],
+                        "goal_evidence": checked["goal_evidence"],
+                        "error": "candidate_goal_failed",
+                        "ci": {
+                            "kind": "goal_observation",
+                            "goal_evidence": checked["goal_evidence"],
+                        },
+                    },
+                    diagnose=True,
                 )
                 return
             row = self.store.update(
@@ -432,7 +575,10 @@ class Delivery:
                 row["id"],
                 quality=checked["quality"],
                 goal_evidence=checked["goal_evidence"],
-                test_failure=None, error=None, error_detail=None,
+                test_failure=None,
+                validation_execution=None,
+                error=None,
+                error_detail=None,
                 state=(
                     "reviewing"
                     if (self.spec["require_review"] or row["validation_plan"]["review"])
@@ -441,7 +587,11 @@ class Delivery:
                 review=(
                     None
                     if (self.spec["require_review"] or row["validation_plan"]["review"])
-                    else {"text": row["validation_plan"]["reason"], "findings": [], "mode": "not_performed"}
+                    else {
+                        "text": row["validation_plan"]["reason"],
+                        "findings": [],
+                        "mode": "not_performed",
+                    }
                 ),
             )
             with self.ms.db.write() as conn:
@@ -493,45 +643,82 @@ class Delivery:
             evaluation = gate(feedback, self.spec)
             ready, failed = evaluation["ci_ready"], evaluation["failed"]
             review_gate = evaluation["review_gate"]
-            changes = {"ci": feedback, "review_gate": review_gate,
-                       "next_ci": time.time() + self.spec["ci_poll_seconds"]}
+            changes = {
+                "ci": feedback,
+                "review_gate": review_gate,
+                "next_ci": time.time() + self.spec["ci_poll_seconds"],
+            }
             request_merge = False
             if ready and not review_gate["ready"]:
-                changes.update(state="review_waiting", error="review_authority_required")
+                changes.update(
+                    state="review_waiting", error="review_authority_required"
+                )
             elif ready:
                 if feedback["base"] != row["candidate"]["target_base"]:
-                    changes.update(state="integration_required", error="target_base_changed")
+                    changes.update(
+                        state="integration_required", error="target_base_changed"
+                    )
                 elif (
                     feedback["draft"]
                     or feedback["mergeable"] is not True
                     or feedback["mergeable_state"]
                     in {"blocked", "behind", "dirty", "draft", "unknown"}
                 ):
-                    changes.update(state="review_waiting", error="platform_merge_waiting")
+                    changes.update(
+                        state="review_waiting", error="platform_merge_waiting"
+                    )
                 else:
                     changes.update(state="merge_ready", next_merge=0)
                     if self.spec["merge"]["mode"] == "service_approved":
                         try:
-                            changes["merge_rules"] = self.adapter.merge_gate(self.spec["merge"]["method"])
+                            changes["merge_rules"] = self.adapter.merge_gate(
+                                self.spec["merge"]["method"]
+                            )
                         except Exception as error:
-                            changes.update(state="review_waiting", error="native_merge_policy_unverified",
-                                           error_detail=redact(str(error)))
+                            changes.update(
+                                state="review_waiting",
+                                error="native_merge_policy_unverified",
+                                error_detail=redact(str(error)),
+                            )
                         else:
                             request_merge = True
             elif failed:
                 changes.update(state="ci_diagnosing")
-            elif self.spec["ci_wait_seconds"] is not None and time.time() - row.get("ci_started", time.time()) > self.spec["ci_wait_seconds"]:
+            elif (
+                self.spec["ci_wait_seconds"] is not None
+                and time.time() - row.get("ci_started", time.time())
+                > self.spec["ci_wait_seconds"]
+            ):
                 changes.update(state="blocked", error="ci_wait_expired")
             from homebrew_harness.runtime.limits import advisory
+
             elapsed = time.time() - row.get("ci_started", time.time())
-            notice = advisory(elapsed, self.spec["ci_wait_warning_seconds"], "ci_wait_elapsed", unit="seconds")
+            notice = advisory(
+                elapsed,
+                self.spec["ci_wait_warning_seconds"],
+                "ci_wait_elapsed",
+                unit="seconds",
+            )
             diagnose = failed
-            if not ready and not failed and changes.get("state") != "blocked" and notice:
-                bucket = max(1, int(elapsed / self.spec["ci_wait_warning_seconds"])).bit_length()
+            if (
+                not ready
+                and not failed
+                and changes.get("state") != "blocked"
+                and notice
+            ):
+                bucket = max(
+                    1, int(elapsed / self.spec["ci_wait_warning_seconds"])
+                ).bit_length()
                 if bucket > row.get("ci_warning_bucket", 0):
-                    changes.update(state="ci_diagnosing", ci_wait_observation=notice, ci_warning_bucket=bucket)
+                    changes.update(
+                        state="ci_diagnosing",
+                        ci_wait_observation=notice,
+                        ci_warning_bucket=bucket,
+                    )
                     diagnose = True
-            self.store.commit_feedback(row, changes, diagnose=diagnose, merge=request_merge)
+            self.store.commit_feedback(
+                row, changes, diagnose=diagnose, merge=request_merge
+            )
             return
         if row["state"] == "repair_approved":
             self.repair(row, work)
@@ -663,9 +850,16 @@ class Delivery:
     def repair(self, row, work):
         if not self.store.repair_allowed(row, work):
             from homebrew_harness.runtime.errors import boundary_error
-            raise boundary_error(ValueError, "ci_repair_limit", "The current scoped repair lacks its next-attempt authority.",
-                limit_name="ci_fix_limit", limit_value=self.spec["ci_fix_limit"],
-                observed_value=work.get("ci_fix_attempts", 0), unit="repair_attempts")
+
+            raise boundary_error(
+                ValueError,
+                "ci_repair_limit",
+                "The current scoped repair lacks its next-attempt authority.",
+                limit_name="ci_fix_limit",
+                limit_value=self.spec["ci_fix_limit"],
+                observed_value=work.get("ci_fix_attempts", 0),
+                unit="repair_attempts",
+            )
         if not self.ms.valid_authority(work):
             with self.ms.db.write() as conn:
                 current = self.store.get("changesets", row["id"], conn)
@@ -677,6 +871,39 @@ class Delivery:
             return
         self.git.verify(row["candidate"])
         count = work.get("ci_fix_attempts", 0) + 1
+        if row["ci_diagnosis"].get("source_ref"):
+            from homebrew_harness.services.work_actions import perform
+
+            paused = self.runtime.store.update_work(
+                self.runtime.header, work["id"], pause_requested=True
+            )
+            action = {
+                "mode": "fork",
+                "source_ref": row["ci_diagnosis"]["source_ref"],
+                "reason": row["ci_diagnosis"]["plan"],
+                "start": True,
+            }
+            if row["ci_diagnosis"].get("integration"):
+                action["integration"] = row["ci_diagnosis"]["integration"]
+            perform(
+                self.runtime,
+                work["id"],
+                action,
+                paused["revision"],
+                "ci-source-" + row["id"] + "-" + str(count),
+            )
+            self.runtime.store.update_work(
+                self.runtime.header, work["id"], ci_fix_attempts=count
+            )
+            self.store.update("changesets", row["id"], state="repairing")
+            return
+        from homebrew_harness.services.work_sources import WorkSources
+
+        preserved = WorkSources(self.runtime).preserve(
+            work["id"],
+            "draft:" + work["id"],
+            "ci-draft-" + row["id"] + "-" + str(count),
+        )
         directory = (
             self.runtime.store.root
             / ".harness/delivery/repairs"
@@ -720,7 +947,9 @@ class Delivery:
             ["--git-dir=" + str(repo), "config", "core.worktree", str(workspace)]
         )
         (workspace / ".git").write_text("gitdir: " + str(repo) + "\n")
-        self.git.run(["--git-dir=" + str(repo), "read-tree", row["candidate"]["commit"]])
+        self.git.run(
+            ["--git-dir=" + str(repo), "read-tree", row["candidate"]["commit"]]
+        )
         from .source_evidence import install, instruction
 
         source_inputs = install(self.git, row["candidate"], work, workspace)
@@ -728,11 +957,23 @@ class Delivery:
 
         def prompt(current):
             original = current["run_spec"]["prompt"]
-            context = [note for note in current.get("execution_context", []) if note not in original]
-            return (original + "\n\nConfirmed CI repair plan:\n" + row["ci_diagnosis"]["plan"]
-                    + (instruction(source_inputs) if source_inputs else "")
-                    + ("\n\nCurrent operator execution context (not a requirements amendment):\n" +
-                       "\n\n".join(context) if context else ""))
+            context = [
+                note
+                for note in current.get("execution_context", [])
+                if note not in original
+            ]
+            return (
+                original
+                + "\n\nConfirmed CI repair plan:\n"
+                + row["ci_diagnosis"]["plan"]
+                + (instruction(source_inputs) if source_inputs else "")
+                + (
+                    "\n\nCurrent operator execution context (not a requirements amendment):\n"
+                    + "\n\n".join(context)
+                    if context
+                    else ""
+                )
+            )
 
         spec = RunSpec(
             **{
@@ -747,10 +988,14 @@ class Delivery:
                         "summary": "The existing candidate requires only the confirmed repair.",
                         "remaining": [row["ci_diagnosis"]["plan"]],
                         "complete": False,
+                        "previous_progress_ref": work.get("progress_ref"),
+                        "preserved_source_ref": preserved["source_ref"],
                     },
                 },
-                "total_seconds": minimum(work["run_spec"]["total_seconds"],
-                                         remaining(work["authority"]["expires_at"], time.time())),
+                "total_seconds": minimum(
+                    work["run_spec"]["total_seconds"],
+                    remaining(work["authority"]["expires_at"], time.time()),
+                ),
             }
         )
         with self.ms.db.write() as conn:
@@ -774,6 +1019,10 @@ class Delivery:
                 + request_key("ci-run", self.ms.id, work["id"] + ":" + str(count)),
                 ci_fix_attempts=count,
                 repair_of=row["id"],
+                progress_history=[
+                    *current.get("progress_history", []),
+                    *([current["progress_ref"]] if current.get("progress_ref") else []),
+                ],
                 progress_ref=None,
                 baseline=None,
                 pause_requested=False,

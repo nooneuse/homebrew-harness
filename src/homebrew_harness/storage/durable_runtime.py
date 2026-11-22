@@ -22,6 +22,16 @@ _ACTIVE = ContextVar("durable_checkpoint", default=None)
 _LIVE_LOCK = threading.RLock()
 _LIVE = {}
 _OPERATION = ContextVar("current_tool_operation", default=None)
+_BOUNDARY_OBSERVER = ContextVar("checkpoint_boundary_observer", default=None)
+
+
+@contextmanager
+def boundary_observer(callback):
+    token = _BOUNDARY_OBSERVER.set(callback)
+    try:
+        yield
+    finally:
+        _BOUNDARY_OBSERVER.reset(token)
 
 
 def current_operation():
@@ -428,6 +438,9 @@ def save_boundary(messages, todo=None, intent=None, phase="running", *, ack=()):
     if writer:
         writer.messages, writer.todo, writer.intent = messages, todo, intent
         writer.save(phase, ack=ack)
+    observer = _BOUNDARY_OBSERVER.get()
+    if observer is not None:
+        observer(messages, todo, intent, phase)
 
 
 def repair_history(messages, operations):

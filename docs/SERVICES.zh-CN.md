@@ -321,3 +321,5 @@ CI 次数默认作为进度观察：`ci_fix_limit=null`、`ci_fix_warning=2`。�
 Run 的原始需求、已接受补充与维护计划合计最多可包含 2,000,000 个字符。选择的模型 profile 仍需提供足够的上下文，正常的模型请求上下文检查继续生效。
 
 同一 Work 的只读恢复方案和停机预算迁移见[恢复与兼容说明](RECOVERY.zh-CN.md)。
+
+See [Work sources and execution control](WORK_CONTROL.zh-CN.md) for source selection, same-Work continuation and interactive candidate verification.

@@ -26,6 +26,8 @@ class Maintenance:
         self.started = False
         self.error = None
         self.closed_sources = set()
+        self.poll_started = False
+        self.poll_finished = threading.Event()
         self.agent_closed = False
         self.delivery = None
         self.communication = None
@@ -67,7 +69,9 @@ class Maintenance:
     def identity(self):
         return {
             "delivery": self.delivery.identity() if self.delivery else None,
-            "development_handoff": fingerprint(self.store.development_handoff) if self.delivery else None,
+            "development_handoff": (
+                fingerprint(self.store.development_handoff) if self.delivery else None
+            ),
             **(
                 {"communication": self.communication.identity()}
                 if self.communication
@@ -77,9 +81,82 @@ class Maintenance:
             "sources": {name: source.identity for name, source in self.sources.items()},
         }
 
+    def poll_loop(self):
+        self.poll_started = True
+        try:
+            while not self.stop.wait(0.05):
+                meta = self.runtime.store.get(self.store.id)
+                if meta["state"] == "stopping":
+                    return
+                if meta["state"] == "paused" and meta["scope"] == "all":
+                    continue
+                try:
+                    self.poll_sources()
+                    self.runtime.store.runtime_failure(self.runtime.header, "inbox")
+                except Exception as error:
+                    if self.stop.is_set():
+                        return
+                    self.runtime.report_failure("inbox", error)
+                    self.stop.wait(1)
+        finally:
+            self.poll_finished.set()
+
+    def poll_sources(self):
+        for name, source in self.sources.items():
+            if self.stop.is_set():
+                break
+            for _ in range(source.spec["max_pages"]):
+                old = self.runtime.store.runtime.get(
+                    "service_sources",
+                    self.store.id + ":" + name,
+                    {"cursor": {}, "next_poll": 0},
+                )
+                if old["next_poll"] > time.time() or self.stop.is_set():
+                    break
+                try:
+                    from homebrew_harness.execution.execution_control import (
+                        control_scope,
+                    )
+                    from homebrew_harness.runtime.limits import current_limits
+
+                    deadline = Deadline.after(
+                        source.spec.get(
+                            "request_seconds", current_limits().platform_request_seconds
+                        )
+                    )
+                    with control_scope(deadline=deadline, cancel_events=(self.stop,)):
+                        page = source.poll(old["cursor"], deadline)
+                        if (
+                            page.events
+                            and self.store.communication is not None
+                            and self.store.communication.actor_provider is not None
+                            and source.scope in self.store.communication.scopes
+                        ):
+                            self.store.communication.actor_provider(source.scope)
+                    with self.runtime.lock:
+                        self.store.source_page(name, page, source.scope)
+                except Exception as error:
+                    if self.stop.is_set():
+                        return
+                    self.store.source_error(
+                        name,
+                        old,
+                        error,
+                        retry_after(error, old.get("attempts", 0) + 1),
+                    )
+                    break
+
     def loop(self):
         self.started = True
         try:
+            from homebrew_harness.runtime.runtime_control import WorkAccepted
+
+            try:
+                self.runtime.workers.start(
+                    self.poll_loop, name="service-inbox", track_operation=False
+                )
+            except WorkAccepted:
+                pass
             self.runtime.store.runtime_failure(self.runtime.header, "maintenance")
             while not self.stop.wait(0.05):
                 meta = self.runtime.store.get(self.store.id)
@@ -87,49 +164,62 @@ class Maintenance:
                     return
                 if meta["state"] == "paused" and meta["scope"] == "all":
                     continue
-                for name, source in self.sources.items():
-                    if self.stop.is_set():
-                        break
-                    for _ in range(source.spec["max_pages"]):
-                        old = self.runtime.store.runtime.get(
-                            "service_sources",
-                            self.store.id + ":" + name,
-                            {"cursor": {}, "next_poll": 0},
-                        )
-                        if old["next_poll"] > time.time() or self.stop.is_set():
-                            break
-                        try:
-                            from homebrew_harness.execution.execution_control import control_scope
-                            from homebrew_harness.runtime.limits import current_limits
-                            deadline = Deadline.after(source.spec.get("request_seconds", current_limits().platform_request_seconds))
-                            with control_scope(deadline=deadline, cancel_events=(self.stop,)):
-                                page = source.poll(old["cursor"], deadline)
-                                if page.events and self.store.communication is not None and self.store.communication.actor_provider is not None and source.scope in self.store.communication.scopes:
-                                    self.store.communication.actor_provider(source.scope)
-                            with self.runtime.lock:
-                                self.store.source_page(name, page, source.scope)
-                        except Exception as error:
-                            if self.stop.is_set():
-                                return
-                            self.store.source_error(
-                                name,
-                                old,
-                                error,
-                                retry_after(error, old.get("attempts", 0) + 1),
-                            )
-                            break
                 with self.store.db.write() as conn:
                     self.store.report(conn)
                 with self.runtime.lock:
                     meta = self.runtime.store.get(self.store.id)
-                    if meta["state"] == "stopping" or (meta["state"] == "paused" and meta["scope"] == "all"):
+                    if meta["state"] == "stopping" or (
+                        meta["state"] == "paused" and meta["scope"] == "all"
+                    ):
                         continue
                     job = self.store.claim_job()
                 if job is None:
                     continue
                 result = None
+                work_id = None
                 try:
-                    result = self.agent.run(job)
+                    from .job_contracts import JobContract
+
+                    contract = JobContract(self.store, job)
+                    work_id = (
+                        job["target"]
+                        if job["kind"] in {"triage", "recovery_plan"}
+                        else contract.primary().get("work_id")
+                    )
+                    execution_id = self.runtime.work_executions.identity(
+                        work_id, job["id"] + ":" + str(job["attempts"])
+                    )
+                    self.store.prepare_job(
+                        job, execution_id=execution_id, work_id=work_id
+                    )
+
+                    def run_job():
+                        from homebrew_harness.execution.operations import (
+                            bind_agent_input,
+                        )
+
+                        bind_agent_input()
+                        if self.stop.is_set() or self.store.job_get(job["id"]).get(
+                            "pause_requested"
+                        ):
+                            from homebrew_harness.execution.model_gateway import (
+                                ModelCancelled,
+                            )
+
+                            raise ModelCancelled(
+                                "Service job paused before model launch."
+                            )
+                        return self.agent.run(job)
+
+                    result = self.runtime.work_executions.invoke(
+                        work_id,
+                        "service_job",
+                        {"job_id": job["id"]},
+                        run_job,
+                        request_id=job["id"] + ":" + str(job["attempts"]),
+                        execution={"mode": "one_shot"},
+                        read_only=True,
+                    )
                     if self.stop.is_set():
                         raise RuntimeError("Service stopped during reasoning.")
                     with self.runtime.lock:
@@ -137,6 +227,15 @@ class Maintenance:
                 except Exception as error:
                     with self.runtime.lock:
                         self.store.finish(job, result=result, error=error)
+                finally:
+                    manager = self.runtime.work_executions.manager(
+                        job.get("work_id") or work_id
+                    )
+                    manager.children[:] = [
+                        child
+                        for child in manager.children
+                        if not child.closed or child.pending()
+                    ]
         except Exception as error:
             self.error = type(error).__name__
             self.runtime.report_failure("maintenance", error)
@@ -159,6 +258,8 @@ class Maintenance:
         if not self.started:
             self.finished.set()
         self.finished.wait()
+        if self.poll_started:
+            self.poll_finished.wait()
         for name, source in self.sources.items():
             if name not in self.closed_sources:
                 source.close()
@@ -168,18 +269,79 @@ class Maintenance:
             self.agent_closed = True
 
     def command(self, method, payload, request_id):
+        if method in {
+            "work_continue",
+            "work_apply_recovery",
+            "work_observe_target",
+            "work_integration_control",
+        }:
+            from .work_control import command
+
+            return command(self.runtime, method, payload, request_id)
+        if method == "job_control":
+            job = self.store.job_get(payload["id"])
+            operation = payload.get("operation")
+            if operation not in {"pause", "resume", "stop", "input"}:
+                raise ValueError("Unknown job control.")
+            if operation == "input":
+                if not job.get("execution_id"):
+                    raise ValueError("Job is not executing.")
+                manager = self.runtime.work_executions.manager(job.get("work_id"))
+                return manager.input(
+                    job["execution_id"], payload["text"], request_id, trusted_host=True
+                )
+
+            def apply(conn):
+                current = self.store.get("jobs", job["id"], conn)
+                if operation == "resume":
+                    if current["state"] not in {"paused", "failed", "queued"}:
+                        raise ValueError("Resume a settled job.")
+                    current.update(
+                        state="queued",
+                        pause_requested=False,
+                        next_attempt=0,
+                        error=None,
+                    )
+                else:
+                    current.update(pause_requested=True)
+                self.store.put(conn, "jobs", current)
+                return {"id": job["id"], "accepted": True, "operation": operation}
+
+            result = self.runtime.store.command(
+                self.runtime.header, method, payload, request_id, apply
+            )
+            if operation in {"pause", "stop"} and job.get("execution_id"):
+                manager = self.runtime.work_executions.manager(job.get("work_id"))
+                manager.stop(job["execution_id"], request_id=request_id)
+            return result
         if method == "work_recovery_plan":
             work = self.runtime.store.work(payload["id"], self.runtime.id)
             native = None
             if work.get("run_id"):
                 native = self.runtime.child_for(work).run_store.get(work["run_id"])
                 if not native.get("cleanup_complete"):
-                    raise ValueError("Wait for current execution cleanup before planning recovery.")
-            return self.runtime.store.command(self.runtime.header, method, payload, request_id,
-                lambda conn: self.store.request_recovery(conn, payload, request_id, native))
+                    raise ValueError(
+                        "Wait for current execution cleanup before planning recovery."
+                    )
+            return self.runtime.store.command(
+                self.runtime.header,
+                method,
+                payload,
+                request_id,
+                lambda conn: self.store.request_recovery(
+                    conn, payload, request_id, native
+                ),
+            )
         if method == "approval_review_retry":
-            return self.runtime.store.command(self.runtime.header, method, payload, request_id,
-                lambda conn: self.runtime.approval_review.retry(payload["id"], payload["revision"], conn=conn))
+            return self.runtime.store.command(
+                self.runtime.header,
+                method,
+                payload,
+                request_id,
+                lambda conn: self.runtime.approval_review.retry(
+                    payload["id"], payload["revision"], conn=conn
+                ),
+            )
         if method == "model_recover":
             return self.agent.model_control.recover(
                 payload["profile"], payload["revision"], request_id
@@ -189,6 +351,10 @@ class Maintenance:
                 raise ValueError("Communication is not configured.")
             if method == "communication_inspect":
                 if payload.get("conclusion", "reconcile") != "reconcile":
+                    if payload.get("execution") is not None:
+                        raise ValueError(
+                            "Execution options apply to reconciliation, not immediate non-execution confirmation."
+                        )
                     return self.communication.inspect(payload, request_id)
                 from .slow_controls import perform
 
@@ -270,19 +436,42 @@ class Maintenance:
                 job.update(
                     state="queued",
                     next_attempt=0,
-                    attempt_limit=(None if self.store.policy["job_attempts"] is None else
-                                   job["attempts"] + self.store.policy["job_attempts"]),
-                    retry_history=[*job.get("retry_history", []),
-                                   {k: job.get(k) for k in ("attempts", "error", "error_detail", "error_info", "error_stage")}],
+                    retry_generation=job.get("retry_generation", 0) + 1,
+                    attempt_limit=(
+                        None
+                        if self.store.policy["job_attempts"] is None
+                        else job["attempts"] + self.store.policy["job_attempts"]
+                    ),
+                    retry_history=[
+                        *job.get("retry_history", []),
+                        {
+                            k: job.get(k)
+                            for k in (
+                                "attempts",
+                                "error",
+                                "error_detail",
+                                "error_info",
+                                "error_stage",
+                            )
+                        },
+                    ],
                 )
                 if job["kind"] in {"review", "ci_triage", "publication"}:
                     row = self.store.get("changesets", job["target"], conn)
                     self.delivery.store.current(row, conn)
                     row.update(
-                        state=("publication_drafting" if job["kind"] == "publication" else
-                               "reviewing" if job["kind"] == "review" else "ci_diagnosing"),
+                        state=(
+                            "publication_drafting"
+                            if job["kind"] == "publication"
+                            else (
+                                "reviewing"
+                                if job["kind"] == "review"
+                                else "ci_diagnosing"
+                            )
+                        ),
                         error=None,
-                        error_detail=None, error_info=None,
+                        error_detail=None,
+                        error_info=None,
                         revision=row["revision"] + 1,
                     )
                     job["revision"] = row["revision"]
@@ -370,6 +559,30 @@ class Maintenance:
         )
 
     def query(self, method, payload):
+        if method in {"work_sources", "work_source_read", "work_source_compare"}:
+            from .work_sources import WorkSources
+
+            source = WorkSources(self.runtime)
+            if method == "work_sources":
+                return source.describe(payload["id"])
+            if method == "work_source_read":
+                return source.read(
+                    payload["id"],
+                    payload["source_ref"],
+                    payload["path"],
+                    payload.get("offset", 0),
+                    payload.get("limit", 10000),
+                    payload.get("expected_version"),
+                )
+            return source.compare(
+                payload["id"],
+                payload["before"],
+                payload["after"],
+                payload.get("offset", 0),
+                payload.get("limit", 100),
+                payload.get("expected_version"),
+                payload.get("path"),
+            )
         if method == "requests_page":
             return self.request_page(**payload)
         if method == "service_models":
@@ -432,7 +645,10 @@ class Maintenance:
         if method == "service_read":
             return self.store.read(**payload)
         if method == "job_get":
-            return self.store.job_get(payload["id"])
+            row = dict(self.store.job_get(payload["id"]))
+            checkpoints = row.pop("phase_checkpoints", {})
+            row["phase_checkpoint_names"] = list(checkpoints)
+            return row
         if method == "conversation_get":
             return self.store.get("messages", payload["id"])
         if method == "report_get":

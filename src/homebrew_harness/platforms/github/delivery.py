@@ -29,6 +29,7 @@ class GithubDelivery:
             "merge_observation": True,
             "merge_methods": ["merge", "squash", "rebase"],
             "async_merge": False,
+            "draft_requests": True,
         }
 
     def __init__(self, spec, values):
@@ -60,7 +61,13 @@ class GithubDelivery:
 
     def pages(self, path, params=None):
         rows = []
-        for page in range(1, 11):
+        from homebrew_harness.runtime.limits import current_limits
+
+        page = 1
+        while (
+            current_limits().platform_query_pages is None
+            or page <= current_limits().platform_query_pages
+        ):
             data, headers = self.transport.request(
                 "GET",
                 path,
@@ -72,7 +79,11 @@ class GithubDelivery:
             rows.extend(data)
             if len(data) < 100 and 'rel="next"' not in headers.get("link", ""):
                 return rows
-        raise ValueError("Delivery query reached its page bound.")
+            page += 1
+        raise ValueError(
+            "Delivery query reached runtime_limits.platform_query_pages="
+            + str(current_limits().platform_query_pages)
+        )
 
     def marker(self, key):
         return "<!-- harness-delivery:" + key + " -->"
@@ -143,10 +154,40 @@ class GithubDelivery:
                     "body": body + "\n\n" + marker,
                     "head": plan["branch"],
                     "base": self.spec["target_branch"],
+                    "draft": plan.get("draft", False),
                 },
             )
         else:
             row = matches[0]
+        if bool(row.get("draft")) != bool(plan.get("draft", False)):
+            if reconcile:
+                return None
+            node = row.get("node_id")
+            if not node:
+                raise ValueError(
+                    "Platform did not expose the change-request node for draft transition."
+                )
+            method = (
+                "convertPullRequestToDraft"
+                if plan.get("draft")
+                else "markPullRequestReadyForReview"
+            )
+            query = (
+                "mutation($id:ID!){"
+                + method
+                + "(input:{pullRequestId:$id}){pullRequest{id isDraft}}}"
+            )
+            data = self.request(
+                "POST", self.graphql_path(), {"query": query, "variables": {"id": node}}
+            )
+            changed = (data.get("data") or {}).get(method, {}).get("pullRequest")
+            if (
+                not changed
+                or changed.get("id") != node
+                or changed.get("isDraft") != bool(plan.get("draft", False))
+            ):
+                raise ValueError("Draft transition was not confirmed by the platform.")
+            row = {**row, "draft": changed["isDraft"]}
         number = row.get("number")
         if (
             type(number) is not int
@@ -179,6 +220,20 @@ class GithubDelivery:
             "state": row.get("state"),
             "merged": row.get("merged", False),
         }
+
+    def graphql_path(self):
+        from urllib.parse import urlsplit, urlunsplit
+
+        endpoint = getattr(self, "values", {}).get("api_url")
+        if not endpoint:
+            return "graphql"
+        parsed = urlsplit(endpoint)
+        path = parsed.path.rstrip("/")
+        if path.endswith("/api/v3"):
+            path = path[: -len("/api/v3")] + "/api/graphql"
+        else:
+            path += "/graphql"
+        return urlunsplit((parsed.scheme, parsed.netloc, path, "", ""))
 
     def target(self, ref):
         subject = ObjectRef(**ref)

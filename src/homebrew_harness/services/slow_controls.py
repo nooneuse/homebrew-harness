@@ -4,11 +4,35 @@ from homebrew_harness.execution.execution_leases import ExecutionLeases
 from .protocol import request_key, fingerprint
 
 METHODS = frozenset(
-    {"communication_inspect", "delivery_inspect", "delivery_refresh", "batch_decide"}
+    {
+        "communication_inspect",
+        "delivery_inspect",
+        "delivery_refresh",
+        "batch_decide",
+        "work_continue",
+        "work_apply_recovery",
+        "work_observe_target",
+        "work_integration_control",
+    }
 )
 
 
 def perform(runtime, method, payload, request_id, action):
+    if payload.get("execution") is not None:
+        return runtime.work_executions.invoke(
+            None,
+            method,
+            payload,
+            lambda: _perform(runtime, method, payload, request_id, action),
+            request_id=request_id,
+            execution=payload["execution"],
+            read_only=method in {"communication_inspect", "delivery_inspect"}
+            and payload.get("conclusion", "reconcile") == "reconcile",
+        )
+    return _perform(runtime, method, payload, request_id, action)
+
+
+def _perform(runtime, method, payload, request_id, action):
     key = request_key("command", runtime.id, request_id)
     digest = fingerprint([method, payload])
     with runtime.store.db.connection() as conn:

@@ -222,6 +222,12 @@ def _prepare_loop(client, model, workdir, components: LoopComponents):
     mcp_runtime = components.mcp_runtime
     shell_runner = components.shell_runner
     subagent = components.subagent
+    bridge=None
+    if components.run_control is not None and components.service_control is None:
+        from homebrew_harness.services.run_bridge import bind
+        bridge=bind(components.run_control)
+        if bridge is not None:
+            components=replace(components,service_control=bridge)
     capabilities, tool_allowlist = components.capabilities, components.tool_allowlist
     client = ensure_gateway(client)
     host = team_member.manager if team_member is not None else team_manager
@@ -238,6 +244,7 @@ def _prepare_loop(client, model, workdir, components: LoopComponents):
         or current_bash_policy()
     )
     owned, cleanup_errors = [], []
+    if bridge is not None:owned.append(('service-work',bridge.close))
     failure = None
     from homebrew_harness.runtime.limits import limits_scope
     with capability_scope(selected), bash_policy_scope(policy), limits_scope(components.runtime_limits):

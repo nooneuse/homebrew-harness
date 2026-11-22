@@ -99,9 +99,12 @@ def publication(store, job, raw, conn=None):
 
 
 def validation_plan(store, job, raw, conn=None):
-    if not isinstance(raw, dict) or set(raw) - {"tests", "selections", "review", "reason"}:
+    if not isinstance(raw, dict) or set(raw) - {"tests", "selections", "review", "reason", "draft"}:
         raise ValueError("Validation plan requires tests, review and a reason.")
     text(raw.get("reason"), maximum=8000)
+    if 'draft' in raw:
+        if not isinstance(raw['draft'],dict) or set(raw['draft'])!={'title','body'}:raise ValueError('Draft publication requires title/body.')
+        text(raw['draft']['title']);text(raw['draft']['body'])
     if type(raw.get("review")) is not bool or not isinstance(raw.get("tests"), list):
         raise ValueError("Validation tests must be a list and review Boolean.")
     row = store.get("changesets", job["target"], conn)
@@ -129,18 +132,24 @@ def ci_triage(store, job, raw, conn=None):
     if (
         not isinstance(raw, dict)
         or not {"classification", "reason", "plan", "next_action"} <= set(raw)
-        or set(raw) - {"classification", "reason", "plan", "next_action", "wait_seconds"}
+        or set(raw) - {"classification", "reason", "plan", "next_action", "wait_seconds", "source_ref", "integration"}
         or raw["classification"]
         not in {"code", "baseline", "flaky", "infrastructure", "unknown"}
     ):
         raise boundary_error(ValueError, "service_result_invalid", "Invalid CI diagnosis.")
     text(raw["reason"], maximum=8000)
     text(raw["plan"], maximum=16000)
-    if raw.get("next_action") not in {"repair", "recheck", "reobserve", "wait", "defer", "stop", "human_required", "reconsider_review", "plan_validation", "proceed"}:
+    if raw.get("next_action") not in {"repair", "recheck", "reobserve", "wait", "defer", "stop", "human_required", "reconsider_review", "plan_validation", "proceed", "retry_prepare"}:
         raise boundary_error(ValueError, "service_result_invalid", "Unknown CI next_action.")
     if "wait_seconds" in raw:
         from homebrew_harness.runtime.limits import positive
         positive(raw["wait_seconds"], "CI wait_seconds")
+    if 'source_ref' in raw:
+        if not isinstance(raw['source_ref'],str):raise ValueError('source_ref must be text.')
+        from .work_actions import validate_action
+        choice={'mode':'fork','source_ref':raw['source_ref'],'reason':raw['plan']}
+        if 'integration' in raw:choice['integration']=raw['integration']
+        validate_action(choice)
     return raw
 
 
@@ -172,6 +181,11 @@ def report(store, job, raw, conn=None):
 
 
 def assessment(store, job, raw, conn=None):
+    if job['kind']=='recovery_plan' and isinstance(raw,dict) and 'action' in raw:
+        from .work_actions import validate_action
+        if set(raw)!={'text','action'}:raise ValueError('Recovery expects text and an optional action.')
+        text(raw['text']);validate_action(raw['action'])
+        return raw
     return _text_only(raw, 16000)
 
 
@@ -192,6 +206,7 @@ def apply_recovery(store, conn, job, result):
             or fingerprint(work_context(store, work, conn)) != job["input"]["basis"]):
         return "stale"
     work.update(recovery_plan={"job_id": job["id"], "basis": job["input"]["basis"], "text": result["text"],
+                               "action":result.get('action'),"execute_requested":job['input'].get('execute_requested',False),
                                "proposed_at": time.time(), "execution_authorized": False}, revision=work["revision"] + 1)
     store.db._put(conn, "service_work", work["id"], work)
     store.changed(conn, work["id"])

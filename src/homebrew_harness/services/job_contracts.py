@@ -50,7 +50,7 @@ HANDLERS = {
     "validation_plan": JobHandler(
         "changesets",
         "Choose validation for this fixed candidate. validation_options lists available authorized tests and explicit requirements. "
-        "Return tests=[recipe names], selections={recipe:optional registered selection}, review=Boolean, reason. "
+        "Return tests=[recipe names], selections={recipe:optional registered selection}, review=Boolean, reason. Optional draft={title,body} publishes this captured source as a Draft PR before final verification; accurately state pending checks and follow configured approval. "
         "Recommended testing and independent review are suggestions. Choose local/full checks, skip unnecessary optional checks with evidence, "
         "or request review as useful. Explicit required_tests/required_review and Goal still apply. No test or review is performed by this proposal.",
         ("delivery-planning",), job_results.validation_plan, job_results.apply_delivery,
@@ -64,7 +64,7 @@ HANDLERS = {
     ),
     "ci_triage": JobHandler(
         "changesets",
-        "Read fixed candidate code and local quality/CI observations. The input work_context contains current execution instructions, accepted scope and handoff facts; validation_history contains prior actual failures for this candidate. Use them before repeating an investigation. Published fix references are source evidence, not passing receipts for this candidate. quality[].outputs lists exact output IDs; use service_read(kind='quality_output', identity=that ID) and next_offset to inspect current or historical recorded logs. service_read kinds are changesets (job.target), work (work_context.id), requirements, events, evidence, policy, job, project_context and quality_output; do not invent kinds. Provide classification (code/baseline/flaky/infrastructure/unknown), reason and a bounded plan. Classification describes the observation and does not select an action. Provide next_action=repair/recheck/reobserve/wait/defer/stop/human_required/reconsider_review/plan_validation/proceed and a concrete reason. Optional wait_seconds selects when to reconsider. Choose the action from current evidence; unknown/baseline/tool errors do not automatically require an operator. For independent_review observations, accept and fix findings, give evidence for reconsider_review, or proceed only if review is advisory and explicit acceptance remains met. A candidate_merge_conflict observation identifies the current target_base and exact conflicting paths in this fixed candidate; conflict markers are evidence to resolve, not validated feature code. prior_integration retains the old candidate review and test facts; they do not verify the changed integration. For this conflict, a baseline classification can also propose scoped integration repair. A passing isolated test does not by itself establish load-flakiness. This does not publish, waive failed checks or grant repair authority.",
+        "Read fixed candidate code and local quality/CI observations. The input work_context contains current execution instructions, accepted scope and handoff facts; validation_history contains prior actual failures for this candidate. Use them before repeating an investigation. Published fix references are source evidence, not passing receipts for this candidate. quality[].outputs lists exact output IDs; use service_read(kind='quality_output', identity=that ID) and next_offset to inspect current or historical recorded logs. service_read kinds are changesets (job.target), work (work_context.id), requirements, events, evidence, policy, job, project_context and quality_output; do not invent kinds. Provide classification (code/baseline/flaky/infrastructure/unknown), reason and a bounded plan. Classification describes the observation and does not select an action. Provide next_action=repair/recheck/reobserve/wait/defer/stop/human_required/reconsider_review/plan_validation/proceed/retry_prepare and a concrete reason. Optional wait_seconds selects when to reconsider. Choose the action from current evidence; unknown/baseline/tool errors do not automatically require an operator. For independent_review observations, accept and fix findings, give evidence for reconsider_review, or proceed only if review is advisory and explicit acceptance remains met. A candidate_merge_conflict observation identifies the current target_base and exact conflicting paths in this fixed candidate; conflict markers are evidence to resolve, not validated feature code. prior_integration retains the old candidate review and test facts; they do not verify the changed integration. For this conflict, a baseline classification can also propose scoped integration repair. A passing isolated test does not by itself establish load-flakiness. This does not publish, waive failed checks or grant repair authority.",
         ("ci-failure-triage",),
         job_results.ci_triage,
         job_results.apply_delivery,
@@ -162,7 +162,8 @@ class JobContract:
         if self.kind == "recovery_plan":
             value = {"work_context": work_context(self.store, primary),
                      "operator_request": self.job["input"].get("instruction", ""),
-                     "current_run": self.job["input"].get("current_run"), "execution_authorized": False}
+                     "current_run": self.job["input"].get("current_run"), "execution_authorized": False,
+                     "execute_requested":self.job["input"].get("execute_requested",False)}
             if primary.get("changeset_id"):
                 candidate = self.store.get("changesets", primary["changeset_id"])
                 value["changeset_id"] = candidate["id"]
@@ -254,6 +255,8 @@ class JobContract:
         return (
             COMMON
             + self.handler.instruction
+            + (" The operator explicitly requested applying your scoped recovery choice. Return optional action={mode:resume/fork/adopt_candidate,source_ref,reason,start:Boolean,integration:{method:merge/rebase,target_ref}}. Inspect Work sources and observe a fixed target before selecting references; do not guess IDs. The proposal completes this reasoning phase; native controls apply it afterward under current authority."
+               if self.kind=='recovery_plan' and self.job['input'].get('execute_requested') else "")
             + (
                 " Use glob/search_text and service_read_code for permitted repository context; paths are relative to this job code root."
                 if self.handler.code
@@ -351,8 +354,10 @@ class JobContract:
                 "Public discussion cannot read unrelated internal evidence."
             )
         primary = self.primary()
-        if kind == "quality_output" and self.kind in {"review", "ci_triage", "publication", "validation_plan"}:
+        if kind == "quality_output" and self.kind in {"review", "ci_triage", "publication", "validation_plan", "recovery_plan"}:
             from .delivery.quality import output_reference
+            if self.kind == "recovery_plan":
+                primary = self.store.get("changesets", primary["changeset_id"])
             output_reference(primary, identity)
             return
         allowed = {

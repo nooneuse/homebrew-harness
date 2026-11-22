@@ -329,6 +329,18 @@ def commands(parser, *, attach=True):
     planning.add_argument("work_id")
     planning.add_argument("--instruction", default="")
     planning.add_argument("--request-id")
+    planning.add_argument('--execute',action='store_true',help='Apply the Lead selected action after planning under current Work authority.')
+    sources=tasks.add_parser('sources');sources.add_argument('work_id')
+    read=tasks.add_parser('read-source');read.add_argument('work_id');read.add_argument('source_ref');read.add_argument('path')
+    read.add_argument('--offset',type=int,default=0);read.add_argument('--limit',type=int,default=10000);read.add_argument('--expected-version')
+    compare=tasks.add_parser('compare-sources');compare.add_argument('work_id');compare.add_argument('before');compare.add_argument('after')
+    compare.add_argument('--offset',type=int,default=0);compare.add_argument('--limit',type=int,default=100);compare.add_argument('--expected-version')
+    target=tasks.add_parser('observe-target');target.add_argument('work_id');target.add_argument('--request-id')
+    apply=tasks.add_parser('apply-recovery');apply.add_argument('work_id');apply.add_argument('--job-id');apply.add_argument('--start',action='store_true');apply.add_argument('--request-id')
+    cont=tasks.add_parser('continue-from');cont.add_argument('work_id');cont.add_argument('source_ref');cont.add_argument('--reason',required=True)
+    cont.add_argument('--mode',choices=('fork','adopt_candidate'),default='fork');cont.add_argument('--start',action='store_true');cont.add_argument('--target-ref')
+    cont.add_argument('--method',choices=('merge','rebase'));cont.add_argument('--request-id')
+    integration=tasks.add_parser('integration');integration.add_argument('work_id');integration.add_argument('operation',choices=('inspect','continue','abort'));integration.add_argument('--request-id')
     for name in (
         "show",
         "progress",
@@ -621,7 +633,19 @@ def operate(service, args):
             )
         work = service.work.get(args.work_id)
         if args.work_command == "plan-recovery":
-            return work.plan_recovery(args.instruction, request_id=args.request_id)
+            return work.plan_recovery(args.instruction,execute=args.execute,request_id=args.request_id)
+        if args.work_command=='sources':return work.sources()
+        if args.work_command=='read-source':return work.read_source(args.source_ref,args.path,offset=args.offset,limit=args.limit,expected_version=args.expected_version)
+        if args.work_command=='compare-sources':return work.compare_sources(args.before,args.after,offset=args.offset,limit=args.limit,expected_version=args.expected_version)
+        if args.work_command=='observe-target':return work.observe_target(request_id=args.request_id)
+        if args.work_command=='apply-recovery':return work.apply_recovery(job_id=args.job_id,start=args.start,request_id=args.request_id)
+        if args.work_command=='continue-from':
+            action={'mode':args.mode,'source_ref':args.source_ref,'reason':args.reason,'start':args.start}
+            if args.target_ref or args.method:
+                if not args.target_ref or not args.method:raise ValueError('Integration requires --target-ref and --method together.')
+                action['integration']={'target_ref':args.target_ref,'method':args.method}
+            return work.continue_from(action,request_id=args.request_id)
+        if args.work_command=='integration':return work.control_integration(args.operation,request_id=args.request_id)
         if args.work_command == "show":
             return work.snapshot()
         if args.work_command == "retry":

@@ -75,6 +75,9 @@ class ServiceRuntime:
         self.start_error = None
         self.unpersisted_failure = None
         self.next_close_retry = 0
+        from .work_executions import WorkExecutions
+
+        self.work_executions = WorkExecutions(self)
         self.leases = ExecutionLeases(store.root)
         self.workspace_lease = ExecutionLeases(Path(self.spec.workspace))
         try:
@@ -135,6 +138,7 @@ class ServiceRuntime:
 
     def start(self):
         from homebrew_harness.runtime.limits import limits_scope
+
         with limits_scope(self.core.config.settings.runtime_limits):
             return self._start()
 
@@ -310,6 +314,7 @@ class ServiceRuntime:
                 self.phase_succeeded(phase, meta)
                 if meta["state"] == "stopping":
                     self.closed = True
+                    self.work_executions.request_close()
                     if time.monotonic() >= self.next_close_retry:
                         self.shutdown.request(self._finish_close, 0)
                         self.next_close_retry = time.monotonic() + 2
@@ -428,10 +433,57 @@ class ServiceRuntime:
         meta = self.store.get(self.id)
         if meta["state"] == "running":
             self.store.poll_schedules(self.header)
-        work = self.store.next_work(self.id)
+        # Applying an explicitly requested recovery is preparation, not normal
+        # development admission. Paused/reviewed Work must still be reachable.
+        work = None
+        if self.maintenance and meta["state"] == "running":
+            with self.store.db.connection() as conn:
+                pending = conn.execute(
+                    "SELECT value FROM records WHERE section='service_work' AND owner=? "
+                    "AND coalesce(json_extract(value,'$.cancel_requested'),0)=0 "
+                    "AND json_extract(value,'$.recovery_plan.execute_requested')=1 "
+                    "AND json_extract(value,'$.recovery_plan.action') IS NOT NULL "
+                    "AND json_extract(value,'$.recovery_plan.execution_id') IS NULL ORDER BY rowid LIMIT 1",
+                    ("service:" + self.id,),
+                ).fetchone()
+            if pending:
+                work = json.loads(pending[0])
+        work = work or self.store.next_work(self.id)
         if work is None:
             if meta.get("active_work"):
                 self.store.update(self.header, active_work=None, active_run=None)
+            return
+        plan = work.get("recovery_plan") or {}
+        if (
+            self.maintenance
+            and meta["state"] == "running"
+            and plan.get("execute_requested")
+            and plan.get("action")
+            and not plan.get("execution_id")
+        ):
+            from .work_control import command
+
+            request_id = "apply-recovery-" + plan["job_id"]
+            execution_id = self.work_executions.identity(work["id"], request_id)
+            with self.store.db.write() as conn:
+                self.store.guard(conn, self.header)
+                current = self.store.db._get(conn, "service_work", work["id"])
+                if current["revision"] != work["revision"]:
+                    return
+                current["recovery_plan"]["execution_id"] = execution_id
+                self.store.db._put(conn, "service_work", work["id"], current)
+            command(
+                self,
+                "work_apply_recovery",
+                {
+                    "id": work["id"],
+                    "revision": work["revision"],
+                    "job_id": plan["job_id"],
+                    "start": plan["action"].get("start", False),
+                    "execution": {"mode": "interactive", "wait_seconds": 0},
+                },
+                request_id,
+            )
             return
         if self.maintenance is not None:
             from .work_progress import import_run, route, install_context
@@ -748,6 +800,15 @@ class ServiceRuntime:
                 if payload.get("scope") not in {"all", "execution"}:
                     raise ValueError("Pause scope must be all or execution.")
                 meta.update(state="paused", scope=payload["scope"])
+                if payload["scope"] == "all" and self.maintenance:
+                    rows = conn.execute(
+                        "SELECT value FROM records WHERE section='service_jobs_model' AND owner=? AND json_extract(value,'$.state')='running'",
+                        ("service:" + self.id,),
+                    ).fetchall()
+                    for (raw,) in rows:
+                        job = json.loads(raw)
+                        job.update(pause_requested=True, paused_by_service=True)
+                        self.store.db._put(conn, "service_jobs_model", job["id"], job)
             elif method == "resume":
                 if self.maintenance is not None and self.maintenance.finished.is_set():
                     raise ValueError(
@@ -761,6 +822,19 @@ class ServiceRuntime:
                     last_clock=time.time(),
                     error=None,
                 )
+                rows = conn.execute(
+                    "SELECT value FROM records WHERE section='service_jobs_model' AND owner=? AND json_extract(value,'$.paused_by_service')=1 AND json_extract(value,'$.state')='paused'",
+                    ("service:" + self.id,),
+                ).fetchall()
+                for (raw,) in rows:
+                    job = json.loads(raw)
+                    job.update(
+                        pause_requested=False,
+                        paused_by_service=False,
+                        state="queued",
+                        next_attempt=0,
+                    )
+                    self.store.db._put(conn, "service_jobs_model", job["id"], job)
             elif method == "stop":
                 meta.update(state="stopping", scope="all")
             else:
@@ -774,7 +848,14 @@ class ServiceRuntime:
                 "request_id": request_id,
             }
 
-        return self.store.command(self.header, method, payload, request_id, apply)
+        result = self.store.command(self.header, method, payload, request_id, apply)
+        # Do not acquire execution-manager locks while holding a database write:
+        # a concurrently recovering manager may need the same database.
+        if method == "pause" and payload.get("scope") == "all" and self.maintenance:
+            for manager in self.work_executions.manager_snapshot():
+                for event in tuple(manager.cancel.values()):
+                    event.set()
+        return result
 
     def _external(self, method, payload, request_id):
         key = request_key("command", self.id, request_id)
@@ -840,7 +921,7 @@ class ServiceRuntime:
                     "execution_context": [
                         *target.get("execution_context", []),
                         payload["text"],
-                    ][-8:]
+                    ]
                 }
                 if method == "work_context"
                 else (
@@ -929,7 +1010,7 @@ class ServiceRuntime:
                         "execution_context": [
                             *target.get("execution_context", []),
                             payload["text"],
-                        ][-8:]
+                        ]
                     }
                 else:
                     getattr(handle, method)(
@@ -1021,7 +1102,7 @@ class ServiceRuntime:
                 return dispatch(self.operations, method, payload, request_id)
         if (
             method not in QUERY_METHODS
-            and method not in {"stop"}
+            and method not in {"stop", "work_execution_stop", "service_execution_stop"}
             and self.store.get(self.id).get("operations_phase", "active") != "active"
         ):
             raise ValueError("Service is parked or draining; use operations controls.")
@@ -1032,6 +1113,8 @@ class ServiceRuntime:
 
             from .slow_controls import METHODS
 
+            if method in {"work_sources", "work_source_read", "work_source_compare"}:
+                return self.maintenance.query(method, payload)
             if method in METHODS:
                 return self.maintenance.command(method, payload, request_id)
             with self.lock:
@@ -1048,6 +1131,16 @@ class ServiceRuntime:
                     if method in QUERY_METHODS
                     else self.maintenance.command(method, payload, request_id)
                 )
+        from .protocol import SERVICE_EXECUTION_QUERIES, SERVICE_EXECUTION_COMMANDS
+
+        if (
+            method in SERVICE_EXECUTION_QUERIES
+            or method in SERVICE_EXECUTION_COMMANDS
+            or method.startswith("work_execution")
+        ):
+            from .work_executions import dispatch
+
+            return dispatch(self, method, payload, request_id)
         with self.lock:
             if (
                 method not in QUERY_METHODS
@@ -1063,41 +1156,6 @@ class ServiceRuntime:
             if method == "focus_get":
                 return self.store.runtime.get(
                     "service_focus", self.id + ":" + payload["context"]
-                )
-            if method in {
-                "work_executions",
-                "work_execution_get",
-                "work_execution_output",
-                "work_execution_stop",
-                "work_execution_input",
-            }:
-                work = self.store.work(payload["id"], self.id)
-                if not work.get("run_id"):
-                    if method == "work_executions":
-                        return {"executions": []}
-                    raise ValueError("Work has no execution yet.")
-                handle = self.child_for(work).runs.get(
-                    work["run_id"],
-                    control=method in {"work_execution_stop", "work_execution_input"},
-                )
-                views = handle.executions
-                if method == "work_executions":
-                    return {"executions": [row.data() for row in views.list()]}
-                execution = views.get(payload["execution_id"])
-                if method == "work_execution_get":
-                    return execution.snapshot().data()
-                if method == "work_execution_output":
-                    return execution.output(
-                        payload.get("cursor", 0),
-                        payload.get("limit", 16000),
-                        stream=payload.get("stream", "output"),
-                    )
-                if work["revision"] != payload.get("revision"):
-                    raise ValueError("Work revision changed.")
-                if method == "work_execution_input":
-                    return execution.input(payload["text"], request_id=request_id)
-                return execution.stop(
-                    revision=payload.get("execution_revision"), request_id=request_id
                 )
             if method == "work_get":
                 return self.work_snapshot(payload["id"])
@@ -1154,6 +1212,7 @@ class ServiceRuntime:
             )
         self.closed = True
         self.approval_review.request_close()
+        self.work_executions.request_close()
         self.next_close_retry = 0
         self.shutdown.request(self._finish_close, timeout)
         return self.snapshot()
@@ -1176,6 +1235,10 @@ class ServiceRuntime:
         self.approval_review.close()
         if self.maintenance is not None:
             self.maintenance.close()
+        if not self.work_executions.wait_closed(1):
+            from homebrew_harness.runtime.runtime_control import ClosePending
+
+            raise ClosePending("Owned Work operations still need cleanup.")
         with self.lock:
             work = self.store.next_work(self.id)
             if work is not None and work["run_id"]:

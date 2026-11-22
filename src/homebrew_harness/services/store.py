@@ -140,6 +140,8 @@ class ServiceStore:
 
     def claim(self, identity, binding):
         with self.db.write() as conn:
+            pending=conn.execute("SELECT key FROM records WHERE section='service_commands' AND owner=? AND json_extract(value,'$.phase')='prepared' LIMIT 1",('service:'+identity,)).fetchone()
+            if pending:raise ValueError('Finish accepted stopped budget migration before Service startup: '+pending[0])
             value = self.db._get(conn, "service_meta", identity)
             if value["binding"] != binding:
                 plan = (

@@ -8,6 +8,24 @@ VERSION = 1
 MAX_FRAME = 256 * 1024
 SERVICE_ID = re.compile(r"svc_[0-9a-f]{32}\Z")
 MAINTENANCE_QUERIES = {
+    "work_sources": {"id"},
+    "work_source_read": {
+        "id",
+        "source_ref",
+        "path",
+        "offset",
+        "limit",
+        "expected_version",
+    },
+    "work_source_compare": {
+        "id",
+        "before",
+        "after",
+        "offset",
+        "limit",
+        "path",
+        "expected_version",
+    },
     "requests_page": {"work_id", "cursor", "limit", "expired"},
     "service_models": set(),
     "communication_get": {"kind", "id"},
@@ -16,7 +34,7 @@ MAINTENANCE_QUERIES = {
     "communication_events": {"id", "cursor", "limit"},
     "delivery_status": {"kind", "id"},
     "service_page": {"kind", "cursor", "limit", "state"},
-    "service_read": {"kind", "identity", "offset", "limit"},
+    "service_read": {"kind", "identity", "offset", "limit", "expected_version"},
     "job_get": {"id"},
     "conversation_get": {"id"},
     "report_get": {"id"},
@@ -43,14 +61,26 @@ OPERATIONS_COMMANDS = {
     "ops_upgrade_confirm": {"id"},
     "ops_retry": {"id"},
 }
+SERVICE_EXECUTION_QUERIES = {
+    "service_executions": {"cursor", "limit"},
+    "service_execution_get": {"execution_id"},
+    "service_execution_wait": {"execution_id", "seconds"},
+    "service_execution_output": {"execution_id", "cursor", "limit", "stream"},
+}
+SERVICE_EXECUTION_COMMANDS = {
+    "service_execution_stop": {"execution_id", "execution_revision"},
+    "service_execution_input": {"execution_id", "text"},
+}
 QUERY_METHODS = {
+    **SERVICE_EXECUTION_QUERIES,
     **OPERATIONS_QUERIES,
     **MAINTENANCE_QUERIES,
     "snapshot": set(),
     "focus_get": {"context"},
     "work_get": {"id"},
     "work_progress": {"id"},
-    "work_executions": {"id"},
+    "work_executions": {"id", "cursor", "limit"},
+    "work_execution_wait": {"id", "execution_id", "seconds"},
     "work_execution_get": {"id", "execution_id"},
     "work_execution_output": {"id", "execution_id", "cursor", "limit", "stream"},
     "work_input": {"id", "offset", "limit", "amendment"},
@@ -60,6 +90,17 @@ QUERY_METHODS = {
     "receipt": {"request_id"},
 }
 MAINTENANCE_COMMANDS = {
+    "work_continue": {"id", "revision", "action", "execution"},
+    "work_apply_recovery": {"id", "revision", "job_id", "execution", "start"},
+    "work_observe_target": {"id", "execution"},
+    "work_integration_control": {
+        "id",
+        "revision",
+        "operation",
+        "execution",
+        "caller_execution_id",
+    },
+    "job_control": {"id", "operation", "text"},
     "model_recover": {"profile", "revision"},
     "approval_review_retry": {"id", "revision"},
     "discussion_assess": {"id", "revision"},
@@ -68,12 +109,20 @@ MAINTENANCE_COMMANDS = {
     "discussion_prepare_review": {"id", "revision"},
     "communication_plan": {"id", "revision", "plan"},
     "communication_request_authority": {"id", "revision"},
-    "communication_inspect": {"id", "revision", "conclusion", "confirmed"},
+    "communication_inspect": {"id", "revision", "conclusion", "confirmed", "execution"},
     "delivery_prepare": {"id", "revision"},
-    "delivery_plan": {"id", "revision", "kind", "body", "subject"},
+    "delivery_plan": {
+        "id",
+        "revision",
+        "kind",
+        "body",
+        "subject",
+        "draft",
+        "publication",
+    },
     "delivery_request": {"id"},
-    "delivery_inspect": {"id", "conclusion", "confirmed"},
-    "delivery_refresh": {"id"},
+    "delivery_inspect": {"id", "conclusion", "confirmed", "execution"},
+    "delivery_refresh": {"id", "execution"},
     "delivery_ci_limits": {"ci_fix_limit", "ci_fix_warning"},
     "delivery_base_update": {"mode"},
     "batch_create": {"refs"},
@@ -85,10 +134,11 @@ MAINTENANCE_COMMANDS = {
     "job_retry": {"id"},
     "work_revise": {"id", "revision", "text"},
     "work_request_authority": {"id", "revision"},
-    "work_recovery_plan": {"id", "revision", "text"},
+    "work_recovery_plan": {"id", "revision", "text", "execute"},
     "authority_revoke": {"id", "revision"},
 }
 COMMAND_METHODS = {
+    **SERVICE_EXECUTION_COMMANDS,
     "work_execution_stop": {"id", "revision", "execution_id", "execution_revision"},
     "work_execution_input": {"id", "revision", "execution_id", "text"},
     **OPERATIONS_COMMANDS,

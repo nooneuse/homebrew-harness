@@ -35,44 +35,97 @@ class JobContracts(unittest.TestCase):
 
     def candidate_job(self):
         # A synthetic CI job needs the delivery policy normally supplied by DeliveryRuntime.
-        self.store.delivery = SimpleNamespace(spec={"ci_fix_limit": None, "ci_fix_warning": 2})
+        self.store.delivery = SimpleNamespace(
+            spec={"ci_fix_limit": None, "ci_fix_warning": 2}
+        )
         work = self.service.work.submit("Keep the original feature requirement.")
         with self.store.db.write() as conn:
             saved = self.store.get("work", work.id, conn)
-            saved.update(amendments=["Retain the accepted constraint."],
-                         execution_context=["Integrate the latest published framework fix."],
-                         progress_ref="handoff_current")
+            saved.update(
+                amendments=["Retain the accepted constraint."],
+                execution_context=["Integrate the latest published framework fix."],
+                progress_ref="handoff_current",
+            )
             self.store.put(conn, "work", saved)
-            self.store.put(conn, "work_progress", {"id": "handoff_current", "requirements_revision": 0,
-                           "summary": "Feature finished; prior isolated baseline test failed.", "complete": True,
-                           "remaining": [], "evidence_refs": ["test_previous"]})
-            self.store.put(conn, "changesets", {"id": "changeset_current", "work_id": work.id,
-                           "revision": 1, "requirements_revision": 0, "state": "ci_diagnosing",
-                           "candidate": {"commit": "a"*40, "tree": "b"*40, "delta": {"src/f.py": {}},
-                                         "files": {"internal": "v"*100000}, "repo": "internal git", "workspace": "internal path"},
-                           "primary_expected": {"internal": "v"*100000},
-                           "quality": [{"run_id": "test_current", "status": "failed", "inputs": {"internal": "v"*100000}}],
-                           "validation_history": [{"quality": [{"run_id": "test_previous", "status": "failed",
-                                                               "inputs": {"internal": "v"*100000}}]}]})
+            self.store.put(
+                conn,
+                "work_progress",
+                {
+                    "id": "handoff_current",
+                    "requirements_revision": 0,
+                    "summary": "Feature finished; prior isolated baseline test failed.",
+                    "complete": True,
+                    "remaining": [],
+                    "evidence_refs": ["test_previous"],
+                },
+            )
+            self.store.put(
+                conn,
+                "changesets",
+                {
+                    "id": "changeset_current",
+                    "work_id": work.id,
+                    "revision": 1,
+                    "requirements_revision": 0,
+                    "state": "ci_diagnosing",
+                    "candidate": {
+                        "commit": "a" * 40,
+                        "tree": "b" * 40,
+                        "delta": {"src/f.py": {}},
+                        "files": {"internal": "v" * 100000},
+                        "repo": "internal git",
+                        "workspace": "internal path",
+                    },
+                    "primary_expected": {"internal": "v" * 100000},
+                    "quality": [
+                        {
+                            "run_id": "test_current",
+                            "status": "failed",
+                            "inputs": {"internal": "v" * 100000},
+                        }
+                    ],
+                    "validation_history": [
+                        {
+                            "quality": [
+                                {
+                                    "run_id": "test_previous",
+                                    "status": "failed",
+                                    "inputs": {"internal": "v" * 100000},
+                                }
+                            ]
+                        }
+                    ],
+                },
+            )
         job = self.activate(self.service.converse("Inspect the candidate."))
         job = {**job, "kind": "ci_triage", "target": "changeset_current"}
         self.agent.job = job
         return work, JobContract(self.store, job)
 
-    def test_candidate_input_and_reads_preserve_current_context_and_exclude_inventories(self):
+    def test_candidate_input_and_reads_preserve_current_context_and_exclude_inventories(
+        self,
+    ):
         work, contract = self.candidate_job()
         before = self.store.get("changesets", "changeset_current")
         data = contract.input()
-        pages = [];offset = 0
+        pages = []
+        offset = 0
         while offset is not None:
-            page = self.read("changesets", "changeset_current", offset=offset, limit=300)
-            pages.append(page["text"]);offset = page["next_offset"]
+            page = self.read(
+                "changesets", "changeset_current", offset=offset, limit=300
+            )
+            pages.append(page["text"])
+            offset = page["next_offset"]
         self.assertEqual(json.loads("".join(pages)), data)
-        self.assertEqual(json.loads(self.read("work", work.id)["text"]), data["work_context"])
+        self.assertEqual(
+            json.loads(self.read("work", work.id)["text"]), data["work_context"]
+        )
         self.assertIn("latest published framework", json.dumps(data))
         self.assertIn("Retain the accepted constraint", json.dumps(data))
         self.assertIn("prior isolated baseline test failed", json.dumps(data))
-        self.assertEqual(data["validation_history"][0]["quality"][0]["run_id"], "test_previous")
+        self.assertEqual(
+            data["validation_history"][0]["quality"][0]["run_id"], "test_previous"
+        )
         self.assertNotIn("internal", json.dumps(data))
         self.assertLess(len(json.dumps(data)), 5000)
         self.assertLess(len(contract.task()), 500)
@@ -81,34 +134,64 @@ class JobContracts(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "changesets"):
             self.read("changeset", "changeset_current")
 
-    def test_candidate_phase_rejects_proposal_when_current_work_instructions_change(self):
+    def test_candidate_phase_rejects_proposal_when_current_work_instructions_change(
+        self,
+    ):
         from homebrew_harness.services.protocol import fingerprint
+
         work, contract = self.candidate_job()
         self.agent.phase_signature = {"primary": fingerprint(contract.input())}
-        self.agent.proposal = {"next_action": "repair", "classification": "code", "reason": "Known defect.", "plan": "Repair."}
+        self.agent.proposal = {
+            "next_action": "repair",
+            "classification": "code",
+            "reason": "Known defect.",
+            "plan": "Repair.",
+        }
         with self.store.db.write() as conn:
             current = self.store.get("work", work.id, conn)
-            current["execution_context"].append("Preserve the newly clarified execution constraint.")
+            current["execution_context"].append(
+                "Preserve the newly clarified execution constraint."
+            )
             self.store.put(conn, "work", current)
         messages = []
-        self.assertFalse(self.agent.complete_phase([SimpleNamespace(name="service_propose")], messages))
+        self.assertFalse(
+            self.agent.complete_phase(
+                [SimpleNamespace(name="service_propose")], messages
+            )
+        )
         self.assertIsNone(self.agent.proposal)
         self.assertIn("newly clarified", messages[0]["content"])
 
     def test_service_code_reader_uses_characters_and_checks_page_version(self):
         from homebrew_harness.tools.catalog import SERVICE_TOOL_DEFINITIONS
-        target = self.workspace/"source.txt";target.write_text("first\nsecond\nthird\n")
+
+        target = self.workspace / "source.txt"
+        target.write_text("first\nsecond\nthird\n")
         job = self.activate(self.service.converse("Discuss this repository."))
         self.agent.job = {**job, "kind": "triage"}
         with patch.object(self.agent, "code_root", return_value=self.workspace):
             first = json.loads(self.agent.read_code("source.txt", offset=0, limit=1))
-            second = json.loads(self.agent.read_code("source.txt", offset=first["next_offset"], limit=1,
-                                                     expected_version=first["version"]))
+            second = json.loads(
+                self.agent.read_code(
+                    "source.txt",
+                    offset=first["next_offset"],
+                    limit=1,
+                    expected_version=first["version"],
+                )
+            )
             self.assertEqual(second["content"], "second\n")
             target.write_text("replaced\n")
             with self.assertRaisesRegex(ValueError, "changed"):
-                self.agent.read_code("source.txt", offset=first["next_offset"], expected_version=first["version"])
-        tool = next(t["function"] for t in SERVICE_TOOL_DEFINITIONS if t["function"]["name"] == "service_read_code")
+                self.agent.read_code(
+                    "source.txt",
+                    offset=first["next_offset"],
+                    expected_version=first["version"],
+                )
+        tool = next(
+            t["function"]
+            for t in SERVICE_TOOL_DEFINITIONS
+            if t["function"]["name"] == "service_read_code"
+        )
         self.assertIn("character", tool["description"])
         self.assertIn("expected_version", tool["parameters"]["properties"])
 
@@ -116,12 +199,23 @@ class JobContracts(unittest.TestCase):
         work, _ = self.candidate_job()
         text = 'diff --git a/source.py b/source.py\n+value = "quoted"\n'
         with self.store.db.write() as conn:
-            self.store.put(conn, "evidence", {"id": "source_reference", "kind": "published_source_reference",
-                           "work_id": work.id, "source_commit": "a"*40, "text": text})
+            self.store.put(
+                conn,
+                "evidence",
+                {
+                    "id": "source_reference",
+                    "kind": "published_source_reference",
+                    "work_id": work.id,
+                    "source_commit": "a" * 40,
+                    "text": text,
+                },
+            )
         first = self.read("evidence", "source_reference", offset=0, limit=20)
-        second = self.read("evidence", "source_reference", offset=first["next_offset"], limit=16000)
+        second = self.read(
+            "evidence", "source_reference", offset=first["next_offset"], limit=16000
+        )
         self.assertEqual(first["text"] + second["text"], text)
-        self.assertEqual(first["source_commit"], "a"*40)
+        self.assertEqual(first["source_commit"], "a" * 40)
         self.assertEqual(first["length"], len(text))
 
     def test_all_job_schemas_reject_invalid_candidates_and_unknown_jobs(self):
@@ -135,15 +229,21 @@ class JobContracts(unittest.TestCase):
                 "alignment": "Within scope.",
             },
             "review": {"text": "Reviewed fixed candidate.", "findings": []},
-            "publication": {"title": "Describe the change", "body": "Recorded changes and verification."},
-            "ci_triage": {"next_action": "wait",
+            "publication": {
+                "title": "Describe the change",
+                "body": "Recorded changes and verification.",
+            },
+            "ci_triage": {
+                "next_action": "wait",
                 "classification": "unknown",
                 "reason": "Missing facts.",
                 "plan": "Read logs.",
             },
             "audit": {"text": "Reviewed fixed code.", "findings": []},
             "conversation": {"text": "Discuss the plan."},
-            "recovery_plan": {"text": "Preserve the fixed branch and propose recovery."},
+            "recovery_plan": {
+                "text": "Preserve the fixed branch and propose recovery."
+            },
             "report": {"text": "Stored facts only."},
             "incident": {"text": "Recorded diagnosis."},
             "upgrade_assessment": {"text": "Recorded assessment."},
@@ -377,9 +477,13 @@ class JobContracts(unittest.TestCase):
             self.agent.read_code("module.py")
         result = self.agent.run(job)
         report_request = next(
-            request for request in self.peer.model_requests
-            if any(message.get("role") == "user" and '"kind": "report"' in message.get("content", "")
-                   for message in request["messages"])
+            request
+            for request in self.peer.model_requests
+            if any(
+                message.get("role") == "user"
+                and '"kind": "report"' in message.get("content", "")
+                for message in request["messages"]
+            )
         )
         offered = {tool["function"]["name"] for tool in report_request["tools"]}
         self.assertIn("service_read", offered)
@@ -503,3 +607,43 @@ class JobContracts(unittest.TestCase):
                 ):
                     with self.assertRaises(ValueError):
                         self.read(kind, identity)
+
+    def test_work_proposal_tools_cannot_mutate_an_integration_or_running_execution(
+        self,
+    ):
+        from homebrew_harness.services.model_work_tools import (
+            ModelWorkTools,
+            definitions,
+        )
+        from homebrew_harness.services.agent import ServiceAgent
+
+        calls = []
+        tools = ModelWorkTools(
+            SimpleNamespace(
+                query=lambda *args: calls.append(args),
+                command=lambda *args: calls.append(args),
+            ),
+            "work_" + "5" * 32,
+            read_only=True,
+        )
+        for name, args in (
+            ("integration", {"operation": "continue"}),
+            ("integration", {"operation": "abort"}),
+            ("execution", {"operation": "stop"}),
+            ("execution", {"operation": "input", "input": "change"}),
+        ):
+            with self.subTest(name=name, args=args), self.assertRaisesRegex(
+                ValueError, "proposal|only observes"
+            ):
+                getattr(tools, name)(**args)
+        self.assertEqual(calls, [])
+        self.agent.job = {"kind": "recovery_plan"}
+        shaped = ServiceAgent.describe_tools(self.agent, definitions())
+        ops = {
+            row["function"]["name"]: row["function"]["parameters"]["properties"]
+            .get("operation", {})
+            .get("enum")
+            for row in shaped
+        }
+        self.assertEqual(ops["service_integration_control"], ["inspect"])
+        self.assertNotIn("stop", ops["service_manage_execution"])

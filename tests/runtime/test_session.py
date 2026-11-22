@@ -6,6 +6,7 @@ from homebrew_harness.runtime.capabilities import Capabilities
 import copy
 import io
 import json
+import os
 import subprocess
 import tempfile
 import threading
@@ -278,7 +279,9 @@ class HarnessTests(unittest.TestCase):
     ):
         session, client, _ = self.session([])
         session.team.bus.send("worker", "lead", "Finding", "result")
-        client.chat.completions.create.side_effect = ProviderError("quota", status_code=403)
+        client.chat.completions.create.side_effect = ProviderError(
+            "quota", status_code=403
+        )
         self.assertTrue(session.process_once())
         self.assertTrue(session._quota_blocked)
         self.assertFalse(session.process_once())
@@ -318,7 +321,7 @@ class WorktreeIntegrationTests(unittest.TestCase):
 
     def git(self, *args):
         return subprocess.run(
-            ["git", *args],
+            ["git", "-c", "core.hooksPath=" + os.devnull, *args],
             cwd=self.root,
             capture_output=True,
             text=True,

@@ -15,7 +15,10 @@ class Publication(unittest.TestCase):
     run_git = fixture.FlowTests.run_git
     pending_target = fixture.FlowTests.pending_target
 
-    draft = {"title": "Restore value handling", "body": "FROM TEST AGENT\n\nRestore the value. Fixed unit-tests passed."}
+    draft = {
+        "title": "Restore value handling",
+        "body": "FROM TEST AGENT\n\nRestore the value. Fixed unit-tests passed.",
+    }
 
     def held(self):
         self.peer.publication_started = threading.Event()
@@ -28,9 +31,14 @@ class Publication(unittest.TestCase):
 
     def test_missing_wording_is_drafted_without_repeating_code_review_or_tests(self):
         self.held()
-        guidance = "Public bodies must begin FROM TEST AGENT and describe confirmed changes."
-        service = self.start(auto_actions=["publish_branch"], maintenance={"instructions": {"review": guidance}},
-                             merge={"mode": "manual"})
+        guidance = (
+            "Public bodies must begin FROM TEST AGENT and describe confirmed changes."
+        )
+        service = self.start(
+            auto_actions=["publish_branch"],
+            maintenance={"instructions": {"review": guidance}},
+            merge={"mode": "manual"},
+        )
         work = service.work.submit("Restore the documented value.")
         self.assertTrue(self.peer.publication_started.wait(20))
         before = copy.deepcopy(self.row(service))
@@ -45,8 +53,12 @@ class Publication(unittest.TestCase):
         jobs = service.records("jobs")["items"]
         self.assertEqual(sum(job["kind"] == "review" for job in jobs), 1)
         self.assertEqual(sum(job["kind"] == "publication" for job in jobs), 1)
-        payloads = [json.loads(m["content"]) for r in self.peer.model_requests for m in r["messages"]
-                    if m.get("role") == "user" and m.get("content", "").startswith('{"job":')]
+        payloads = [
+            json.loads(m["content"])
+            for r in self.peer.model_requests
+            for m in r["messages"]
+            if m.get("role") == "user" and m.get("content", "").startswith('{"job":')
+        ]
         prepared = next(p for p in payloads if p["job"]["kind"] == "publication")
         self.assertEqual(prepared["policy"]["instructions"], {"review": guidance})
         service.decide(request, "approve", decision_id="approve-generated-wording")
@@ -55,7 +67,9 @@ class Publication(unittest.TestCase):
         branches = [action for action in actions if action["kind"] == "publish_branch"]
         self.assertEqual(len(branches), 1)
         self.assertEqual(branches[0]["attempts"], 1)
-        self.assertEqual(self.peer.pulls[0]["body"].split("\n\n<!--", 1)[0], self.draft["body"])
+        self.assertEqual(
+            self.peer.pulls[0]["body"].split("\n\n<!--", 1)[0], self.draft["body"]
+        )
         self.assertEqual(service.store.work(work.id)["run_id"], before["run_id"])
 
     def test_denied_wording_gets_a_new_exact_approval_and_keeps_confirmed_branch(self):
@@ -86,16 +100,34 @@ class Publication(unittest.TestCase):
         self.assertEqual(replacement["plan"]["body"], self.draft["body"])
         service.decide(corrected, "approve", decision_id="approve-corrected-wording")
         eventually(lambda: len(self.peer.pulls) == 1, 15)
-        self.assertEqual(sum(action["attempts"] for action in service.records("actions")["items"]
-                             if action["kind"] == "publish_branch"), 1)
+        self.assertEqual(
+            sum(
+                action["attempts"]
+                for action in service.records("actions")["items"]
+                if action["kind"] == "publish_branch"
+            ),
+            1,
+        )
 
     def test_operator_referral_waits_for_new_current_instructions(self):
-        self.peer.publication_value = {"human_required": True, "reason": "Confirm the public writing policy."}
+        self.peer.publication_value = {
+            "human_required": True,
+            "reason": "Confirm the public writing policy.",
+        }
         service = self.start(auto_actions=["publish_branch"], merge={"mode": "manual"})
         work = service.work.submit("Restore the value.")
-        row = eventually(lambda: self.row(service) if service.records("changesets")["items"]
-                         and self.row(service)["state"] == "publication_attention" else None, 25)
-        self.assertIn("Confirm the public writing policy", str(service.health()["issues"]))
+        row = eventually(
+            lambda: (
+                self.row(service)
+                if service.records("changesets")["items"]
+                and self.row(service)["state"] == "publication_attention"
+                else None
+            ),
+            25,
+        )
+        self.assertIn(
+            "Confirm the public writing policy", str(service.health()["issues"])
+        )
         self.assertTrue(service.health()["waiting_for_operator"])
         before = copy.deepcopy(row)
         self.peer.publication_value = self.draft
@@ -111,32 +143,73 @@ class Publication(unittest.TestCase):
         request = eventually(lambda: self.pending_target(service), 25)
         service.pause("all")
         service.decide(request, "deny", decision_id="deny-publication")
-        self.host.store.put("approval_reviews", "denial-fixture", {
-            "id": "denial-fixture", "checkpoint": "service:" + service.id,
-            "request_id": request.ref.id, "state": "denied",
-            "verdict": {"decision": "deny", "reason": "Required public prefix is missing."}})
-        issue = next(issue for issue in service.health()["issues"] if issue["code"] == "delivery_blocked")
+        self.host.store.put(
+            "approval_reviews",
+            "denial-fixture",
+            {
+                "id": "denial-fixture",
+                "checkpoint": "service:" + service.id,
+                "request_id": request.ref.id,
+                "state": "denied",
+                "verdict": {
+                    "decision": "deny",
+                    "reason": "Required public prefix is missing.",
+                },
+            },
+        )
+        issue = next(
+            issue
+            for issue in service.health()["issues"]
+            if issue["code"] == "delivery_blocked"
+        )
         self.assertEqual(issue["message"], "Required public prefix is missing.")
         self.assertEqual(issue["request_id"], request.ref.id)
         self.assertEqual(issue["action_id"], request.arguments["action_id"])
         self.assertTrue(service.health()["waiting_for_operator"])
-        self.assertEqual(work.progress()["delivery"]["denied_request_id"], request.ref.id)
+        self.assertEqual(
+            work.progress()["delivery"]["denied_request_id"], request.ref.id
+        )
 
     def test_failed_wording_job_has_native_retry_with_existing_quality(self):
         self.peer.publication_value = {"not_a_draft": True}
-        service = self.start(auto_actions=["publish_branch"], merge={"mode": "manual"},
-                             maintenance={"job_turns": 1, "job_attempts": 1})
+        service = self.start(
+            auto_actions=["publish_branch"],
+            merge={"mode": "manual"},
+            maintenance={"job_turns": 1, "job_attempts": 1},
+        )
         service.work.submit("Restore the value.")
-        row = eventually(lambda: self.row(service) if service.records("changesets")["items"]
-                         and self.row(service)["state"] == "publication_failed" else None, 25)
+        row = eventually(
+            lambda: (
+                self.row(service)
+                if service.records("changesets")["items"]
+                and self.row(service)["state"] == "publication_failed"
+                else None
+            ),
+            25,
+        )
         before = copy.deepcopy(row)
-        job = next(job for job in service.records("jobs")["items"] if job["kind"] == "publication")
+        job = next(
+            job
+            for job in service.records("jobs")["items"]
+            if job["kind"] == "publication"
+        )
         self.assertEqual(job["state"], "failed")
         self.peer.publication_value = self.draft
         service.retry_job(job["id"], request_id="retry-wording")
         eventually(lambda: self.pending_target(service), 25)
         self.assertEqual(self.row(service)["quality"], before["quality"])
         self.assertEqual(self.row(service)["review"], before["review"])
+        after = service.job(job["id"])
+        self.assertGreater(after["attempts"], job["attempts"])
+        self.assertEqual(after["retry_generation"], 1)
+        self.assertTrue(after["retry_history"][0]["error"])
+        self.assertTrue(
+            any(
+                m.get("name") == "retry_attempt"
+                for r in self.peer.model_requests
+                for m in r["messages"]
+            )
+        )
 
     def test_started_or_unknown_external_effect_blocks_replacement(self):
         from homebrew_harness.services.delivery.publication import accept
@@ -147,7 +220,11 @@ class Publication(unittest.TestCase):
         self.assertTrue(self.peer.publication_started.wait(20))
         store = service.runtime.maintenance.delivery.store
         row = self.row(service)
-        job = next(job for job in service.records("jobs")["items"] if job["kind"] == "publication")
+        job = next(
+            job
+            for job in service.records("jobs")["items"]
+            if job["kind"] == "publication"
+        )
         with store.db.write() as conn:
             action = store.action(conn, row, "ensure_change_request")
             for state in ("started", "unknown"):
@@ -177,16 +254,29 @@ class Publication(unittest.TestCase):
             return value
 
         with patch.object(delivery_fixture, "completion", completion):
-            service = self.start(auto_actions=["publish_branch"], merge={"mode": "manual"})
+            service = self.start(
+                auto_actions=["publish_branch"], merge={"mode": "manual"}
+            )
             work = service.work.submit("Restore the value.")
             self.assertTrue(self.peer.publication_started.wait(20))
             before = copy.deepcopy(self.row(service))
             work.context("Describe the parser change in the public title.")
-            self.peer.publication_value = {**self.draft, "title": "Restore parser value handling"}
+            self.peer.publication_value = {
+                **self.draft,
+                "title": "Restore parser value handling",
+            }
             self.peer.publication_hold.set()
             eventually(lambda: self.pending_target(service), 25)
-        self.assertEqual(self.row(service)["publication"]["title"], "Restore parser value handling")
+        self.assertEqual(
+            self.row(service)["publication"]["title"], "Restore parser value handling"
+        )
         self.assertEqual(self.row(service)["quality"], before["quality"])
         self.assertEqual(self.row(service)["review"], before["review"])
-        observed = [m.get("content", "") for r in self.peer.model_requests for m in r["messages"]]
-        self.assertTrue(any("changed during reasoning" in str(message) for message in observed))
+        observed = [
+            m.get("content", "")
+            for r in self.peer.model_requests
+            for m in r["messages"]
+        ]
+        self.assertTrue(
+            any("changed during reasoning" in str(message) for message in observed)
+        )

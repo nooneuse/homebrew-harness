@@ -267,6 +267,12 @@ class DeliveryStore:
             raise StaleDelivery("ChangeSet is stale; prepare a current candidate.")
         return work
 
+    def action_basis(self,row,plan):
+        if plan.get('draft'):
+            return fingerprint({'work_id':row['work_id'],'requirements_revision':row['requirements_revision'],
+                'policy':row['policy'],'candidate':{k:row['candidate'][k] for k in ('commit','tree','content_hash','delta')},'draft':True})
+        return row.get('frozen')
+
     def freeze(self, row):
         return fingerprint(
             {
@@ -283,7 +289,7 @@ class DeliveryStore:
             }
         )
 
-    def action(self, conn, row, kind, *, body=None, subject=None):
+    def action(self, conn, row, kind, *, body=None, subject=None, draft=False, publication=None):
         self.current(row)
         if kind not in {
             "publish_branch",
@@ -294,7 +300,12 @@ class DeliveryStore:
             raise boundary_error(
                 ValueError, "delivery_contract", "Unknown delivery action."
             )
-        if not row.get("frozen"):
+        if type(draft) is not bool or draft and kind not in {'publish_branch','ensure_change_request'}:
+            raise ValueError('Draft publication applies only to a review branch or change request.')
+        if not row.get('candidate'):raise ValueError('Capture a source candidate before draft publication.')
+        if draft and kind=='ensure_change_request' and not publication:
+            raise ValueError('Draft PR publication requires a truthful title/body.')
+        if not draft and not row.get("frozen"):
             raise boundary_error(
                 ValueError, "delivery_contract", "Candidate is not quality-ready."
             )
@@ -304,7 +315,7 @@ class DeliveryStore:
                 "delivery_contract",
                 "Candidate artifacts were retired; prepare new reviewed work before delivery.",
             )
-        if row["frozen"] != self.freeze(row):
+        if not draft and row["frozen"] != self.freeze(row):
             raise boundary_error(
                 ValueError, "delivery_contract", "Candidate quality evidence changed."
             )
@@ -323,11 +334,16 @@ class DeliveryStore:
             )
         content = {
             "changeset": row["id"],
-            "hash": row["frozen"],
+            "hash": self.action_basis(row,{'draft':draft}),
             "commit": row["candidate"]["commit"],
             "branch": row["branch"],
             "target_base": row["candidate"]["target_base"],
         }
+        if draft:content['draft']=True
+        if publication is not None:
+            if not isinstance(publication,dict) or set(publication)!={'title','body'}:raise ValueError('Publication requires title/body.')
+            text(publication['title']);text(publication['body'])
+            content.update(publication)
         if kind == "merge_change_request":
             from .merge_flow import gate
 
@@ -363,7 +379,7 @@ class DeliveryStore:
                 + row["candidate"]["commit"]
                 + "\n\nLocal verification completed. Publication is tracked separately.",
             )
-            publication = row.get("publication") or row.get("review", {}).get("publication")
+            publication = publication or row.get("publication") or (row.get("review") or {}).get("publication")
             if publication:
                 content.update(publication)
             if row.get("change_request"):
@@ -527,7 +543,7 @@ class DeliveryStore:
             or request["state"] != "pending"
             or expired(request["expires_at"], time.time())
             or action["plan_hash"] != request["plan_hash"]
-            or row["frozen"] != action["plan"]["hash"]
+            or self.action_basis(row,action["plan"]) != action["plan"]["hash"]
             or action["state"] not in {"queued", "awaiting_approval"}
         ):
             raise boundary_error(
@@ -593,11 +609,11 @@ class DeliveryStore:
                     "delivery_contract",
                     "Action is not authorized or has expired.",
                 )
-            if row["frozen"] != current["plan"]["hash"]:
+            if self.action_basis(row,current["plan"]) != current["plan"]["hash"]:
                 raise boundary_error(
                     ValueError, "delivery_contract", "Action candidate changed."
                 )
-            if row["frozen"] != self.freeze(row):
+            if not current['plan'].get('draft') and row["frozen"] != self.freeze(row):
                 raise boundary_error(
                     ValueError,
                     "delivery_contract",
@@ -695,7 +711,8 @@ class DeliveryStore:
                     row.update(
                         change_request=result["subject"],
                         change_request_action=action["id"],
-                        state="ci_waiting",
+                        state=row['state'] if action['plan'].get('draft') else 'ci_waiting',
+                        draft_published=bool(action['plan'].get('draft')),
                         ci_started=time.time(),
                         next_ci=0,
                     )
@@ -714,6 +731,9 @@ class DeliveryStore:
             return "stale"
         if job["kind"] == "validation_plan":
             row.update(validation_plan=result, state="validating", error=None)
+            if result.get('draft'):
+                self.action(conn,row,'publish_branch',draft=True)
+                self.action(conn,row,'ensure_change_request',draft=True,publication=result['draft'])
         elif job["kind"] == "publication":
             from .publication import accept
             accept(self, row, job, result, conn)
@@ -750,11 +770,13 @@ class DeliveryStore:
             row["ci_diagnosis"] = result
             row["reasoning_job_id"] = job["id"]
             action = result.get("next_action")
-            if action in {"defer", "stop", "human_required"}:
+            if action=='retry_prepare':
+                row.update(state='queued',error=None,next_validation=0)
+            elif action in {"defer", "stop", "human_required"}:
                 row.update(state="blocked", error="model_" + action, error_detail=result["reason"])
             elif action == "plan_validation":
                 row["validation_history"] = [*row.get("validation_history", []), {"candidate_commit": row["candidate"]["commit"], "quality": row.get("quality"), "test_failure": row.get("test_failure"), "validation_plan": row.get("validation_plan"), "reason": result["reason"]}]
-                row.update(state="validating", validation_plan=None, error=None)
+                row.update(state="validating", validation_execution=None, validation_plan=None, error=None)
             elif action == "reconsider_review":
                 row["review_history"] = [*row.get("review_history", []), row.get("review")]
                 row.update(state="reviewing", review=None, review_response=result, error=None)
@@ -767,7 +789,7 @@ class DeliveryStore:
             elif action == "proceed":
                 if self.spec["require_review"] and any(f["severity"] == "blocking" for f in (row.get("review") or {}).get("findings", [])):
                     raise ValueError("The operator requires a passing independent review; fix or request an evidence-based reconsideration.")
-                if row.get("test_failure") or row.get("quality") is None:
+                if row.get("test_failure") or row.get("quality") is None or (row.get('goal_evidence') or {}).get('ok') is False:
                     raise ValueError("Explicit candidate acceptance remains unmet; choose verification or explain the remaining work.")
                 row.update(state="review_branch_ready", review_response=result, error=None)
                 row["frozen"] = self.freeze(row)
@@ -784,7 +806,7 @@ class DeliveryStore:
                     row.update(state="blocked", error="candidate_recheck_limit",
                                error_detail="Model-requested candidate rechecks reached ci_fix_limit=" + str(self.spec["ci_fix_limit"]))
                 else:
-                    row.update(state="validating", validation_rechecks=rechecks + 1, force_test_recheck=True,
+                    row.update(state="validating", validation_execution=None, validation_rechecks=rechecks + 1, force_test_recheck=True,
                                next_validation=time.time() + self.spec["ci_poll_seconds"],
                                error=None, error_detail=None)
             else:

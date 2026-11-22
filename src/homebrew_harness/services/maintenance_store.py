@@ -106,6 +106,7 @@ class MaintenanceStore:
                 "discussion_assessment",
                 "discussion_prompts",
                 "phase_outputs",
+            "phase_checkpoints",
                 "unapplied_result",
                 "integration",
                 "integration_quality",
@@ -121,13 +122,17 @@ class MaintenanceStore:
             "next_cursor": rows[limit - 1][0] if len(rows) > limit else None,
         }
 
-    def read(self, kind, identity, *, offset=0, limit=4000):
+    def read(self, kind, identity, *, offset=0, limit=4000, expected_version=None):
         number(offset, "offset", 0, 2**63 - 1, integer=True)
         number(limit, "limit", 1, 16000, integer=True)
         value = self.get(kind, identity)
         raw = json.dumps(value, ensure_ascii=False)
+        version=fingerprint(value)
+        if expected_version is not None and expected_version!=version:
+            raise ValueError('Service record changed between pages; read the current revision.')
         return {
             "id": identity,
+            "version": version,
             "offset": offset,
             "length": len(raw),
             "text": raw[offset : offset + limit],
@@ -187,6 +192,9 @@ class MaintenanceStore:
         if work["revision"] != payload["revision"] or work.get("cancel_requested") or not work.get("pause_requested"):
             raise ValueError("Recovery planning requires the current paused, uncancelled Work.")
         instruction = payload.get("text", "")
+        execute = payload.get("execute", False)
+        if type(execute) is not bool:
+            raise ValueError("Recovery execute must be Boolean.")
         if not isinstance(instruction, str):
             raise ValueError("Recovery instruction must be text.")
         if instruction:
@@ -194,7 +202,7 @@ class MaintenanceStore:
         basis = fingerprint(work_context(self, work, conn))
         observed = {k: native.get(k) for k in ("id", "status", "episode", "last_outcome", "cleanup_complete", "deadline_at")} if native else None
         job = self.job(conn, "recovery_plan", work["id"], work["requirements_revision"],
-                       {"basis": basis, "instruction": instruction, "current_run": observed},
+                       {"basis": basis, "instruction": instruction, "current_run": observed, "execute_requested": execute},
                        "recovery-plan:" + request_id)
         work.update(recovery_request={"job_id": job["id"], "basis": basis, "request_id": request_id}, revision=work["revision"] + 1)
         self.db._put(conn, "service_work", work["id"], work)
@@ -400,8 +408,8 @@ class MaintenanceStore:
         with self.db.write() as conn:
             self.store.guard(conn, self.header)
             rows = conn.execute(
-                "SELECT value FROM records WHERE section='service_jobs_model' AND owner=? AND json_extract(value,'$.state') IN ('queued','running') ORDER BY CASE json_extract(value,'$.kind') WHEN 'recovery_plan' THEN 0 WHEN 'conversation' THEN 1 ELSE 2 END,rowid LIMIT 32",
-                ("service:" + self.id,),
+                "SELECT value FROM records WHERE section='service_jobs_model' AND owner=? AND json_extract(value,'$.state') IN ('queued','running') AND coalesce(json_extract(value,'$.pause_requested'),0)=0 AND coalesce(json_extract(value,'$.next_attempt'),0)<=? ORDER BY CASE json_extract(value,'$.kind') WHEN 'recovery_plan' THEN 0 WHEN 'conversation' THEN 1 ELSE 2 END,rowid LIMIT ?",
+                ("service:" + self.id, time.time(), __import__("homebrew_harness.runtime.limits",fromlist=["current_limits"]).current_limits().service_job_batch),
             ).fetchall()
             for (raw,) in rows:
                 job = json.loads(raw)
@@ -676,6 +684,9 @@ class MaintenanceStore:
             "discussion_assessment",
             "discussion_prompts",
             "phase_outputs",
+            "phase_checkpoints",
+            "execution_id",
+            "work_id",
         }:
             raise ValueError("Unknown service preparation field.")
         with self.db.write() as conn:
@@ -699,6 +710,10 @@ class MaintenanceStore:
                 or current["generation"] != self.header["generation"]
             ):
                 raise ValueError("Job ownership changed.")
+            if current.get('pause_requested'):
+                current.update(state='paused',error='job_paused',next_attempt=0)
+                self.db._put(conn,'service_jobs_model',job['id'],current)
+                return current
             if meta["state"] == "stopping":
                 current.update(state="queued", error="service_stopping", next_attempt=0)
                 self.db._put(conn, "service_jobs_model", job["id"], current)
