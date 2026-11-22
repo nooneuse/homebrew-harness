@@ -228,6 +228,10 @@ class RunStore:
             raise ValueError("Managed run not found or invalid.")
         return value
 
+    def configure_budgets(self, identity, changes, revision, request_id):
+        from .budgets import configure
+        return configure(self, identity, changes, revision, request_id)
+
     def create(self, spec, *, now=None, _accept=None):
         if not isinstance(spec, RunSpec):
             raise ValueError("RunSpec is required.")

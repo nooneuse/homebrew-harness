@@ -143,6 +143,7 @@ class JobContracts(unittest.TestCase):
             },
             "audit": {"text": "Reviewed fixed code.", "findings": []},
             "conversation": {"text": "Discuss the plan."},
+            "recovery_plan": {"text": "Preserve the fixed branch and propose recovery."},
             "report": {"text": "Stored facts only."},
             "incident": {"text": "Recorded diagnosis."},
             "upgrade_assessment": {"text": "Recorded assessment."},

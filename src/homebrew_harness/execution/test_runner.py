@@ -244,9 +244,8 @@ class TestRecipe:
         positive(self.run_warning, "test.run_warning", nullable=True, integer=True)
         object.__setattr__(self, "_identity", executable_identity(self.argv[0]))
 
-    def fingerprint(self):
-        return digest(
-            {
+    def fingerprint(self, *, legacy_output=False):
+        data = {
                 "argv": self.argv,
                 "snapshot_limits": self.snapshot_limits,
                 "executable": self._identity,
@@ -258,14 +257,15 @@ class TestRecipe:
                 "test_roots": self.test_roots,
                 "timeout": self.timeout,
                 "output": self.output_bytes,
-                "hard_output": self.hard_output_bytes,
                 "cpu": self.cpu_seconds,
                 "file": self.file_bytes,
                 "fds": self.open_files,
                 "memory": self.memory_mb,
                 "worktrees": self.allow_worktrees,
             }
-        )
+        if not legacy_output:
+            data["hard_output"] = self.hard_output_bytes
+        return digest(data)
 
 
 @dataclass
@@ -375,6 +375,22 @@ class TestRunner:
         return digest(
             {"recipe": recipe.fingerprint(), "backend": self.backend.fingerprint()}
         )
+
+    def evidence_contracts(self, recipe):
+        """Older passing output-bounded executions can satisfy the relaxed contract.
+
+        This is evidence compatibility only. Grants still use _fingerprint.
+        Other inputs, commands, resources and isolation must match exactly.
+        """
+        contracts = {self._fingerprint(recipe): None}
+        if recipe.hard_output_bytes is None:
+            legacy = recipe.fingerprint(legacy_output=True)
+            if self.backend.name != "native":
+                legacy = digest({"recipe": legacy, "backend": self.backend.fingerprint()})
+            contracts[legacy] = {"rule": "legacy_implicit_output_limit", "previous_hard_output_bytes": recipe.output_bytes,
+                                 "current_hard_output_bytes": None,
+                                 "instruction": "Reuse the actual older passing receipt; this does not issue a grant or claim a new execution."}
+        return contracts
 
     def handoff_state(self):
         """Export consumed limits and scoped grants, never test pass evidence."""

@@ -260,6 +260,15 @@ class RunHandle(Handle):
         return self.snapshot()
 
     @host_operation
+    def configure_budgets(self, changes, *, revision=None, request_id=None):
+        self._require_control()
+        current = self.core.run_store.get(self.id)
+        result = self.core.run_store.configure_budgets(self.id, changes,
+            current["revision"] if revision is None else revision, request_id or "sdk_" + uuid.uuid4().hex)
+        self.core.changed.set()
+        return result
+
+    @host_operation
     def retry(self, *, seconds=None, request_id=None, expires_at=None):
         self._require_control()
         self.core.run_store.retry(self.id, seconds=seconds, request_id=request_id, expires_at=expires_at)

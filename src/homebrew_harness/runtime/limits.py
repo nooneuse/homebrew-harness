@@ -97,6 +97,17 @@ class RuntimeLimits:
     routing_output_chars: int = 24000
     platform_response_bytes: int = 2_000_000
     platform_error_bytes: int = 8192
+    platform_connect_seconds: float = 30
+    platform_read_seconds: float = 60
+    platform_write_seconds: float = 60
+    platform_pool_seconds: float = 30
+    platform_request_seconds: float = 120
+    platform_read_attempts: int = 3
+    platform_error_seconds: float = 1
+    platform_close_seconds: float = 5
+    evidence_page_rows: int = 100
+    communication_poll_attempts: int | None = None
+    communication_poll_warning: int = 3
     communication_inline_comments: int | None = None
     communication_question_ids: int | None = None
     archive_inherited_ids: int | None = None
@@ -212,7 +223,7 @@ class RuntimeLimits:
                     "artifact_files", "artifact_profiles", "hard_context_chars",
                     "review_files", "review_pages", "mcp_selected_servers", "mcp_selected_tools", "mcp_server_tools", "team_members",
                     "mcp_discovery_pages", "mcp_discovery_tools", "subagent_call_warning", "declared_stages", "stage_read_paths", "stage_inputs", "batch_decisions",
-                    "user_input_queue", "backup_manifest_files", "merge_history_commits", "discussion_source_refs", "assessment_evidence_paths", "operation_audit_patterns", "upgrade_candidates", "delivery_batch_items", "storage_reference_depth", "workflow_output_attempts", "workflow_output_warning"}
+                    "user_input_queue", "backup_manifest_files", "merge_history_commits", "discussion_source_refs", "assessment_evidence_paths", "operation_audit_patterns", "upgrade_candidates", "delivery_batch_items", "storage_reference_depth", "workflow_output_attempts", "workflow_output_warning", "communication_poll_attempts"}
         for name, value in asdict(self).items():
             if name == "auto_compact":
                 if type(value) is not bool:

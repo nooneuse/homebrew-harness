@@ -325,6 +325,10 @@ def commands(parser, *, attach=True):
     retry.add_argument("work_id")
     retry.add_argument("--seconds", type=float)
     retry.add_argument("--request-id")
+    planning = tasks.add_parser("plan-recovery", help="Request a read-only Lead recovery proposal for a paused Work.")
+    planning.add_argument("work_id")
+    planning.add_argument("--instruction", default="")
+    planning.add_argument("--request-id")
     for name in (
         "show",
         "progress",
@@ -616,6 +620,8 @@ def operate(service, args):
                 state=args.state, cursor=args.cursor, limit=args.limit
             )
         work = service.work.get(args.work_id)
+        if args.work_command == "plan-recovery":
+            return work.plan_recovery(args.instruction, request_id=args.request_id)
         if args.work_command == "show":
             return work.snapshot()
         if args.work_command == "retry":

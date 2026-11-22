@@ -288,6 +288,9 @@ class ServiceAgent:
 
             verify(snapshot, self.runtime.spec.communication)
             return Path(snapshot["workspace"])
+        if self.job and self.job["kind"] == "recovery_plan":
+            work = self.store.store.work(self.job["target"], self.store.id)
+            return Path(work.get("run_workspace") or self.runtime.spec.workspace)
         if self.job and self.job["kind"] == "upgrade_assessment":
             plan = self.store.get("upgrade_plans", self.job["target"])
             return Path(

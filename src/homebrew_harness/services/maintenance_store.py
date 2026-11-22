@@ -181,6 +181,26 @@ class MaintenanceStore:
         self.db._put(conn, "service_jobs_model", identity, value)
         return value
 
+    def request_recovery(self, conn, payload, request_id, native):
+        from .job_contracts import work_context
+        work = self.get("work", payload["id"], conn)
+        if work["revision"] != payload["revision"] or work.get("cancel_requested") or not work.get("pause_requested"):
+            raise ValueError("Recovery planning requires the current paused, uncancelled Work.")
+        instruction = payload.get("text", "")
+        if not isinstance(instruction, str):
+            raise ValueError("Recovery instruction must be text.")
+        if instruction:
+            text(instruction, "recovery instruction")
+        basis = fingerprint(work_context(self, work, conn))
+        observed = {k: native.get(k) for k in ("id", "status", "episode", "last_outcome", "cleanup_complete", "deadline_at")} if native else None
+        job = self.job(conn, "recovery_plan", work["id"], work["requirements_revision"],
+                       {"basis": basis, "instruction": instruction, "current_run": observed},
+                       "recovery-plan:" + request_id)
+        work.update(recovery_request={"job_id": job["id"], "basis": basis, "request_id": request_id}, revision=work["revision"] + 1)
+        self.db._put(conn, "service_work", work["id"], work)
+        self.changed(conn, work["id"])
+        return {"id": work["id"], "job_id": job["id"], "accepted": True, "execution_authorized": False, "request_id": request_id}
+
     def source_page(self, name, page, scope):
         from homebrew_harness.platforms.contracts import SourcePage
 
@@ -380,11 +400,20 @@ class MaintenanceStore:
         with self.db.write() as conn:
             self.store.guard(conn, self.header)
             rows = conn.execute(
-                "SELECT value FROM records WHERE section='service_jobs_model' AND owner=? AND json_extract(value,'$.state') IN ('queued','running') ORDER BY CASE json_extract(value,'$.kind') WHEN 'conversation' THEN 0 ELSE 1 END,rowid LIMIT 32",
+                "SELECT value FROM records WHERE section='service_jobs_model' AND owner=? AND json_extract(value,'$.state') IN ('queued','running') ORDER BY CASE json_extract(value,'$.kind') WHEN 'recovery_plan' THEN 0 WHEN 'conversation' THEN 1 ELSE 2 END,rowid LIMIT 32",
                 ("service:" + self.id,),
             ).fetchall()
             for (raw,) in rows:
                 job = json.loads(raw)
+                if job["kind"] == "recovery_plan":
+                    from .job_contracts import work_context
+                    work = self.db._get(conn, "service_work", job["target"])
+                    if (not work or work.get("cancel_requested") or not work.get("pause_requested")
+                            or work["requirements_revision"] != job["revision"]
+                            or (work.get("recovery_request") or {}).get("job_id") != job["id"]
+                            or fingerprint(work_context(self, work, conn)) != job["input"]["basis"]):
+                        self.db._put(conn, "service_jobs_model", job["id"], {**job, "state": "stale"})
+                        continue
                 if job["kind"] == "triage":
                     work = self.db._get(conn, "service_work", job["target"])
                     if (

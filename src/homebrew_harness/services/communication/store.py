@@ -36,6 +36,7 @@ class CommunicationStore:
             for p in policy["projects"]
         }
         self.actor_ids = {}
+        self.actor_provider = None
 
     def get(self, kind, identity, conn=None):
         if kind not in SECTIONS:
@@ -362,6 +363,8 @@ class CommunicationStore:
     def ingest(self, name, items, scope, *, page=None, observed=False):
         if scope not in self.scopes:
             raise boundary_error(ValueError, "communication_contract", "Discussion crosses host project scope.")
+        if items and self.actor_provider is not None:
+            self.actor_provider(scope)
         with self.db.write() as conn:
             self.runtime.store.guard(conn, self.runtime.header)
             for item in items:
@@ -1113,6 +1116,7 @@ class CommunicationStore:
             if row["revision"] != payload["revision"]:
                 raise boundary_error(ValueError, "communication_contract", "Communication reference revision changed.")
             if method in {"discussion_assess", "discussion_reopen"}:
+                row.update(poll_attempts=0, poll_budget_blocked=False)
                 request_analysis(row)
             elif method == "discussion_pause":
                 row.update(

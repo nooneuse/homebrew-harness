@@ -99,10 +99,18 @@ class Maintenance:
                         if old["next_poll"] > time.time() or self.stop.is_set():
                             break
                         try:
-                            page = source.poll(old["cursor"], Deadline.after(5))
+                            from homebrew_harness.execution.execution_control import control_scope
+                            from homebrew_harness.runtime.limits import current_limits
+                            deadline = Deadline.after(source.spec.get("request_seconds", current_limits().platform_request_seconds))
+                            with control_scope(deadline=deadline, cancel_events=(self.stop,)):
+                                page = source.poll(old["cursor"], deadline)
+                                if page.events and self.store.communication is not None and self.store.communication.actor_provider is not None and source.scope in self.store.communication.scopes:
+                                    self.store.communication.actor_provider(source.scope)
                             with self.runtime.lock:
                                 self.store.source_page(name, page, source.scope)
                         except Exception as error:
+                            if self.stop.is_set():
+                                return
                             self.store.source_error(
                                 name,
                                 old,
@@ -160,6 +168,15 @@ class Maintenance:
             self.agent_closed = True
 
     def command(self, method, payload, request_id):
+        if method == "work_recovery_plan":
+            work = self.runtime.store.work(payload["id"], self.runtime.id)
+            native = None
+            if work.get("run_id"):
+                native = self.runtime.child_for(work).run_store.get(work["run_id"])
+                if not native.get("cleanup_complete"):
+                    raise ValueError("Wait for current execution cleanup before planning recovery.")
+            return self.runtime.store.command(self.runtime.header, method, payload, request_id,
+                lambda conn: self.store.request_recovery(conn, payload, request_id, native))
         if method == "approval_review_retry":
             return self.runtime.store.command(self.runtime.header, method, payload, request_id,
                 lambda conn: self.runtime.approval_review.retry(payload["id"], payload["revision"], conn=conn))

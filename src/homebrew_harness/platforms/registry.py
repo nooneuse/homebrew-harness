@@ -9,6 +9,7 @@ import stat
 
 from .contracts import NAME, SourcePage, digest
 from .http import JsonTransport
+from homebrew_harness.runtime.limits import current_limits, positive
 
 from .github.repository import GithubRepository, validate_project
 from .github.feedback import GithubFeedback
@@ -45,6 +46,7 @@ def validate_declaration(raw, capability, *, named=False):
         "ca_file_env",
         "poll_seconds",
         "max_pages",
+        "request_seconds",
     }
     extra = {"name"} if named else {"number", "actor_ids", "app_ids"}
     if set(raw) - common - extra:
@@ -75,10 +77,12 @@ def validate_declaration(raw, capability, *, named=False):
     result = {
         "poll_seconds": 43200 if named else 30,
         "max_pages": 5 if named else 10,
+        "request_seconds": current_limits().platform_request_seconds,
         **raw,
         "project": project,
     }
     import math
+    positive(result["request_seconds"], "platform.request_seconds")
 
     for field in ("poll_seconds", "max_pages"):
         value = result[field]
@@ -167,8 +171,10 @@ class RepositorySource:
             self.spec["project"],
         )
         self.identity = digest(
-            {"declaration": self.spec, "connection": identity, "adapter_version": 1}
+            {"declaration": {k:v for k,v in self.spec.items() if k not in {"poll_seconds","max_pages","request_seconds"}}, "connection": identity, "adapter_version": 1}
         )
+        self.legacy_identity = digest({"declaration": {k:v for k,v in self.spec.items() if k != "request_seconds"},
+                                       "connection": identity, "adapter_version": 1})
 
     def close(self):
         self.adapter.close()
@@ -177,7 +183,7 @@ class RepositorySource:
         if not isinstance(saved, dict):
             raise ValueError("Invalid bound source cursor.")
         if saved and (
-            set(saved) != {"binding", "position"} or saved["binding"] != self.identity
+            set(saved) != {"binding", "position"} or saved["binding"] not in {self.identity, self.legacy_identity}
         ):
             raise ValueError("Source cursor belongs to another platform binding.")
         position = saved.get("position", {})

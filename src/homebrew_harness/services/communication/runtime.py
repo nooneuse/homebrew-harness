@@ -51,13 +51,13 @@ class CommunicationRuntime:
                     raise ValueError(
                         "Platform cannot perform enabled communication actions."
                     )
-                self.store.actor_ids[scope] = adapter.identity()
         except BaseException:
             for adapter, _identity in self.projects.values():
                 adapter.close()
             self.leases.close()
             raise
         self.ms.communication = self.store
+        self.store.actor_provider = self.ensure_actor
 
     def identity(self):
         return {
@@ -65,7 +65,7 @@ class CommunicationRuntime:
             "projects": {
                 digest(scope): {
                     "identity": identity,
-                    "actor_id": self.store.actor_ids[scope],
+                    "publisher_verification": "before_use",
                 }
                 for scope, (_adapter, identity) in self.projects.items()
             },
@@ -79,7 +79,15 @@ class CommunicationRuntime:
         ref = ObjectRef(**subject)
         if ref.scope() not in self.projects:
             raise ValueError("Discussion project is not configured.")
+        self.ensure_actor(ref.scope())
         return self.projects[ref.scope()][0]
+
+    def ensure_actor(self, scope):
+        if scope not in self.projects:
+            raise ValueError("Discussion project is not configured.")
+        actor = self.projects[scope][0].identity()
+        self.store.actor_ids[scope] = actor
+        return actor
 
     def rows(self, kind, limit=100):
         import json
@@ -132,6 +140,8 @@ class CommunicationRuntime:
                 for row in self.rows("discussions"):
                     if self.stop.is_set():
                         return
+                    if row.get("poll_budget_blocked"):
+                        continue
                     try:
                         if row["next_poll"] <= time.time():
                             self.poll(row)
@@ -180,8 +190,12 @@ class CommunicationRuntime:
                 retry_after=time.time()
                 + retry_after(error, current.get("poll_attempts", 0) + 1),
             )
-            if current.get("poll_attempts", 0) >= 3:
+            from homebrew_harness.runtime.limits import current_limits, advisory, reached
+            current["poll_advisory"] = advisory(current["poll_attempts"], current_limits().communication_poll_warning,
+                                                "communication_poll_attempts", unit="attempts")
+            if reached(current_limits().communication_poll_attempts, current["poll_attempts"]):
                 current["state"] = "blocked"
+                current["poll_budget_blocked"] = True
             self.store.put(conn, "discussions", current)
 
     def poll(self, row):

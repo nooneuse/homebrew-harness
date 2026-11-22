@@ -135,6 +135,17 @@ CI 研判要求分别返回 `classification` 与 `next_action`：前者描述现
 | `routing_output_chars` | `24000` |
 | `platform_response_bytes` | `2000000` |
 | `platform_error_bytes` | `8192` |
+| `platform_connect_seconds` | `30` |
+| `platform_read_seconds` | `60` |
+| `platform_write_seconds` | `60` |
+| `platform_pool_seconds` | `30` |
+| `platform_request_seconds` | `120` |
+| `platform_read_attempts` | `3` |
+| `platform_error_seconds` | `1` |
+| `platform_close_seconds` | `5` |
+| `evidence_page_rows` | `100` |
+| `communication_poll_attempts` | `null` |
+| `communication_poll_warning` | `3` |
 | `communication_inline_comments` | `null` |
 | `communication_question_ids` | `null` |
 | `archive_inherited_ids` | `null` |

@@ -182,6 +182,22 @@ def _text_only(raw, maximum):
     return raw
 
 
+def apply_recovery(store, conn, job, result):
+    from .job_contracts import work_context
+    from .protocol import fingerprint
+    work = store.get("work", job["target"], conn)
+    if (work.get("cancel_requested") or not work.get("pause_requested")
+            or work["requirements_revision"] != job["revision"]
+            or (work.get("recovery_request") or {}).get("job_id") != job["id"]
+            or fingerprint(work_context(store, work, conn)) != job["input"]["basis"]):
+        return "stale"
+    work.update(recovery_plan={"job_id": job["id"], "basis": job["input"]["basis"], "text": result["text"],
+                               "proposed_at": time.time(), "execution_authorized": False}, revision=work["revision"] + 1)
+    store.db._put(conn, "service_work", work["id"], work)
+    store.changed(conn, work["id"])
+    return "completed"
+
+
 def apply_triage(store, conn, job, result):
     work = store.get("work", job["target"], conn)
     if work["requirements_revision"] != job["revision"] or work["cancel_requested"]:

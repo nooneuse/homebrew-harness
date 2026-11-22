@@ -12,6 +12,7 @@ from homebrew_harness.execution.execution_control import (
 )
 from homebrew_harness.platforms.contracts import ObjectRef, SourceEvent, digest
 from .repository import validate_project
+from homebrew_harness.runtime.limits import current_limits
 from homebrew_harness.platforms.effects import publication, tracks_write
 
 
@@ -58,7 +59,7 @@ class GithubCommunication:
     @tracks_write
     def request(self, method, path, body=None, params=None):
         return self.transport.request(
-            method, path, operation_deadline(10), body=body, params=params
+            method, path, operation_deadline(self.spec.get("request_seconds", current_limits().platform_request_seconds)), body=body, params=params
         )[0]
 
     def pages(self, path, params=None):
@@ -67,7 +68,7 @@ class GithubCommunication:
             raw, headers = self.transport.request(
                 "GET",
                 path,
-                operation_deadline(10),
+                operation_deadline(self.spec.get("request_seconds", current_limits().platform_request_seconds)),
                 params={**(params or {}), "per_page": 100, "page": page},
             )
             if not isinstance(raw, list) or len(raw) > 100:

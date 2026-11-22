@@ -22,6 +22,17 @@ class JobHandler:
 
 
 HANDLERS = {
+    "recovery_plan": JobHandler(
+        "work",
+        "Propose an evidence-based recovery plan for this same paused Work. This is read-only planning, not execution or authority. "
+        "The newest operator instruction takes precedence over historical CI plans. Preserve existing code, receipts and accepted constraints. "
+        "Choose a fixed development branch and evaluate the retained published candidate and current draft before deciding what work remains. "
+        "Do not assume the latest main must be integrated, start over, repeat applicable tests, or continue a paused conflict repair. "
+        "Use current code and recorded evidence to choose a strategy; changed candidates still need explicitly required verification and review. "
+        "Return text explaining the recommended strategy, evidence, remaining checks and any necessary authority/decision. "
+        "This proposal does not resume a Run, modify code, waive acceptance, publish, or merge.",
+        ("maintenance-planning", "delivery-planning"), job_results.assessment, job_results.apply_recovery,
+    ),
     "triage": JobHandler(
         "work",
         "Provide disposition (accept/needs_info/defer/reject/merge/decide), category (bug/feature/documentation/maintenance/question), reason, plan with concrete acceptance/verification, scope (host alias for accept/decide), priority (0-100), optional related_work. Read linked events and original requirements. Major changes require decide; merge links local Work only.",
@@ -148,6 +159,18 @@ class JobContract:
 
     def input(self, primary=None):
         primary = self.primary() if primary is None else primary
+        if self.kind == "recovery_plan":
+            value = {"work_context": work_context(self.store, primary),
+                     "operator_request": self.job["input"].get("instruction", ""),
+                     "current_run": self.job["input"].get("current_run"), "execution_authorized": False}
+            if primary.get("changeset_id"):
+                candidate = self.store.get("changesets", primary["changeset_id"])
+                value["changeset_id"] = candidate["id"]
+                value["current_candidate"] = {k: candidate.get(k) for k in ("state", "quality", "review", "ci", "change_request")}
+                value["current_candidate"]["candidate"] = {k: (candidate.get("candidate") or {}).get(k) for k in ("commit", "target_base", "conflicts")}
+                value["previous_candidates"] = [{**{k: row.get(k) for k in ("commit", "target_base", "review")},
+                    "quality": self.quality(row.get("quality"))} for row in candidate.get("candidate_history", [])]
+            return value
         if self.kind in {"review", "ci_triage", "publication", "validation_plan"}:
             value = {k: copy.deepcopy(primary.get(k)) for k in
                      ("id", "work_id", "requirements_revision", "revision", "state", "run_id",
@@ -334,6 +357,7 @@ class JobContract:
             return
         allowed = {
             "triage": {"work", "events", "work_list", "requirements", "evidence"},
+            "recovery_plan": {"work", "events", "requirements", "evidence", "changesets"},
             "review": {"changesets", "work", "events", "evidence", "requirements"},
             "validation_plan": {"changesets", "work", "events", "evidence", "requirements"},
             "ci_triage": {"changesets", "work", "events", "evidence", "requirements"},
@@ -347,8 +371,10 @@ class JobContract:
                              ", ".join(sorted(allowed | ({"quality_output"} if self.kind in {"review", "ci_triage"} else set()))))
         if kind in {"work_list", "health"}:
             return
+        if self.kind == "recovery_plan" and kind == "changesets" and identity == primary.get("changeset_id"):
+            return
         work_id = (
-            self.job["target"] if self.kind == "triage" else primary.get("work_id")
+            self.job["target"] if self.kind in {"triage", "recovery_plan"} else primary.get("work_id")
         )
         work = self.store.store.work(work_id, self.store.id) if work_id else {}
         if kind == "work" and identity == work_id:

@@ -16,7 +16,7 @@ CATEGORIES = {"bug", "feature", "documentation", "maintenance", "question"}
 DISPOSITIONS = {"accept", "needs_info", "defer", "reject", "merge", "decide"}
 INSTRUCTION_TARGETS = frozenset({
     "common", "development", "triage", "discussion", "review", "ci_triage", "validation_plan", "publication",
-    "audit", "conversation", "report", "incident", "upgrade_assessment",
+    "audit", "conversation", "report", "incident", "upgrade_assessment", "recovery_plan",
 })
 
 

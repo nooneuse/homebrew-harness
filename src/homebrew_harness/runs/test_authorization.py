@@ -47,7 +47,7 @@ def scope(control, name, cwd, execution):
     if not intent.get("original"):
         intent = {"original": control.spec.prompt, "amendments": []}
     return {
-        "spec": digest(control.spec.data()),
+        "spec": digest(control.state["spec"]),
         "control": control.state.get("control_identity"),
         "member": member,
         "role": execution.role,

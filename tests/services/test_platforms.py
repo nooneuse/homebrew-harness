@@ -79,6 +79,15 @@ class PlatformTests(unittest.TestCase):
                 other.poll(page.cursor, Deadline.after(5))
             self.assertEqual(len(self.peer.source_requests), before)
 
+    def test_legacy_cursor_and_new_operational_budget_preserve_the_same_source_position(self):
+        source=self.source()
+        page=source.poll({},Deadline.after(5))
+        legacy={**page.cursor,'binding':source.legacy_identity}
+        self.assertEqual(source.poll(legacy,Deadline.after(5)).cursor['binding'],source.identity)
+        changed=self.source(poll_seconds=120,max_pages=20,request_seconds=60)
+        self.assertEqual(source.identity,changed.identity)
+        changed.poll(page.cursor,Deadline.after(5))
+
     def test_issue_and_change_request_with_same_number_have_distinct_work(self):
         service = self.start()
         service.pause("all")

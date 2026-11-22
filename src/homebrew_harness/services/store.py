@@ -24,6 +24,10 @@ class ServiceStore:
             raise ValueError("Unknown service reference.")
         return value
 
+    def configure_stopped_budgets(self, identity, changes, revision, request_id, **kwargs):
+        from .budgets import configure
+        return configure(self, identity, changes, revision, request_id, **kwargs)
+
     @staticmethod
     def summary(value):
         return {

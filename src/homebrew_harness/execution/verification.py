@@ -30,11 +30,15 @@ def applicable(records, runner, name, cwd, *, selection=None):
     }
     if current["backend"] != "container":
         return {"ok": False, "reason": "environment_not_portable", "basis": current}
+    contracts = runner.evidence_contracts(recipe) if hasattr(runner, "evidence_contracts") else {current["contract"]: None}
+    if callable(records):
+        records = records(current, tuple(contracts))
     matching = [
         row
         for row in records
         if row.get("recipe") == name
-        and row.get("verification_basis") == current
+        and all((row.get("verification_basis") or {}).get(key) == value for key, value in current.items() if key != "contract")
+        and (row.get("verification_basis") or {}).get("contract") in contracts
         and row.get("executed_at")
     ]
     good = [
@@ -62,9 +66,10 @@ def applicable(records, runner, name, cwd, *, selection=None):
             row.get("recipe") == name
             and row.get("status") in {"failed", "timeout", "cancelled"}
             and row.get("executed_at", 0) > selected["executed_at"]
+            and other.get("contract") in contracts
             and all(
                 other.get(key) == current[key]
-                for key in ("version", "inputs", "contract", "backend", "role")
+                for key in ("version", "inputs", "backend", "role")
             )
         ):
             return {
@@ -79,5 +84,7 @@ def applicable(records, runner, name, cwd, *, selection=None):
         "receipt_ref": selected["run_id"],
         "executed_at": selected["executed_at"],
         "basis": current,
+        "historical_basis": selected["verification_basis"],
+        "compatibility": contracts[selected["verification_basis"]["contract"]],
         "receipt": selected,
     }

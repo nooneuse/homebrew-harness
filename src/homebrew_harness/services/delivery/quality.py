@@ -86,7 +86,7 @@ def verify(delivery, candidate, work):
             from homebrew_harness.execution.verification import applicable
 
             reuse = applicable(
-                historical(delivery.runtime, work),
+                lambda basis, contracts: historical(delivery.runtime, work, recipe=name, basis=basis, contracts=contracts),
                 runner,
                 name,
                 Path(candidate["workspace"]),
@@ -103,6 +103,8 @@ def verify(delivery, candidate, work):
                             "executed_at": reuse["executed_at"],
                             "checked_basis": reuse["basis"],
                             "candidate_digest": candidate["content_hash"],
+                            "historical_basis": reuse["historical_basis"],
+                            "compatibility": reuse["compatibility"],
                         },
                     }
                 )

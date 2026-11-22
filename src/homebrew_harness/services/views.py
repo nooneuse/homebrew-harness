@@ -102,6 +102,10 @@ class WorkHandle(Handle):
     def context(self, text, **kw):
         return self._control("work_context", text=text, **kw)
 
+    def plan_recovery(self, text="", **kw):
+        """Request a read-only Lead proposal, without resuming execution."""
+        return self._control("work_recovery_plan", text=text, **kw)
+
     def progress(self):
         return self.service.query("work_progress", {"id": self.id})
 

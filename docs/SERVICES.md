@@ -332,3 +332,5 @@ Expected model-output failures become observations for the Lead to assess. It ma
 [Execution views and controls](EXECUTION.md)
 
 A Run may contain up to 2,000,000 characters in its combined original request, accepted amendments and maintenance plan. The selected model profile must provide enough context; the normal request context check still applies.
+
+Existing Work recovery proposals and owner budget migration are described in [Recovery](RECOVERY.md).

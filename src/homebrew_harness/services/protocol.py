@@ -85,6 +85,7 @@ MAINTENANCE_COMMANDS = {
     "job_retry": {"id"},
     "work_revise": {"id", "revision", "text"},
     "work_request_authority": {"id", "revision"},
+    "work_recovery_plan": {"id", "revision", "text"},
     "authority_revoke": {"id", "revision"},
 }
 COMMAND_METHODS = {

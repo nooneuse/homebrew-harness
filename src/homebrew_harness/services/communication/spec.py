@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 from homebrew_harness.execution.model_connections import read_environment
 from homebrew_harness.platforms.registry import validate_declaration, connection
+from homebrew_harness.platforms.contracts import digest
 from homebrew_harness.services.maintenance_spec import number, text
 
 ACTIONS = {"post_comment", "reply_thread", "submit_review"}
@@ -49,7 +50,7 @@ def validate(raw, sources):
         "debounce_seconds": 10,
         "max_debounce_seconds": 60,
         "authorization_seconds": None,
-        "request_seconds": 10,
+        "request_seconds": current_limits().platform_request_seconds,
         "prepare_seconds": None,
         "no_progress_rounds": 3,
         "model_profile": None,
@@ -74,7 +75,7 @@ def validate(raw, sources):
     value["prompt_files"] = {name: str(Path(path).expanduser()) for name, path in files.items()}
     if value["mode"] not in {"remote", "local"}:
         raise boundary_error(ValueError, "communication_contract", "Unknown communication mode.")
-    if not isinstance(value["projects"], list) or not 1 <= len(value["projects"]) <= 8:
+    if not isinstance(value["projects"], list) or not value["projects"] or (current_limits().service_sources is not None and len(value["projects"]) > current_limits().service_sources):
         raise boundary_error(ValueError, "communication_contract", "Communication requires bounded host project declarations.")
     declarations = []
     for project in value["projects"]:
@@ -205,7 +206,8 @@ def open_projects(spec, environment, roots):
                     declaration["instance"],
                     declaration["project"],
                 )
-            ] = (adapter, identity)
+            ] = (adapter, digest(
+                {"connection": identity, "credential": transport.credential_identity}))
     except BaseException:
         for adapter, _identity in result.values():
             adapter.close()

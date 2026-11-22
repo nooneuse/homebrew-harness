@@ -4,6 +4,7 @@ from homebrew_harness.runtime.limits import current_limits
 import json
 import asyncio
 import ssl
+import time
 from urllib.parse import urlsplit
 
 import httpx
@@ -71,6 +72,7 @@ class JsonTransport:
         ):
             raise ValueError("Invalid external service credential.")
         register_private_values(endpoint, token)
+        self.credential_identity = digest(token)
         self.loop = asyncio.new_event_loop()
         headers = {"Accept": "application/json", "User-Agent": "homebrew-harness"}
         if token:
@@ -95,22 +97,45 @@ class JsonTransport:
         headers=None,
         parse_json=True,
     ):
-        check(deadline)
-        remaining = deadline.remaining()
-        return self.loop.run_until_complete(
-            asyncio.wait_for(
-                self._request(
-                    method,
-                    path,
-                    deadline,
-                    params=params,
-                    body=body,
-                    headers=headers,
-                    parse_json=parse_json,
-                ),
-                timeout=remaining,
-            )
-        )
+        from homebrew_harness.execution.execution_control import operation_deadline
+        from homebrew_harness.runtime.limits import backoff
+        from homebrew_harness.runtime.errors import annotate_error
+        limits = current_limits()
+        deadline = deadline.intersect(operation_deadline(limits.platform_request_seconds))
+        started = time.monotonic()
+        attempts = limits.platform_read_attempts if method in {"GET", "HEAD"} else 1
+        for attempt in range(attempts):
+            check(deadline)
+            try:
+                return self.loop.run_until_complete(asyncio.wait_for(
+                    self._controlled_request(method, path, deadline, params=params, body=body, headers=headers, parse_json=parse_json),
+                    timeout=deadline.remaining()))
+            except (httpx.RequestError, TimeoutError) as error:
+                phase = next((name for kind, name in ((httpx.ConnectTimeout, "connect"), (httpx.ReadTimeout, "read"),
+                    (httpx.WriteTimeout, "write"), (httpx.PoolTimeout, "pool")) if isinstance(error, kind)), "request")
+                field = "platform_" + phase + "_seconds"
+                annotate_error(error, code="platform_request_failed", phase=phase,
+                    limit_name=field, limit_value=getattr(limits, field), unit="seconds",
+                    elapsed_seconds=time.monotonic()-started, attempt=attempt+1, method=method)
+                if attempt + 1 == attempts or deadline.remaining() == 0:
+                    raise
+                pause = backoff(attempt, initial=limits.transport_delay_seconds, maximum=limits.transport_delay_cap_seconds)
+                until = time.monotonic() + pause
+                while time.monotonic() < until:
+                    check(deadline)
+                    time.sleep(min(limits.observation_poll_seconds, max(0, until-time.monotonic())))
+
+    async def _controlled_request(self, method, path, deadline, **kwargs):
+        task = asyncio.create_task(self._request(method, path, deadline, **kwargs))
+        try:
+            while not task.done():
+                check(deadline)
+                await asyncio.wait({task}, timeout=current_limits().observation_poll_seconds)
+            return await task
+        finally:
+            if not task.done():
+                task.cancel()
+                await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), current_limits().platform_close_seconds)
 
     async def _request(
         self, method, path, deadline, *, params, body, headers, parse_json
@@ -123,7 +148,9 @@ class JsonTransport:
             params=params,
             json=body,
             headers=headers,
-            timeout=min(5, remaining) if remaining is not None else 5,
+            timeout=httpx.Timeout(**{name: min(getattr(current_limits(), "platform_"+name+"_seconds"), remaining)
+                if remaining is not None else getattr(current_limits(), "platform_"+name+"_seconds")
+                for name in ("connect", "read", "write", "pool")}),
         ) as response:
             if response.status_code < 200 or response.status_code >= 300:
                 detail = None
@@ -140,7 +167,7 @@ class JsonTransport:
                             return body.get("error", body)
                 try:
                     left = deadline.remaining()
-                    detail = await asyncio.wait_for(read_error(), 0.25 if left is None else min(0.25, max(0, left)))
+                    detail = await asyncio.wait_for(read_error(), current_limits().platform_error_seconds if left is None else min(current_limits().platform_error_seconds, max(0, left)))
                 except (ValueError, httpx.HTTPError, asyncio.TimeoutError, asyncio.CancelledError):
                     pass
                 raise RemoteFailure(response.status_code, response.headers, detail)
@@ -166,9 +193,9 @@ class JsonTransport:
             if pending:
                 self.loop.run_until_complete(
                     asyncio.wait_for(
-                        asyncio.gather(*pending, return_exceptions=True), 1
+                        asyncio.gather(*pending, return_exceptions=True), current_limits().platform_close_seconds
                     )
                 )
-            self.loop.run_until_complete(asyncio.wait_for(self.client.aclose(), 1))
+            self.loop.run_until_complete(asyncio.wait_for(self.client.aclose(), current_limits().platform_close_seconds))
         finally:
             self.loop.close()
