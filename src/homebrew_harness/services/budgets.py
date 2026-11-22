@@ -1,5 +1,6 @@
 """Stopped-service owner configuration; permissions and private references stay fixed."""
 import copy
+from pathlib import Path
 from .spec import ServiceSpec
 from .runtime import saved_config
 from .protocol import fingerprint
@@ -40,7 +41,7 @@ def configure(store, identity, changes, revision, request_id, *, work_id=None, r
         if not work or not work.get('pause_requested'):
             raise ValueError('The bound Work must remain paused.')
         from homebrew_harness.runs.store import RunStore
-        native = RunStore(work.get('run_workspace') or spec['workspace'])
+        native = RunStore(Path(work.get('run_workspace') or spec['workspace']))
         try:
             run = native.get(work['run_id'])
             native.configure_budgets(run['id'], run_changes, run['revision'], 'service-'+request_id)
