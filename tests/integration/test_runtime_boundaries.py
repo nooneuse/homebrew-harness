@@ -260,7 +260,7 @@ class IntentTests(Fixture):
     def test_budget_rejects_overlarge_constraints_instead_of_summarizing_them_away(
         self,
     ):
-        compactor = ContextCompactor(None, "test", self.root, context_chars=1500)
+        compactor = ContextCompactor(None, "test", self.root, context_chars=1500, runtime_limits={"hard_context_chars": 1500})
         compactor.intent.update("Constraint " * 500)
         with self.assertRaises(CompactionError):
             compactor.prepare([{"role": "user", "content": "continue"}], "continue")

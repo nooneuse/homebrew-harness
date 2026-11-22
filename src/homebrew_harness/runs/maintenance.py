@@ -1,5 +1,6 @@
 """Quiescent Run exports and consistent database/attachment backup bundles."""
 
+from homebrew_harness.runtime.limits import current_limits
 import hashlib
 import json
 import os
@@ -232,12 +233,13 @@ def backup_run(store, run_id, output, *, max_bytes=256_000_000, max_files=20000)
 def verify_backup(directory):
     root = canonical_root(Path(directory))
     with SafeFile(root, "manifest.json") as target:
-        raw, _, _ = target.snapshot(max_bytes=4_000_000)
+        raw, _, _ = target.snapshot(max_bytes=current_limits().backup_manifest_bytes)
     manifest = json.loads(raw)
     if (
         manifest.get("format") != 1
         or not isinstance(manifest.get("files"), dict)
-        or not 1 <= len(manifest["files"]) <= 20002
+        or not manifest["files"]
+        or current_limits().backup_manifest_files is not None and len(manifest["files"]) > current_limits().backup_manifest_files
     ):
         raise ValueError("Invalid backup manifest.")
     total = 0

@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Host model selection shared by session and direct execution entry points."""
 
 from homebrew_harness.configuration import (
@@ -38,8 +39,8 @@ def read_environment(path, workspace, *, private=False, inherit_environment=True
                 "Model environment must be a regular owner-only host file."
             )
         with os.fdopen(fd, "rb", closefd=False) as stream:
-            raw = stream.read(65537)
-        if len(raw) > 65536:
+            raw = stream.read(current_limits().config_file_bytes + 1)
+        if len(raw) > current_limits().config_file_bytes:
             raise ValueError("Model environment exceeds 64 KiB.")
         values = dotenv_values(
             stream=io.StringIO(raw.decode("utf-8")), interpolate=False

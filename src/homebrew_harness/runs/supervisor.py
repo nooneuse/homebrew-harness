@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import backoff
 """Own a worker process; restart only after real execution ownership is free."""
 
 import os
@@ -269,11 +270,8 @@ class RunSupervisor:
                         },
                     )
                     return self.store.status(identity)
-                if time.time() >= value[
-                    "deadline_at"
-                ] or time.monotonic() - started_monotonic >= max(
-                    0, value["deadline_at"] - started_clock
-                ):
+                if value["deadline_at"] is not None and (time.time() >= value["deadline_at"]
+                        or time.monotonic() - started_monotonic >= max(0, value["deadline_at"] - started_clock)):
                     safe = self.recovery_safe(value)
                     header = {
                         "run_id": identity,
@@ -374,11 +372,8 @@ class RunSupervisor:
                             if last
                             else time.monotonic() - started > spec.heartbeat_timeout
                         )
-                        expired = now >= value[
-                            "deadline_at"
-                        ] or time.monotonic() - started_monotonic >= max(
-                            0, value["deadline_at"] - started_clock
-                        )
+                        expired = value["deadline_at"] is not None and (now >= value["deadline_at"]
+                            or time.monotonic() - started_monotonic >= max(0, value["deadline_at"] - started_clock))
                         if expired or stale or control["action"] in {"pause", "cancel"}:
                             if stopping is None:
                                 stopping = time.monotonic()
@@ -451,14 +446,14 @@ class RunSupervisor:
                         ):
                             # Recovery inspects checkpoint operations before any model or tool starts.
                             count = current["recovery_count"] + 1
-                            if count <= spec.retries:
+                            if spec.retries is None or count <= spec.retries:
                                 self.store.update(
                                     header,
                                     {
                                         "status": "retrying",
                                         "recovery_count": count,
                                         "next_retry_at": time.time()
-                                        + min(60, spec.retry_delay * 2 ** (count - 1)),
+                                        + backoff(count - 1, initial=spec.retry_delay),
                                     },
                                 )
                                 continue
@@ -479,6 +474,7 @@ class RunSupervisor:
                             {"status": "blocked", "last_outcome": outcome.data()},
                         )
                     elif current["status"] in {"retrying", "queued"}:
+                        self.try_model_handoff(self.store.get(identity))
                         continue
                     if self.try_model_handoff(self.store.get(identity)):
                         continue
@@ -507,20 +503,22 @@ class RunSupervisor:
     def try_model_handoff(self, value):
         if (
             self.model_handoff is None
-            or value["status"] != "blocked"
+            or value["status"] not in {"blocked", "retrying"}
             or not value["cleanup_complete"]
         ):
             return False
         spec = RunSpec.from_dict(value["spec"])
-        if (value.get("last_outcome") or {}).get(
-            "reason_code"
-        ) not in spec.fallback_errors:
+        outcome = value.get("last_outcome") or {}
+        reason = outcome.get("reason_code")
+        if reason == "provider_transient":
+            kind = ((outcome.get("details") or {}).get("error_info") or {}).get("details", {}).get("kind")
+            reason = "provider_" + kind if kind else reason
+        if reason not in spec.fallback_errors:
             return False
         choices = [
             name
-            for name in spec.fallback_models
-            if name not in value.get("used_fallbacks", [])
-            and name != value.get("selected_model")
+            for name in dict.fromkeys((*spec.fallback_models, spec.model_profile))
+            if name is not None and name != value.get("selected_model")
         ]
         if not choices:
             return False

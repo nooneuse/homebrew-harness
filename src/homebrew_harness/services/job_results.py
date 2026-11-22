@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Candidate validation and short transaction application for service jobs."""
 
 from homebrew_harness.runtime.errors import boundary_error
@@ -51,7 +52,7 @@ def review(store, job, raw, conn=None):
         or not {"text", "findings"} <= set(raw)
         or set(raw) - {"text", "findings", "publication"}
         or not isinstance(raw["findings"], list)
-        or len(raw["findings"]) > 32
+        or (current_limits().communication_findings is not None and len(raw["findings"]) > current_limits().communication_findings)
     ):
         raise boundary_error(ValueError, "service_result_invalid", "Invalid independent review proposal.")
     text(raw["text"], maximum=16000)
@@ -97,16 +98,49 @@ def publication(store, job, raw, conn=None):
     return raw
 
 
+def validation_plan(store, job, raw, conn=None):
+    if not isinstance(raw, dict) or set(raw) - {"tests", "selections", "review", "reason"}:
+        raise ValueError("Validation plan requires tests, review and a reason.")
+    text(raw.get("reason"), maximum=8000)
+    if type(raw.get("review")) is not bool or not isinstance(raw.get("tests"), list):
+        raise ValueError("Validation tests must be a list and review Boolean.")
+    row = store.get("changesets", job["target"], conn)
+    work = store.store.work(row["work_id"], store.id)
+    options = store.delivery.validation_options(work)
+    if any(not isinstance(name, str) for name in raw["tests"]) or set(raw["tests"]) - set(options["available_tests"]):
+        raise ValueError("Choose only the Work's available and authorized test recipes.")
+    if set(options["required_tests"]) - set(raw["tests"]) or options["required_review"] and not raw["review"]:
+        raise ValueError("Explicit operator acceptance cannot be skipped; select the required tests/review.")
+    selections = raw.get("selections", {})
+    if not isinstance(selections, dict) or set(selections) - set(raw["tests"]):
+        raise ValueError("Selections must belong to chosen tests.")
+    if any(name in selections and selections[name] is not None for name in options["required_tests"]):
+        raise ValueError("Required full-recipe acceptance cannot be replaced by a selection.")
+    if len(raw["tests"]) != len(set(raw["tests"])):
+        raise ValueError("Validation tests must be unique.")
+    from homebrew_harness.execution.test_selection import validate_selection
+    for name, selection in selections.items():
+        registered = options["selections"][name]
+        validate_selection(selection, registered["framework"], registered["roots"])
+    return {**raw, "selections": selections}
+
+
 def ci_triage(store, job, raw, conn=None):
     if (
         not isinstance(raw, dict)
-        or set(raw) != {"classification", "reason", "plan"}
+        or not {"classification", "reason", "plan", "next_action"} <= set(raw)
+        or set(raw) - {"classification", "reason", "plan", "next_action", "wait_seconds"}
         or raw["classification"]
         not in {"code", "baseline", "flaky", "infrastructure", "unknown"}
     ):
         raise boundary_error(ValueError, "service_result_invalid", "Invalid CI diagnosis.")
     text(raw["reason"], maximum=8000)
     text(raw["plan"], maximum=16000)
+    if raw.get("next_action") not in {"repair", "recheck", "reobserve", "wait", "defer", "stop", "human_required", "reconsider_review", "plan_validation", "proceed"}:
+        raise boundary_error(ValueError, "service_result_invalid", "Unknown CI next_action.")
+    if "wait_seconds" in raw:
+        from homebrew_harness.runtime.limits import positive
+        positive(raw["wait_seconds"], "CI wait_seconds")
     return raw
 
 

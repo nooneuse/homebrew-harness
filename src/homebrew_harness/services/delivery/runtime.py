@@ -1,4 +1,5 @@
 """Fixed delivery progression; model jobs supply evidence, never execute writes."""
+from homebrew_harness.runtime.limits import expired, minimum, remaining
 
 import json
 import threading
@@ -26,18 +27,17 @@ class Delivery:
             self.spec, environment, (runtime.store.root, runtime.spec.workspace)
         )
         settings = runtime.core.config.settings
-        if not settings.test_config:
-            raise ValueError("Delivery needs a host test registry.")
-        probe = load_test_runner(settings.test_config, runtime.store.root)
-        try:
-            if set(self.spec["required_tests"]) - set(probe.recipes):
-                raise ValueError("Delivery required tests are not registered.")
-            if self.spec["mode"] == "isolated" and probe.backend.name != "container":
-                raise ValueError(
-                    "Credentialed delivery requires isolated candidate tests."
-                )
-        finally:
-            probe.close()
+        if self.spec["required_tests"]:
+            if not settings.test_config:
+                raise ValueError("Explicit required tests need a host test registry.")
+            probe = load_test_runner(settings.test_config, runtime.store.root)
+            try:
+                if set(self.spec["required_tests"]) - set(probe.recipes):
+                    raise ValueError("Required delivery tests are not registered.")
+                if self.spec["mode"] == "isolated" and probe.backend.name != "container":
+                    raise ValueError("Credentialed test execution requires an isolated test backend.")
+            finally:
+                probe.close()
         if (
             "bash" in runtime.spec.run_spec("Validate delivery").tools
             or runtime.spec.run_defaults.get("mcp")
@@ -80,6 +80,24 @@ class Delivery:
 
         self.test_leases = ExecutionLeases(runtime.store.root)
         self.tests = TestResources(self.test_leases, "delivery-tests")
+
+    def validation_options(self, work):
+        settings = self.runtime.core.config.settings
+        available, selectors = [], {}
+        unavailable = None
+        if settings.test_config and Path(settings.test_config).is_file():
+            runner = load_test_runner(settings.test_config, self.runtime.store.root)
+            try:
+                admitted = set(work["run_spec"]["allow_tests"]) | set(self.spec["required_tests"])
+                if self.spec["mode"] == "isolated" and runner.backend.name != "container":
+                    unavailable = "isolated_test_backend_required"
+                else:
+                    available = sorted(set(runner.recipes) & admitted)
+                    selectors = {name: {"framework": runner.recipes[name].selector, "roots": list(runner.recipes[name].test_roots)} for name in available}
+            finally:
+                runner.close()
+        return {"available_tests": available, "selections": selectors, "unavailable_reason": unavailable, "required_tests": self.spec["required_tests"],
+                "required_review": self.spec["require_review"], "recommended_review": True}
 
     @property
     def test_runner(self):
@@ -130,7 +148,7 @@ class Delivery:
                 for row in conn.execute(
                     "SELECT value FROM records WHERE section=? AND owner=?"
                     + (
-                        " AND coalesce(json_extract(value,'$.observation_terminal'),0)=0 AND json_extract(value,'$.state') IN ('queued','preparing','validating','reviewing','review_branch_ready','ci_waiting','review_waiting','repair_approved','merge_ready','merge_pending','merged_verifying','integration_required','closed_unmerged','verification_blocked','superseded','ci_diagnosing','repairing','repair_waiting','repair_waiting_authority','quality_failed','blocked','publication_drafting','publication_denied','publication_attention','publication_failed')"
+                        " AND coalesce(json_extract(value,'$.observation_terminal'),0)=0 AND json_extract(value,'$.state') IN ('queued','preparing','validating','reviewing','review_branch_ready','ci_waiting','review_waiting','repair_approved','merge_ready','merge_pending','merged_verifying','integration_required','closed_unmerged','verification_blocked','superseded','ci_diagnosing','repairing','repair_waiting','repair_waiting_authority','quality_failed','blocked','publication_drafting','publication_denied','publication_attention','publication_failed','diagnosis_waiting','validation_planning')"
                         if active and kind == "changesets"
                         else (
                             " AND json_extract(value,'$.state') IN ('queued','started')"
@@ -186,7 +204,7 @@ class Delivery:
                     if self.stop.is_set():
                         break
                     if action["state"] == "queued":
-                        if action["expires_at"] <= time.time():
+                        if expired(action["expires_at"], time.time()):
                             self.store.expire_action(action)
                             continue
                         if action.get("next_attempt", 0) > time.time():
@@ -253,6 +271,16 @@ class Delivery:
     def advance(self, row):
         from .merge_flow import OBSERVING, PASSIVE, observe, verify_result
 
+        if row["state"] == "diagnosis_waiting":
+            if row.get("next_ci", 0) <= time.time():
+                with self.ms.db.write() as conn:
+                    current = self.store.get("changesets", row["id"], conn)
+                    self.store.current(current, conn)
+                    current.update(state="ci_diagnosing", revision=current["revision"] + 1)
+                    self.store.put(conn, "changesets", current)
+                    self.ms.job(conn, "ci_triage", row["id"], current["revision"], {},
+                                row["id"] + ":model-wait:" + str(current["revision"]))
+            return
         if row["state"] == "merged_verifying":
             verify_result(self, row)
             return
@@ -375,9 +403,17 @@ class Delivery:
                     self.preparing = False
             return
         if row["state"] == "validating":
+            if row.get("validation_plan") is None:
+                with self.ms.db.write() as conn:
+                    current = self.store.get("changesets", row["id"], conn)
+                    current.update(state="validation_planning", revision=current["revision"] + 1)
+                    self.store.put(conn, "changesets", current)
+                    self.ms.job(conn, "validation_plan", row["id"], current["revision"], {},
+                                row["id"] + ":validation-plan:" + str(current["revision"]))
+                return
             from .quality import verify
 
-            checked = verify(self, row["candidate"], work)
+            checked = verify(self, row["candidate"], {**work, "force_test_recheck": row.get("force_test_recheck", False), "validation_plan": row.get("validation_plan")})
             if not checked["ok"]:
                 if checked.get("test_failure"):
                     self.store.test_failure(row, checked)
@@ -399,24 +435,24 @@ class Delivery:
                 test_failure=None, error=None, error_detail=None,
                 state=(
                     "reviewing"
-                    if self.spec["require_review"]
+                    if (self.spec["require_review"] or row["validation_plan"]["review"])
                     else "review_branch_ready"
                 ),
                 review=(
                     None
-                    if self.spec["require_review"]
-                    else {"text": "Host did not require model review.", "findings": []}
+                    if (self.spec["require_review"] or row["validation_plan"]["review"])
+                    else {"text": row["validation_plan"]["reason"], "findings": [], "mode": "not_performed"}
                 ),
             )
             with self.ms.db.write() as conn:
-                if self.spec["require_review"]:
+                if self.spec["require_review"] or row["validation_plan"]["review"]:
                     self.ms.job(
                         conn,
                         "review",
                         row["id"],
                         row["revision"],
                         {},
-                        row["id"] + ":review:" + row["candidate"]["commit"],
+                        row["id"] + ":review:" + str(row["revision"]),
                     )
                 else:
                     row["frozen"] = self.store.freeze(row)
@@ -484,9 +520,18 @@ class Delivery:
                             request_merge = True
             elif failed:
                 changes.update(state="ci_diagnosing")
-            elif time.time() - row.get("ci_started", time.time()) > self.spec["ci_wait_seconds"]:
+            elif self.spec["ci_wait_seconds"] is not None and time.time() - row.get("ci_started", time.time()) > self.spec["ci_wait_seconds"]:
                 changes.update(state="blocked", error="ci_wait_expired")
-            self.store.commit_feedback(row, changes, diagnose=failed, merge=request_merge)
+            from homebrew_harness.runtime.limits import advisory
+            elapsed = time.time() - row.get("ci_started", time.time())
+            notice = advisory(elapsed, self.spec["ci_wait_warning_seconds"], "ci_wait_elapsed", unit="seconds")
+            diagnose = failed
+            if not ready and not failed and changes.get("state") != "blocked" and notice:
+                bucket = max(1, int(elapsed / self.spec["ci_wait_warning_seconds"])).bit_length()
+                if bucket > row.get("ci_warning_bucket", 0):
+                    changes.update(state="ci_diagnosing", ci_wait_observation=notice, ci_warning_bucket=bucket)
+                    diagnose = True
+            self.store.commit_feedback(row, changes, diagnose=diagnose, merge=request_merge)
             return
         if row["state"] == "repair_approved":
             self.repair(row, work)
@@ -704,10 +749,8 @@ class Delivery:
                         "complete": False,
                     },
                 },
-                "total_seconds": min(
-                    work["run_spec"]["total_seconds"],
-                    work["authority"]["expires_at"] - time.time(),
-                ),
+                "total_seconds": minimum(work["run_spec"]["total_seconds"],
+                                         remaining(work["authority"]["expires_at"], time.time())),
             }
         )
         with self.ms.db.write() as conn:

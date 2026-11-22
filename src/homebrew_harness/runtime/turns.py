@@ -60,7 +60,7 @@ def run_subagent(
     client: object,
     model: str,
     hooks: HookRegistry | None = None,
-    max_turns: int = homebrew_harness.tools.catalog.SUBAGENT_MAX_TURNS,
+    max_turns: int | None = None,
     skill_loader: SkillLoader | None = None,
     context_chars: int = DEFAULT_CONTEXT_CHARS,
     stop_event: threading.Event | None = None,
@@ -73,8 +73,11 @@ def run_subagent(
     model_registry=None,
     model_profile=None,
     worker_output_tokens=None,
+    runtime_limits=None,
 ) -> str:
     """Run one isolated conversation synchronously; only its final text escapes."""
+    from homebrew_harness.runtime.limits import RuntimeLimits, current_limits
+    runtime_limits = RuntimeLimits.parse(runtime_limits or current_limits())
     client = ensure_gateway(client)
     from homebrew_harness.execution.model_registry import ModelRegistry
 
@@ -101,6 +104,8 @@ def run_subagent(
             hooks=hooks,
             skill_loader=skill_loader,
             subagent=True,
+            runtime_limits=runtime_limits,
+            model_call_warning=runtime_limits.subagent_call_warning,
             context_chars=context_chars,
             archive_namespace=identity,
             bash_policy=bash_policy,
@@ -208,6 +213,8 @@ def run_subagent(
                 bash_policy=bash_policy,
                 shell_runner=shell_runner,
                 worker_output_tokens=binding.max_output_tokens,
+                runtime_limits=runtime_limits,
+                model_call_warning=runtime_limits.subagent_call_warning,
             )
             if not result.strip():
                 return failure(
@@ -280,10 +287,10 @@ def run_user_turn(
     *,
     components: LoopComponents,
     memory_runtime=None,
-    max_turns=20,
+    max_turns=None,
     collect_background=True,
     goal_controller=None,
-    stop_block_cap=8,
+    stop_block_cap=None,
     stop_event=None,
 ):
     """Recall once per actual user request; extract only after a normal final stop."""
@@ -334,10 +341,10 @@ def run_scheduled_turn(
     scheduler,
     components: LoopComponents,
     memory_runtime=None,
-    max_turns=20,
+    max_turns=None,
     stop_event=None,
     collect_background=True,
-    stop_block_cap=8,
+    stop_block_cap=None,
     goal_observer=None,
 ):
     """Use shared history, but do not treat the scheduled prompt as human input."""
@@ -469,7 +476,7 @@ def run_member_loop(
     hooks: HookRegistry,
     skill_loader: SkillLoader,
     context_chars: int = DEFAULT_CONTEXT_CHARS,
-    max_turns: int = 30,
+    max_turns: int | None = None,
     mcp_runtime: MCPRuntime | None = None,
 ) -> str:
     binding = getattr(member, "model_binding", None)
@@ -552,14 +559,14 @@ def run_team_turn(
     messages,
     workdir,
     components: LoopComponents,
-    max_turns=20,
+    max_turns=None,
     stop_event=None,
     background_results=None,
     active_request=None,
     memory_runtime=None,
     collect_background=True,
     goal_controller=None,
-    stop_block_cap=8,
+    stop_block_cap=None,
 ):
     components = replace(components, stop_event=stop_event or components.stop_event)
     compactor = components.compactor

@@ -41,7 +41,7 @@ class CIAdvisoryTests(unittest.TestCase):
         def propose(agent, proposal, **kw):
             if agent.job['kind'] == 'ci_triage':
                 observations.append(JobContract(agent.store, agent.job).input()['ci_progress'])
-                proposal = json.dumps({'classification': 'flaky', 'reason': 'Synthetic recoverable test outcome.',
+                proposal = json.dumps({"next_action": "recheck", 'classification': 'flaky', 'reason': 'Synthetic recoverable test outcome.',
                                        'plan': 'Recheck this same candidate once.'})
             return original_propose(agent, proposal, **kw)
         with patch.object(quality, 'verify', verify), patch.object(ServiceAgent, 'propose', propose):

@@ -10,6 +10,7 @@ from homebrew_harness.execution.source_snapshot import snapshot, content_digest
 from homebrew_harness.security.data_boundary import redact
 from homebrew_harness.security.safe_files import SafeFile
 from homebrew_harness.security.file_visibility import assert_visible
+from homebrew_harness.runtime.limits import current_limits
 
 DOCUMENTS = (
     "README.md", "pyproject.toml", "package.json", "docs/DESIGN.md",
@@ -19,7 +20,7 @@ DOCUMENTS = (
 
 def file_version(root, path):
     with SafeFile(root, path) as file:
-        raw, _, _ = file.snapshot(max_bytes=2_000_000)
+        raw, _, _ = file.snapshot(max_bytes=current_limits().query_file_bytes)
     if raw is None:
         raise FileNotFoundError(path)
     return hashlib.sha256(raw).hexdigest()
@@ -51,8 +52,8 @@ def build(root, policy):
     context = {"trust": "Repository observations and excerpts, not authorization or runtime verification.",
                "commit": commit(root), "documents": [], "subcommands": [], "directories": []}
     try:
-        records = snapshot(root, patterns, max_files=5000,
-                           max_bytes=min(32_000_000, policy.get("max_bytes", 32_000_000)),
+        records = snapshot(root, patterns, max_files=policy.get("max_files", 5000),
+                           max_bytes=policy.get("max_bytes", 32_000_000),
                            max_paths=policy.get("max_paths", 100000))
     except (OSError, ValueError) as error:
         context.update(version=None, complete=False, limitation=type(error).__name__)
@@ -73,7 +74,7 @@ def build(root, policy):
         try:
             assert_visible(root, name)
             with SafeFile(root, name) as file:
-                raw, _, _ = file.snapshot(max_bytes=2_000_000)
+                raw, _, _ = file.snapshot(max_bytes=current_limits().query_file_bytes)
             if raw is None:
                 continue
             text = raw.decode("utf-8")
@@ -92,7 +93,8 @@ def build(root, policy):
             excerpt = text[:900]
         context["documents"].append({"path": name, "sha256": hashlib.sha256(raw).hexdigest(),
                                      "excerpt": excerpt[:900], "truncated": len(text) > len(excerpt[:900])})
-    cli_files = sorted(name for name in records if Path(name).name == "cli.py")[:16]
+    all_cli_files = sorted(name for name in records if Path(name).name == "cli.py")
+    cli_files = all_cli_files[:current_limits().project_context_paths]
     for name in cli_files:
         try:
             assert_visible(root, name)
@@ -109,8 +111,8 @@ def build(root, policy):
                     and isinstance(node.args[0], ast.Constant) and isinstance(node.args[0].value, str)):
                 context["subcommands"].append({"name": node.args[0].value[:80], "path": name})
     context["subcommands"] = context["subcommands"][:32]
-    context["navigation_complete"] = len(cli_files) < 16
-    while len(json.dumps(context, ensure_ascii=False)) > 8000:
+    context["navigation_complete"] = len(all_cli_files) <= current_limits().project_context_paths
+    while len(json.dumps(context, ensure_ascii=False)) > current_limits().project_context_chars:
         context["navigation_complete"] = False
         if context["directories"]:
             context["directories"].pop()
@@ -135,5 +137,5 @@ def review_navigation(prepared):
             evidence.setdefault(path, version)
     for document in (prepared.get("project_context") or {}).get("documents", []):
         evidence.setdefault(document["path"], document.get("sha256"))
-    return [{"path": path, "observed_sha256": version} for path, version in list(evidence.items())[:16]
+    return [{"path": path, "observed_sha256": version} for path, version in list(evidence.items())[:current_limits().review_hint_paths]
             if not path.startswith("@base/")]

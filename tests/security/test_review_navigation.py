@@ -1,3 +1,5 @@
+from homebrew_harness.runtime.limits import limits_scope
+from dataclasses import replace
 """Reviewer navigation stays bounded, readonly and distinct from approval proof."""
 import hashlib
 import json
@@ -63,19 +65,23 @@ class NavigationTests(unittest.TestCase):
     def test_navigation_has_inventory_shared_byte_and_page_bounds(self):
         for name in ('a', 'b', 'c'):
             (self.root / name).write_text('four')
-        with patch('homebrew_harness.security.review_evidence.NAVIGATION_PATHS', 2):
+        with limits_scope({'review_navigation_paths': 2}):
+            self.evidence = ReviewEvidence(self.root)
             result = self.evidence.navigate({})
             self.assertTrue(result['truncated']); self.assertEqual(result['stop_reason'], 'inventory_limit')
-        with patch('homebrew_harness.security.review_evidence.NAVIGATION_BYTES', 8):
+        with limits_scope({'review_navigation_bytes': 8}):
+            self.evidence = ReviewEvidence(self.root)
             result = self.evidence.navigate({'text': 'absent'}, search=True)
             self.assertEqual(result['stop_reason'], 'byte_limit')
             self.assertEqual(self.evidence.navigation_bytes, 8)
         other = ReviewEvidence(self.root)
-        with patch('homebrew_harness.security.review_evidence.NAVIGATION_BYTES', 7):
+        with limits_scope({'review_navigation_bytes': 7}):
+            other = ReviewEvidence(self.root)
             result = other.navigate({'text': 'absent'}, search=True)
             self.assertEqual(result['stop_reason'], 'byte_limit')
             self.assertEqual(result['navigation_byte_limit'], 7)
-        with patch('homebrew_harness.security.review_evidence.MAX_PAGES', self.evidence.pages):
+        with limits_scope({'review_pages': self.evidence.pages}):
+            self.evidence.limits = replace(self.evidence.limits, review_pages=self.evidence.pages)
             with self.assertRaises(EvidenceLimitReached): self.evidence.navigate({})
 
     def test_old_hint_is_an_observation_not_an_approval_result(self):
@@ -99,6 +105,25 @@ class ReviewerNavigation(unittest.TestCase):
     reviewer = helpers.ApprovalReviewTests.reviewer
     request = helpers.ApprovalReviewTests.request
     context = helpers.ApprovalReviewTests.context
+
+    def test_configured_schema_and_evidence_windows_allow_larger_queries(self):
+        (self.root/'evidence.txt').write_text('x' * 12000)
+        for index in range(120):
+            (self.root / ('source-' + str(index) + '.py')).write_text('source')
+        answers = [reply(calls=[call('find', name='find_review_files', arguments='{"pattern":"*.py","limit":120}')]),
+                   reply(calls=[call('read', name='read_review_file', arguments='{"path":"evidence.txt","limit":12000}')]), verdict()]
+        with limits_scope({'review_page_chars': 15000, 'query_results': 150}):
+            reviewer, client, payloads = self.reviewer(answers)
+            context = self.context()
+            self.assertEqual(reviewer.review(self.request(), context, lambda: context, lambda decision, _: decision), 'approve')
+        tools = {t['function']['name']: t['function']['parameters']['properties'] for t in client.chat.completions.create.call_args.kwargs['tools']}
+        self.assertEqual(tools['read_review_file']['limit']['maximum'], 15000)
+        self.assertEqual(tools['find_review_files']['limit']['maximum'], 150)
+        find_result = json.loads(next(m['content'] for m in payloads[1] if m.get('role') == 'tool'))
+        self.assertEqual(len(find_result['paths']), 120)
+        read_result = json.loads(next(m['content'] for m in payloads[2] if m.get('role') == 'tool' and m.get('tool_call_id') == 'read'))
+        self.assertTrue(read_result['read_complete'])
+        self.assertEqual(len(read_result['content']), 12000)
 
     def test_find_search_and_read_can_complete_one_native_review(self):
         (self.root / 'process.py').write_text('print("ok")\n')

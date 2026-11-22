@@ -3,7 +3,7 @@
 import threading
 import time
 from contextlib import contextmanager
-from homebrew_harness.configuration import DEFAULT_PERSISTENCE_SECONDS
+from homebrew_harness.runtime.limits import current_limits, expired
 from homebrew_harness.execution.execution_control import check
 from homebrew_harness.execution.model_gateway import Deadline
 from homebrew_harness.security.approval_review import requester_binding
@@ -27,7 +27,7 @@ class NativeReviewGate:
         token = object()
         activity = {"request": None, "cancel": threading.Event(),
                     "deadline": self.control.deadline().intersect(Deadline.after(
-                        reviewer.config.timeout_seconds + DEFAULT_PERSISTENCE_SECONDS, source="tool"))}
+                        None if reviewer.config.timeout_seconds is None else reviewer.config.timeout_seconds + current_limits().persistence_seconds, source="tool"))}
         with self.changed:
             self.active[token] = activity
         try:
@@ -50,7 +50,7 @@ class NativeReviewGate:
                 request = activity["request"]
                 if request is not None:
                     latest = self.control.requests.get(self.control.id, request["id"])
-                    if latest["state"] != "pending" or latest["revision"] != request["revision"] or latest["expires_at"] <= time.time():
+                    if latest["state"] != "pending" or latest["revision"] != request["revision"] or expired(latest["expires_at"], time.time()):
                         activity["cancel"].set()
                 try:
                     check(activity["deadline"], (self.control.cancel, self.control.session.stop_event),

@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import limits_scope
 """A concise model-selected public outline preserves the complete work contract."""
 
 import copy
@@ -26,6 +27,9 @@ class ReplyBriefTests(unittest.TestCase):
 
     def test_brief_structure_and_bounds(self):
         good=self.proposal();validate_proposal(good,{'scopes':{'code':{}}})
+        scope = limits_scope({"service_text_chars": 1000})
+        scope.__enter__()
+        self.addCleanup(scope.__exit__, None, None, None)
         for value in (None, '', {}, {'scope':'ok'}, {'scope':'ok','next_step':False},
                       {'scope':'x'*2001,'next_step':'ok'},
                       {'scope':'ok','next_step':'x'*1001},

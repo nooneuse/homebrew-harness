@@ -1,5 +1,7 @@
 # Persistent services
 
+Current budget defaults and migration: [Runtime budgets](LIMITS.md).
+
 [简体中文](SERVICES.zh-CN.md)
 
 A service owns a persistent work queue and fixed schedules. Each work item runs through the existing managed Run supervisor. The `manual` profile is the first stage of service support: an operator submits work, watches progress, answers native requests, and pauses or stops execution.
@@ -311,7 +313,7 @@ Publication wording is recorded separately from code review. A draft supplied by
 
 Candidate review and CI diagnosis receive the bound Work's current execution context, accepted requirements, completed handoff and prior validation evidence. Their record reads use the same evidence projection, while internal file inventories remain in storage. A changed Work instruction requires a fresh proposal. Retrying a failed reasoning job preserves its failure history and candidate receipts; the subsequent repair Run receives current execution instructions. Health and Work progress show the reasoning job and its actual failure reason.
 
-Review of a repaired candidate covers the complete proposed change against its target base, with the latest repair shown separately. `maintenance.job_call_warning` defaults to an advisory at 40 model calls; later reminders are spaced further apart. The model can continue evaluating evidence after a reminder. `job_turns` defaults to `null`; a configured integer provides an explicit hard call limit. `job_seconds` continues to bound total time, and verification and publication requirements remain in effect.
+Review of a repaired candidate covers the complete proposed change against its target base, with the latest repair shown separately. `maintenance.job_call_warning` defaults to an advisory at 40 model calls; later reminders are spaced further apart. The model can continue evaluating evidence after a reminder. `job_turns` defaults to `null`; a configured integer provides an explicit hard call limit. `job_seconds` defaults to null and only an explicit finite value bounds time, and verification and publication requirements remain in effect.
 
 ## Service operations (P4)
 

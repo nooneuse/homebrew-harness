@@ -86,6 +86,7 @@ def execute(args, parser):
             workdir,
             env_file=args.env_file if args.env_file != default.env_file else None,
             models_config=args.models_config,
+            runtime_limits=getattr(args, "runtime_limits", None),
         )
         assembler = InteractionAssembler(workdir, config)
 

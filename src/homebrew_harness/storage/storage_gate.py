@@ -11,7 +11,7 @@ from functools import wraps
 
 from homebrew_harness.execution.execution_control import operation_deadline
 from homebrew_harness.security.safe_files import SafeFile, canonical_root
-from homebrew_harness.configuration import DEFAULT_STORAGE_LOCK_SECONDS
+from homebrew_harness.runtime.limits import current_limits
 from homebrew_harness.storage.persistence import storage_check
 
 _HELD = ContextVar("storage_gates", default={})
@@ -20,9 +20,9 @@ _HELD = ContextVar("storage_gates", default={})
 @contextmanager
 def storage_gate(root, *, exclusive=False):
     started = time.monotonic()
-    deadline = operation_deadline(DEFAULT_STORAGE_LOCK_SECONDS)
+    deadline = operation_deadline(current_limits().storage_lock_seconds)
     def checked():
-        storage_check(deadline, phase="maintenance_lock", limit=DEFAULT_STORAGE_LOCK_SECONDS, started=started)
+        storage_check(deadline, phase="maintenance_lock", limit=current_limits().storage_lock_seconds, started=started)
     checked()
     root = canonical_root(root)
     held = _HELD.get()

@@ -38,6 +38,7 @@ def add_environment_argument(parser, *, defaults=False):
 
 
 def add_host_config_arguments(parser):
+    parser.add_argument("--runtime-limits", type=json.loads, default=argparse.SUPPRESS, help="JSON runtime window and resource settings.")
     parser.add_argument("--approval-review", type=json.loads, help="Host approval review policy as JSON; default manual.")
     parser.add_argument("--conversation-mode", choices=("normal", "plan"), help=argparse.SUPPRESS)
     parser.add_argument("--fork-seed", type=json.loads, help=argparse.SUPPRESS)
@@ -128,8 +129,8 @@ def add_session_arguments(parser):
     parser.add_argument(
         "--max-turns",
         type=int,
-        default=20,
-        help="Maximum parent model calls per request (default: 20); each subagent allows up to 30.",
+        default=None,
+        help="Explicit hard model-call budget; default is advisory with no call ceiling.",
     )
     parser.add_argument(
         "--context-chars",
@@ -140,8 +141,8 @@ def add_session_arguments(parser):
     parser.add_argument(
         "--turn-timeout",
         type=float,
-        default=DEFAULT_TASK_SECONDS,
-        help="Absolute deadline for a user/event turn including child tools (default: 1500 seconds).",
+        default=None,
+        help="Explicit hard user/event turn deadline; default has no total timeout.",
     )
     parser.add_argument(
         "--resume-session",
@@ -186,13 +187,13 @@ def add_session_arguments(parser):
     parser.add_argument(
         "--goal-input-chars",
         type=int,
-        default=12000,
+        default=None,
         help="Maximum Goal checker data characters (default: 12000).",
     )
     parser.add_argument(
         "--stop-block-cap",
         type=int,
-        default=8,
+        default=None,
         help="Maximum consecutive Stop continuations (default: 8).",
     )
 

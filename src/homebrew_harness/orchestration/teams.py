@@ -657,13 +657,16 @@ from homebrew_harness.orchestration.workspace_runtime import WorkspaceRuntime
 from homebrew_harness.runtime.runtime_control import WorkAccepted, Workers
 
 
+_DEFAULT_MEMBERS = object()
+
+
 class TeamManager(WorkspaceRuntime):
     def __init__(
         self,
         workdir: Path,
         run_member,
         *,
-        max_members: int = 8,
+        max_members=_DEFAULT_MEMBERS,
         scan_interval: float = 0.2,
         background_manager=None,
         bash_policy=None,
@@ -677,6 +680,9 @@ class TeamManager(WorkspaceRuntime):
             bash_policy=bash_policy,
         )
         self.capabilities = self.capabilities.include("teams", "subagents")
+        from homebrew_harness.runtime.limits import current_limits
+        if max_members is _DEFAULT_MEMBERS:
+            max_members = current_limits().team_members
         self.run_member, self.max_members, self.scan_interval = (
             run_member,
             max_members,
@@ -926,7 +932,7 @@ class TeamManager(WorkspaceRuntime):
                 raise ValueError(
                     "Team is closed or this identity has already been used in the session."
                 )
-            if (
+            if self.max_members is not None and (
                 sum(
                     item.status not in {"stopped", "failed"}
                     for item in self.members.values()

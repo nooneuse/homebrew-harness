@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Explicit host checkpoint retirement with reversible cold snapshots and purge."""
 
 import copy
@@ -30,7 +31,6 @@ from homebrew_harness.storage.storage_admin import canonical, maintenance
 DEFAULT_DAYS = 15
 DEFAULT_KEEP = 10
 GRACE_DAYS = 7
-MAX_BYTES = 64 * 1024 * 1024
 SESSION_API_SECTIONS = ("api_sessions", "api_turns", "api_decisions", "approval_reviews", "executions", "execution_controls")
 _COLD = re.compile(r"\.harness/checkpoint-retirement/[0-9a-f]{32}\.json\.gz\Z")
 
@@ -402,10 +402,10 @@ def pin(root, sid, enabled=True):
 
 def _publish_archive(root, data):
     raw = canonical(data)
-    if len(raw) > MAX_BYTES:
+    if len(raw) > current_limits().checkpoint_archive_bytes:
         raise ValueError("Cold snapshot exceeds the size limit.")
     packed = gzip.compress(raw, mtime=0)
-    if len(packed) > MAX_BYTES:
+    if len(packed) > current_limits().checkpoint_archive_bytes:
         raise ValueError("Compressed snapshot exceeds the size limit.")
     reference = ".harness/checkpoint-retirement/" + uuid.uuid4().hex + ".json.gz"
     with SafeFile(root, reference, create_parents=True) as target:
@@ -423,12 +423,12 @@ def _load_archive(root, sid, archive):
     if not isinstance(archive, dict) or not _COLD.fullmatch(archive.get("path", "")):
         raise RecoveryRequired("Invalid cold snapshot reference.")
     with SafeFile(root, archive["path"]) as target:
-        packed, identity, _ = target.snapshot(max_bytes=MAX_BYTES)
+        packed, identity, _ = target.snapshot(max_bytes=current_limits().checkpoint_archive_bytes)
     if packed is None or hashlib.sha256(packed).hexdigest() != archive.get("sha256"):
         raise RecoveryRequired("Cold snapshot is missing or changed.")
     with gzip.GzipFile(fileobj=io.BytesIO(packed)) as stream:
-        raw = stream.read(MAX_BYTES + 1)
-    if len(raw) > MAX_BYTES or hashlib.sha256(raw).hexdigest() != archive.get(
+        raw = stream.read(current_limits().checkpoint_archive_bytes + 1)
+    if len(raw) > current_limits().checkpoint_archive_bytes or hashlib.sha256(raw).hexdigest() != archive.get(
         "raw_sha256"
     ):
         raise RecoveryRequired("Cold snapshot failed its bounded content verification.")
@@ -706,7 +706,7 @@ def _cleanup_cold(root, sid, meta, field):
         if reference in state_roots(other, external_snapshot(root)["references"]):
             return False
         with SafeFile(root, reference) as target:
-            raw, identity, _ = target.snapshot(max_bytes=MAX_BYTES)
+            raw, identity, _ = target.snapshot(max_bytes=current_limits().checkpoint_archive_bytes)
             if raw is not None:
                 if (
                     not _COLD.fullmatch(reference)
@@ -848,11 +848,11 @@ def reconcile(root):
                 if not _COLD.fullmatch(reference):
                     continue
                 with SafeFile(root, reference) as target:
-                    packed, identity, _ = target.snapshot(max_bytes=MAX_BYTES - total)
+                    packed, identity, _ = target.snapshot(max_bytes=current_limits().checkpoint_archive_bytes - total)
                     total += len(packed)
                     with gzip.GzipFile(fileobj=io.BytesIO(packed)) as stream:
-                        raw = stream.read(MAX_BYTES + 1)
-                    if len(raw) > MAX_BYTES:
+                        raw = stream.read(current_limits().checkpoint_archive_bytes + 1)
+                    if len(raw) > current_limits().checkpoint_archive_bytes:
                         raise ValueError("Orphan snapshot exceeds its limit.")
                     data = json.loads(raw)
                     sid = session_id(data["session_id"])

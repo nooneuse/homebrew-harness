@@ -1,4 +1,6 @@
+from homebrew_harness.runtime.limits import current_limits
 """Durable human requests; approval is consumed with operation acceptance."""
+from homebrew_harness.runtime.limits import expiry, expired, minimum
 
 import hashlib
 import json
@@ -140,7 +142,7 @@ def matches_record(db, conn, request, run):
     return (
         request["run_id"] == run["id"]
         and run["status"] not in TERMINAL
-        and time.time() <= request["expires_at"]
+        and not expired(request["expires_at"], time.time())
         and time.time() >= run["last_clock"] - 1
         and ctx["epoch"] == db._get(conn, "input_epochs", "user_" + run["id"], 0)
         and (
@@ -284,7 +286,7 @@ class HumanRequests:
             "independent_work": independent_work,
         }
         raw = json.dumps(content, ensure_ascii=False)
-        if len(raw) > 64000 or redact(raw) != raw:
+        if len(raw) > current_limits().input_text_chars or redact(raw) != raw:
             raise ValueError(
                 "Human requests must not contain private connection values."
             )
@@ -304,15 +306,8 @@ class HumanRequests:
             "call_id": call_id,
             "context": ctx,
             "created_at": time.time(),
-            "expires_at": min(
-                state["deadline_at"],
-                time.time()
-                + (
-                    control.spec.approval_seconds
-                    if kind == "tool"
-                    else control.spec.total_seconds
-                ),
-            ),
+            "expires_at": minimum(state["deadline_at"], expiry(
+                control.spec.approval_seconds if kind == "tool" else control.spec.total_seconds, time.time())),
             "revision": 0,
             "state": "pending",
             "decision": None,
@@ -414,7 +409,7 @@ class HumanRequests:
                 if (
                     not isinstance(answer, str)
                     or not answer.strip()
-                    or len(answer) > 64000
+                    or len(answer) > current_limits().input_text_chars
                 ):
                     raise ValueError("An attention answer must be nonempty text.")
             elif answer is not None:
@@ -542,7 +537,7 @@ class HumanRequests:
                 fresh = context(control, request["tool"], request["arguments"])
             status = (
                 "expired"
-                if time.time() > request["expires_at"]
+                if expired(request["expires_at"], time.time())
                 else "stale"
                 if fresh != request["context"]
                 else None
@@ -571,7 +566,7 @@ class HumanRequests:
             or request["kind"] != "tool"
             or request["tool"] not in available
             or request["tool"] not in control.spec.effective_tools()
-            or time.time() > request["expires_at"]
+            or expired(request["expires_at"], time.time())
             or request["context"]
             != context(control, request["tool"], request["arguments"])
         ):

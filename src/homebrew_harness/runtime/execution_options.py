@@ -57,8 +57,8 @@ def options(value=None):
         raise ValueError("one_shot uses timeout_seconds, not an observation wait.")
     wait = value.get("wait_seconds", 10)
     timeout = value.get("timeout_seconds")
-    if type(wait) not in (int, float) or not math.isfinite(wait) or not 0 <= wait <= 60:
-        raise ValueError("Observation wait must be between 0 and 60 seconds.")
+    if type(wait) not in (int, float) or not math.isfinite(wait) or wait < 0:
+        raise ValueError("Observation wait must be finite nonnegative seconds.")
     if timeout is not None and (
         type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0
     ):

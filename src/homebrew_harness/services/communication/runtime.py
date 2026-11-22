@@ -1,4 +1,5 @@
 """Event-driven discussion preparation and authorized outbox execution."""
+from homebrew_harness.runtime.limits import expired
 
 import threading
 import time
@@ -409,7 +410,7 @@ class CommunicationRuntime:
             self.leases.use("communication-publish"),
         ):
             row = self.store.get("discussions", action["discussion_id"])
-            if action["expires_at"] <= time.time():
+            if expired(action["expires_at"], time.time()):
                 self.renew_expired(action)
                 return
             try:

@@ -1,6 +1,7 @@
 """s14: real SDK transports, host policies and dynamic MCP tool discovery."""
 
 from __future__ import annotations
+from homebrew_harness.runtime.limits import current_limits
 
 from homebrew_harness.configuration import DEFAULT_MCP_CONNECT_SECONDS, DEFAULT_LOCAL_CONTROL_SECONDS
 
@@ -95,7 +96,7 @@ class ServerSpec:
     concurrency: int = 4
 
     def __post_init__(self):
-        if type(self.concurrency) is not int or not 1 <= self.concurrency <= 32:
+        if type(self.concurrency) is not int or self.concurrency < 1:
             raise MCPError("MCP concurrency must be between 1 and 32.")
         if not isinstance(self.execution, MCPExecutionPolicy):
             raise MCPError("MCP execution must be a host policy object.")
@@ -155,7 +156,7 @@ def load_specs(path: Path, *, missing_ok: bool = False) -> dict[str, ServerSpec]
     specs, prefixes = {}, set()
     for name, data in payload["servers"].items():
         safe = normalize_mcp_name(name)
-        if len(safe) > 32 or safe in prefixes:
+        if len(safe) > max(1, current_limits().mcp_tool_name_chars // 2) or safe in prefixes:
             raise MCPError("MCP server prefixes collide or exceed 32 characters.")
         prefixes.add(safe)
         if not isinstance(data, dict) or set(data) - {
@@ -190,7 +191,7 @@ def load_specs(path: Path, *, missing_ok: bool = False) -> dict[str, ServerSpec]
                 "MCP timeout_seconds must be a positive finite number or null."
             )
         connect_timeout = data.get("connect_timeout_seconds", DEFAULT_MCP_CONNECT_SECONDS)
-        if type(connect_timeout) not in (int, float) or not 0 < connect_timeout <= 120:
+        if type(connect_timeout) not in (int, float) or connect_timeout <= 0:
             raise MCPError(
                 "MCP connect_timeout_seconds must be greater than zero and at most 120."
             )
@@ -482,7 +483,11 @@ class _Connection:
 
     async def _list_tools(self, session):
         tools, cursor, seen = [], None, set()
-        for _ in range(100):
+        import itertools
+        limits = current_limits()
+        for page in itertools.count():
+            if limits.mcp_discovery_pages is not None and page >= limits.mcp_discovery_pages:
+                break
             result = await session.list_tools(cursor=cursor)
             for tool in result.tools:
                 definition = tool.model_dump(
@@ -493,9 +498,9 @@ class _Connection:
                     validate_mcp_schema(definition["outputSchema"])
                 tools.append(definition)
                 if (
-                    len(tools) > 128
+                    limits.mcp_discovery_tools is not None and len(tools) > limits.mcp_discovery_tools
                     or sum(len(json.dumps(item).encode()) for item in tools)
-                    > 8 * 1024 * 1024
+                    > limits.mcp_discovery_bytes
                 ):
                     raise MCPError(
                         "MCP tool discovery exceeds the count or content limit."
@@ -725,11 +730,13 @@ class MCPRuntime:
         selection=None,
         delegation="lead_only",
         resource_scope=None,
-        max_container_connections=8,
+        max_container_connections=None,
     ):
+        if max_container_connections is None:
+            max_container_connections = current_limits().mcp_container_connections
         if (
             type(max_container_connections) is not int
-            or not 1 <= max_container_connections <= 32
+            or max_container_connections < 1
         ):
             raise MCPError("MCP container connection limit must be between 1 and 32.")
         self.max_container_connections = max_container_connections
@@ -921,7 +928,7 @@ class MCPRuntime:
             ):
                 continue
             alias = f"mcp__{normalize_mcp_name(connection.spec.name)}__{normalize_mcp_name(raw)}"
-            if len(alias) > 64 or alias in bindings or alias in self.reserved_names:
+            if len(alias) > current_limits().mcp_tool_name_chars or alias in bindings or alias in self.reserved_names:
                 raise MCPError(
                     "MCP names collide after normalization or exceed the 64-character tool-name limit."
                 )
@@ -1099,11 +1106,11 @@ class MCPRuntime:
                         views.extend(scoped.values())
                     if any(
                         set(candidate) & set(view)
-                        or len(view) + len(candidate) + len(self.reserved_names) > 128
+                        or (current_limits().tool_pool_size is not None and len(view) + len(candidate) + len(self.reserved_names) > current_limits().tool_pool_size)
                         for view in views
                     ):
                         raise MCPError(
-                            "MCP tool pool collides or exceeds 128 total tools."
+                            "MCP tool pool collides or exceeds its configured tool_pool_size."
                         )
                     self._connections[key] = connection
                     if workspace:

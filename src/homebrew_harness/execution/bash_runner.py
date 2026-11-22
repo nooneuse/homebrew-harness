@@ -1,6 +1,7 @@
 """Restricted Bash uses the shared process capture and Docker lifecycle."""
 
 from __future__ import annotations
+from homebrew_harness.runtime.limits import current_limits
 
 import json
 import os
@@ -130,6 +131,7 @@ class BashContainerBackend(ContainerBackend):
                     "-c",
                     COLLECTOR,
                     json.dumps(self.profile.data()),
+                    str(current_limits().artifact_freeze_seconds),
                 ],
                 request.cwd,
                 {"PATH": os.defpath},
@@ -140,9 +142,13 @@ class BashContainerBackend(ContainerBackend):
             if result.returncode != 0 or getattr(result, "output_limit", False):
                 from homebrew_harness.execution.artifact_policy import ArtifactError
 
-                raise ArtifactError(
-                    "Artifact export was incomplete; no workspace files were published."
-                )
+                from homebrew_harness.runtime.errors import boundary_error
+                from homebrew_harness.security.data_boundary import redact
+                raise boundary_error(ArtifactError, "artifact_freeze_timeout" if "artifact_freeze_timeout" in result.stderr else "artifact_export_failed",
+                    "Artifact export was incomplete; no workspace files were published.",
+                    exit_code=result.returncode, collector_error=redact(result.stderr)[:1000],
+                    freeze_seconds=current_limits().artifact_freeze_seconds)
+
             return decode_export(result.stdout, self.profile)
         finally:
             runner.close(0.2)
@@ -181,6 +187,7 @@ class ContainerShellRunner(ShellRunner):
         timeout,
         *,
         output_bytes=8 * 1024 * 1024,
+        hard_output_bytes=None,
         cancel_events=(),
         on_started=None,
         artifact_profile=None,
@@ -209,6 +216,7 @@ class ContainerShellRunner(ShellRunner):
                 {},
                 min([v for v in (timeout, self.bash_policy.timeout) if v is not None], default=None),
                 output_bytes=min(output_bytes, self.bash_policy.output_bytes),
+                hard_output_bytes=min([v for v in (hard_output_bytes, self.bash_policy.hard_output_bytes) if v is not None], default=None),
                 cancel_events=cancel_events,
                 on_started=on_started,
             )

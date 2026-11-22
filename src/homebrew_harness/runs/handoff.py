@@ -92,17 +92,15 @@ def switch_model(store, run_id, alias, revision, registry, *, reason, supervisor
                 if supervisor is None:
                     checker.close()
             if (
-                time.time() >= current["deadline_at"]
+                current["deadline_at"] is not None and time.time() >= current["deadline_at"]
                 or time.time() < current["last_clock"] - 1
             ):
                 raise ValueError(
                     "Handoff cannot extend the Run deadline or change its clock."
                 )
-            if alias == current.get("selected_model") or alias in current.get(
-                "used_fallbacks", []
-            ):
+            if alias == current.get("selected_model"):
                 raise ValueError(
-                    "This model binding has already been used; no fallback cycles."
+                    "Target is the current model; use the existing Run retry/resume operation."
                 )
             saved = store.runtime.get("checkpoints", current.get("checkpoint"))
             if (
@@ -226,7 +224,7 @@ def switch_model(store, run_id, alias, revision, registry, *, reason, supervisor
                         "expected_models": registry.manifest(),
                         "expected_binding": binding.identity(),
                         "status": "queued",
-                        "next_retry_at": None,
+                        "next_retry_at": current.get("next_retry_at") if current["status"] == "retrying" else None,
                         "last_outcome": None,
                         "boundary_phase": "idle",
                     },

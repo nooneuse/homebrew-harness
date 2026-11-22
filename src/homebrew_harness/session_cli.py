@@ -99,7 +99,7 @@ def _execute_session(args, parser):
         for value in (args.wait_timeout, args.shutdown_timeout)
     ):
         parser.error("wait and shutdown timeouts must be nonnegative")
-    if args.max_turns < 1:
+    if args.max_turns is not None and args.max_turns < 1:
         parser.error("--max-turns must be positive")
     if args.context_chars < 10_000:
         parser.error("--context-chars must be at least 10000")
@@ -231,6 +231,7 @@ def _execute_session(args, parser):
                     workflow_runtime=workflow_runtime,
                     mcp_runtime=mcp_runtime,
                     max_turns=args.max_turns,
+                    runtime_limits=args.runtime_limits,
                     context_chars=args.context_chars,
                     stop_block_cap=args.stop_block_cap,
                     goal_evaluator_model=args.goal_evaluator_model

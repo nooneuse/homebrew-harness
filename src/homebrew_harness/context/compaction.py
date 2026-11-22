@@ -1,6 +1,7 @@
 """Bounded context reductions that retain semantic working state before archival."""
 
 from __future__ import annotations
+from homebrew_harness.runtime.limits import current_limits
 
 from homebrew_harness.runtime.errors import boundary_error, error_message
 
@@ -94,7 +95,7 @@ class ArchiveStore:
                 pass
             restored.add(self.workdir / path)
         inherited = value.get("inherited", [])
-        if not isinstance(inherited, list) or len(inherited) > 16:
+        if not isinstance(inherited, list) or (current_limits().archive_inherited_ids is not None and len(inherited) > current_limits().archive_inherited_ids):
             raise CompactionError("Too many inherited archive contexts.")
         checked = []
         for group in inherited:
@@ -120,7 +121,7 @@ class ArchiveStore:
         for group in groups:
             if group not in distinct:
                 distinct.append(group)
-        if len(distinct) > 16:
+        if current_limits().archive_inherited_ids is not None and len(distinct) > current_limits().archive_inherited_ids:
             raise CompactionError("Too many inherited archive contexts.")
         self._inherited = distinct
 
@@ -269,11 +270,19 @@ class ContextCompactor:
         trigger_messages: int = 50,
         target_messages: int = 30,
         archive_namespace: str | None = None,
+        runtime_limits=None,
     ):
         if context_chars < 1000:
             raise ValueError("Context budget must be at least 1000 characters.")
         if not 5 <= target_messages < trigger_messages:
             raise ValueError("Require 5 <= target_messages < trigger_messages.")
+        from homebrew_harness.runtime.limits import RuntimeLimits
+        self.runtime_limits = RuntimeLimits.parse(runtime_limits if runtime_limits is not None else current_limits())
+        for name, key in {"TOOL_RESULT_BATCH_CHAR_LIMIT": "tool_result_batch_chars",
+                          "LARGE_RESULT_CHAR_LIMIT": "large_result_chars", "SUMMARY_INPUT_CHAR_LIMIT": "summary_input_chars",
+                          "SUMMARY_TARGET_CHARS": "summary_target_chars", "SUMMARY_CHAR_LIMIT": "summary_chars",
+                          "MAX_RECOVERY_REWRITES": "summary_rewrites", "MIN_SUMMARY_CHARS": "summary_min_chars"}.items():
+            setattr(self, name, getattr(self.runtime_limits, key))
         self.client, self.model = client, model
         self.store = ArchiveStore(workdir, archive_namespace)
         self.context_chars = context_chars
@@ -428,7 +437,7 @@ class ContextCompactor:
         """Retain real saved evidence; remove only duplicated scope text."""
         retained = self.request_is_retained(active_request)
         result, restored = [], {}
-        remaining = min(self.SUMMARY_INPUT_CHAR_LIMIT, self.context_chars // 2) * 8
+        remaining = self.runtime_limits.summary_restore_chars
         for message in messages:
             item = dict(message)
             content = item.get("content")
@@ -652,13 +661,13 @@ class ContextCompactor:
             conversation[i : i + input_limit]
             for i in range(0, len(conversation), input_limit)
         ] or [conversation]
-        if len(chunks) > 8:
+        if self.runtime_limits.summary_chunks is not None and len(chunks) > self.runtime_limits.summary_chunks:
             raise boundary_error(
                 SummaryCompactionError,
                 "summary_chunk_limit",
                 "History needs more than eight summary chunks; original history was retained.",
                 limit_name="summary_chunks",
-                limit_value=8,
+                limit_value=self.runtime_limits.summary_chunks,
                 observed_value=len(chunks),
                 unit="chunks",
             )
@@ -899,17 +908,26 @@ class ContextCompactor:
         if not old_history:
             self.check_compacted_size(messages, tools)
             return messages
-        return self._compact_selected(
-            messages,
-            old_history,
-            policies,
-            [m for g in recent for m in g],
-            active_request,
-            plan,
-            "Reactive compact" if required or keep_recent else "Compacted",
-            tools,
-            required=required,
-        )
+        try:
+            return self._compact_selected(
+                messages,
+                old_history,
+                policies,
+                [m for g in recent for m in g],
+                active_request,
+                plan,
+                "Reactive compact" if required or keep_recent else "Compacted",
+                tools,
+                required=required,
+            )
+        except CompactionError as error:
+            if required or self.runtime_limits.hard_context_chars is not None:
+                raise
+            from homebrew_harness.context.tracked_history import set_context
+            set_context(messages, "harness_compaction_observation", {"role": "user", "name": "harness_compaction_observation",
+                "content": "Compaction did not install a replacement: " + str(error) +
+                           ". Original history remains available. Decide whether to continue, try another compaction or change the approach."})
+            return messages
 
     COMPACTION_STATUS = "Context compaction completed successfully; the semantic working record is installed and the transcript saved. Its observations describe state before this compaction. Continue remaining work; this compaction is no longer pending."
 
@@ -1256,6 +1274,18 @@ class ContextCompactor:
         self, messages: list[dict], active_request: str, plan: str = "", tools=None
     ) -> list[dict]:
         self.groups(messages)
+        if not self.runtime_limits.auto_compact:
+            from homebrew_harness.runtime.limits import observe
+            prepared = self.tool_result_budget(self.pin_intent(messages, active_request))
+            size = self.estimate_chars(prepared, tools)
+            hard = self.runtime_limits.hard_context_chars
+            if hard is not None and size > hard:
+                raise boundary_error(CompactionError, "context_hard_limit", "Explicit context capacity exceeded.",
+                                     limit_name="hard_context_chars", limit_value=hard, observed_value=size, unit="characters")
+            observe(prepared, [("context_characters", size, self.context_chars, "characters"),
+                               ("context_messages", len(prepared), self.trigger_messages, "messages")],
+                    self.__dict__.setdefault("advisory_seen", {}))
+            return prepared
         copies = [dict(message) for message in messages]
         originals = {id(new): old for new, old in zip(copies, messages)}
         prepared = self.pin_intent(copies, active_request)

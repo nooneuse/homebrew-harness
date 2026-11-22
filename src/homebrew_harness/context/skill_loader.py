@@ -1,6 +1,7 @@
 """s07: scan a skill catalog once, then expose full instructions by name."""
 
 from __future__ import annotations
+from homebrew_harness.runtime.limits import current_limits
 
 from homebrew_harness.runtime.output import print
 
@@ -107,7 +108,7 @@ class SkillLoader:
         found: dict[str, Skill] = {}
         seen_paths, conflicts = set(), set()
         for index, manifest in enumerate(sorted(root.glob("*/SKILL.md"))):
-            if index >= 1000:
+            if index >= current_limits().skill_files:
                 raise ValueError("Skill catalog exceeds the host entry limit.")
             try:
                 execution_check()
@@ -125,8 +126,8 @@ class SkillLoader:
                     SafeFile(root, str(manifest)) as target,
                     target.open_read() as stream,
                 ):
-                    raw = stream.read(1_000_001)
-                    if len(raw) > 1_000_000:
+                    raw = stream.read(current_limits().skill_file_bytes + 1)
+                    if len(raw) > current_limits().skill_file_bytes:
                         raise ValueError("Skill body exceeds the host byte limit.")
                     target.verify_binding()
                     content = raw.decode("utf-8")
@@ -150,8 +151,8 @@ class SkillLoader:
                 description = " ".join(description.strip().lstrip("#").split())
                 if not description:
                     raise ValueError("Skill needs a description or a body heading.")
-                if len(description) > DESCRIPTION_LIMIT:
-                    description = description[: DESCRIPTION_LIMIT - 3] + "..."
+                if len(description) > current_limits().skill_description_chars:
+                    description = description[: max(0, current_limits().skill_description_chars - 3)] + "..."
                 if name in found or name in conflicts:
                     found.pop(name, None)
                     conflicts.add(name)

@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Bounded text and Git inspection without an arbitrary command interface."""
 
 import json
@@ -20,9 +21,9 @@ QUERY_TOOLS = {"search_text", "git_status", "git_diff"}
 def search_text(text, *, workdir, pattern="**/*", limit=50):
     if (
         not isinstance(text, str)
-        or not 1 <= len(text) <= 1000
+        or not 1 <= len(text) <= current_limits().query_pattern_chars
         or type(limit) is not int
-        or not 1 <= limit <= 100
+        or not 1 <= limit <= current_limits().query_results
     ):
         raise ValueError("Search needs a literal string and a limit between 1 and 100.")
     walk = FileWalk(workdir, pattern)
@@ -33,7 +34,7 @@ def search_text(text, *, workdir, pattern="**/*", limit=50):
             assert_visible(walk.root, path)
             with SafeFile(walk.root, path) as target:
                 content, _, _ = target.snapshot(
-                    max_bytes=min(2_000_000, 8_000_000 - total)
+                    max_bytes=min(current_limits().query_file_bytes, current_limits().query_total_bytes - total)
                 )
                 assert_visible(walk.root, path)
         except (OSError, ValueError):
@@ -74,7 +75,7 @@ def search_text(text, *, workdir, pattern="**/*", limit=50):
                     break
         if reason:
             break
-        if total >= 8_000_000:
+        if total >= current_limits().query_total_bytes:
             reason = "byte_limit"
             break
     return json.dumps(
@@ -118,7 +119,6 @@ def _visible(root, path):
         return False
 
 
-GIT_METADATA_LIMIT = 100000
 
 
 def _git(workdir):
@@ -147,7 +147,7 @@ def _status_records(git, *, untracked):
         if not raw:
             continue
         count += 1
-        if count > GIT_METADATA_LIMIT:
+        if count > current_limits().git_metadata_entries:
             raise ValueError(
                 "Git metadata limit reached; the requested changes were not fully inspected."
             )
@@ -176,10 +176,10 @@ def git_status(*, workdir):
     for row in _status_records(git, untracked=True):
         if _entry_visible(git, row):
             entries.append(row)
-            if len(entries) > 200:
+            if len(entries) > current_limits().git_status_entries:
                 break
     return json.dumps(
-        redact({"files": entries[:200], "truncated": len(entries) > 200}),
+        redact({"files": entries[:current_limits().git_status_entries], "truncated": len(entries) > current_limits().git_status_entries}),
         ensure_ascii=False,
     )
 
@@ -201,20 +201,20 @@ def _untracked(git, paths):
     found = []
     for index, path in enumerate(filter(None, result.stdout.split("\0"))):
         check()
-        if index >= GIT_METADATA_LIMIT:
+        if index >= current_limits().git_metadata_entries:
             raise ValueError("Git untracked metadata limit reached.")
         if (paths is None or path in paths) and _visible(git.workdir, path):
             found.append(path)
-            if len(found) > 200:
+            if len(found) > current_limits().git_status_entries:
                 break
-    return found[:200], len(found) > 200
+    return found[:current_limits().git_status_entries], len(found) > current_limits().git_status_entries
 
 
 def git_diff(*, workdir, paths=None):
     git = _git(workdir)
     if paths is not None and (
         not isinstance(paths, list)
-        or not 1 <= len(paths) <= 32
+        or not 1 <= len(paths) <= current_limits().git_diff_files
         or any(not isinstance(p, str) or not _visible(git.workdir, p) for p in paths)
     ):
         raise ValueError("Diff paths must be 1-32 visible relative workspace files.")
@@ -227,7 +227,7 @@ def git_diff(*, workdir, paths=None):
         if not _entry_visible(git, row):
             continue
         entries += 1
-        if requested is None and entries > 32:
+        if requested is None and entries > current_limits().git_diff_files:
             reason = "file_limit"
             break
         selected.update(pair)
@@ -260,12 +260,12 @@ def git_diff(*, workdir, paths=None):
             *(":(literal)" + p for p in sorted(selected)),
         ]
     )
-    if len(result.stdout) > 12000:
+    if len(result.stdout) > current_limits().git_diff_chars:
         reason = "output_limit"
     return json.dumps(
         redact(
             {
-                "diff": result.stdout[:12000],
+                "diff": result.stdout[:current_limits().git_diff_chars],
                 "truncated": reason is not None,
                 "stop_reason": reason,
                 **({"untracked": untracked} if requested is not None else {}),
@@ -284,9 +284,9 @@ def diff_snapshot(*, workdir, base=None, paths=None):
         return _visible(git.workdir, path) and not host_managed_parts(Path(path).parts) and ".worktrees" not in Path(path).parts
 
     git = _git(workdir)
-    if base is not None and (not isinstance(base, str) or not base or len(base) > 200 or base.startswith("-") or any(ord(c) < 32 for c in base)):
-        raise ValueError("Base must be a short Git revision.")
-    if paths is not None and (not 1 <= len(paths) <= 32 or any(not project_visible(p) for p in paths)):
+    if base is not None and (not isinstance(base, str) or not base or base.startswith("-") or any(ord(c) < 32 for c in base)):
+        raise ValueError("Base must be a Git revision, without options or control characters.")
+    if paths is not None and (not 1 <= len(paths) <= current_limits().git_diff_files or any(not project_visible(p) for p in paths)):
         raise ValueError("Diff paths must be 1-32 visible workspace paths.")
     revision = git._git(["rev-parse", "--verify", "--end-of-options", (base or "HEAD") + "^{commit}"]).stdout.strip()
     head = git._git(["rev-parse", "HEAD"]).stdout.strip()
@@ -294,13 +294,13 @@ def diff_snapshot(*, workdir, base=None, paths=None):
     requested = set(paths) if paths else None
     changed = sorted({p for p in names if p and project_visible(p) and (requested is None or p in requested)})
     raw_untracked = git._git(["ls-files", "--others", "--exclude-standard", "-z"]).stdout.split("\0")
-    if len(raw_untracked) > GIT_METADATA_LIMIT:
+    if len(raw_untracked) > current_limits().git_metadata_entries:
         raise ValueError("Git untracked metadata limit reached.")
     untracked = sorted(p for p in raw_untracked if p and project_visible(p) and (requested is None or p in requested))
-    limited = len(untracked) > 200
-    untracked = untracked[:200]
-    truncated = limited or len(set(changed) | set(untracked)) > 32
-    selected = sorted(set(changed) | set(untracked))[:32]
+    limited = len(untracked) > current_limits().git_status_entries
+    untracked = untracked[:current_limits().git_status_entries]
+    truncated = limited or len(set(changed) | set(untracked)) > current_limits().git_diff_files
+    selected = sorted(set(changed) | set(untracked))[:current_limits().git_diff_files]
     patch = git._git(["diff", "--no-renames", "--no-ext-diff", "--no-textconv", "--no-color", revision, "--",
         *(":(literal)" + p for p in selected)]).stdout if selected else ""
     fingerprint = hashlib.sha256((revision + head + patch).encode())
@@ -309,12 +309,12 @@ def diff_snapshot(*, workdir, base=None, paths=None):
         check()
         try:
             with SafeFile(git.workdir, path) as source, source.open_read() as stream:
-                raw = stream.read(1_000_001)
+                raw = stream.read(current_limits().git_diff_file_bytes + 1)
                 source.verify_binding()
         except FileNotFoundError:
             raw = b""
         fingerprint.update(path.encode() + hashlib.sha256(raw).digest())
-        if len(raw) > 1_000_000:
+        if len(raw) > current_limits().git_diff_file_bytes:
             truncated = True
         if b"\0" in raw and path not in binary:
             binary.append(path)
@@ -328,7 +328,7 @@ def diff_snapshot(*, workdir, base=None, paths=None):
                     binary.append(path)
             else:
                 patch += "\n--- /dev/null\n+++ " + path + "\n" + "".join("+" + line + "\n" for line in text.splitlines())
-    truncated |= len(patch) > 12000
-    return redact({"workspace": str(git.workdir), "base": revision, "head": head, "paths": selected, "diff": patch[:12000],
-        "untracked": untracked[:32], "binary": binary, "truncated": truncated,
+    truncated |= len(patch) > current_limits().git_diff_chars
+    return redact({"workspace": str(git.workdir), "base": revision, "head": head, "paths": selected, "diff": patch[:current_limits().git_diff_chars],
+        "untracked": untracked[:current_limits().git_diff_files], "binary": binary, "truncated": truncated,
         "fingerprint": fingerprint.hexdigest()})

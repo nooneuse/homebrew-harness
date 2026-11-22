@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Owned tool attempts with bounded observation, cancellation and durable results.
 
 Waiting never owns process lifetime. Native tools retain their permission and
@@ -268,7 +269,7 @@ class Operations:
             # The tool's native full-output store remains authoritative. This is
             # a bounded incremental observation buffer, with an explicit base.
             output = row['output'] + text
-            excess = max(0, len(output) - 262144)
+            excess = max(0, len(output) - current_limits().execution_output_chars)
             row['output'] = output[excess:]
             row['output_base'] += excess
             row['last_output_at'] = time.time()
@@ -330,7 +331,7 @@ class Operations:
         return self.get(identity)
 
     def output(self, identity, cursor=0, limit=16000, stream="output"):
-        if type(cursor) is not int or cursor < 0 or type(limit) is not int or not 1 <= limit <= 16000:
+        if type(cursor) is not int or cursor < 0 or type(limit) is not int or not 1 <= limit <= current_limits().operation_read_chars:
             raise ValueError('Output cursor must be nonnegative; limit must be 1-16000 characters.')
         row = self.get(identity)
         if stream == 'result':
@@ -484,7 +485,7 @@ class Operations:
 
     def input(self, identity, value, request_id, *, trusted_host=False):
         owner = self._resolve(identity)
-        if not isinstance(value, str) or len(value) > 16000 or not isinstance(request_id, str) or not 1 <= len(request_id) <= 200:
+        if not isinstance(value, str) or len(value) > current_limits().operation_input_chars or not isinstance(request_id, str) or not 1 <= len(request_id) <= 200:
             raise ValueError('Input needs bounded text and a request_id.')
         key = 'input:' + request_id
         digest = hashlib.sha256(value.encode()).hexdigest()
@@ -562,7 +563,7 @@ class Operations:
         row.pop('output', None)
         row['inputs'] = {key[6:]: dict(value) for key, value in row.pop('controls', {}).items() if key.startswith('input:')}
         value = json.dumps(row.get('result'), ensure_ascii=False)
-        if len(value) > 16000:
+        if len(value) > current_limits().operation_input_chars:
             row['result'] = {'truncated': True, 'total_characters': len(value),
                              'preview': value[:12000], 'read_with': 'read_execution_output(stream=result)'}
         return row

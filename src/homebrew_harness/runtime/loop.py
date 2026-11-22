@@ -1,6 +1,7 @@
 """loop for the harness."""
 
 from __future__ import annotations
+from homebrew_harness.runtime.limits import current_limits
 
 from homebrew_harness.runtime.errors import boundary_error
 
@@ -114,7 +115,7 @@ def agent_loop(
     model: str,
     messages: list[dict],
     workdir: Path,
-    max_turns: int | None = 20,
+    max_turns: int | None = None,
     *,
     hooks: HookRegistry | None = None,
     todo_manager: TodoManager | None = None,
@@ -133,7 +134,7 @@ def agent_loop(
     collect_background: bool = True,
     workflow_runtime: WorkflowRuntime | None = None,
     goal_controller: GoalController | None = None,
-    stop_block_cap: int = 8,
+    stop_block_cap: int | None = None,
     goal_observer: GoalController | None = None,
     test_runner: TestRunner | None = None,
     tool_allowlist: frozenset[str] | None = None,
@@ -143,10 +144,16 @@ def agent_loop(
     model_registry=None,
     worker_output_tokens=None,
     steering=None,
+    runtime_limits=None,
+    model_call_warning=20,
+    turn_warning_seconds=1500,
 ) -> str:
     """Use the same preparation path as recalled user and automatic turns."""
-    if type(stop_block_cap) is not int or not 1 <= stop_block_cap <= 100:
-        raise GoalError("Stop continuation cap must be between 1 and 100.")
+    from homebrew_harness.runtime.limits import positive
+    try:
+        positive(stop_block_cap, "stop_block_cap", nullable=True, integer=True)
+    except ValueError as error:
+        raise GoalError(str(error)) from error
     components = LoopComponents(
         hooks=hooks,
         todo_manager=todo_manager,
@@ -169,6 +176,9 @@ def agent_loop(
         model_registry=model_registry,
         worker_output_tokens=worker_output_tokens,
         steering=steering,
+        runtime_limits=runtime_limits,
+        model_call_warning=model_call_warning,
+        turn_warning_seconds=turn_warning_seconds,
     )
     with homebrew_harness.runtime.assembly._prepare_loop(
         client, model, workdir, components
@@ -190,7 +200,7 @@ def _agent_loop(
     model,
     messages,
     workdir,
-    max_turns=20,
+    max_turns=None,
     *,
     components: LoopComponents,
     first_pool: ToolPool,
@@ -198,7 +208,7 @@ def _agent_loop(
     on_first_response=None,
     collect_background=True,
     goal_controller=None,
-    stop_block_cap=8,
+    stop_block_cap=None,
     goal_observer=None,
 ):
     """Append each assistant turn and all matching tool results before continuing."""
@@ -243,6 +253,10 @@ def _agent_loop(
     rounds_since_todo = 0
     stop_blocks = 0
     turns = 0
+    import time
+    from homebrew_harness.runtime.limits import observe
+    advisory_started = time.monotonic()
+    advisory_seen = {}
     steering = components.steering if not subagent and team_member is None else None
     reactive_retries = 0
     first_response = True
@@ -372,6 +386,9 @@ def _agent_loop(
                 "content": f"This Service phase has {remaining} model calls remaining, including the next request. "
                 "If the evidence is sufficient, submit the phase proposal with service_propose. Otherwise describe the "
                 "unresolved evidence and bounded next step in its result contract. This changes neither authorization nor quality requirements."})
+        if components.service_control is None:
+            observe(messages, [("model_calls", turns, components.model_call_warning, "calls"),
+                               ("task_elapsed", time.monotonic() - advisory_started, components.turn_warning_seconds, "seconds")], advisory_seen)
         if max_turns is not None and turns >= max_turns:
             if goal_controller is not None and goal_controller.pending:
                 return goal_controller.report(
@@ -496,7 +513,7 @@ def _agent_loop(
         except Exception as error:
             if components.run_control is not None and not subagent and team_member is None and components.run_control.observe_model_failure(error, messages):
                 continue
-            if is_context_overflow(error) and reactive_retries < 1:
+            if is_context_overflow(error) and reactive_retries < current_limits().context_overflow_retries:
                 messages[:] = compactor.compact_history(
                     messages, active_request, plan, keep_recent=5, tools=tools, required=True
                 )
@@ -594,7 +611,7 @@ def _agent_loop(
             client.checkpoint()
             if continuation is not None:
                 stop_blocks += 1
-                if stop_blocks > stop_block_cap:
+                if stop_block_cap is not None and stop_blocks > stop_block_cap:
                     if goal_controller is not None and goal_controller.pending:
                         return goal_controller.report(
                             response.text or "",
@@ -631,7 +648,7 @@ def _agent_loop(
                     continue
                 if decision.action == "block":
                     stop_blocks += 1
-                    if stop_blocks > stop_block_cap:
+                    if stop_block_cap is not None and stop_blocks > stop_block_cap:
                         return goal_controller.report(
                             response.text or "",
                             goal_controller.suspend(

@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Test selectors are data for a fixed launcher, never extra shell arguments."""
 
 import json
@@ -13,7 +14,7 @@ def validate_selection(selection, framework, roots=("tests",)):
     if not isinstance(selection, dict) or set(selection) - {"targets", "filter"}:
         raise ValueError("Test selection accepts targets and an optional pytest filter.")
     targets = selection.get("targets")
-    if not isinstance(targets, list) or not 1 <= len(targets) <= 100:
+    if not isinstance(targets, list) or not targets or (current_limits().test_selection_targets is not None and len(targets) > current_limits().test_selection_targets):
         raise ValueError("Select 1-100 test targets; omit selection for the full suite.")
     for target in targets:
         if not isinstance(target, str) or len(target) > 1000:
@@ -31,7 +32,7 @@ def validate_selection(selection, framework, roots=("tests",)):
             if parsed.is_absolute() or '..' in parsed.parts or not any(path == root or path.startswith(root + '/') for root in roots):
                 raise ValueError("Test target is outside the registered test roots.")
     expression = selection.get('filter')
-    if expression is not None and (framework != 'pytest' or not isinstance(expression, str) or not expression.strip() or len(expression) > 2000 or '\x00' in expression):
+    if expression is not None and (framework != 'pytest' or not isinstance(expression, str) or not expression.strip() or len(expression) > current_limits().test_selection_chars or '\x00' in expression):
         raise ValueError("Only pytest supports a nonempty bounded selection filter.")
     return {'targets': list(dict.fromkeys(targets)), **({'filter': expression} if expression is not None else {})}
 

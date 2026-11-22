@@ -28,6 +28,8 @@ def digest(version):
 
 class ReviewEvidence:
     def __init__(self, root):
+        from homebrew_harness.runtime.limits import current_limits
+        self.limits = current_limits()
         self.root = canonical_root(Path(root))
         self.files = {}
         self.pages = 0
@@ -39,10 +41,10 @@ class ReviewEvidence:
         try:
             with SafeFile(self.root, path) as file:
                 try:
-                    raw, version, _ = file.snapshot(max_bytes=FILE_BYTES)
+                    raw, version, _ = file.snapshot(max_bytes=self.limits.review_file_bytes)
                 except ValueError as error:
                     if str(error) == "File snapshot exceeds the host size limit.":
-                        raise boundary_error(EvidenceLimitReached, "review_file_bytes_limit", str(error), limit_name="review_file_bytes", limit_value=FILE_BYTES, observed_value=getattr(error, "details", {}).get("observed_value"), unit="bytes") from error
+                        raise boundary_error(EvidenceLimitReached, "review_file_bytes_limit", str(error), limit_name="review_file_bytes", limit_value=self.limits.review_file_bytes, observed_value=getattr(error, "details", {}).get("observed_value"), unit="bytes") from error
                     raise
                 file.verify_binding()
             return raw, version
@@ -54,10 +56,10 @@ class ReviewEvidence:
         size = len(raw) if raw is not None else 0
         prior_size = previous["bytes"] if previous else 0
         delta = max(0, size - prior_size)
-        if previous is None and len(self.files) >= MAX_FILES:
-            raise boundary_error(EvidenceLimitReached, "review_file_count_limit", "Review evidence file limit reached (file count).", limit_name="review_files", limit_value=MAX_FILES, observed_value=len(self.files)+1, unit="files")
-        if self.bytes + delta > TOTAL_BYTES:
-            raise boundary_error(EvidenceLimitReached, "review_total_bytes_limit", "Review evidence total content limit reached.", limit_name="review_total_bytes", limit_value=TOTAL_BYTES, observed_value=self.bytes+delta, unit="bytes")
+        if previous is None and self.limits.review_files is not None and len(self.files) >= self.limits.review_files:
+            raise boundary_error(EvidenceLimitReached, "review_file_count_limit", "Review evidence file limit reached (file count).", limit_name="review_files", limit_value=self.limits.review_files, observed_value=len(self.files)+1, unit="files")
+        if self.bytes + delta > self.limits.review_total_bytes:
+            raise boundary_error(EvidenceLimitReached, "review_total_bytes_limit", "Review evidence total content limit reached.", limit_name="review_total_bytes", limit_value=self.limits.review_total_bytes, observed_value=self.bytes+delta, unit="bytes")
         changed = previous is not None and previous["version"] != version
         if previous is None or changed:
             previous = self.files[path] = {
@@ -72,8 +74,8 @@ class ReviewEvidence:
         return {"ok": False, "error": {"code": code, "message": message, "path": path}}
 
     def read(self, arguments):
-        if self.pages >= MAX_PAGES:
-            raise boundary_error(EvidenceLimitReached, "review_page_limit", "Review evidence page limit reached.", limit_name="review_pages", limit_value=MAX_PAGES, observed_value=self.pages+1, unit="pages")
+        if self.limits.review_pages is not None and self.pages >= self.limits.review_pages:
+            raise boundary_error(EvidenceLimitReached, "review_page_limit", "Review evidence page limit reached.", limit_name="review_pages", limit_value=self.limits.review_pages, observed_value=self.pages+1, unit="pages")
         self.pages += 1
         path = None
         try:
@@ -85,8 +87,8 @@ class ReviewEvidence:
             ):
                 return self.error("invalid_arguments", "Use path and optional character offset/limit.")
             path = arguments["path"]
-            offset, limit = arguments.get("offset", 0), arguments.get("limit", PAGE_CHARACTERS)
-            if type(offset) is not int or not 0 <= offset <= FILE_BYTES or type(limit) is not int or not 1 <= limit <= PAGE_CHARACTERS:
+            offset, limit = arguments.get("offset", 0), arguments.get("limit", self.limits.review_page_chars)
+            if type(offset) is not int or not 0 <= offset <= self.limits.review_file_bytes or type(limit) is not int or not 1 <= limit <= self.limits.review_page_chars:
                 return self.error("invalid_arguments", "Invalid character offset or page limit.", path)
             _, parts = model_parts(self.root, path)
             if host_managed_parts(parts) or ".worktrees" in parts:
@@ -136,7 +138,7 @@ class ReviewEvidence:
     def catalog(self, entries):
         """Stored path hints are navigation, not current file or approval proof."""
         result = []
-        for entry in entries[:16] if isinstance(entries, list) else []:
+        for entry in entries[:self.limits.review_hint_paths] if isinstance(entries, list) else []:
             if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
                 continue
             try:
@@ -159,23 +161,23 @@ class ReviewEvidence:
         from homebrew_harness.execution.execution_control import check
         from homebrew_harness.tools.file_iteration import FileWalk
         from .file_visibility import file_access_scope
-        if self.pages >= MAX_PAGES:
-            raise boundary_error(EvidenceLimitReached, "review_page_limit", "Review evidence page limit reached.", limit_name="review_pages", limit_value=MAX_PAGES, observed_value=self.pages + 1, unit="pages")
+        if self.limits.review_pages is not None and self.pages >= self.limits.review_pages:
+            raise boundary_error(EvidenceLimitReached, "review_page_limit", "Review evidence page limit reached.", limit_name="review_pages", limit_value=self.limits.review_pages, observed_value=self.pages + 1, unit="pages")
         self.pages += 1
         allowed = {"pattern", "cursor", "limit"} | ({"text"} if search else set())
         if not isinstance(arguments, dict) or set(arguments) - allowed:
             return self.error("invalid_arguments", "Use a relative pattern, cursor and limit, plus literal text for search.")
-        pattern, cursor, limit = arguments.get("pattern", "**/*"), arguments.get("cursor", 0), arguments.get("limit", 50)
+        pattern, cursor, limit = arguments.get("pattern", "**/*"), arguments.get("cursor", 0), arguments.get("limit", min(50, self.limits.query_results))
         text = arguments.get("text")
-        if (not isinstance(pattern, str) or not 1 <= len(pattern) <= 1000
-                or type(cursor) is not int or not 0 <= cursor <= NAVIGATION_PATHS
-                or type(limit) is not int or not 1 <= limit <= 100
-                or search and (not isinstance(text, str) or not 1 <= len(text) <= 1000)):
-            return self.error("invalid_arguments", "Navigation needs bounded pattern/text, a nonnegative cursor and a limit between 1 and 100.")
+        if (not isinstance(pattern, str) or not 1 <= len(pattern) <= self.limits.query_pattern_chars
+                or type(cursor) is not int or not 0 <= cursor <= self.limits.review_navigation_paths
+                or type(limit) is not int or not 1 <= limit <= self.limits.query_results
+                or search and (not isinstance(text, str) or not 1 <= len(text) <= self.limits.query_pattern_chars)):
+            return self.error("invalid_arguments", "Navigation needs pattern/text within query_pattern_chars, a cursor within review_navigation_paths and a positive limit within query_results.")
         try:
             if host_managed_parts(Path(pattern).parts) or ".worktrees" in Path(pattern).parts:
                 raise ValueError("Host-managed state is outside reviewer scope.")
-            walk = FileWalk(self.root, pattern, max_paths=NAVIGATION_PATHS)
+            walk = FileWalk(self.root, pattern, max_paths=self.limits.review_navigation_paths)
         except (OSError, ValueError) as error:
             return self.error("forbidden", str(error)[:500])
         items, skipped, next_cursor, stop_reason = [], 0, None, None
@@ -186,14 +188,14 @@ class ReviewEvidence:
                     continue
                 if host_managed_parts(Path(path).parts) or ".worktrees" in Path(path).parts:
                     continue
-                if search and self.navigation_bytes >= NAVIGATION_BYTES:
+                if search and self.navigation_bytes >= self.limits.review_navigation_bytes:
                     stop_reason = "byte_limit"
                     break
                 try:
                     assert_visible(self.root, path)
                     with SafeFile(self.root, path) as file:
                         if search:
-                            raw, version, _ = file.snapshot(max_bytes=min(NAVIGATION_FILE_BYTES, NAVIGATION_BYTES - self.navigation_bytes))
+                            raw, version, _ = file.snapshot(max_bytes=min(self.limits.review_navigation_file_bytes, self.limits.review_navigation_bytes - self.navigation_bytes))
                             if raw is None:
                                 skipped += 1
                                 continue
@@ -205,7 +207,7 @@ class ReviewEvidence:
                     assert_visible(self.root, path)
                 except (OSError, ValueError) as error:
                     if (search and getattr(error, "code", None) == "file_snapshot_bytes_limit"
-                            and NAVIGATION_BYTES - self.navigation_bytes < NAVIGATION_FILE_BYTES):
+                            and self.limits.review_navigation_bytes - self.navigation_bytes < self.limits.review_navigation_file_bytes):
                         stop_reason = "byte_limit"
                         break
                     skipped += 1
@@ -237,7 +239,7 @@ class ReviewEvidence:
                        "next_cursor": next_cursor, "truncated": bool(stop_reason or walk.truncated or skipped or walk.skipped),
                        "stop_reason": stop_reason or walk.reason or ("unreadable_file" if skipped or walk.skipped else None),
                        "visited_paths": walk.visited, "skipped_files": skipped + walk.skipped,
-                       "navigation_bytes": self.navigation_bytes, "navigation_byte_limit": NAVIGATION_BYTES,
+                       "navigation_bytes": self.navigation_bytes, "navigation_byte_limit": self.limits.review_navigation_bytes,
                        "trust": "Navigation observations only. Read a relevant file before using it as approval evidence."})
 
     def observed(self):

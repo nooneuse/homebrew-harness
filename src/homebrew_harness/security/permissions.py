@@ -1,6 +1,7 @@
 """s03: hard denials, host-owned rules, and per-call terminal approval."""
 
 from __future__ import annotations
+from homebrew_harness.runtime.limits import current_limits
 
 from homebrew_harness.runtime.output import print
 
@@ -506,7 +507,7 @@ def ask_user(
         file=sys.stderr,
     )
     try:
-        deadline = operation_deadline(120)
+        deadline = operation_deadline(current_limits().manual_approval_seconds)
         if getattr(builtins.input, "__module__", None) == "builtins":
             print("Allow this call? [y/N] ", end="", flush=True)
             while True:

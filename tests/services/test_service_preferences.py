@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import limits_scope
 """Configured preferences stay scoped and survive real Service/Run boundaries."""
 
 import json
@@ -25,6 +26,9 @@ class PreferenceContracts(unittest.TestCase):
         return ServiceSpec(str(self.root), profile="repository_maintenance", maintenance={"instructions": instructions})
 
     def test_guidance_accepts_only_known_bounded_text_and_no_credentials(self):
+        scope = limits_scope({"service_text_chars": 8000})
+        scope.__enter__()
+        self.addCleanup(scope.__exit__, None, None, None)
         invalid = [[], {"pr_template": "unsupported field"}, {"common": ""}, {"common": 42}, {"common": "x" * 8001}, {"common": "sk-" + "a" * 32}, {name: "x" * 2000 for name in INSTRUCTION_TARGETS}]
         for value in invalid:
             with self.subTest(value_type=type(value).__name__), self.assertRaises(ValueError):

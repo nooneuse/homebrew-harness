@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """One input owner routes exact approval IDs and ordinary user steering."""
 
 import copy
@@ -119,7 +120,7 @@ class ApprovalBroker:
             + "\nUse /approve ID yes or /approve ID no."
         )
         try:
-            return wait_future(future, operation_deadline(120))
+            return wait_future(future, operation_deadline(current_limits().manual_approval_seconds))
         finally:
             with self.lock:
                 self.pending.pop(identity, None)

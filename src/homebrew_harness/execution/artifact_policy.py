@@ -1,5 +1,6 @@
 """Small immutable output rules selected and bounded by the host."""
 
+from homebrew_harness.runtime.limits import current_limits
 import re
 from dataclasses import asdict, dataclass
 from pathlib import PurePosixPath
@@ -84,7 +85,7 @@ class ArtifactFile:
     def __post_init__(self):
         artifact_path(self.source)
         artifact_path(self.target, target=True)
-        if type(self.max_bytes) is not int or not 0 <= self.max_bytes <= 16 * 1048576:
+        if type(self.max_bytes) is not int or self.max_bytes < 0:
             raise ArtifactError("Invalid artifact file byte limit.")
 
 
@@ -103,17 +104,20 @@ class ArtifactProfile:
             f if isinstance(f, ArtifactFile) else ArtifactFile(**f) for f in self.files
         )
         if (
-            not 1 <= len(files) <= 16
+            not files
             or len({f.source for f in files}) != len(files)
             or len({f.target for f in files}) != len(files)
         ):
             raise ArtifactError(
                 "Output rules need 1-16 distinct source and target files."
             )
+        maximum = current_limits().artifact_files
+        if maximum is not None and len(files) > maximum:
+            raise ArtifactError("Artifact file count exceeds its configured budget.")
         targets = [f.target for f in files]
         if any(a != b and b.startswith(a + "/") for a in targets for b in targets):
             raise ArtifactError("Output targets cannot contain one another.")
-        if type(self.max_bytes) is not int or not 0 <= self.max_bytes <= 16 * 1048576:
+        if type(self.max_bytes) is not int or self.max_bytes < 0:
             raise ArtifactError("Invalid artifact bundle byte limit.")
         object.__setattr__(self, "files", files)
 
@@ -122,7 +126,9 @@ class ArtifactProfile:
 
 
 def output_profiles(values):
-    if not isinstance(values, (tuple, list)) or len(values) > 16:
+    from homebrew_harness.runtime.limits import current_limits
+    maximum = current_limits().artifact_profiles
+    if not isinstance(values, (tuple, list)) or maximum is not None and len(values) > maximum:
         raise ArtifactError("Host output rules must be a bounded sequence.")
     profiles = tuple(
         p if isinstance(p, ArtifactProfile) else ArtifactProfile(**p) for p in values

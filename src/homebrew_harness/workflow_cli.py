@@ -1,6 +1,7 @@
 """Direct workflow entry point: orchestration needs no outer model conversation."""
 
 from __future__ import annotations
+import argparse
 
 from homebrew_harness.configuration import (
     DEFAULT_MAX_OUTPUT_TOKENS,
@@ -30,7 +31,8 @@ def register(groups):
     )
     parser.add_argument("--max-output-tokens", type=int, default=DEFAULT_MAX_OUTPUT_TOKENS)
     parser.add_argument("--concurrency", type=int, default=2)
-    parser.add_argument("--timeout-seconds", type=float, default=DEFAULT_TASK_SECONDS)
+    parser.add_argument("--runtime-limits", type=json.loads, default=argparse.SUPPRESS, help="JSON storage and advisory settings.")
+    parser.add_argument("--timeout-seconds", type=float, default=None)
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("list")
     commands.add_parser(

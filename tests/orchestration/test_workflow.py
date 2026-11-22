@@ -369,10 +369,24 @@ class WorkflowTests(unittest.TestCase):
         async def script(ctx, args):
             return await ctx.agent("one", schema=VALUE_SCHEMA)
 
-        out = self.runtime(script, runner).run("test-flow", {})
+        from homebrew_harness.runtime.limits import limits_scope
+        with limits_scope({'workflow_output_attempts': 2}):
+            out = self.runtime(script, runner).run("test-flow", {})
         self.assertEqual(out["task"]["status"], "failed")
         self.assertEqual(out["task"]["progress"]["calls"], 2)
         self.assertNotIn("tokens", out["task"]["progress"])
+
+    def test_default_output_correction_can_continue_after_two_invalid_results(self):
+        attempts = iter([RunnerOutput({'value': 'bad'}), RunnerOutput({'value': 'bad'}), RunnerOutput({'value': 1})])
+        runner = Runner(lambda *args: next(attempts))
+        async def script(ctx, args):
+            return await ctx.agent('one', schema=VALUE_SCHEMA)
+        out = self.runtime(script, runner).run('test-flow', {})
+        self.assertEqual(out['task']['status'], 'completed')
+        self.assertEqual(out['task']['progress']['calls'], 3)
+        observation = json.loads(runner.calls[-1][0].split('Progress observation: ', 1)[1])
+        self.assertEqual(observation['enforcement'], 'advisory')
+        self.assertEqual(observation['observed_value'], 2)
 
     def test_parallel_requests_are_not_serialized_by_token_cost(self):
         release = threading.Event()
@@ -538,6 +552,7 @@ class WorkflowTests(unittest.TestCase):
                 await task
 
         asyncio.run(scene())
+        self.assertTrue(runtime.wait_closed(5))
         snapshot = json.loads(
             next(
                 path

@@ -15,7 +15,7 @@ from homebrew_harness.runtime.runtime_state import RecoveryRequired
 from homebrew_harness.security.data_boundary import redact
 from homebrew_harness.security.safe_files import SafeFile, canonical_root
 from homebrew_harness.storage.storage_metrics import metrics_for
-from homebrew_harness.configuration import DEFAULT_STORAGE_OPEN_SECONDS, DEFAULT_STORAGE_LOCK_SECONDS, DEFAULT_STORAGE_TRANSACTION_SECONDS
+from homebrew_harness.runtime.limits import current_limits
 from homebrew_harness.storage.persistence import StorageTimeout, storage_check
 from homebrew_harness.runtime.errors import boundary_error
 
@@ -89,7 +89,7 @@ def encode(value):
     raw = json.dumps(
         redact(value), ensure_ascii=False, allow_nan=False, separators=(",", ":")
     )
-    if len(raw.encode()) > 64 * 1024 * 1024:
+    if len(raw.encode()) > current_limits().storage_record_bytes:
         raise RecoveryRequired("A runtime record exceeds the host size limit.")
     return raw
 
@@ -126,9 +126,31 @@ class SQLiteDatabase:
         self.workdir = canonical_root(Path(workdir))
         self.path = self.workdir / DB_PATH
         self.metrics = metrics_for(self.workdir)
-        self.open_timeout = DEFAULT_STORAGE_OPEN_SECONDS
-        self.lock_timeout = DEFAULT_STORAGE_LOCK_SECONDS
-        self.transaction_timeout = DEFAULT_STORAGE_TRANSACTION_SECONDS
+        self._timeouts = {}
+
+    @property
+    def open_timeout(self):
+        return self._timeouts.get("open", current_limits().storage_open_seconds)
+
+    @open_timeout.setter
+    def open_timeout(self, value):
+        self._timeouts["open"] = value
+
+    @property
+    def lock_timeout(self):
+        return self._timeouts.get("lock", current_limits().storage_lock_seconds)
+
+    @lock_timeout.setter
+    def lock_timeout(self, value):
+        self._timeouts["lock"] = value
+
+    @property
+    def transaction_timeout(self):
+        return self._timeouts.get("transaction", current_limits().storage_transaction_seconds)
+
+    @transaction_timeout.setter
+    def transaction_timeout(self, value):
+        self._timeouts["transaction"] = value
 
     def exists(self):
         for reference in (
@@ -167,7 +189,8 @@ class SQLiteDatabase:
         )
 
     @staticmethod
-    def begin(connection, deadline, *, limit=DEFAULT_STORAGE_LOCK_SECONDS):
+    def begin(connection, deadline, *, limit=None):
+        limit = current_limits().storage_lock_seconds if limit is None else limit
         started = time.monotonic()
         while True:
             storage_check(deadline, phase="lock", limit=limit, started=started)

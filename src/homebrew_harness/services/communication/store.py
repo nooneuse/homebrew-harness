@@ -1,4 +1,5 @@
 """Transactional discussion projections, rounds and independently authorized messages."""
+from homebrew_harness.runtime.limits import expiry, expired, remaining
 
 from homebrew_harness.runtime.errors import boundary_error
 import copy
@@ -925,7 +926,7 @@ class CommunicationStore:
             else "waiting_participant",
             "state": "queued" if auto else "awaiting_approval",
             "authorization": "host_policy" if auto else None,
-            "expires_at": time.time() + self.policy["authorization_seconds"],
+            "expires_at": expiry(self.policy["authorization_seconds"], time.time()),
             "revision": 0,
             "attempts": 0,
             "result": None,
@@ -959,14 +960,14 @@ class CommunicationStore:
                 "intent": action["plan"]["intent"],
                 "basis": action["plan"].get("review_basis"),
             },
-            "expires_at": time.time() + self.policy["authorization_seconds"],
+            "expires_at": expiry(self.policy["authorization_seconds"], time.time()),
         }
         return self.ms.put(conn, "decisions", value)
 
     def decide(self, conn, request, payload, decision_id):
         row = self.get("discussions", request["discussion_id"], conn)
         if (
-            request["expires_at"] is not None and request["expires_at"] <= time.time()
+            request["expires_at"] is not None and expired(request["expires_at"], time.time())
         ) or request["basis"] != self.basis(row):
             raise boundary_error(ValueError, "communication_contract", "Discussion decision has expired or changed.")
         choice = payload["decision"]
@@ -995,7 +996,7 @@ class CommunicationStore:
                 authorization="operator:" + decision_id
                 if choice == "approve"
                 else None,
-                expires_at=time.time() + self.policy["authorization_seconds"],
+                expires_at=expiry(self.policy["authorization_seconds"], time.time()),
                 revision=action["revision"] + 1,
             )
             self.put(conn, "communication_actions", action)

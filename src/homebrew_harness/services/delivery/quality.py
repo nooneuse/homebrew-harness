@@ -16,7 +16,7 @@ def receipt_view(root, receipt):
         "inputs", "stdout", "stderr", "stdout_preview", "stderr_preview"
     }}
     outputs = {}
-    for stream in ("stdout", "stderr"):
+    for stream in ("stdout", "stderr", "stdout_tail", "stderr_tail"):
         path = receipt.get(stream)
         if not path:
             continue
@@ -64,6 +64,13 @@ def read_output(row, identity, offset, limit):
 
 def verify(delivery, candidate, work):
     delivery.git.verify(candidate)
+    plan = work.get("validation_plan") or {}
+    chosen = plan.get("tests", delivery.spec["required_tests"])
+    if not chosen:
+        goal = work["run_spec"].get("goal")
+        evidence = HardVerifier(candidate["workspace"]).check(goal) if goal else None
+        return {"quality": [], "goal_evidence": evidence, "ok": not evidence or evidence["ok"],
+                "verification_mode": "no_automated_tests_requested"}
     runner = load_test_runner(
         delivery.runtime.core.config.settings.test_config, Path(candidate["workspace"])
     )
@@ -71,7 +78,8 @@ def verify(delivery, candidate, work):
     receipts = []
     reused = {}
     try:
-        for name in delivery.spec["required_tests"]:
+        plan = work.get("validation_plan") or {}
+        for name in plan.get("tests", delivery.spec["required_tests"]):
             if delivery.stop.is_set():
                 raise RuntimeError("Service stopped during fixed-content verification.")
             from homebrew_harness.services.evidence import receipts as historical
@@ -82,8 +90,9 @@ def verify(delivery, candidate, work):
                 runner,
                 name,
                 Path(candidate["workspace"]),
+                selection=plan.get("selections", {}).get(name),
             )
-            if reuse["ok"]:
+            if reuse["ok"] and not work.get("force_test_recheck"):
                 reused[name] = reuse
                 receipts.append(
                     {
@@ -102,8 +111,8 @@ def verify(delivery, candidate, work):
                 name, cwd=Path(candidate["workspace"]), role="lead", max_runs=1
             )
             with test_context("lead"):
-                receipt = runner.run(name)
-                current = runner.verify(name, Path(candidate["workspace"]))
+                receipt = runner.run(name, selection=(work.get("validation_plan") or {}).get("selections", {}).get(name))
+                current = runner.verify(name, Path(candidate["workspace"]), selection=plan.get("selections", {}).get(name))
             receipts.append(receipt_view(candidate["workspace"], receipt))
             if (
                 receipt["status"] != "passed"

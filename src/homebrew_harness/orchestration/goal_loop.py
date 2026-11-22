@@ -1,6 +1,7 @@
 """s17: a scoped Stop gate with independent judgement and durable evidence."""
 
 from __future__ import annotations
+from homebrew_harness.runtime.limits import current_limits
 
 from homebrew_harness.configuration import (
     DEFAULT_GOAL_OUTPUT_TOKENS,
@@ -108,7 +109,9 @@ def commit_goal_binding(db, conn, entries):
 
 
 class GoalStore:
-    def __init__(self, workdir):
+    def __init__(self, workdir, *, runtime_limits=None):
+        from homebrew_harness.runtime.limits import RuntimeLimits
+        self.limits = RuntimeLimits.parse(runtime_limits or current_limits())
         self.workdir = Path(workdir).resolve()
         self.root = self.workdir / ".harness" / "goals"
         from homebrew_harness.storage.durable_runtime import DurableStore
@@ -207,11 +210,10 @@ class GoalStore:
                 or state.get("format") != 3
                 or state.get("goal_id") != goal_id
                 or not isinstance(state.get("condition"), str)
-                or not 1 <= len(state["condition"]) <= 4000
+                or not state["condition"]
                 or state.get("status") not in PENDING | TERMINAL
                 or not isinstance(state.get("progress"), dict)
                 or not isinstance(state.get("evidence"), list)
-                or len(state["evidence"]) > 2000
                 or type(state.get("sequence")) is not int
                 or state["sequence"] < 0
             ):
@@ -247,7 +249,6 @@ class GoalStore:
                     or type(record.get("historical")) is not bool
                     or not isinstance(record.get("kind"), str)
                     or not isinstance(record.get("body"), str)
-                    or len(record["body"]) > 1600
                     or not isinstance(record.get("archive"), str)
                     or not isinstance(record.get("metadata"), dict)
                 ):
@@ -270,7 +271,7 @@ class PromptGoalEvaluator:
     """One JSON-only, tool-free request; no history, memory or SDK retries."""
 
     def __init__(self, client, model, *, max_tokens=DEFAULT_GOAL_OUTPUT_TOKENS, timeout=DEFAULT_GOAL_REQUEST_SECONDS):
-        if type(max_tokens) is not int or not 128 <= max_tokens <= 8192:
+        if type(max_tokens) is not int or max_tokens < 1:
             raise GoalError("Goal checker output limit must be between 128 and 8192.")
         client = ensure_gateway(client)
         self.client = (
@@ -326,7 +327,7 @@ class PromptGoalEvaluator:
             for key in ("ok", "impossible"):
                 if type(value[key]) is not bool:
                     raise boundary_error(ValueError, "goal_result_invalid", "Expected a Boolean.", field=key)
-            if not isinstance(value["reason"], str) or not value["reason"].strip() or len(value["reason"]) > 500:
+            if not isinstance(value["reason"], str) or not value["reason"].strip() or (current_limits().goal_reason_chars is not None and len(value["reason"]) > current_limits().goal_reason_chars):
                 raise boundary_error(ValueError, "goal_result_invalid", "Expected nonempty text of at most 500 characters.", field="reason")
             if not isinstance(value["evidence_ids"], list) or any(not isinstance(item, str) for item in value["evidence_ids"]):
                 raise boundary_error(ValueError, "goal_result_invalid", "Expected an array of evidence ID strings.", field="evidence_ids")
@@ -360,18 +361,20 @@ class GoalController:
         workdir,
         evaluator,
         *,
-        block_cap=8,
-        input_chars=12000,
+        block_cap=None,
+        block_warning=8,
+        input_chars=None,
         on_event=None,
         hard_verifier=None,
+        runtime_limits=None,
     ):
-        if type(block_cap) is not int or not 1 <= block_cap <= 100:
-            raise GoalError("Goal Stop block cap must be between 1 and 100.")
-        if type(input_chars) is not int or not 2000 <= input_chars <= 40_000:
-            raise GoalError(
-                "Goal checker input limit must be between 2000 and 40000 characters."
-            )
-        self.store, self.evaluator = GoalStore(workdir), evaluator
+        from homebrew_harness.runtime.limits import positive
+        positive(block_cap, "block_cap", nullable=True, integer=True)
+        positive(block_warning, "block_warning", nullable=True, integer=True)
+        positive(input_chars, "input_chars", nullable=True, integer=True)
+        self.block_warning = block_warning
+        self.store, self.evaluator = GoalStore(workdir, runtime_limits=runtime_limits), evaluator
+        self.limits = self.store.limits
         self.block_cap, self.input_chars, self.on_event = (
             block_cap,
             input_chars,
@@ -437,7 +440,9 @@ class GoalController:
 
     def prepare_goal(self, condition, *, goal_id=None):
         self._release_retired()
-        spec = validate_spec(condition) if isinstance(condition, dict) else None
+        from homebrew_harness.runtime.limits import limits_scope
+        with limits_scope(self.limits):
+            spec = validate_spec(condition) if isinstance(condition, dict) else None
         if spec is not None:
             for predicate in spec["predicates"]:
                 if predicate["type"] == "tests_passed":
@@ -453,7 +458,7 @@ class GoalController:
         if (
             not isinstance(condition, str)
             or not condition.strip()
-            or len(condition.strip()) > 4000
+            or (self.limits.goal_condition_chars is not None and len(condition.strip()) > self.limits.goal_condition_chars)
         ):
             raise GoalError(
                 "Goal must be a nonempty completion condition under 4000 characters."
@@ -624,6 +629,8 @@ class GoalController:
             "hard_checks": self.state.get("hard_checks"),
             "progress": dict(self.state["progress"]),
             "model_usage_source": "gateway_or_external_evaluator",
+            "stop_advisory": {"threshold": self.block_warning, "checks": self.state["episode_checks"],
+                              "blocks": self.state["episode_blocks"], "hard_limit": self.block_cap},
         }
 
     def suspend(self, action, reason):
@@ -671,7 +678,7 @@ class GoalController:
         )
         if any(item["id"] == evidence_id for item in self.state["evidence"]):
             return
-        if len(self.state["evidence"]) >= 2000:
+        if self.limits.goal_evidence_records is not None and len(self.state["evidence"]) >= self.limits.goal_evidence_records:
             raise GoalError(
                 "Goal evidence capacity reached; split the goal before continuing. Existing evidence remains archived."
             )
@@ -683,7 +690,7 @@ class GoalController:
             "kind": kind,
             "order": self.state["sequence"],
             "historical": False,
-            "body": preview(encoded(body), 1600),
+            "body": preview(encoded(body), self.limits.goal_evidence_chars),
             "metadata": metadata or {},
             "archive": reference,
         }
@@ -857,7 +864,7 @@ class GoalController:
             "task_intent": self.state.get("task_intent"),
             "condition_id": "condition",
             "evidence": self._select_evidence(),
-            "final_answer": {"id": "final", "content": preview(candidate, 1500)},
+            "final_answer": {"id": "final", "content": candidate},
         }
         if self.state.get("spec") is not None:
             packet["hard_checks"] = self.state.get("hard_checks")
@@ -866,11 +873,11 @@ class GoalController:
             "selected": len(packet["evidence"]),
             "omitted": 0,
         }
-        while len(encoded(packet)) > self.input_chars and packet["evidence"]:
+        while self.input_chars is not None and len(encoded(packet)) > self.input_chars and packet["evidence"]:
             packet["evidence"].pop()
             packet["evidence_coverage"]["selected"] -= 1
             packet["evidence_coverage"]["omitted"] += 1
-        if len(encoded(packet)) > self.input_chars:
+        if self.input_chars is not None and len(encoded(packet)) > self.input_chars:
             raise GoalError("Goal condition and candidate exceed checker input budget.")
         return packet
 
@@ -884,7 +891,7 @@ class GoalController:
             and evaluation.impossible
             or not isinstance(evaluation.reason, str)
             or not evaluation.reason.strip()
-            or len(evaluation.reason) > 500
+            or (current_limits().goal_reason_chars is not None and len(evaluation.reason) > current_limits().goal_reason_chars)
             or not isinstance(evaluation.evidence_ids, tuple)
             or any(not isinstance(item, str) for item in evaluation.evidence_ids)
         ):
@@ -940,7 +947,7 @@ class GoalController:
             )
             self._persist()
             return StopDecision("defer", self.state["last_reason"])
-        if self.state["episode_checks"] >= self.block_cap + 1:
+        if self.block_cap is not None and self.state["episode_checks"] >= self.block_cap + 1:
             return self.suspend(
                 "limit", "Goal Stop check limit reached; explicit user input is needed."
             )
@@ -995,7 +1002,7 @@ class GoalController:
             self._release()
             return StopDecision(self.state["status"], evaluation.reason)
         self.state["episode_blocks"] += 1
-        if self.state["episode_blocks"] > self.block_cap:
+        if self.block_cap is not None and self.state["episode_blocks"] > self.block_cap:
             return self.suspend(
                 "limit",
                 "Goal remains unmet; Stop continuation cap reached. Last reason: "
@@ -1023,7 +1030,7 @@ class GoalController:
                 "Current hard tests require host authorization; preauthorize the recipe or resume in an interactive terminal.",
             )
         self.state["episode_blocks"] += 1
-        if self.state["episode_blocks"] > self.block_cap:
+        if self.block_cap is not None and self.state["episode_blocks"] > self.block_cap:
             return self.suspend(
                 "limit",
                 "Hard condition continuation cap reached; inspect status and current test authorization.",

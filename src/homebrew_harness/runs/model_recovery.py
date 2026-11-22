@@ -30,7 +30,7 @@ def context(control, messages):
     if not latest or latest.get("resolved"):
         set_context(messages, NAME, None)
         return
-    value = {"error": latest, "remaining_feedback_attempts": max(0, control.spec.retries - feedback["consecutive"]),
+    value = {"error": latest, "remaining_feedback_attempts": None if control.spec.retries is None else max(0, control.spec.retries - feedback["consecutive"]),
              "business_actions_from_failed_model_request": 0,
              "instruction": "The previous model request failed before any new tool actions were accepted. This is an observation, not task completion or permission. Keep the original task and completed tool facts. Choose whether to continue with normal tools, adjust the attempted output, or call report_run_blocker with the obstacle and required next action. Do not repeat already completed or unverified side effects. This failure does not prove the model is permanently unavailable."}
     set_context(messages, NAME, {"role": "user", "name": NAME, "content": json.dumps(value, ensure_ascii=False)})
@@ -48,7 +48,7 @@ def observe(control, error, messages):
     latest = {"id": "model_error_" + uuid.uuid4().hex, "at": time.time(), "attempt": count,
               "error_info": error_info(error), "resolved": False}
     control.state = control.store.update(control.header, {"model_feedback": {"consecutive": count, "latest": latest}})
-    if count > control.spec.retries:
+    if control.spec.retries is not None and count > control.spec.retries:
         raise RunStopped("model_error_recovery_exhausted") from error
     context(control, messages)
     return True

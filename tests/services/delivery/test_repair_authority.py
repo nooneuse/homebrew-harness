@@ -64,7 +64,7 @@ class RepairAuthorityTests(unittest.TestCase):
         self.assertEqual(len(self.peer.pulls), 1)
 
     def test_baseline_extra_approval_can_retry_failed_preparation_once(self):
-        self.peer.ci_value = {"classification": "baseline", "reason": "The target moved.",
+        self.peer.ci_value = {"next_action": "repair", "classification": "baseline", "reason": "The target moved.",
                               "plan": "Resolve src/value.txt to 2 and retain its verification."}
         service, work, public, old = self.pending()
         delivery = service.runtime.maintenance.delivery
@@ -101,7 +101,7 @@ class RepairAuthorityTests(unittest.TestCase):
         service.refresh_delivery(before["id"], request_id="renew-pending-repair")
         current = store.get("decisions", request.ref.id)
         self.assertEqual(current["revision"], expired["revision"] + 1)
-        self.assertGreater(current["expires_at"], time.time())
+        self.assertIsNone(current["expires_at"])
         self.assertEqual(current["candidate"], expired["candidate"])
         self.assertEqual(current["state"], "pending")
         self.assertEqual(self.facts(self.row(service, work)), self.facts(before))

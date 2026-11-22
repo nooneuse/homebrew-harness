@@ -20,10 +20,10 @@ class PolicyTests(unittest.TestCase):
         default = validate(raw)
         self.assertIsNone(default['ci_fix_limit'])
         self.assertEqual(default['ci_fix_warning'], 2)
-        for limit in (None, 0, 2, 10):
+        for limit in (None, 0, 2, 10, 11, 200):
             with self.subTest(limit=limit):
                 self.assertEqual(validate({**raw, 'ci_fix_limit': limit})['ci_fix_limit'], limit)
-        for limit in (True, -1, 11, 2.5):
+        for limit in (True, -1, 2.5):
             with self.subTest(limit=limit), self.assertRaises(ValueError):
                 validate({**raw, 'ci_fix_limit': limit})
         self.assertIsNone(validate({**raw, 'ci_fix_warning': None})['ci_fix_warning'])

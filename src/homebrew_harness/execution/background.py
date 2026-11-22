@@ -78,6 +78,7 @@ class ShellRunner:
         timeout: float,
         *,
         output_bytes=8 * 1024 * 1024,
+        hard_output_bytes=None,
         cancel_events=(),
         on_started=None,
         allow_input=True,
@@ -129,6 +130,8 @@ class ShellRunner:
         result = None
         failure = None
         streams = {"stdout": bytearray(), "stderr": bytearray()}
+        tails = {"stdout": bytearray(), "stderr": bytearray()}
+        received = {"stdout": 0, "stderr": 0}
         try:
             if input_callback is not None:
                 from homebrew_harness.execution.operations import bind_input
@@ -163,32 +166,27 @@ class ShellRunner:
                         if not chunk:
                             selector.unregister(key.fileobj)
                         else:
-                            streams[key.data].extend(chunk)
-                            if sum(map(len, streams.values())) > output_bytes:
-                                result = subprocess.CompletedProcess(
-                                    process.args,
-                                    None,
-                                    bytes(streams["stdout"][:output_bytes]).decode(
-                                        "utf-8", "replace"
-                                    ),
-                                    bytes(
-                                        streams["stderr"][
-                                            : max(
-                                                0,
-                                                output_bytes
-                                                - len(streams["stdout"][:output_bytes]),
-                                            )
-                                        ]
-                                    ).decode("utf-8", "replace"),
-                                )
+                            received[key.data] += len(chunk)
+                            keep = max(0, output_bytes - sum(map(len, streams.values())))
+                            streams[key.data].extend(chunk[:keep])
+                            tails[key.data].extend(chunk)
+                            if len(tails[key.data]) > output_bytes:
+                                del tails[key.data][:-output_bytes]
+                            if hard_output_bytes is not None and sum(received.values()) > hard_output_bytes:
+                                result = subprocess.CompletedProcess(process.args, None,
+                                    bytes(streams["stdout"]).decode("utf-8", "replace"),
+                                    bytes(streams["stderr"]).decode("utf-8", "replace"))
                                 result.output_limit = True
                                 return result
+
             result = subprocess.CompletedProcess(
                 process.args,
                 process.returncode,
                 bytes(streams["stdout"]).decode("utf-8", "replace"),
                 bytes(streams["stderr"]).decode("utf-8", "replace"),
             )
+            result.output_capture = {kind: {"received_bytes": received[kind], "truncated": received[kind] > len(streams[kind]),
+                                                   "tail": bytes(tails[kind]).decode("utf-8", "replace")} for kind in streams}
             process.harness_capture_complete = True
             return result
         except BaseException as error:

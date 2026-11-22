@@ -648,6 +648,7 @@ class DeadlineTests(unittest.TestCase):
             {},
             5,
             output_bytes=100000,
+            hard_output_bytes=100000,
         )
         self.assertTrue(result.output_limit)
         self.assertLessEqual(len(result.stdout), 100000)

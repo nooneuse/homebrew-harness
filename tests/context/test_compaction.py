@@ -89,7 +89,7 @@ class CompactionTests(unittest.TestCase):
         self.addCleanup(capture.__exit__, None, None, None)
 
     def compactor(self, client=None, **kwargs):
-        return ContextCompactor(client or Mock(), "test-model", self.workdir, **kwargs)
+        return ContextCompactor(client or Mock(), "test-model", self.workdir, **kwargs, runtime_limits={"auto_compact": True})
 
     def transcripts(self):
         return sorted((self.workdir / ".harness" / "transcripts").glob("*.jsonl"))
@@ -656,17 +656,15 @@ class CompactionTests(unittest.TestCase):
                     ]
                 ),
                 RuntimeError("private-test-value"),
+                reply("Retained results; compaction can be retried later."),
             ]
         )
         history = [{"role": "user", "content": "Task"}]
-        with self.assertRaises(CompactionError):
-            homebrew_harness.runtime.loop.agent_loop(
-                client,
-                "test-model",
-                history,
-                self.workdir,
-                capabilities=Capabilities.full(memory_mode="off"),
-            )
+        result = homebrew_harness.runtime.loop.agent_loop(
+            client, "test-model", history, self.workdir,
+            capabilities=Capabilities.full(memory_mode="off"),
+        )
+        self.assertIn("Retained results", result)
         self.assertEqual((self.workdir / "saved.txt").read_text(), "saved")
         self.assertEqual(
             [

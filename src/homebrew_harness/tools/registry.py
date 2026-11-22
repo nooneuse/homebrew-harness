@@ -217,6 +217,7 @@ def build_tool_pool(client, model, workdir, components: LoopComponents):
                 shell_runner=shell_runner,
                 model_registry=components.model_registry,
                 worker_output_tokens=components.worker_output_tokens,
+                runtime_limits=components.runtime_limits,
             ),
         )
         if worktree_manager is not None:

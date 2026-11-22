@@ -7,12 +7,13 @@ import re
 from pathlib import Path
 
 from homebrew_harness.services.maintenance_spec import number
+from homebrew_harness.runtime.limits import current_limits
 
 
 def validate(raw):
     defaults = {
         "mode": "isolated",
-        "operation_seconds": DEFAULT_TASK_SECONDS,
+        "operation_seconds": None,
         "health_seconds": 1,
         "stale_seconds": 30,
         "min_free_bytes": 16_000_000,
@@ -47,6 +48,8 @@ def validate(raw):
         ("keep_recent", 1, 1000),
         ("candidate_retention_days", 1, 3650),
     ):
+        if name == "operation_seconds" and value[name] is None:
+            continue
         number(
             value[name],
             name,
@@ -63,7 +66,8 @@ def validate(raw):
     patterns = value["audit_globs"]
     if (
         not isinstance(patterns, list)
-        or not 1 <= len(patterns) <= 32
+        or not patterns
+        or current_limits().operation_audit_patterns is not None and len(patterns) > current_limits().operation_audit_patterns
         or any(
             not isinstance(p, str)
             or not p
@@ -74,7 +78,7 @@ def validate(raw):
     ):
         raise ValueError("Invalid fixed audit patterns.")
     aliases = value["upgrade_candidates"]
-    if not isinstance(aliases, dict) or len(aliases) > 16:
+    if not isinstance(aliases, dict) or current_limits().upgrade_candidates is not None and len(aliases) > current_limits().upgrade_candidates:
         raise ValueError("Upgrade candidates must be a bounded host catalog.")
     for alias, candidate in aliases.items():
         if (

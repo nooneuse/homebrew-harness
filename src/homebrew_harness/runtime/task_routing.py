@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Bounded planning proposals; only the host can accept an execution selection."""
 
 import json
@@ -58,7 +59,7 @@ def validate_route(raw, *, allowed, registry, prompt, detach_allowed=False):
     ):
         if (
             not isinstance(getattr(route, name), (list, tuple))
-            or len(getattr(route, name)) > 16
+            or current_limits().routing_items is not None and len(getattr(route, name)) > current_limits().routing_items
         ):
             raise ValueError("Invalid routing collection: " + name)
     if any(not isinstance(v, str) for v in route.capabilities) or len(
@@ -90,10 +91,10 @@ def validate_route(raw, *, allowed, registry, prompt, detach_allowed=False):
         raise ValueError(
             "Detached execution requires an explicit host lifecycle choice and a managed task."
         )
-    if not isinstance(route.rationale, str) or not 1 <= len(route.rationale) <= 2000:
+    if not isinstance(route.rationale, str) or not 1 <= len(route.rationale) <= current_limits().routing_reason_chars:
         raise ValueError("Routing rationale must be bounded text.")
     if any(
-        not isinstance(v, str) or not 1 <= len(v) <= 2000
+        not isinstance(v, str) or not 1 <= len(v) <= current_limits().routing_reason_chars
         for v in route.missing_requirements
     ):
         raise ValueError("Missing requirements must be bounded text.")
@@ -117,7 +118,7 @@ def validate_route(raw, *, allowed, registry, prompt, detach_allowed=False):
     goal = None
     if route.goal_candidate is not None:
         goal = validate_spec(route.goal_candidate)
-        if len(prompt) > 4000:
+        if len(prompt) > current_limits().routing_prompt_chars:
             raise ValueError(
                 "A long staged task requires an explicit host completion condition."
             )
@@ -218,7 +219,7 @@ class TaskRouter:
             max_tokens=2048,
         )
         text = result.require_text(nonempty=True)
-        if len(text) > 24000:
+        if len(text) > current_limits().routing_output_chars:
             raise ValueError("Routing output exceeds its limit.")
         raw = json.loads(text)
         if execution_mode:

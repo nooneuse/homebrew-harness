@@ -1,4 +1,5 @@
 """Versioned ChangeSets, immutable action plans and per-item host decisions."""
+from homebrew_harness.runtime.limits import expiry, expired
 
 from homebrew_harness.runtime.errors import boundary_error
 import time
@@ -8,9 +9,12 @@ from .git import StaleDelivery
 
 
 def scoped_repair(row):
-    classification = (row.get("ci_diagnosis") or {}).get("classification")
+    diagnosis = row.get("ci_diagnosis") or {}
+    if diagnosis.get("next_action") is not None:
+        return diagnosis["next_action"] == "repair"
+    classification = diagnosis.get("classification")
     return classification == "code" or (
-        classification == "baseline" and bool((row.get("candidate") or {}).get("conflicts")))
+        (row.get("ci") or {}).get("kind") == "candidate_merge_conflict" and classification == "baseline")
 
 
 class DeliveryStore:
@@ -87,16 +91,16 @@ class DeliveryStore:
         identity = "request_" + request_key("ci-repair", self.id, row["id"] + ":" + fingerprint(result))
         old = self.db._get(conn, "service_decisions", identity)
         if old:
-            if renew and old["state"] == "pending" and old["expires_at"] <= time.time():
+            if renew and old["state"] == "pending" and expired(old["expires_at"], time.time()):
                 old.update(revision=old["revision"] + 1,
-                           expires_at=time.time() + self.spec["authorization_seconds"])
+                           expires_at=expiry(self.spec["authorization_seconds"], time.time()))
                 return self.put(conn, "decisions", old)
             return old
         return self.put(conn, "decisions", {
             "id": identity, "kind": "ci_repair", "work_id": row["work_id"],
             "requirements_revision": row["requirements_revision"], "changeset_id": row["id"],
             "revision": 0, "state": "pending", "created_at": time.time(),
-            "expires_at": time.time() + self.spec["authorization_seconds"],
+            "expires_at": expiry(self.spec["authorization_seconds"], time.time()),
             "candidate": {"scope": "ci-repair", "plan": result["plan"], "reason": result["reason"]},
             "reason": result["reason"],
         })
@@ -405,7 +409,7 @@ class DeliveryStore:
                 )
                 else None
             ),
-            "expires_at": time.time() + self.spec["authorization_seconds"],
+            "expires_at": expiry(self.spec["authorization_seconds"], time.time()),
             "revision": 0,
             "attempts": 0,
             "result": None,
@@ -444,7 +448,7 @@ class DeliveryStore:
             "plan_hash": action["plan_hash"],
             "state": "pending",
             "revision": prior["revision"] + 1 if prior else 0,
-            "expires_at": time.time() + self.spec["authorization_seconds"],
+            "expires_at": expiry(self.spec["authorization_seconds"], time.time()),
             "reason": "Authorize "
             + action["kind"]
             + " for frozen candidate "
@@ -466,7 +470,7 @@ class DeliveryStore:
             if (
                 request["state"] != "pending"
                 or request["revision"] != payload["revision"]
-                or request["expires_at"] <= time.time()
+                or expired(request["expires_at"], time.time())
                 or row["state"] != "repair_waiting"
                 or not scoped_repair(row)
                 or request["requirements_revision"] != work["requirements_revision"]
@@ -521,7 +525,7 @@ class DeliveryStore:
             type(payload["revision"]) is not int
             or request["revision"] != payload["revision"]
             or request["state"] != "pending"
-            or request["expires_at"] <= time.time()
+            or expired(request["expires_at"], time.time())
             or action["plan_hash"] != request["plan_hash"]
             or row["frozen"] != action["plan"]["hash"]
             or action["state"] not in {"queued", "awaiting_approval"}
@@ -539,7 +543,7 @@ class DeliveryStore:
         action.update(
             state="queued" if approve else "denied",
             authorization="operator:" + decision_id if approve else None,
-            expires_at=time.time() + self.spec["authorization_seconds"],
+            expires_at=expiry(self.spec["authorization_seconds"], time.time()),
             revision=action["revision"] + 1,
         )
         request.update(
@@ -582,7 +586,7 @@ class DeliveryStore:
             if (
                 current["state"] != "queued"
                 or current["authorization"] is None
-                or current["expires_at"] <= time.time()
+                or expired(current["expires_at"], time.time())
             ):
                 raise boundary_error(
                     ValueError,
@@ -651,7 +655,7 @@ class DeliveryStore:
         with self.db.write() as conn:
             self.runtime.store.guard(conn, self.runtime.header)
             current = self.get("actions", action["id"], conn)
-            if current["state"] != "queued" or current["expires_at"] > time.time():
+            if current["state"] != "queued" or not expired(current["expires_at"], time.time()):
                 return
             row = self.get("changesets", action["changeset_id"], conn)
             current.update(
@@ -708,13 +712,22 @@ class DeliveryStore:
         self.current(row)
         if row["revision"] != job["revision"]:
             return "stale"
-        if job["kind"] == "publication":
+        if job["kind"] == "validation_plan":
+            row.update(validation_plan=result, state="validating", error=None)
+        elif job["kind"] == "publication":
             from .publication import accept
             accept(self, row, job, result, conn)
         elif job["kind"] == "review":
             row["review"] = result
             if any(f["severity"] == "blocking" for f in result["findings"]):
-                row.update(state="quality_failed", error="review_findings")
+                row.update(state="ci_diagnosing", error="review_findings",
+                           ci={"kind": "independent_review", "head": row["candidate"]["commit"], "findings": result["findings"]})
+                row["revision"] += 1
+                self.put(conn, "changesets", row)
+                self.ms.job(conn, "ci_triage", row["id"], row["revision"], {},
+                            row["id"] + ":review-response:" + fingerprint(result))
+                self.ms.changed(conn, row["work_id"])
+                return "completed"
             elif not row["candidate"]["delta"]:
                 row.update(state="already_present", observation_terminal=True)
                 work = self.current(row, conn)
@@ -736,24 +749,47 @@ class DeliveryStore:
         elif job["kind"] == "ci_triage":
             row["ci_diagnosis"] = result
             row["reasoning_job_id"] = job["id"]
-            if scoped_repair(row):
+            action = result.get("next_action")
+            if action in {"defer", "stop", "human_required"}:
+                row.update(state="blocked", error="model_" + action, error_detail=result["reason"])
+            elif action == "plan_validation":
+                row["validation_history"] = [*row.get("validation_history", []), {"candidate_commit": row["candidate"]["commit"], "quality": row.get("quality"), "test_failure": row.get("test_failure"), "validation_plan": row.get("validation_plan"), "reason": result["reason"]}]
+                row.update(state="validating", validation_plan=None, error=None)
+            elif action == "reconsider_review":
+                row["review_history"] = [*row.get("review_history", []), row.get("review")]
+                row.update(state="reviewing", review=None, review_response=result, error=None)
+                row["revision"] += 1
+                self.put(conn, "changesets", row)
+                self.ms.job(conn, "review", row["id"], row["revision"], {},
+                            row["id"] + ":review-reconsider:" + str(row["revision"]))
+                self.ms.changed(conn, row["work_id"])
+                return "completed"
+            elif action == "proceed":
+                if self.spec["require_review"] and any(f["severity"] == "blocking" for f in (row.get("review") or {}).get("findings", [])):
+                    raise ValueError("The operator requires a passing independent review; fix or request an evidence-based reconsideration.")
+                if row.get("test_failure") or row.get("quality") is None:
+                    raise ValueError("Explicit candidate acceptance remains unmet; choose verification or explain the remaining work.")
+                row.update(state="review_branch_ready", review_response=result, error=None)
+                row["frozen"] = self.freeze(row)
+            elif action == "repair" or action is None and scoped_repair(row):
                 work = self.current(row, conn)
                 if self.spec["auto_ci_fix"] and not self.limit_reached(work.get("ci_fix_attempts", 0)):
                     row["state"] = "repair_approved"
                 else:
                     row["state"] = "repair_waiting"
                     self.repair_request(conn, row)
-            elif row.get("test_failure") and result["classification"] in {"flaky", "infrastructure"}:
+            elif action == "recheck" or action is None and row.get("test_failure") and result["classification"] in {"flaky", "infrastructure"}:
                 rechecks = row.get("validation_rechecks", 0)
                 if self.limit_reached(rechecks):
                     row.update(state="blocked", error="candidate_recheck_limit",
                                error_detail="Model-requested candidate rechecks reached ci_fix_limit=" + str(self.spec["ci_fix_limit"]))
                 else:
-                    row.update(state="validating", validation_rechecks=rechecks + 1,
+                    row.update(state="validating", validation_rechecks=rechecks + 1, force_test_recheck=True,
                                next_validation=time.time() + self.spec["ci_poll_seconds"],
                                error=None, error_detail=None)
             else:
-                row.update(state="blocked", error="ci_" + result["classification"])
+                row.update(state="diagnosis_waiting", error=None, error_detail=result["reason"],
+                           next_ci=time.time() + result.get("wait_seconds", self.spec["ci_poll_seconds"]))
         row["revision"] += 1
         self.put(conn, "changesets", row)
         self.ms.changed(conn, row["work_id"])

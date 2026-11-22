@@ -148,6 +148,27 @@ class SlashTests(unittest.TestCase):
         self.assertNotIn('write_file', names)
         self.assertNotIn('bash', names)
 
+    def test_review_can_continue_past_ten_calls_and_inherits_read_window(self):
+        self.repository()
+        (self.root/'code.py').write_text('x = 2\n')
+        (self.root/'evidence.txt').write_text('x' * 12000)
+        responses = [reply(calls=[call(str(i), name='read_file', arguments='{"path":"evidence.txt"}')]) for i in range(11)]
+        session, client, payloads = self.session([*responses, reply('Review completed from evidence.')],
+            runtime_limits={'file_read_chars': 18000, 'subagent_call_warning': 2})
+        result = json.loads(session.run_user('/review code.py'))
+        self.assertFalse(result['stale'])
+        self.assertEqual(client.chat.completions.create.call_count, 12)
+        self.assertIn('x' * 12000, next(m['content'] for m in payloads[1] if m.get('role') == 'tool'))
+        self.assertTrue(any(m.get('name') == 'execution_advisories' for m in payloads[-1]))
+
+    def test_review_preserves_explicit_session_call_budget(self):
+        self.repository()
+        (self.root/'code.py').write_text('x = 2\n')
+        session, client, _ = self.session([reply(calls=[call('one', name='read_file', arguments='{"path":"code.py"}')]), reply('unseen')], max_turns=1)
+        result = json.loads(session.run_user('/review'))
+        self.assertEqual(json.loads(result['review'])['status'], 'incomplete')
+        self.assertEqual(client.chat.completions.create.call_count, 1)
+
     def test_diff_base_untracked_and_symlink_boundary(self):
         self.repository()
         base = self.git('rev-parse', 'HEAD')

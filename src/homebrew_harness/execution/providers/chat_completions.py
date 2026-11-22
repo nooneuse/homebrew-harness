@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Chat Completions SDK projection and buffered streaming."""
 
 from homebrew_harness.runtime.errors import boundary_error
@@ -240,7 +241,7 @@ def streamed(events):
     for chunk in events:
         data = as_data(chunk)
         size += len(json.dumps(data, default=str))
-        if size > 8_000_000:
+        if size > current_limits().model_response_bytes:
             raise boundary_error(ModelProtocolError, "model_stream_buffer_limit", "Model stream exceeded its bounded buffer.", limit_name="stream_buffer_characters", limit_value=8_000_000, observed_value=size, unit="serialized_characters")
         if data.get("usage") is not None:
             collected["usage"] = data["usage"]

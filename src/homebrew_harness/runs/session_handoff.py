@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import minimum
 """A closed single-agent Session continues as a new Run without replaying input."""
 
 import time
@@ -107,7 +108,7 @@ def accept_session_handoff(
                             "context": None,
                             "used": 0,
                             "max_runs": grant["remaining"],
-                            "expires_at": min(run["deadline_at"], grant["expires_at"]),
+                            "expires_at": minimum(run["deadline_at"], grant["expires_at"]),
                         }
                 for name in spec.allow_tests:
                     if name not in source_grants:

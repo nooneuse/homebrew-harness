@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Planning and project initialization over the existing Session loop."""
 
 import copy
@@ -96,7 +97,7 @@ class PlanEvidence:
                 return None
 
     def add(self, path):
-        if len(self.files) >= 128:
+        if current_limits().review_tracked_paths is not None and len(self.files) >= current_limits().review_tracked_paths:
             self.overflow = True
             return
         self.files[path] = self.signature(path)
@@ -203,7 +204,8 @@ def init_draft(session, *, preview=False):
     before = session.project_guidance.snapshot()
     result = run_subagent("Read the project README, contribution guide, source layout, build/test configuration and CI using read-only tools. Produce ONLY concise AGENTS.md markdown in the project's documentation language (English by default). Describe purpose, modules, build/test commands, conventions and contribution workflow. Preserve useful existing guidance; identify facts still unknown. Do not claim tests were executed. Never include credentials, private endpoints, machine paths, personal identities, or development review records. Existing AGENTS.md:\n" + before["content"],
         session.workdir, client=session.client, model=session.model, hooks=session.hooks, skill_loader=session.skills,
-        parent_intent=session.intent, context_chars=session.compactor.context_chars, max_turns=10,
+        parent_intent=session.intent, context_chars=session.compactor.context_chars, max_turns=session.max_turns,
+        runtime_limits=session.runtime_limits,
         tool_allowlist=READ_TOOLS, stop_event=session.stop_event, worker_output_tokens=session.lead_binding.max_output_tokens)
     result = json.loads(result)
     if result.get("status") != "completed" or not result.get("result", "").strip():

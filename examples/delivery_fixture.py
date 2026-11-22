@@ -303,6 +303,10 @@ class Peer:
                             "text": "Fixed repository reviewed.",
                             "findings": getattr(outer, "audit_findings", []),
                         }
+                    elif kind == "validation_plan":
+                        options = data["input"].get("validation_options", {})
+                        proposal = {"tests": options.get("required_tests", []) or options.get("available_tests", []),
+                                    "review": True, "reason": "Verify the fixture with its admitted recipe and independent review."}
                     elif kind == "review":
                         proposal = {
                             "text": "Fixed candidate reviewed.", "findings": [],
@@ -318,7 +322,7 @@ class Peer:
                             "body": "Restore the value and preserve the fixed unit-test contract.",
                         })
                     elif kind == "ci_triage":
-                        proposal = getattr(outer, "ci_value", {
+                        proposal = getattr(outer, "ci_value", {"next_action": "repair",
                             "classification": "code",
                             "reason": "Confirmed current-candidate regression.",
                             "plan": "Set src/value.txt to 2 and preserve the fixed tests.",

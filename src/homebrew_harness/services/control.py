@@ -40,11 +40,13 @@ class ControlServer(ThreadingHTTPServer):
         # A disconnected observer is transport failure, not a new business action.
         self.transport_errors = getattr(self, "transport_errors", 0) + 1
 
-    def __init__(self, root, dispatch, *, service_id, port=0):
+    def __init__(self, root, dispatch, *, service_id, port=0, runtime_limits=None):
         from pathlib import Path
         from homebrew_harness.security.safe_files import SafeFile
         from homebrew_harness.security.data_boundary import register_private_values
 
+        from homebrew_harness.runtime.limits import RuntimeLimits
+        self.runtime_limits = RuntimeLimits.parse(runtime_limits)
         self.root = Path(root)
         self.dispatch = dispatch
         self.service_id = service_id
@@ -133,7 +135,7 @@ class ControlServer(ThreadingHTTPServer):
                     if details is not None:
                         value["details"] = details
                 raw = json.dumps(value, ensure_ascii=False, allow_nan=False).encode()
-                if len(raw) > MAX_FRAME:
+                if len(raw) > server.runtime_limits.control_frame_bytes:
                     status = 413
                     raw = json.dumps(
                         {
@@ -238,7 +240,7 @@ class ControlServer(ThreadingHTTPServer):
                     self.reply(400, code="control_framing")
                     return
                 length = int(lengths[0])
-                if length > MAX_FRAME:
+                if length > server.runtime_limits.control_frame_bytes:
                     self.reply(413, code="control_size")
                     return
                 types = self.headers.get_all("Content-Type", [])
@@ -270,9 +272,9 @@ class ControlServer(ThreadingHTTPServer):
 
             def invoke(self, method, payload, request_id):
                 try:
-                    result = server.dispatch(
-                        server.service_id, method, payload, request_id
-                    )
+                    from homebrew_harness.runtime.limits import limits_scope
+                    with limits_scope(server.runtime_limits):
+                        result = server.dispatch(server.service_id, method, payload, request_id)
                 except Exception as error:
                     from homebrew_harness.security.data_boundary import redact
 
@@ -303,6 +305,7 @@ class ControlServer(ThreadingHTTPServer):
             "endpoint": endpoint,
             "instance": self.instance,
             "token_file": str(self.root / reference),
+            "max_frame_bytes": self.runtime_limits.control_frame_bytes,
         }
         try:
             with SafeFile(

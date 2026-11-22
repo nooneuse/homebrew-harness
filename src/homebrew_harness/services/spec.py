@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Host declarations for one serial workspace and fixed service schedules."""
 
 from homebrew_harness.configuration import DEFAULT_SHUTDOWN_SECONDS
@@ -22,7 +23,7 @@ def seconds(value, name, minimum=0.01, maximum=604800):
     if (
         type(value) not in {int, float}
         or not math.isfinite(value)
-        or not minimum <= value <= maximum
+        or value < minimum
     ):
         raise ValueError("Invalid service duration: " + name)
     return value
@@ -64,6 +65,12 @@ class ServiceSpec:
     communication: dict = field(default_factory=dict)
 
     def __post_init__(self):
+        from homebrew_harness.runtime.limits import limits_scope
+        limits = self.run_defaults.get("runtime_limits") if isinstance(self.run_defaults, dict) else None
+        with limits_scope(limits or current_limits()):
+            self._validate()
+
+    def _validate(self):
         if self.profile not in {"manual", "repository_maintenance"}:
             raise ValueError("Unsupported service profile.")
         path = Path(self.workspace).expanduser()
@@ -82,8 +89,8 @@ class ServiceSpec:
         object.__setattr__(
             self, "run_defaults", json.loads(json.dumps(defaults, allow_nan=False))
         )
-        if not isinstance(self.schedules, (tuple, list)) or len(self.schedules) > 32:
-            raise ValueError("Service schedules must contain at most 32 entries.")
+        if not isinstance(self.schedules, (tuple, list)) or (current_limits().service_schedules is not None and len(self.schedules) > current_limits().service_schedules):
+            raise ValueError("Schedules must be a list within any configured service_schedules limit.")
         schedules = tuple(
             s if isinstance(s, ScheduleSpec) else ScheduleSpec(**s)
             for s in self.schedules
@@ -93,7 +100,7 @@ class ServiceSpec:
         object.__setattr__(self, "schedules", schedules)
         seconds(self.poll_seconds, "poll_seconds", maximum=60)
         seconds(self.shutdown_seconds, "shutdown_seconds", maximum=60)
-        if type(self.queue_limit) is not int or not 1 <= self.queue_limit <= 10000:
+        if type(self.queue_limit) is not int or self.queue_limit < 1:
             raise ValueError("Invalid service queue limit.")
         from .maintenance_spec import validate_sources, validate_policy
 
@@ -174,9 +181,9 @@ class ServiceSpec:
     def load(cls, path, control):
         path = Path(path).expanduser().resolve()
         with path.open("rb") as stream:
-            raw = stream.read(65537)
-        if len(raw) > 65536:
-            raise ValueError("Service specification exceeds 64 KiB.")
+            raw = stream.read(current_limits().config_file_bytes + 1)
+        if len(raw) > current_limits().config_file_bytes:
+            raise ValueError("Service specification exceeds runtime_limits.config_file_bytes.")
         data = json.loads(raw)
         if (
             not isinstance(data, dict)

@@ -1,3 +1,4 @@
+import argparse
 """Host CLI for storage/GC/benchmarks; deliberately absent from model tool schemas."""
 
 import json
@@ -99,6 +100,7 @@ def register(groups):
             command.add_argument("--keep-recent", type=int, default=10)
         if name == "benchmark":
             add_direct_model_arguments(command)
+            command.add_argument("--runtime-limits", type=json.loads, default=argparse.SUPPRESS, help="JSON storage and advisory settings.")
             command.add_argument(
                 "--live",
                 action="store_true",
@@ -107,14 +109,14 @@ def register(groups):
             command.add_argument(
                 "--max-turns",
                 type=int,
-                default=4,
-                help="Benchmark turns per case, 1..100",
+                default=None,
+                help="Optional explicit model-call budget per benchmark case.",
             )
             command.add_argument(
                 "--timeout-seconds",
                 type=float,
-                default=120,
-                help="Benchmark absolute batch deadline",
+                default=None,
+                help="Optional explicit benchmark batch deadline",
             )
     parser.set_defaults(_handler=__name__, _command_parser=parser)
 

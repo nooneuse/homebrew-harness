@@ -80,7 +80,7 @@ class QualityRecoveryTests(unittest.TestCase):
             return result
         def propose(agent, proposal, **kw):
             if agent.job['kind'] == 'ci_triage':
-                proposal = json.dumps({'classification': 'flaky', 'reason': 'Synthetic scheduling failure.',
+                proposal = json.dumps({"next_action": "recheck", 'classification': 'flaky', 'reason': 'Synthetic scheduling failure.',
                         'plan': 'Recheck the same fixed candidate once.'})
             return original_propose(agent, proposal, **kw)
         with patch.object(quality, 'verify', verify), patch.object(ServiceAgent, 'propose', propose):
@@ -113,7 +113,7 @@ class QualityRecoveryTests(unittest.TestCase):
             return result
         def propose(agent, proposal, **kw):
             if agent.job['kind'] == 'ci_triage':
-                proposal = json.dumps({'classification': 'infrastructure',
+                proposal = json.dumps({"next_action": "recheck", 'classification': 'infrastructure',
                     'reason': 'Synthetic transient execution failure.',
                     'plan': 'Recheck the fixed candidate with the registered tests.'})
             return original_propose(agent, proposal, **kw)

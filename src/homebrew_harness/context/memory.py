@@ -1,6 +1,7 @@
 """s09: selective, project-local knowledge across otherwise independent sessions."""
 
 from __future__ import annotations
+from homebrew_harness.runtime.limits import current_limits
 
 from homebrew_harness.runtime.output import print
 
@@ -91,9 +92,8 @@ class MemoryRecord:
         ):
             raise MemoryError("Invalid memory identity or type.")
         if (
-            len(cleaned["description"]) > 300
-            or len(cleaned["body"]) > 4000
-            or len(cleaned["evidence"]) > 1000
+            current_limits().memory_record_chars is not None
+            and sum(len(cleaned[key]) for key in ("description", "body", "evidence")) > current_limits().memory_record_chars
         ):
             raise MemoryError("Memory record is too long.")
         try:
@@ -199,9 +199,9 @@ class MemoryStore:
     def _read_text(self, path):
         with SafeFile(self.workdir, str(path)) as target, target.open_read() as stream:
             execution_check()
-            raw = stream.read(1_000_001)
+            raw = stream.read(current_limits().memory_file_bytes + 1)
             target.verify_binding()
-            if len(raw) > 1_000_000:
+            if len(raw) > current_limits().memory_file_bytes:
                 raise MemoryError("Memory input exceeds the host limit.")
             return raw.decode("utf-8")
 
@@ -341,9 +341,9 @@ class MemoryRuntime:
         self.selection_output_tokens = int(
             os.getenv("HARNESS_MEMORY_SELECTION_TOKENS", "").strip() or "2048"
         )
-        if not 128 <= self.selection_output_tokens <= 8192:
+        if self.selection_output_tokens < 1:
             raise MemoryError(
-                "Memory selection output tokens must be between 128 and 8192."
+                "Memory selection output tokens must be positive."
             )
         self.client, self.model = client, model
         self.store = MemoryStore(workdir)
@@ -463,9 +463,9 @@ class MemoryRuntime:
             if score > 0
         ][:5]
 
-    def recall(self, request: str, *, max_chars: int = RECALL_CHAR_LIMIT) -> str:
+    def recall(self, request: str, *, max_chars: int | None = None) -> str:
         self.last_recalled = ()
-        budget = min(RECALL_CHAR_LIMIT, max_chars)
+        budget = current_limits().memory_recall_chars if max_chars is None else min(current_limits().memory_recall_chars, max_chars)
         if budget <= 0:
             return ""
         try:
@@ -614,7 +614,7 @@ class MemoryRuntime:
             ):
                 return 0
             payload = [record.__dict__ for record in records]
-            if len(json.dumps(payload, ensure_ascii=False)) > 20000:
+            if len(json.dumps(payload, ensure_ascii=False)) > current_limits().memory_consolidation_chars:
                 raise MemoryError(
                     "Memory store exceeds the single-pass consolidation budget."
                 )

@@ -57,6 +57,8 @@ You can also use `python -m homebrew_harness` with the same subcommands. Running
 
 `--cwd` and `--env-file` are shared options and may appear before or after subcommands. If repeated, the last explicit value takes precedence. Other options belong to their feature group; use `homebrew-harness run --help` or the help for an individual operation to see them.
 
+Work defaults use advisory progress thresholds. Models decide how to continue; explicit budgets, permissions and acceptance remain enforceable. See [runtime budgets](docs/LIMITS.md) ([中文](docs/LIMITS.zh-CN.md)) for defaults, migration and configurable execution boundaries.
+
 ## Model configuration
 
 Keep configuration outside the workspace. Create the default environment file:

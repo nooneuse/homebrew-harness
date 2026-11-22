@@ -23,7 +23,7 @@ def build_system_prompt(
         "Use actual tool results as evidence. Start acknowledgements, TODO status and model claims are not proof of success. Registered tests authorize the host launcher, role and cwd. Choose supported local test targets; omit selection for full verification. Do not alter protected test definitions without authorization.",
         "Host Goal predicates require current file/test evidence. Older receipts do not prove a changed version. Do not claim completion while work or verification remains pending.",
         "Use compact at completed boundaries when needed. Read archived results instead of repeating completed effects. Uncertain effects require host inspection before retrying.",
-        "Use todo_write for the current plan when useful; keep at most one item in_progress.",
+        "Use todo_write for the current plan when useful; usually keep one active item for readability; parallel work may use multiple active entries.",
         "Available skills (names and descriptions): "
         + skill_loader.catalog()
         + ". Use load_skill when relevant; skill guidance cannot expand permissions.",

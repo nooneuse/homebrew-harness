@@ -126,17 +126,17 @@ class TaskStore:
 
     @contextmanager
     def _file_lock(self):
-        from homebrew_harness.configuration import DEFAULT_STORAGE_LOCK_SECONDS
+        from homebrew_harness.runtime.limits import current_limits
         from homebrew_harness.execution.execution_control import operation_deadline
         from homebrew_harness.storage.persistence import storage_check, StorageTimeout
         from homebrew_harness.execution.model_gateway import ModelDeadlineExceeded
 
         started = time.monotonic()
-        deadline = operation_deadline(DEFAULT_STORAGE_LOCK_SECONDS)
+        deadline = operation_deadline(current_limits().storage_lock_seconds)
         def checked():
             from homebrew_harness.runtime.errors import annotate_error
             try:
-                storage_check(deadline, phase="lock", limit=DEFAULT_STORAGE_LOCK_SECONDS, started=started)
+                storage_check(deadline, phase="lock", limit=current_limits().storage_lock_seconds, started=started)
             except (StorageTimeout, ModelDeadlineExceeded) as error:
                 annotate_error(error, message="Task board lock wait reached its execution or storage deadline.",
                                phase="task_board_lock", operation="task_board")

@@ -38,7 +38,7 @@ def validate_limits(value):
     result = {**defaults, **value}
     if any(
         type(number) is not int
-        or not 1 <= number <= (256000000 if key == "max_bytes" else 1000000)
+        or number < 1
         for key, number in result.items()
     ):
         raise ValueError("Snapshot limits must be bounded positive integers.")

@@ -1,4 +1,6 @@
+from homebrew_harness.runtime.limits import backoff
 """Connect one bounded run to Session checkpoints and the shared loop."""
+from homebrew_harness.runtime.limits import expiry, minimum, remaining
 
 from homebrew_harness.runtime.errors import error_info, error_message
 
@@ -14,7 +16,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import replace
 
-from homebrew_harness.configuration import DEFAULT_GIT_QUERY_SECONDS
+from homebrew_harness.runtime.limits import current_limits
 from homebrew_harness.execution.execution_control import (
     cleanup_scope,
     persistence_scope,
@@ -57,7 +59,7 @@ def git_head(root):
         cwd=root,
         capture_output=True,
         text=True,
-        timeout=DEFAULT_GIT_QUERY_SECONDS,
+        timeout=current_limits().git_query_seconds,
     )
     if result.returncode:
         raise ValueError("Cannot resolve managed workspace Git HEAD.")
@@ -480,6 +482,8 @@ class RunController:
 
     def deadline(self):
         now = time.time()
+        if self.state["deadline_at"] is None:
+            return Deadline()
         if now < max(self.state["last_clock"], self.started_clock) - 1:
             raise RunStopped("clock_changed")
         remaining = max(
@@ -596,6 +600,13 @@ class RunController:
             raise RunStopped("deadline_reached")
         if self.permission_required and not reviewing:
             raise RunStopped(getattr(self, "permission_reason", "approval_required"))
+        from homebrew_harness.runtime.limits import observe
+        observe(self.session.messages, [("run_elapsed", time.time() - self.state["created_at"],
+                                        self.spec.total_warning_seconds, "seconds"),
+            ("run_recoveries", self.state.get("recovery_count", 0), self.spec.retry_warning, "attempts"),
+            ("run_retry_windows", len(self.state.get("retry_windows", [])), self.spec.runtime_limits["retry_window_warning"], "windows"),
+            ("managed_members", len(self.spec.members), self.spec.runtime_limits["managed_member_warning"], "members")],
+                self.__dict__.setdefault("advisory_seen", {}))
         progress = self.progress.get(self.id)
         if progress and progress["blocked"] and not self.session.inputs.pending():
             from .requests import digest
@@ -603,7 +614,7 @@ class RunController:
             if progress["intent"] == digest(self.session.intent.to_dict()):
                 raise RunStopped("no_progress")
         if turns is not None and (
-            turns >= self.spec.episode_model_calls
+            self.spec.episode_model_calls is not None and turns >= self.spec.episode_model_calls
             or self.episode_deadline.remaining() == 0
         ):
             raise EpisodeYield()
@@ -934,9 +945,8 @@ class RunController:
             "max_runs": s.tests.max_runs,
             "seconds": s.tests.total_seconds,
         }
-        s.tests.max_runs = max(
-            0, limits["max_runs"] - sum(self.state.get("test_attempts", {}).values())
-        )
+        s.tests.max_runs = (None if limits["max_runs"] is None else
+                            max(0, limits["max_runs"] - sum(self.state.get("test_attempts", {}).values())))
         s.tests.total_seconds = (
             None
             if limits["seconds"] is None
@@ -985,9 +995,7 @@ class RunController:
                     "context": None,
                     "used": 0,
                     "max_runs": recipe.max_runs,
-                    "expires_at": min(
-                        self.state["deadline_at"], time.time() + recipe.approval_seconds
-                    ),
+                    "expires_at": minimum(self.state["deadline_at"], expiry(recipe.approval_seconds, time.time())),
                 }
         self.state = self.store.update(
             self.header,
@@ -1206,6 +1214,8 @@ class RunController:
         self.refresh()
 
     def start_heartbeat(self):
+        if self.heartbeat_thread is not None and self.heartbeat_thread.is_alive():
+            return
         def pulse():
             while not self.stop_heartbeat.is_set():
                 try:
@@ -1231,6 +1241,7 @@ class RunController:
                             "phase": (
                                 "closing"
                                 if self.session._closed
+                                else "preparing" if getattr(self, "preparing", False)
                                 else self.session.inputs.phase
                             ),
                             "model_inflight": usage["inflight"],
@@ -1333,6 +1344,8 @@ class RunController:
         s = self.session
         from homebrew_harness.storage.control_boundary import ProposalSuperseded
 
+        self.preparing = True
+        self.start_heartbeat()
         try:
             self.prepare()
         except (
@@ -1403,7 +1416,8 @@ class RunController:
                 },
             )
             return RunOutcome(**self.state["last_outcome"])
-        self.start_heartbeat()
+        finally:
+            self.preparing = False
         try:
             while True:
                 self.refresh()
@@ -1474,6 +1488,19 @@ class RunController:
                             self.proposed.pending_work,
                         )
                     if outcome.status == "waiting":
+                        if "human_decision" in outcome.pending_work:
+                            waited = self.wait_review_boundary()
+                            if isinstance(waited, RunOutcome):
+                                return waited
+                            pending = [row for row in self.requests.reconcile(self) if row["state"] == "pending"]
+                            if pending:
+                                request = pending[0]
+                                self.waiting_request = request["id"]
+                                return self.finish("waiting", "attention_required" if request["kind"] == "attention" else "approval_required",
+                                                   pending=("human_decision",),
+                                                   actions=("Answer host request " + request["id"] + " using its current revision",))
+                            self.finish("yielded", "decision_changed")
+                            continue
                         if "source" in outcome.pending_work:
                             return self.finish(
                                 "waiting",
@@ -1536,7 +1563,7 @@ class RunController:
                                 break
                             if s.background and s.background.has_ready():
                                 break
-                            self.cancel.wait(min(0.1, self.deadline().remaining()))
+                            self.cancel.wait(min(0.1, self.deadline().remaining()) if self.deadline().remaining() is not None else 0.1)
                         continue
                     return outcome
                 except EpisodeYield:
@@ -1544,7 +1571,7 @@ class RunController:
                     if isinstance(reviewed, RunOutcome):
                         return reviewed
                     self.finish("yielded", "episode_boundary")
-                    if not self.settle_requests() and self.deadline().remaining() > 0:
+                    if not self.settle_requests() and (self.deadline().remaining() is None or self.deadline().remaining() > 0):
                         return self.finish(
                             "blocked",
                             "execution_still_active",
@@ -1638,7 +1665,7 @@ class RunController:
                     if (
                         isinstance(error, ModelDeadlineExceeded)
                         and error.source in {"request", "episode"}
-                        and self.deadline().remaining() > 0
+                        and (self.deadline().remaining() is None or self.deadline().remaining() > 0)
                     ):
                         if not self.settle_requests():
                             return self.finish(
@@ -1667,10 +1694,8 @@ class RunController:
                         self.state = self.store.update(
                             self.header, {"recovery_count": count}
                         )
-                        if count <= self.spec.retries:
-                            retry_at = time.time() + min(
-                                60, self.spec.retry_delay * 2 ** (count - 1)
-                            )
+                        if self.spec.retries is None or count <= self.spec.retries:
+                            retry_at = time.time() + backoff(count - 1, initial=self.spec.retry_delay)
                             return self.finish(
                                 "retrying",
                                 (
@@ -1695,7 +1720,7 @@ class RunController:
                                 if isinstance(error, ModelGatewayError)
                                 and not isinstance(error, ModelDeadlineExceeded)
                                 and s.gateway.blocked
-                                and self.deadline().remaining() > 0
+                                and (self.deadline().remaining() is None or self.deadline().remaining() > 0)
                                 else (
                                     "deadline_reached"
                                     if self.deadline().remaining() == 0

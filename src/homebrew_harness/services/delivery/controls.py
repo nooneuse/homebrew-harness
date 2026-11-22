@@ -94,8 +94,19 @@ def command(delivery, method, payload, request_id):
                 if set(payload) != {"ci_fix_limit", "ci_fix_warning"}:
                     raise ValueError("CI limits require both an explicit nullable budget and warning threshold.")
                 limits = validate_ci_limits(payload["ci_fix_limit"], payload["ci_fix_warning"])
+            active_execution = False
+            if meta.get("active_run"):
+                rows = runtime.store.runtime.items("service_work")
+                work = next((w for w in rows.values() if w.get("service_id") == runtime.id and w.get("run_id") == meta["active_run"]), None)
+                if work is None:
+                    active_execution = True
+                else:
+                    from homebrew_harness.storage.durable_runtime import DurableStore
+                    native = DurableStore(work["run_workspace"]).get("runs", work["run_id"])
+                    active_execution = not (work.get("pause_requested") and native
+                        and native["status"] in {"paused", "blocked"} and native.get("cleanup_complete"))
             if (meta["state"] != "paused" or meta["scope"] != "all" or delivery.preparing
-                    or meta.get("active_run") or conn.execute(
+                    or active_execution or conn.execute(
                         "SELECT 1 FROM records WHERE section='service_jobs_model' AND owner=? "
                         "AND json_extract(value,'$.state') IN ('running','preparing') LIMIT 1",
                         ("service:" + runtime.id,)).fetchone()):

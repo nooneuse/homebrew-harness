@@ -190,7 +190,8 @@ def run(session, command):
         prompt = "Review this fixed Git snapshot for concrete correctness/security issues. Read relevant current files as needed. Report findings with paths and evidence; do not edit, execute tests, or claim unseen code was verified. Binary files are not reviewed.\n" + json.dumps(snapshot, ensure_ascii=False)
         result = run_subagent(prompt, session.workspace.lead_cwd(), client=session.client, model=session.model,
             hooks=session.hooks, skill_loader=session.skills, parent_intent=session.intent,
-            context_chars=session.compactor.context_chars, max_turns=10,
+            context_chars=session.compactor.context_chars, max_turns=session.max_turns,
+            runtime_limits=session.runtime_limits,
             tool_allowlist=frozenset({"read_file", "glob", "search_text", "git_status", "git_diff", "load_skill", "compact"}),
             stop_event=session.stop_event, worker_output_tokens=session.lead_binding.max_output_tokens)
         current = diff_snapshot(workdir=session.workspace.lead_cwd(), base=snapshot["base"], paths=list(paths) or None)

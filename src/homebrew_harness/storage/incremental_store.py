@@ -1,5 +1,6 @@
 """SQLite immutable messages/components and versioned logical documents."""
 
+from homebrew_harness.runtime.limits import current_limits
 import copy
 import hashlib
 import json
@@ -146,8 +147,11 @@ class IncrementalStore(SQLiteDatabase):
         if meta is None:
             return None
         identity = (doc, meta["revision"])
-        if identity in seen or len(seen) > 32:
+        if identity in seen:
             raise RecoveryRequired("Invalid incremental document reference cycle.")
+        depth_limit = current_limits().storage_reference_depth
+        if depth_limit is not None and len(seen) > depth_limit:
+            raise RecoveryRequired("Incremental document traversal exceeds storage_reference_depth.")
         seen = (*seen, identity)
         value = {}
         for name, ref in meta["fields"].items():

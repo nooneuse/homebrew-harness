@@ -1,3 +1,5 @@
+from homebrew_harness.runtime.limits import current_limits
+from homebrew_harness.runtime.limits import expired
 """Small host service loop for durable wakeups, PR input and notifications."""
 
 from homebrew_harness.configuration import DEFAULT_LOCAL_CONTROL_SECONDS
@@ -93,8 +95,8 @@ class RunServices:
                 "Managed service configuration must be outside the workspace."
             )
         with path.open("rb") as file:
-            raw = file.read(100001)
-        if len(raw) > 100000:
+            raw = file.read(current_limits().source_control_bytes + 1)
+        if len(raw) > current_limits().source_control_bytes:
             raise ValueError("Managed service configuration exceeds its size limit.")
         return cls(store, json.loads(raw), environment=environment)
 
@@ -125,6 +127,8 @@ class RunServices:
             )
 
     def deadline(self, run):
+        if run["deadline_at"] is None:
+            return Deadline.after(10)
         remaining = max(
             0,
             min(
@@ -143,7 +147,7 @@ class RunServices:
         db = self.store.runtime.backend()
         with storage_gate(self.store.root), db.write() as conn:
             run = db._get(conn, "runs", identity)
-            if time.time() >= run["deadline_at"]:
+            if run["deadline_at"] is not None and time.time() >= run["deadline_at"]:
                 return
             rows = [
                 json.loads(row[0])
@@ -152,13 +156,13 @@ class RunServices:
                     ("lead:" + run["session_id"],),
                 ).fetchall()
             ]
-            expired = False
+            any_expired = False
             for row in rows:
                 if row["state"] not in {"pending", "approved"}:
                     continue
                 status = (
                     "expired"
-                    if time.time() > row["expires_at"]
+                    if expired(row["expires_at"], time.time())
                     else "stale"
                     if row["context"]["epoch"]
                     != db._get(conn, "input_epochs", "user_" + identity, 0)
@@ -167,7 +171,7 @@ class RunServices:
                 if status:
                     row.update(state=status, revision=row["revision"] + 1)
                     db._put(conn, "run_requests", row["id"], row)
-                    expired |= status == "expired"
+                    any_expired |= status == "expired"
             control = db._get(conn, "run_controls", identity, {"action": "run"})
             if (
                 run["status"] != "waiting"
@@ -175,7 +179,7 @@ class RunServices:
                 or control["action"] != "run"
             ):
                 return
-            if expired:
+            if any_expired:
                 run.update(
                     status="blocked",
                     revision=run["revision"] + 1,

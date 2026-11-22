@@ -434,7 +434,7 @@ class MemoryTests(unittest.TestCase):
                 hooks=homebrew_harness.runtime.hooks.create_hooks(),
                 todo_manager=TodoManager(),
                 skill_loader=SkillLoader(self.workdir / "skills"),
-                compactor=ContextCompactor(client, "test-model", self.workdir),
+                compactor=ContextCompactor(client, "test-model", self.workdir, runtime_limits={"auto_compact": True}),
             ),
         )
         self.assertEqual(result, "I have finished.")
@@ -464,7 +464,7 @@ class MemoryTests(unittest.TestCase):
                     hooks=homebrew_harness.runtime.hooks.create_hooks(),
                     todo_manager=TodoManager(),
                     skill_loader=SkillLoader(self.workdir / "skills"),
-                    compactor=ContextCompactor(client, "test-model", self.workdir),
+                    compactor=ContextCompactor(client, "test-model", self.workdir, runtime_limits={"auto_compact": True}),
                 ),
             )
         finish.assert_not_called()
@@ -483,7 +483,7 @@ class MemoryTests(unittest.TestCase):
                 hooks=homebrew_harness.runtime.hooks.create_hooks(),
                 todo_manager=TodoManager(),
                 skill_loader=SkillLoader(self.workdir / "skills"),
-                compactor=ContextCompactor(client, "test-model", self.workdir),
+                compactor=ContextCompactor(client, "test-model", self.workdir, runtime_limits={"auto_compact": True}),
             ),
         )
         self.assertEqual(result, "Primary result")

@@ -15,6 +15,6 @@ class ReasoningLimits(unittest.TestCase):
             self.assertEqual(spec.maintenance["job_seconds"], 2700)
             configured = ServiceSpec(workspace, profile="repository_maintenance", maintenance={"job_turns": 512})
             self.assertEqual(configured.maintenance["job_turns"], 512)
-            for invalid in (0, 513, True, 1.5):
+            for invalid in (0, True, 1.5):
                 with self.subTest(invalid=invalid), self.assertRaises(ValueError):
                     ServiceSpec(workspace, profile="repository_maintenance", maintenance={"job_turns": invalid})

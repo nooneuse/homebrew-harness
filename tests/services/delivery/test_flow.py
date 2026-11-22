@@ -137,6 +137,8 @@ class FlowTests(unittest.TestCase):
                 "author_name_env": "AUTHOR",
                 "author_email_env": "EMAIL",
                 "required_tests": ["unit-tests"],
+                "require_review": True,
+                "auto_ci_fix": False,
                 "required_checks": ["CI"],
                 "check_app_ids": [11],
                 "auto_actions": ["publish_branch", "ensure_change_request"],
@@ -564,7 +566,7 @@ class FlowTests(unittest.TestCase):
             # the accepted-action path must also preserve the changed target.
             saved = service.runtime.maintenance.store.get("decisions", request.ref.id)
             self.assertEqual(saved["state"], "superseded")
-            self.assertGreater(saved["revision"], request.revision)
+            self.assertGreater(saved["revision"], request.ref.revision)
         eventually(
             lambda: any(
                 a["state"] == "superseded" for a in service.records("actions")["items"]

@@ -57,7 +57,7 @@ Public replies briefly confirm decisive scope, distinguish preparatory work from
 
 The job saves completed assessments before drafting. Retries reuse valid assessment input, source evidence, policy, prompt and model versions. Pure acknowledgements can consume the new event without repeating questions or calling the model; substantive changes require a new assessment. Cached history is optional, and its absence causes fresh assessment. Preparation stages share the existing job deadline and retain the per-stage model-turn limit. Assessment does not grant work or publication authority, and the existing approval workflow remains separate.
 
-Issue assessments default to `request_seconds: 500` in the host settings and `maintenance.job_seconds: 1500` with `maintenance.job_turns: 24` in the Service specification. Explicit settings can change these limits. The request limit is passed explicitly to the model transport. Assessment and drafting share the 1,500-second job deadline; each request receives at most 500 seconds or the remaining job time. These settings are separate from platform HTTP requests and approval-review deadlines.
+Single model requests default to request_seconds=500. maintenance.job_seconds and job_turns default to null; their advisory thresholds are 1500 seconds and 40 calls. Explicit finite budgets remain effective and assessment/drafting share that selected job window. These settings are separate from platform HTTP request and approval-review configuration. See [runtime budgets](LIMITS.md).
 
 ## Configurable discussion prompts
 

@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Model-declared work progress uses the Run's existing durable ownership."""
 
 import json
@@ -21,18 +22,18 @@ def submit(
     context = context_for(control)
     if not context:
         raise ValueError("This Run has no Service work handoff.")
-    if not isinstance(summary, str) or not summary.strip() or len(summary) > 10000:
+    if not isinstance(summary, str) or not summary.strip() or len(summary) > current_limits().progress_summary_chars:
         raise ValueError(
             "Progress summary must be nonempty and at most 10000 characters."
         )
     if (
         type(complete) is not bool
         or not isinstance(remaining, (list, tuple))
-        or len(remaining) > 32
+        or (current_limits().progress_items is not None and len(remaining) > current_limits().progress_items)
         or any(
             not isinstance(v, str) or not v.strip() or len(v) > 2000 for v in remaining
         )
-        or sum(len(v) for v in remaining) > 16000
+        or sum(len(v) for v in remaining) > current_limits().progress_remaining_chars
     ):
         raise ValueError(
             "Progress requires a boolean completion and bounded remaining work."
@@ -43,13 +44,13 @@ def submit(
         )
     if (
         not isinstance(evidence_refs, (list, tuple))
-        or len(evidence_refs) > 100
+        or (current_limits().progress_items is not None and len(evidence_refs) > current_limits().progress_items)
         or any(not isinstance(v, str) or len(v) > 100 for v in evidence_refs)
     ):
         raise ValueError("Progress evidence references are invalid.")
     if (
         not isinstance(included_inputs, (list, tuple))
-        or len(included_inputs) > 100
+        or (current_limits().progress_items is not None and len(included_inputs) > current_limits().progress_items)
         or any(
             not isinstance(v, str) or not control.write_allowed(workdir, v)
             for v in included_inputs

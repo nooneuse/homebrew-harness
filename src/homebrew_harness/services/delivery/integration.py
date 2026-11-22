@@ -7,6 +7,7 @@ from pathlib import Path
 from homebrew_harness.execution.source_snapshot import snapshot, content_digest
 from homebrew_harness.platforms.merges import commit
 from homebrew_harness.services.protocol import fingerprint
+from homebrew_harness.runtime.limits import current_limits
 
 
 def _git(git, repo, *args, **kwargs):
@@ -126,12 +127,12 @@ def prove(git, candidate, observed, directory):
             "rev-list",
             "--reverse",
             candidate["target_base"] + ".." + head,
-            "--max-count=65",
+            *(["--max-count=" + str(current_limits().merge_history_commits + 1)] if current_limits().merge_history_commits is not None else []),
         )
         .decode()
         .split()
     )
-    if len(source) > 64:
+    if current_limits().merge_history_commits is not None and len(source) > current_limits().merge_history_commits:
         raise ValueError("Merge source history exceeds its proof bound.")
     method = observed.get("method")
     proof = None

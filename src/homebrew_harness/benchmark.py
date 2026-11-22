@@ -1,3 +1,5 @@
+from homebrew_harness.configuration import DEFAULT_MODEL_REQUEST_SECONDS
+from homebrew_harness.runtime.limits import current_limits
 """Small reproducible file-task suite; offline protocol runs and bounded live runs."""
 
 import contextlib
@@ -148,18 +150,17 @@ def run_benchmark(
     *,
     count=3,
     output_tokens=4096,
-    max_turns=4,
-    timeout_seconds=120,
+    max_turns=None,
+    timeout_seconds=None,
     binding=None,
     on_gateway=None,
 ):
     if (
         type(count) is not int
         or not 1 <= count <= len(TASKS)
-        or type(max_turns) is not int
-        or not 1 <= max_turns <= 100
+        or max_turns is not None and (type(max_turns) is not int or max_turns < 1)
     ):
-        raise ValueError("Benchmark requires 1..3 cases and 1..100 turns per case.")
+        raise ValueError("Benchmark requires available cases and a positive optional turn budget.")
     import homebrew_harness.runtime.loop
     from homebrew_harness.context.compaction import ContextCompactor
     from homebrew_harness.execution.model_profile import profile_fingerprint
@@ -237,7 +238,7 @@ def run_benchmark(
             client or OfflineClient(TASKS[0]),
             GatewayLimits(
                 concurrency=1,
-                request_timeout=30,
+                request_timeout=DEFAULT_MODEL_REQUEST_SECONDS,
                 session_timeout=timeout_seconds,
             ),
             workdir=base,
@@ -293,7 +294,7 @@ def run_benchmark(
             try:
                 # Model calls use the real loop, permissions, shared gateway and checkpoint protocol.
                 with (
-                    transport.scope(context_id=task["id"], deadline=Deadline.after(40)),
+                    transport.scope(context_id=task["id"], deadline=Deadline.after(current_limits().benchmark_task_seconds)),
                     checkpoint_scope(writer),
                     noninteractive_permissions(),
                     contextlib.redirect_stderr(io.StringIO()),
@@ -305,6 +306,7 @@ def run_benchmark(
                         messages,
                         root,
                         max_turns=max_turns,
+                        model_call_warning=current_limits().benchmark_model_call_warning,
                         goal_controller=goal,
                         compactor=compactor,
                         active_request=task["prompt"],

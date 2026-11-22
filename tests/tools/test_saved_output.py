@@ -123,7 +123,9 @@ class SavedOutputTests(unittest.TestCase):
         for _ in range(9):
             wrapper = self.read(reference, raw=True)
             reference = self.store.save("tool-results", json.dumps(wrapper, ensure_ascii=False))
-        with self.assertRaisesRegex(ValueError, "nesting"):
+        from homebrew_harness.runtime.limits import limits_scope
+        self.assertEqual(self.read(reference)["content"], self.source["content"])
+        with limits_scope({"saved_output_links": 8}), self.assertRaisesRegex(ValueError, "nesting"):
             self.read(reference)
 
     def test_source_json_with_file_response_keys_is_not_recursively_decoded(self):

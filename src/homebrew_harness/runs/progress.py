@@ -1,5 +1,6 @@
 """Persist only strong repeated-failure and ineffective-mutation signals."""
 
+from homebrew_harness.runtime.limits import current_limits
 import json
 import time
 
@@ -55,19 +56,18 @@ class ProgressTracker:
             "count": state["count"] + 1 if state["signature"] == signature else 1,
             "revision": state["revision"] + 1,
         }
-        limit = control.spec.repeat_limit
-        if value["count"] >= limit * (value["replans"] + 1):
-            value["blocked"] = value["replans"] >= control.spec.replan_limit
+        limit = control.spec.repeat_limit or control.spec.repeat_warning
+        if limit is not None and value["count"] >= limit * (value["replans"] + 1):
+            value["blocked"] = (control.spec.repeat_limit is not None and control.spec.replan_limit is not None
+                                and value["replans"] >= control.spec.replan_limit)
             if not value["blocked"]:
                 value["replans"] += 1
             value["feedback"] = {
-                "revision": value["revision"],
-                "count": value["count"],
-                "fact": redact(description)[:600],
-                "blocked": value["blocked"],
-                "action": "Report the blocker; host intervention is required."
-                if value["blocked"]
-                else "Change the local approach using this repeated execution fact; avoid repeating the same action.",
+                "revision": value["revision"], "count": value["count"], "fact": redact(description)[:600],
+                "blocked": value["blocked"], "enforcement": "hard" if value["blocked"] else "advisory",
+                "action": "The explicitly configured repetition budget is exhausted; report remaining work."
+                          if value["blocked"] else
+                          "Repeated execution is an observation. Decide whether to continue, change the approach, wait or stop.",
             }
         self.save(control, value)
 
@@ -142,8 +142,8 @@ class ProgressTracker:
                 "blocked": False,
                 "feedback": None,
             }
-        paths = {**state["files"], path: [*seen, file_hash][-16:]}
-        if len(paths) > 64:
+        paths = {**state["files"], path: [*seen, file_hash][-current_limits().progress_versions:]}
+        if len(paths) > current_limits().progress_paths:
             paths.pop(next(iter(paths)))
         self.save(control, {**state, "files": paths, "revision": state["revision"] + 1})
 
@@ -152,7 +152,7 @@ class ProgressTracker:
             type(revision) is not int
             or not isinstance(reason, str)
             or not reason.strip()
-            or len(reason) > 1000
+            or len(reason) > current_limits().input_text_chars
         ):
             raise ValueError(
                 "Progress reset requires its current revision and a reason."

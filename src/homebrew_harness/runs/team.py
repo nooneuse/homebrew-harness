@@ -10,9 +10,11 @@ from .spec import RunStopped
 from .store import owner_guard
 
 
-def validate_members(values, stages):
-    if not isinstance(values, (list, tuple)) or len(values) > 4:
-        raise ValueError("Managed teams contain at most four declared members.")
+def validate_members(values, stages, runtime_limits=None):
+    from homebrew_harness.runtime.limits import RuntimeLimits
+    limits = RuntimeLimits.parse(runtime_limits)
+    if not isinstance(values, (list, tuple)) or limits.managed_members is not None and len(values) > limits.managed_members:
+        raise ValueError("Managed members exceed runtime_limits.managed_members or have an invalid collection.")
     result = []
     names = set()
     for raw in values:
@@ -26,15 +28,14 @@ def validate_members(values, stages):
             raise ValueError("Invalid managed member fields.")
         name = validate_agent_name(raw.get("name"), teammate=True)
         role, prompt = raw.get("role"), raw.get("prompt")
-        retry = raw.get("retries", 1)
+        retry = raw.get("retries")
         if (
             name in names
             or any(
                 not isinstance(v, str) or not 1 <= len(v) <= 4000
                 for v in (role, prompt)
             )
-            or type(retry) is not int
-            or not 0 <= retry <= 3
+            or retry is not None and (type(retry) is not int or retry < 0)
         ):
             raise ValueError("Member identities, text and retries must be bounded.")
         model = raw.get("model_profile")
@@ -175,7 +176,7 @@ class ManagedTeam:
         with db.write() as conn:
             owner_guard(db, conn, self.control.header)
             current = db._get(conn, "run_members", key, {"attempts": 0})
-            if recovery and current.get("recoveries", 0) >= self.specs[name]["retries"]:
+            if recovery and self.specs[name]["retries"] is not None and current.get("recoveries", 0) >= self.specs[name]["retries"]:
                 raise RunStopped("member_recovery_exhausted")
             db._put(
                 conn,

@@ -4,7 +4,8 @@ import threading
 import time
 from contextlib import contextmanager
 from contextvars import ContextVar
-from homebrew_harness.configuration import DEFAULT_PERSISTENCE_SECONDS, DEFAULT_SHUTDOWN_SECONDS
+from homebrew_harness.configuration import DEFAULT_SHUTDOWN_SECONDS
+from homebrew_harness.runtime.limits import current_limits
 
 from homebrew_harness.execution.model_gateway import (
     Deadline,
@@ -37,7 +38,8 @@ def current_persistence():
 
 
 @contextmanager
-def persistence_scope(seconds=DEFAULT_PERSISTENCE_SECONDS, *, operation="state_commit", context_id=None):
+def persistence_scope(seconds=None, *, operation="state_commit", context_id=None):
+    seconds = current_limits().persistence_seconds if seconds is None else seconds
     previous = _PERSISTENCE.get()
     deadline = Deadline.after(seconds, source="persistence")
     started = time.monotonic()
@@ -106,7 +108,7 @@ def check(deadline=None, cancel_events=(), *, inherit=True, gateway=True):
 
 @contextmanager
 def acquired(lock, deadline=None, *, cancel_events=(), inherit=True):
-    deadline = deadline or operation_deadline(120)
+    deadline = deadline or operation_deadline(current_limits().lock_seconds)
     while True:
         check(deadline, cancel_events, inherit=inherit, gateway=False)
         remaining = deadline.remaining()
@@ -144,7 +146,7 @@ class ControlledRLock:
     def acquire(self, blocking=True, timeout=-1):
         if not blocking or timeout != -1:
             return self.lock.acquire(blocking, timeout)
-        deadline = operation_deadline(120)
+        deadline = operation_deadline(current_limits().lock_seconds)
         while True:
             check(deadline, gateway=False)
             if self.lock.acquire(timeout=min(0.05, deadline.remaining())):

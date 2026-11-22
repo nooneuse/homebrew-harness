@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """One effective tool snapshot and a monotonic, host-owned delegation scope."""
 
 import copy
@@ -216,7 +217,7 @@ class ToolPool:
         if not any(t["function"]["name"] not in CONTROL_TOOLS for t in tools):
             tools = [t for t in tools if t["function"]["name"] not in CONTROL_TOOLS]
         names = [tool["function"]["name"] for tool in tools]
-        if len(names) != len(set(names)) or len(names) > 128:
+        if len(names) != len(set(names)) or (current_limits().tool_pool_size is not None and len(names) > current_limits().tool_pool_size):
             raise ValueError("Effective tool pool collides or exceeds 128 tools.")
         return cls(
             tools,

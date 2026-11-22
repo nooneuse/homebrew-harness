@@ -2,7 +2,7 @@
 
 import time
 
-from homebrew_harness.configuration import DEFAULT_PERSISTENCE_SECONDS
+from homebrew_harness.runtime.limits import current_limits, positive
 from homebrew_harness.execution.execution_control import (
     check, current_persistence, operation_deadline, persistence_scope,
 )
@@ -45,10 +45,12 @@ def storage_check(deadline, *, phase, limit, started):
         raise StorageTimeout(phase, limit, started, deadline) from error
 
 
-def persist(operation, callback, *, context_id=None, seconds=DEFAULT_PERSISTENCE_SECONDS, attempts=3):
+def persist(operation, callback, *, context_id=None, seconds=None, attempts=None):
     """Callback must be an idempotent checkpoint/result write, never a tool body."""
-    if type(attempts) is not int or not 1 <= attempts <= 3:
-        raise ValueError("Persistence allows one to three attempts.")
+    seconds = current_limits().persistence_seconds if seconds is None else seconds
+    attempts = current_limits().persistence_attempts if attempts is None else attempts
+    positive(seconds, "persistence.seconds")
+    positive(attempts, "persistence.attempts", integer=True)
     with persistence_scope(seconds, operation=operation, context_id=context_id) as deadline:
         started = time.monotonic()
         for attempt in range(1, attempts+1):

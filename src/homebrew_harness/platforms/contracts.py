@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Platform-independent object identities, source pages and change feedback."""
 
 import hashlib
@@ -100,7 +101,7 @@ class SourceEvent:
         for name in ("title", "body"):
             if not isinstance(self.content.get(name, ""), str):
                 raise ValueError("Source text must be a string.")
-        if len(json.dumps(self.content, ensure_ascii=False, allow_nan=False)) > 64000:
+        if len(json.dumps(self.content, ensure_ascii=False, allow_nan=False)) > current_limits().source_record_chars:
             raise ValueError("Source content exceeds its limit.")
         if self.object.kind in SUBJECTS and self.object != self.subject:
             raise ValueError("Subject update must identify its own subject.")
@@ -128,11 +129,11 @@ class SourcePage:
     state: str
 
     def validate(self, scope):
-        if not isinstance(self.events, (tuple, list)) or len(self.events) > 100:
+        if not isinstance(self.events, (tuple, list)) or (current_limits().source_batch_events is not None and len(self.events) > current_limits().source_batch_events):
             raise ValueError("Source page exceeds its event limit.")
         if (
             not isinstance(self.cursor, dict)
-            or len(json.dumps(self.cursor, allow_nan=False)) > 64000
+            or len(json.dumps(self.cursor, allow_nan=False)) > current_limits().source_cursor_chars
         ):
             raise ValueError("Invalid opaque source cursor.")
         if (
@@ -179,10 +180,10 @@ class ChangeFeedback:
             raise ValueError("Invalid change feedback subject or head.")
         if (
             not isinstance(self.cursor, dict)
-            or len(json.dumps(self.cursor, allow_nan=False)) > 64000
+            or len(json.dumps(self.cursor, allow_nan=False)) > current_limits().source_cursor_chars
         ):
             raise ValueError("Invalid feedback cursor.")
-        if not isinstance(self.events, (tuple, list)) or len(self.events) > 30000:
+        if not isinstance(self.events, (tuple, list)) or (current_limits().source_recovery_events is not None and len(self.events) > current_limits().source_recovery_events):
             raise ValueError("Invalid feedback batch size.")
         for event in self.events:
             if (

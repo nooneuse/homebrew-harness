@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """A single input owner delegates execution to Session and managed Run owners."""
 
 import threading
@@ -111,7 +112,7 @@ class InteractionHost:
         if (
             not isinstance(text, str)
             or not text.strip()
-            or len(text) > 64000
+            or len(text) > current_limits().input_text_chars
             or redact(text) != text
         ):
             raise ValueError(
@@ -278,7 +279,7 @@ class InteractionHost:
 
     def _watch_controls(self, session, broker):
         try:
-            deadline = time.monotonic() + self.config.turn_seconds
+            deadline = None if self.config.turn_seconds is None else time.monotonic() + self.config.turn_seconds
             while not self.closed and not session._closed:
                 self._sync_model_preference(session)
                 with self.lock:
@@ -288,7 +289,7 @@ class InteractionHost:
                         broker.close()
                         session.close()
                         break
-                if time.monotonic() >= deadline:
+                if deadline is not None and time.monotonic() >= deadline:
                     self._announce({"error": "Interactive command reached its deadline."})
                     break
                 self.wake.wait(0.05)
@@ -539,7 +540,7 @@ class InteractionHost:
                 text = conversation.accept_plan(session, command.values[0])
             self._sync_conversation(session)
             payload = session.intent.original + "\n\nAccepted user amendments:\n" + "\n\n".join(session.intent.amendments)
-            if len(payload) > 64000 or redact(payload) != payload:
+            if len(payload) > current_limits().input_text_chars or redact(payload) != payload:
                 raise ValueError("Accepted plan input exceeds the task input boundary.")
             import hashlib
             identity = "usr_" + hashlib.sha256((session.session_id + ":plan:" + str(command.values[0])).encode()).hexdigest()[:32]
@@ -1037,7 +1038,7 @@ class InteractionHost:
                 self.wake.wait(.05)
                 self.wake.clear()
                 continue
-            if time.time() >= task["created_at"] + self.config.total_seconds:
+            if self.config.total_seconds is not None and time.time() >= task["created_at"] + self.config.total_seconds:
                 self.state.update(
                     task["id"],
                     state="blocked",
@@ -1537,8 +1538,8 @@ class InteractionHost:
     def _handoff(self, task):
         from homebrew_harness.runs.session_handoff import accept_session_handoff
 
-        remaining = task["created_at"] + self.config.total_seconds - time.time()
-        if remaining < 0.1:
+        remaining = None if self.config.total_seconds is None else task["created_at"] + self.config.total_seconds - time.time()
+        if remaining is not None and remaining < 0.1:
             raise ValueError(
                 "The original task deadline expired; handoff cannot renew it."
             )

@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import limits_scope
 """Targeted Git queries select changes independently of display limits."""
 
 import io
@@ -124,7 +125,7 @@ class GitQueryTests(unittest.TestCase):
         (self.root / "one.txt").write_text("after")
         (self.root / "two.txt").write_text("after")
         with (
-            patch("homebrew_harness.tools.queries.GIT_METADATA_LIMIT", 1),
+            limits_scope({"git_metadata_entries": 1}),
             self.assertRaisesRegex(ValueError, "metadata"),
         ):
             git_diff(workdir=self.root, paths=["two.txt"])

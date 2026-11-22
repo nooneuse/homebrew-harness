@@ -56,6 +56,7 @@ class TestGrantTests(unittest.TestCase):
                     roles=("lead", "teammate"),
                     locked_globs=locked,
                     max_runs=1,
+                    approval_seconds=3600,
                 )
             ],
             max_runs=6,

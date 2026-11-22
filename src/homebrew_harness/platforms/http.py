@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Bounded external JSON transport; no execution or repository state."""
 
 import json
@@ -130,7 +131,7 @@ class JsonTransport:
                     chunks, size = [], 0
                     async for chunk in response.aiter_bytes():
                         size += len(chunk)
-                        if size > 8192:
+                        if size > current_limits().platform_error_bytes:
                             break
                         chunks.append(chunk)
                     else:
@@ -149,7 +150,7 @@ class JsonTransport:
             async for chunk in response.aiter_bytes():
                 check(deadline)
                 size += len(chunk)
-                if size > 2_000_000:
+                if size > current_limits().platform_response_bytes:
                     raise ValueError("External JSON response exceeds its size limit.")
                 chunks.append(chunk)
             raw = b"".join(chunks)

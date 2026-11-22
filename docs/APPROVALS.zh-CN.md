@@ -1,5 +1,7 @@
 # 自动审批审核
 
+当前预算默认值与迁移见[运行预算](LIMITS.zh-CN.md)。
+
 [English](APPROVALS.md) | **简体中文** · [README](../README.zh-CN.md)
 
 工具权限先判断为 `allow`、`deny` 或 `ask`。默认审批模式为 `manual`。可选的 `auto_review` 使用独立模型上下文，将每个 `ask` 请求与原始任务、已接受修订及宿主政策比对。规则直接允许或拒绝的调用不会额外发起审核。
@@ -31,14 +33,14 @@ Run 规格接受同一个 `approval_review` 对象；非空 Run 配置优先于�
 | `model_profile` | 未设置 | `profile` 来源必须提供的模型目录别名 |
 | `requester_fallback` | 未设置 | 缺少可信请求者绑定时显式回退 `lead` |
 | `kinds` | `["tool", "test_grant"]` | 委托审核器处理的审批种类 |
-| `timeout_seconds` | `120` | 审核 deadline，允许 `0.01`～`500` 秒 |
-| `max_turns` | `6` | 最多调用审核模型的次数，允许 `1`～`8` |
+| `timeout_seconds` | `null` | 显式审核总期限；默认仅在 500 秒后提醒 |
+| `max_turns` | `null` | 显式调用预算；默认仅在 6 次调用后提醒 |
 
 所有来源都使用独立上下文，并通过 ModelGateway 使用完整模型绑定，包括协议、参数、输出额度和上下文窗口。调用次数和用量进入已有观察记录。`requester` 在可用时捕获实际 subagent／teammate 的绑定。缺少可信来源时默认转人工，宿主可明确设置 `requester_fallback: "lead"`。模型连接失败同样转人工。
 
 专用审核模型配置为 `model_source: "profile"`、`model_profile: "safety"`。`safety` 需在外部模型目录中定义，连接凭据仍由宿主环境提供，参见[模型接入](MODELS.zh-CN.md)。
 
-审核器通过 `read_review_file(path, offset=0, limit=10000)` 读取 UTF-8 文件，偏移以 Unicode 字符计数。返回结果描述文件版本、已读范围与下一页偏移。路径缺失和普通查询错误作为结构化工具反馈，由模型决定证据是否相关、是否继续读取；证据变更回到当前对话重新判断。仍保留单次审核 16 个文件、16 MiB 不同文件内容、64 页及单文件 8 MiB 的读取上限。
+审核器通过 `read_review_file(path, offset=0, limit=10000)` 读取 UTF-8 文件，偏移以 Unicode 字符计数。返回结果描述文件版本、已读范围与下一页偏移。路径缺失和普通查询错误作为结构化工具反馈，由模型决定证据是否相关、是否继续读取；证据变更回到当前对话重新判断。不同内容和单文件读取窗口默认分别为 16 MiB、8 MiB；文件和页数默认无硬限，均可通过 runtime_limits 调整。
 
 最终结果包含 `decision` 和 `reason`，`risk` 可选，不再单独返回 `authorization` 决定。无效输出会反馈给模型纠正。模型服务错误在同一截止和调用轮次内最多连续尝试三次，历史失败不会禁用后续模型请求。
 

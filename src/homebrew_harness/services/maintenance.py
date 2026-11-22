@@ -253,7 +253,8 @@ class Maintenance:
                 job.update(
                     state="queued",
                     next_attempt=0,
-                    attempt_limit=job["attempts"] + self.store.policy["job_attempts"],
+                    attempt_limit=(None if self.store.policy["job_attempts"] is None else
+                                   job["attempts"] + self.store.policy["job_attempts"]),
                     retry_history=[*job.get("retry_history", []),
                                    {k: job.get(k) for k in ("attempts", "error", "error_detail", "error_info", "error_stage")}],
                 )

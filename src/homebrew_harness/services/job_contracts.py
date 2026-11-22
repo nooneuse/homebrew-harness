@@ -36,6 +36,14 @@ HANDLERS = {
         job_results.discussion,
         job_results.apply_discussion,
     ),
+    "validation_plan": JobHandler(
+        "changesets",
+        "Choose validation for this fixed candidate. validation_options lists available authorized tests and explicit requirements. "
+        "Return tests=[recipe names], selections={recipe:optional registered selection}, review=Boolean, reason. "
+        "Recommended testing and independent review are suggestions. Choose local/full checks, skip unnecessary optional checks with evidence, "
+        "or request review as useful. Explicit required_tests/required_review and Goal still apply. No test or review is performed by this proposal.",
+        ("delivery-planning",), job_results.validation_plan, job_results.apply_delivery,
+    ),
     "review": JobHandler(
         "changesets",
         "Read fixed candidate code and verification evidence. candidate.delta is the complete proposed change against target_base; repair_delta, when present, is only the latest repair and does not replace review of the original feature. Provide text and findings=[{severity:blocking/warning,path,message}]. Optional publication={title,body} describes this PR from confirmed changes and tests, without implicit issue-closing keywords. Apply configured PR writing guidance to that publication draft when supplied. Review the bound candidate, not another workspace.",
@@ -45,7 +53,7 @@ HANDLERS = {
     ),
     "ci_triage": JobHandler(
         "changesets",
-        "Read fixed candidate code and local quality/CI observations. The input work_context contains current execution instructions, accepted scope and handoff facts; validation_history contains prior actual failures for this candidate. Use them before repeating an investigation. Published fix references are source evidence, not passing receipts for this candidate. quality[].outputs lists exact output IDs; use service_read(kind='quality_output', identity=that ID) and next_offset to inspect current or historical recorded logs. service_read kinds are changesets (job.target), work (work_context.id), requirements, events, evidence, policy, job, project_context and quality_output; do not invent kinds. Provide classification (code/baseline/flaky/infrastructure/unknown), reason and a bounded plan. Local flaky/infrastructure diagnoses request a bounded recheck of this same candidate; baseline/unknown require operator action. A code diagnosis proposes scoped repair. A candidate_merge_conflict observation identifies the current target_base and exact conflicting paths in this fixed candidate; conflict markers are evidence to resolve, not validated feature code. prior_integration retains the old candidate review and test facts; they do not verify the changed integration. For this conflict, a baseline classification can also propose scoped integration repair. A passing isolated test does not by itself establish load-flakiness. This does not publish, waive failed checks or grant repair authority.",
+        "Read fixed candidate code and local quality/CI observations. The input work_context contains current execution instructions, accepted scope and handoff facts; validation_history contains prior actual failures for this candidate. Use them before repeating an investigation. Published fix references are source evidence, not passing receipts for this candidate. quality[].outputs lists exact output IDs; use service_read(kind='quality_output', identity=that ID) and next_offset to inspect current or historical recorded logs. service_read kinds are changesets (job.target), work (work_context.id), requirements, events, evidence, policy, job, project_context and quality_output; do not invent kinds. Provide classification (code/baseline/flaky/infrastructure/unknown), reason and a bounded plan. Classification describes the observation and does not select an action. Provide next_action=repair/recheck/reobserve/wait/defer/stop/human_required/reconsider_review/plan_validation/proceed and a concrete reason. Optional wait_seconds selects when to reconsider. Choose the action from current evidence; unknown/baseline/tool errors do not automatically require an operator. For independent_review observations, accept and fix findings, give evidence for reconsider_review, or proceed only if review is advisory and explicit acceptance remains met. A candidate_merge_conflict observation identifies the current target_base and exact conflicting paths in this fixed candidate; conflict markers are evidence to resolve, not validated feature code. prior_integration retains the old candidate review and test facts; they do not verify the changed integration. For this conflict, a baseline classification can also propose scoped integration repair. A passing isolated test does not by itself establish load-flakiness. This does not publish, waive failed checks or grant repair authority.",
         ("ci-failure-triage",),
         job_results.ci_triage,
         job_results.apply_delivery,
@@ -140,14 +148,17 @@ class JobContract:
 
     def input(self, primary=None):
         primary = self.primary() if primary is None else primary
-        if self.kind in {"review", "ci_triage", "publication"}:
+        if self.kind in {"review", "ci_triage", "publication", "validation_plan"}:
             value = {k: copy.deepcopy(primary.get(k)) for k in
                      ("id", "work_id", "requirements_revision", "revision", "state", "run_id",
                       "previous", "requirements_id", "quality", "test_failure", "goal_evidence",
                       "review", "ci", "ci_diagnosis", "validation_rechecks", "error", "error_detail",
-                      "error_info", "reasoning_job_id", "publication", "publication_feedback")}
+                      "error_info", "reasoning_job_id", "publication", "publication_feedback", "validation_plan", "review_response", "review_history", "ci_wait_observation")}
             value["candidate"] = {k: copy.deepcopy((primary.get("candidate") or {}).get(k))
                                   for k in ("commit", "tree", "target_base", "delta", "conflicts")}
+            if self.kind == "validation_plan":
+                work = self.store.store.work(primary["work_id"], self.store.id)
+                value["validation_options"] = self.store.delivery.validation_options(work)
             if self.kind == "review" and primary.get("previous"):
                 value["candidate"]["repair_delta"] = value["candidate"]["delta"]
                 value["candidate"]["delta"] = self.store.delivery.git.proposed_delta(primary["candidate"])
@@ -160,7 +171,7 @@ class JobContract:
             value["validation_history"] = [
                 {k: copy.deepcopy(record.get(k)) for k in
                  ("observed_at", "candidate_commit", "state", "quality", "test_failure",
-                  "error", "error_detail", "requested_recheck")}
+                  "error", "error_detail", "requested_recheck", "validation_plan", "reason")}
                 for record in primary.get("validation_history", [])]
             for record in value["validation_history"]:
                 record["quality"] = self.quality(record.get("quality"))
@@ -207,7 +218,8 @@ class JobContract:
             if self.kind != "discussion"
             else {k: self.store.policy[k] for k in ("objectives", "non_goals", "scopes")}
         )
-        guidance = instructions_for(self.store.policy, "review" if self.kind == "publication" else self.kind)
+        kind = "review" if self.kind == "publication" and "publication" not in self.store.policy.get("instructions", {}) else self.kind
+        guidance = instructions_for(self.store.policy, kind)
         if guidance:
             value["instructions"] = guidance
         else:
@@ -316,13 +328,14 @@ class JobContract:
                 "Public discussion cannot read unrelated internal evidence."
             )
         primary = self.primary()
-        if kind == "quality_output" and self.kind in {"review", "ci_triage", "publication"}:
+        if kind == "quality_output" and self.kind in {"review", "ci_triage", "publication", "validation_plan"}:
             from .delivery.quality import output_reference
             output_reference(primary, identity)
             return
         allowed = {
             "triage": {"work", "events", "work_list", "requirements", "evidence"},
             "review": {"changesets", "work", "events", "evidence", "requirements"},
+            "validation_plan": {"changesets", "work", "events", "evidence", "requirements"},
             "ci_triage": {"changesets", "work", "events", "evidence", "requirements"},
             "publication": {"changesets", "work", "events", "evidence", "requirements"},
             "audit": {"audits", "work_list"},
@@ -554,7 +567,7 @@ class JobContract:
     def override(self, kind, identity):
         if kind == "policy":
             return self.policy()
-        if self.kind in {"review", "ci_triage", "publication"}:
+        if self.kind in {"review", "ci_triage", "publication", "validation_plan"}:
             if kind == "changesets":
                 return self.input()
             if kind == "work":

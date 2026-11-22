@@ -1,3 +1,5 @@
+from homebrew_harness.runtime.limits import expiry, expired
+from homebrew_harness.runtime.limits import backoff
 """Service-owned events, proposals, decisions, conversations and report windows."""
 
 from homebrew_harness.runtime.errors import (
@@ -399,15 +401,15 @@ class MaintenanceStore:
                     and job.get("generation") == self.header["generation"]
                 ):
                     continue
-                if job["attempts"] >= job.get(
-                    "attempt_limit", self.policy["job_attempts"]
-                ):
+                from homebrew_harness.runtime.limits import reached
+                if reached(job.get("attempt_limit", self.policy["job_attempts"]), job["attempts"]):
                     job.update(state="failed", error="attempts_exhausted")
                     self.fail_target(conn, job)
                     self.db._put(conn, "service_jobs_model", job["id"], job)
                     continue
                 job.update(
                     state="running",
+                    started_at=time.time(),
                     attempts=job["attempts"] + 1,
                     generation=self.header["generation"],
                 )
@@ -446,7 +448,7 @@ class MaintenanceStore:
             "state": "pending",
             "candidate": proposal,
             "created_at": time.time(),
-            "expires_at": time.time() + self.policy["authority_seconds"],
+            "expires_at": expiry(self.policy["authority_seconds"], time.time()),
         }
         previous = self.db._get(conn, "service_decisions", rid)
         if previous and renew:
@@ -477,7 +479,7 @@ class MaintenanceStore:
                     "requirements_revision": work["requirements_revision"],
                     "policy": fingerprint(self.policy),
                     "scope": scope,
-                    "expires_at": time.time() + self.policy["authority_seconds"],
+                    "expires_at": expiry(self.policy["authority_seconds"], time.time()),
                     "origin": origin,
                     "revoked": False,
                 },
@@ -508,7 +510,7 @@ class MaintenanceStore:
                     "requirements_revision": work["requirements_revision"],
                     "policy": fingerprint(self.policy),
                     "scope": scope,
-                    "expires_at": time.time() + self.policy["authority_seconds"],
+                    "expires_at": expiry(self.policy["authority_seconds"], time.time()),
                     "origin": origin,
                     "revoked": False,
                 },
@@ -606,7 +608,7 @@ class MaintenanceStore:
             "requirements_revision": work["requirements_revision"],
             "policy": fingerprint(self.policy),
             "scope": scope,
-            "expires_at": time.time() + self.policy["authority_seconds"],
+            "expires_at": expiry(self.policy["authority_seconds"], time.time()),
             "origin": origin,
             "revoked": False,
         }
@@ -674,6 +676,10 @@ class MaintenanceStore:
                 return current
             if error is not None:
                 from homebrew_harness.security.data_boundary import redact
+                from homebrew_harness.execution.model_gateway import ModelGatewayError
+                from homebrew_harness.context.compaction import CompactionError
+                from homebrew_harness.runtime.errors import AgentError
+                recoverable = isinstance(error, (ValueError, ModelGatewayError, CompactionError, AgentError))
 
                 annotate_error(
                     error,
@@ -685,8 +691,8 @@ class MaintenanceStore:
                 current.update(
                     state=(
                         "queued"
-                        if current["attempts"]
-                        < current.get("attempt_limit", self.policy["job_attempts"])
+                        if recoverable and (current.get("attempt_limit", self.policy["job_attempts"]) is None
+                        or current["attempts"] < current.get("attempt_limit", self.policy["job_attempts"]))
                         else "failed"
                     ),
                     error=type(error).__name__,
@@ -699,7 +705,7 @@ class MaintenanceStore:
                     error_info=error_info(error),
                     error_code=error_info(error)["code"],
                     error_stage="apply" if result is not None else "reasoning",
-                    next_attempt=time.time() + min(60, 2 ** current["attempts"]),
+                    next_attempt=time.time() + backoff(current["attempts"]),
                 )
                 if result is not None:
                     current["unapplied_result"] = redact(result)
@@ -825,7 +831,7 @@ class MaintenanceStore:
             return self.delivery.store.decide(conn, decision, payload, request_id)
         work = self.store.work(decision["work_id"], self.id)
         if (
-            decision["expires_at"] <= time.time()
+            expired(decision["expires_at"], time.time())
             or decision["requirements_revision"] != work["requirements_revision"]
         ):
             raise ValueError("Decision expired or requirements changed.")
@@ -876,7 +882,7 @@ class MaintenanceStore:
                 )
             if action == "approve":
                 authority.update(
-                    expires_at=time.time() + self.policy["authority_seconds"],
+                    expires_at=expiry(self.policy["authority_seconds"], time.time()),
                     revoked=False,
                     origin="operator:" + request_id,
                 )
@@ -909,5 +915,5 @@ class MaintenanceStore:
             and not auth["revoked"]
             and auth["requirements_revision"] == work["requirements_revision"]
             and auth["policy"] == fingerprint(self.policy)
-            and auth["expires_at"] > time.time()
+            and not expired(auth["expires_at"], time.time())
         )

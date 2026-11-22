@@ -1,5 +1,6 @@
 """Narrow service reasoning on the existing prepared Agent Loop."""
 
+from homebrew_harness.runtime.limits import current_limits
 from homebrew_harness.runtime.errors import boundary_error
 
 import json
@@ -28,6 +29,7 @@ class ServiceAgent:
     def __init__(self, runtime, store, stop, *, model_profile=None):
         self.runtime, self.store, self.stop = runtime, store, stop
         settings = runtime.core.config.settings
+        self.advisory_seen = {}
         environment = (
             read_environment(settings.env_file, runtime.store.root)
             if settings.env_file
@@ -118,7 +120,7 @@ class ServiceAgent:
                 properties[name] = {
                     key: item for key, item in value.items() if key != "pattern"
                 }
-            if function.get("name") == "service_read" and self.job and self.job["kind"] in {"review", "ci_triage", "publication"}:
+            if function.get("name") == "service_read" and self.job and self.job["kind"] in {"review", "ci_triage", "publication", "validation_plan"}:
                 properties["kind"]["enum"] = ["changesets", "work", "requirements", "events", "evidence",
                                                 "policy", "job", "project_context", "quality_output"]
                 properties["identity"]["description"] = "Use exact IDs from input: changesets=job.target, work=input.work_context.id, quality_output=quality[].outputs[].id."
@@ -295,7 +297,7 @@ class ServiceAgent:
             )
         if self.job and self.job["kind"] == "audit":
             return Path(self.store.get("audits", self.job["target"])["workspace"])
-        if self.job and self.job["kind"] in {"review", "ci_triage", "publication"}:
+        if self.job and self.job["kind"] in {"review", "ci_triage", "publication", "validation_plan"}:
             return Path(
                 self.store.get("changesets", self.job["target"])["candidate"][
                     "workspace"
@@ -362,7 +364,8 @@ class ServiceAgent:
         selected = raw.pop("evidence_paths", None) if isinstance(raw, dict) else None
         allowed = set(self.code_evidence)
         allowed.update(d["path"] for d in (self.project_context or {}).get("documents", []))
-        if selected is not None and (not isinstance(selected, list) or len(selected) > 32
+        evidence_limit = current_limits().assessment_evidence_paths
+        if selected is not None and (not isinstance(selected, list) or evidence_limit is not None and len(selected) > evidence_limit
                 or any(not isinstance(path, str) or path not in allowed for path in selected)):
             raise ValueError("evidence_paths must select provided or read project files.")
         self.selected_evidence = selected
@@ -388,6 +391,12 @@ class ServiceAgent:
         self.phase_counts[self.phase_key] = count + 1
 
     def observe_calls(self, messages):
+        import time
+        from homebrew_harness.runtime.limits import observe
+        observe(messages, [("job_attempts", self.job["attempts"], self.store.policy["job_attempt_warning"], "attempts"),
+                           ("job_elapsed", time.time() - self.job.get("started_at", time.time()),
+                            self.store.policy["job_warning_seconds"], "seconds")],
+                self.__dict__.setdefault("advisory_seen", {}))
         warning = self.store.policy["job_call_warning"]
         if warning is None:
             return
@@ -418,7 +427,7 @@ class ServiceAgent:
             return False
         if self.proposal is None:
             return False
-        if self.job["kind"] in {"review", "ci_triage", "publication"}:
+        if self.job["kind"] in {"review", "ci_triage", "publication", "validation_plan"}:
             latest = JobContract(self.store, self.job).input()
             signature = fingerprint(latest)
             if signature != self.phase_signature["primary"]:
@@ -465,6 +474,7 @@ class ServiceAgent:
         return True
 
     def run(self, job):
+        self.advisory_seen = {}
         with self.model_control.lock:
             self.binding, self.gateway = self.model_control.select(job)
             try:
@@ -531,7 +541,7 @@ class ServiceAgent:
             from .communication.reasoning import work_status
             self.phase_work_status = work_status(self.store, job)
             primary = {**primary, "work_status": self.phase_work_status}
-        if kind in {"review", "ci_triage", "publication"}:
+        if kind in {"review", "ci_triage", "publication", "validation_plan"}:
             self.store.delivery.git.verify(primary["candidate"])
         if kind == "audit":
             from .operations.audit import verify
@@ -542,7 +552,7 @@ class ServiceAgent:
         self.used_phases.add(self.phase_key)
         preview = contract.input(primary)
         self.phase_signature = {**identity(job, self.phase_key, self.binding, self.discussion_prompts, plan),
-                                "primary": fingerprint(preview if kind in {"review", "ci_triage", "publication"} else primary)}
+                                "primary": fingerprint(preview if kind in {"review", "ci_triage", "publication", "validation_plan"} else primary)}
         cached = self.store.job_get(job["id"]).get("phase_outputs", {}).get(self.phase_key)
         root = self.code_root() if project is not None else None
         if valid(cached, self.phase_signature, project, root):
@@ -590,7 +600,7 @@ class ServiceAgent:
                                 "truncated": len(text) < len(body)})
                 budget -= len(text)
             preview["source_previews"] = list(reversed(sources))
-        if project and kind not in {"review", "ci_triage", "publication"}:
+        if project and kind not in {"review", "ci_triage", "publication", "validation_plan"}:
             preview["project_context"] = project
         if plan:
             from .communication.reasoning import public
@@ -608,7 +618,8 @@ class ServiceAgent:
                                              "model_call_warning": self.store.policy["job_call_warning"],
                                              "seconds": self.store.policy["job_seconds"]},
                         "input": preview,
-                        **({"project_context": project} if project and kind in {"review", "ci_triage", "publication"} else {}),
+                        "previous_attempt": {key: job.get(key) for key in ("attempts", "error", "error_detail", "error_info", "unapplied_result")},
+                        **({"project_context": project} if project and kind in {"review", "ci_triage", "publication", "validation_plan"} else {}),
                     },
                     ensure_ascii=False,
                 ),
@@ -617,6 +628,9 @@ class ServiceAgent:
         if self.phase_feedback:
             messages.append({"role": "user", "content": json.dumps(self.phase_feedback, ensure_ascii=False)})
         components = LoopComponents(
+            runtime_limits=self.runtime.core.config.settings.runtime_limits,
+            model_call_warning=self.store.policy["job_call_warning"],
+            turn_warning_seconds=self.store.policy["job_warning_seconds"],
             skill_loader=self.skills,
             capabilities=Capabilities(),
             service_control=self,
@@ -655,7 +669,7 @@ class ServiceAgent:
             )
         if self.proposal is None:
             raise ValueError("Service reasoning did not submit a structured proposal.")
-        if kind in {"review", "ci_triage", "publication"}:
+        if kind in {"review", "ci_triage", "publication", "validation_plan"}:
             self.store.delivery.git.verify(primary["candidate"])
         if kind == "audit":
             verify(self.runtime, primary)

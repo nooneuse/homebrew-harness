@@ -1,4 +1,5 @@
 from __future__ import annotations
+from homebrew_harness.runtime.limits import current_limits
 
 from homebrew_harness.runtime.output import print
 
@@ -186,7 +187,7 @@ def tool_result_hook(event: ToolEvent, output: str) -> None:
 
 
 def large_output_hook(event: ToolEvent, output: str) -> None:
-    if len(output) > 8_000:
+    if len(output) > current_limits().hook_response_chars:
         print(
             f"[hook] Large output: {event.name}, {len(output)} characters.",
             file=sys.stderr,

@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Scoped host views over durable tool executions, including remote Run workers."""
 
 import hashlib
@@ -33,7 +34,7 @@ class ExecutionHandle(Handle):
         return ExecutionResult(self.ref, row['state'], value=row['result'])
 
     def output(self, cursor=0, limit=16000, *, stream="output"):
-        if type(cursor) is not int or cursor < 0 or type(limit) is not int or not 1 <= limit <= 16000:
+        if type(cursor) is not int or cursor < 0 or type(limit) is not int or not 1 <= limit <= current_limits().operation_read_chars:
             raise ValueError('Invalid output cursor or limit.')
         row = self._row()
         if stream == 'result':
@@ -74,7 +75,7 @@ class ExecutionHandle(Handle):
     def input(self, text, *, request_id=None):
         if not self.views.control:
             raise ValueError('This execution view is read-only.')
-        if not isinstance(text, str) or len(text) > 16000:
+        if not isinstance(text, str) or len(text) > current_limits().operation_input_chars:
             raise ValueError('Execution input must be bounded text.')
         row = self._row()
         request_id = request_id or uuid.uuid4().hex

@@ -1,6 +1,7 @@
 """Single public command with independently executed feature groups."""
 
 import argparse
+import json
 import importlib
 from pathlib import Path
 
@@ -14,6 +15,7 @@ def parser():
         epilog="Without a subcommand, route new tasks automatically. Shared --cwd and --env-file options may appear before or after subcommands.",
     )
     add_location_arguments(root, defaults=True)
+    root.add_argument("--runtime-limits", type=json.loads, help="JSON runtime window and advisory settings.")
     root.add_argument(
         "--host-config",
         type=Path,
@@ -52,4 +54,11 @@ def main(argv=None):
     if args.entrypoint is None:
         args.entrypoint = "auto"
     module = importlib.import_module(args._handler)
-    return module.execute(args, args._command_parser)
+    from homebrew_harness.runtime.limits import RuntimeLimits, current_limits, limits_scope
+    try:
+        value = getattr(args, "runtime_limits", None)
+        limits = RuntimeLimits.parse(value if value is not None else current_limits())
+    except ValueError as error:
+        args._command_parser.error(str(error))
+    with limits_scope(limits):
+        return module.execute(args, args._command_parser)

@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Opt-in process ownership for long host hooks; no additional dependencies."""
 
 import hashlib
@@ -74,7 +75,7 @@ class ProcessHook:
                    'paths': [path for path in sys.path if path and Path(path).is_dir()],
                    'arguments': encode_argument(args)}
         payload = json.dumps(request, ensure_ascii=False).encode()
-        if len(payload) > 1024 * 1024:
+        if len(payload) > current_limits().hook_payload_bytes:
             raise ValueError('Process hook input exceeds its one MiB transport limit.')
         runner = ShellRunner()
         runner.stdin_pipe = True

@@ -48,12 +48,11 @@ SERVICE_TOOL_DEFINITIONS = [
                 **NONEMPTY_STRING,
                 "description": "Actual relative file path, e.g. README.md or a path returned by glob/search; never a service record kind.",
             },
-            "offset": {"type": "integer", "minimum": 0, "maximum": 10000000},
+            "offset": {"type": "integer", "minimum": 0,},
             "expected_version": {"type": "string", "description": "The version returned by the previous page; omit for a first read."},
             "limit": {
                 "type": "integer",
                 "minimum": 1,
-                "maximum": 500,
                 "description": "Number of source lines, between 1 and 500.",
             },
         },
@@ -79,22 +78,19 @@ TOOLS = [
         "submit_work_progress",
         "Persist work progress. Set complete=true only when development and routine cleanup are done; submit completion by itself. Service handles candidate validation and PR afterward.",
         {
-            "summary": {**NONEMPTY_STRING, "maxLength": 10000},
+            "summary": {**NONEMPTY_STRING,},
             "remaining": {
                 "type": "array",
-                "items": {**NONEMPTY_STRING, "maxLength": 2000},
-                "maxItems": 32,
+                "items": {**NONEMPTY_STRING,},
             },
             "complete": {"type": "boolean"},
             "evidence_refs": {
                 "type": "array",
                 "items": NONEMPTY_STRING,
-                "maxItems": 100,
             },
             "included_inputs": {
                 "type": "array",
                 "items": NONEMPTY_STRING,
-                "maxItems": 100,
                 "description": "Existing input drafts explicitly proposed for delivery; not publication authority.",
             },
         },
@@ -118,7 +114,7 @@ TOOLS = [
         {
             "text": NONEMPTY_STRING,
             "pattern": NONEMPTY_STRING,
-            "limit": {"type": "integer", "minimum": 1, "maximum": 100},
+            "limit": {"type": "integer", "minimum": 1,},
         },
         ["text"],
     ),
@@ -136,7 +132,6 @@ TOOLS = [
                 "type": "array",
                 "items": NONEMPTY_STRING,
                 "minItems": 1,
-                "maxItems": 32,
             }
         },
         [],
@@ -145,8 +140,8 @@ TOOLS = [
         "report_run_blocker",
         "Stop this Run without granting permission. Explain why you choose to block instead of continuing after an error or obstacle, and what is needed next.",
         {
-            "reason": {**NONEMPTY_STRING, "maxLength": 2000},
-            "required_action": {"type": "string", "maxLength": 1000},
+            "reason": {**NONEMPTY_STRING,},
+            "required_action": {"type": "string",},
         },
         ["reason"],
     ),
@@ -155,7 +150,7 @@ TOOLS = [
         "Explicitly pause this Run until a new source event or a fresh healthy source observation. This grants no permission and preserves accepted requirements.",
         {
             "until": {"type": "string", "enum": ["event", "healthy"]},
-            "reason": {"type": "string", "maxLength": 1000},
+            "reason": {"type": "string",},
         },
         [],
     ),
@@ -203,7 +198,7 @@ TOOLS = [
         "List isolated artifact bundles for the current session, task and workspace. No workspace files are created.",
         {
             "offset": {"type": "integer", "minimum": 0},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 50},
+            "limit": {"type": "integer", "minimum": 1,},
         },
         [],
     ),
@@ -311,7 +306,7 @@ TOOLS = [
             "run_id": NONEMPTY_STRING,
             "operation_id": NONEMPTY_STRING,
             "offset": {"type": "integer", "minimum": 0},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 16000},
+            "limit": {"type": "integer", "minimum": 1,},
         },
         ["run_id"],
     ),
@@ -330,7 +325,7 @@ TOOLS = [
     define_tool(
         "compact",
         "Request a working summary after this tool batch. Optionally supply working_state notes with confirmed interfaces/versions, decisions, hypotheses and the next implementation/test action. Notes are reference only; original history is archived.",
-        {"working_state": {"type": "string", "maxLength": 8000}},
+        {"working_state": {"type": "string",}},
         [],
     ),
     define_tool(
@@ -545,7 +540,7 @@ TEAMMATE_TOOLS = [
 ] + [SUBMIT_PLAN_TOOL]
 
 
-SUBAGENT_MAX_TURNS = 30
+SUBAGENT_MAX_TURNS = None
 
 
 # Execution controls do not grant the underlying tool permission.
@@ -555,7 +550,7 @@ EXECUTION_SCHEMA = {
     "type": "object",
     "properties": {
         "mode": {"type": "string", "enum": ["interactive", "one_shot"]},
-        "wait_seconds": {"type": "number", "minimum": 0, "maximum": 60},
+        "wait_seconds": {"type": "number", "minimum": 0,},
         "timeout_seconds": {"type": ["number", "null"], "exclusiveMinimum": 0},
     },
     "required": [],
@@ -568,7 +563,6 @@ SELECTION_SCHEMA = {
             "type": "array",
             "items": NONEMPTY_STRING,
             "minItems": 1,
-            "maxItems": 100,
         },
         "filter": NONEMPTY_STRING,
     },
@@ -595,7 +589,7 @@ EXECUTION_TOOL_DEFINITIONS = [
             "execution_id": NONEMPTY_STRING,
             "stream": {"type": "string", "enum": ["output", "result"]},
             "cursor": {"type": "integer", "minimum": 0},
-            "limit": {"type": "integer", "minimum": 1, "maximum": 16000},
+            "limit": {"type": "integer", "minimum": 1,},
         },
         ["execution_id"],
     ),
@@ -604,7 +598,7 @@ EXECUTION_TOOL_DEFINITIONS = [
         "Wait for an owned execution. Wait expiry returns its status without stopping it. Wait rather than repeatedly polling unchanged state.",
         {
             "execution_id": NONEMPTY_STRING,
-            "wait_seconds": {"type": "number", "minimum": 0, "maximum": 60},
+            "wait_seconds": {"type": "number", "minimum": 0,},
         },
         ["execution_id"],
     ),
@@ -614,7 +608,7 @@ EXECUTION_TOOL_DEFINITIONS = [
         {
             "execution_id": NONEMPTY_STRING,
             "revision": {"type": "integer", "minimum": 0},
-            "request_id": {**NONEMPTY_STRING, "maxLength": 200},
+            "request_id": {**NONEMPTY_STRING,},
         },
         ["execution_id"],
     ),
@@ -623,8 +617,8 @@ EXECUTION_TOOL_DEFINITIONS = [
         "Send input only when the execution advertises can_send_input. Unsupported commands must be stopped and restarted with revised arguments.",
         {
             "execution_id": NONEMPTY_STRING,
-            "input": {"type": "string", "maxLength": 16000},
-            "request_id": {**NONEMPTY_STRING, "maxLength": 200},
+            "input": {"type": "string",},
+            "request_id": {**NONEMPTY_STRING,},
         },
         ["execution_id", "input", "request_id"],
     ),

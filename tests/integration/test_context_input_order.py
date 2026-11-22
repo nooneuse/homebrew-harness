@@ -20,6 +20,7 @@ class ContextInputOrderTests(unittest.TestCase):
                 "fixture",
                 Path(directory).resolve(),
                 context_chars=50000,
+                runtime_limits={"hard_context_chars": 50000},
                 shutdown_timeout=0.02,
             )
             with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):

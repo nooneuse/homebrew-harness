@@ -1,5 +1,7 @@
 # Controlling long operations
 
+Current budget defaults and migration: [Runtime budgets](LIMITS.md).
+
 [中文](EXECUTION.zh-CN.md)
 
 Long tool calls can return control to the model while their execution remains owned by the runtime. The model can inspect output, wait, send supported input, or stop an operation. The same execution tools are assembled for Sessions, managed Runs, subagents, team members, and Service model jobs when their underlying tools are authorized.
@@ -24,7 +26,7 @@ Bash, registered tests, subagent `task` and `workflow` accept an `execution` obj
 }
 ```
 
-`timeout_seconds` is an optional execution deadline. Omission or `null` adds no per-call wallclock deadline. The parent Run or task deadline and explicitly configured host limits still apply. `wait_seconds` accepts 0–60 seconds and is only an observation window for interactive calls; it is not accepted in one-shot mode.
+`timeout_seconds` is an optional execution deadline. Omission or `null` adds no per-call wallclock deadline. The parent Run or task deadline and explicitly configured host limits still apply. `wait_seconds` accepts finite nonnegative seconds and is only an observation window for interactive calls; it is not accepted in one-shot mode.
 
 Interactive executions can continue across normal Run Episode boundaries. Checkpoints retain their execution IDs, and the next Episode can observe or control the same attempt. A `started` operation with a live owner remains pending; an operation whose owner was lost, or whose effects are unknown, requires recovery inspection. Explicit stops and parent deadlines still end execution.
 
@@ -51,7 +53,7 @@ Submit this object to `invoke_tool`. Only the original tools visible to the curr
 | `send_execution_input` | Send input with an idempotent request ID when supported |
 | `stop_execution` | Request cancellation and then observe actual cleanup |
 
-Control tools use `execution_id`. Output queries accept `cursor` and `limit`, with at most 16,000 characters per response. `stream="result"` pages through a large final result; the default stream reads process output. Completed executions also produce a saved event for the owning model. Output is not sent to the model line by line.
+Control tools use `execution_id`. Output queries accept `cursor` and `limit`, with a configurable 16,000-character default response window. `stream="result"` pages through a large final result; the default stream reads process output. Completed executions also produce a saved event for the owning model. Output is not sent to the model line by line.
 
 A stopped wait, no new output, and a running execution are observations, not successful verification. A cancellation acknowledgment means the request was accepted; resources may still be stopping. Inspect `execution_pending` and `cleanup` before restarting conflicting work.
 
@@ -146,12 +148,12 @@ State persistence has a separate 180-second window. Database connection preparat
 
 The default resource-closing window is 60 seconds. Existing explicit values remain effective. Persistence can save completed facts after a model or Episode deadline, and stays within an enclosing resource-closing window. Storage timeout diagnostics identify the operation, phase, limit, elapsed time and commit/rollback state. A caller's observation wait remains separate from these windows.
 
-Automatic approval review and the Goal model checker default to a 500-second window. Fixed workspace Git queries allow up to 120 seconds. Explicit shorter settings and parent execution deadlines still apply.
+Single model requests default to 500 seconds; Auto-review has no default whole-task deadline. Git query windows default to 120 seconds and are configurable in runtime_limits. Explicit parent deadlines still apply.
 
-MCP connection setup and container management default to 90 seconds; container inspection allows 15 seconds. Service operations such as backup and audit have a 1500-second execution window. Status-query observation waits remain separate.
+MCP connection setup and container management default to 90 seconds; container inspection allows 15 seconds. Service operations such as backup and audit have no default whole-operation deadline. Status-query observation waits remain separate.
 
 ## Working-state compaction
 
-Compaction preserves the complete task, accepted amendments and plan separately. Its working record prioritizes unfinished work, relevant contracts and evidence; the detailed transcript and operation index remain retrievable. The target is 8,000 characters and the normal ceiling is 10,000. An oversized result receives one focused shortening request with a lower drafting target. A corrected result may use at most 5% extra space, capped at 500 characters across the complete summary, when verified spare context is available. The complete serialized context is checked before installing the replacement. Missing space or larger overflow preserves the original history and reports the applicable limits.
+Compaction retains the complete task, amendments and plan; its working record preserves unfinished work, relevant interfaces and evidence. Detailed transcripts and operation indexes remain readable. Context pressure is advisory by default; the model can call compact, while confirmed provider overflow invokes recovery. Set auto_compact=true for proactive reduction. The 8,000-character target and 10,000-character nominal window are configurable; longer summaries can fit when actual serialized context has room. Coverage, chunks and rewrites are configurable. Failed optional reduction retains the original history and returns an observation.
 
-Native Run automatic review is registered before its durable request becomes visible. Normal model or Episode boundaries wait for this critical activity before closing its Session. Explicit pause, cancellation, request invalidation and absolute deadlines still apply; manual decisions win over late model output. New Runs default to a 900-second approval-request window, bounded by the Run deadline; an explicit shorter window remains effective.
+Native Run automatic review is registered before its durable request becomes visible. Normal model or Episode boundaries wait for this critical activity before closing its Session. Explicit pause, cancellation, request invalidation and absolute deadlines still apply; manual decisions win over late model output. New Runs add no default approval expiry; approvals remain bound to version and scope. Explicit finite windows and parent Run deadlines remain effective.

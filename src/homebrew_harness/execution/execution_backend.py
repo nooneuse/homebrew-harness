@@ -1,7 +1,8 @@
 """Host-selected execution backends. Container requests never fall back to native."""
 
 from homebrew_harness.runtime.errors import boundary_error
-from homebrew_harness.configuration import DEFAULT_CONTAINER_CONTROL_SECONDS, DEFAULT_CONTAINER_INSPECT_SECONDS, DEFAULT_SHUTDOWN_SECONDS
+from homebrew_harness.configuration import DEFAULT_SHUTDOWN_SECONDS
+from homebrew_harness.runtime.limits import current_limits
 import hashlib
 import json
 import os
@@ -119,14 +120,18 @@ class ContainerPolicy:
             raise boundary_error(ValueError, "execution_backend",
                 "Container command must be a fixed host-selected argv inside the image."
             )
+        from homebrew_harness.runtime.limits import positive
+        positive(self.cpus, "container.cpus")
+        for name in ("memory_mb", "pids", "uid", "workspace_bytes"):
+            positive(getattr(self, name), name, integer=True)
         if (
-            not 0.1 <= self.cpus <= 8
-            or not 64 <= self.memory_mb <= 4096
-            or not 16 <= self.pids <= 256
-            or not 1 <= self.uid <= 65534
+            self.cpus < 0.1
+            or self.memory_mb < 64
+            or self.pids < 16
+            or self.uid < 1
             or type(self.workspace_writable) is not bool
             or type(self.workspace_bytes) is not int
-            or not 1024 * 1024 <= self.workspace_bytes <= 512 * 1024 * 1024
+            or self.workspace_bytes < 1024 * 1024
         ):
             raise boundary_error(ValueError, "execution_backend",
                 "Container resource policy exceeds the supported host bounds."
@@ -166,7 +171,8 @@ class ContainerBackend:
             ).encode()
         ).hexdigest()
 
-    def probe(self, timeout=DEFAULT_CONTAINER_INSPECT_SECONDS, cancel_events=()):
+    def probe(self, timeout=None, cancel_events=()):
+        timeout = current_limits().container_inspect_seconds if timeout is None else timeout
         if self.cli_identity is None:
             return {
                 "available": False,
@@ -184,7 +190,7 @@ class ContainerBackend:
         try:
             result = self._control(
                 [self.policy.cli, "info", "--format", "{{.OSType}}"],
-                max(0.001, min(DEFAULT_CONTAINER_INSPECT_SECONDS, timeout)),
+                max(0.001, min(current_limits().container_inspect_seconds, timeout)),
                 cancel_events,
             )
             available = result.returncode == 0 and result.stdout.strip() == "linux"
@@ -196,7 +202,8 @@ class ContainerBackend:
             "os_isolation_verified": False,
         }
 
-    def _inspect(self, name, timeout=DEFAULT_CONTAINER_INSPECT_SECONDS):
+    def _inspect(self, name, timeout=None):
+        timeout = current_limits().container_inspect_seconds if timeout is None else timeout
         try:
             result = self._control(
                 [self.policy.cli, "inspect", name], max(0.001, timeout)
@@ -327,7 +334,7 @@ class ContainerBackend:
             raise BackendUnavailable(
                 "Container command is not bound to this host recipe."
             )
-        if not self.probe(min(DEFAULT_CONTAINER_CONTROL_SECONDS, request.deadline.remaining()) if request.deadline.remaining() is not None else DEFAULT_CONTAINER_CONTROL_SECONDS, request.cancel_events)[
+        if not self.probe(min(current_limits().container_control_seconds, request.deadline.remaining()) if request.deadline.remaining() is not None else current_limits().container_control_seconds, request.cancel_events)[
             "available"
         ]:
             raise BackendUnavailable(
@@ -378,7 +385,7 @@ class ContainerBackend:
             remaining = request.deadline.remaining()
             image_result = self._control(
                 [policy.cli, "image", "inspect", policy.image, "--format", "{{.Id}}"],
-                max(0.001, min(DEFAULT_CONTAINER_INSPECT_SECONDS, remaining if remaining is not None else DEFAULT_CONTAINER_INSPECT_SECONDS)),
+                max(0.001, min(current_limits().container_inspect_seconds, remaining if remaining is not None else current_limits().container_inspect_seconds)),
                 request.cancel_events,
             )
             if image_result.returncode != 0:
@@ -464,7 +471,7 @@ class ContainerBackend:
             check(request.deadline, request.cancel_events)
             create_started = True
             creation = self._control(
-                command, min(DEFAULT_CONTAINER_CONTROL_SECONDS, request.deadline.remaining()) if request.deadline.remaining() is not None else DEFAULT_CONTAINER_CONTROL_SECONDS, request.cancel_events
+                command, min(current_limits().container_control_seconds, request.deadline.remaining()) if request.deadline.remaining() is not None else current_limits().container_control_seconds, request.cancel_events
             )
             if creation.returncode != 0:
                 if self._precreation_rejection(creation):
@@ -475,7 +482,7 @@ class ContainerBackend:
             created = True
             check(request.deadline, request.cancel_events)
             configuration = self._inspect(
-                name, min(DEFAULT_CONTAINER_INSPECT_SECONDS, request.deadline.remaining()) if request.deadline.remaining() is not None else DEFAULT_CONTAINER_INSPECT_SECONDS
+                name, min(current_limits().container_inspect_seconds, request.deadline.remaining()) if request.deadline.remaining() is not None else current_limits().container_inspect_seconds
             )
             if not self._verified(configuration, name, temporary, request, image):
                 raise BackendUnavailable(

@@ -8,6 +8,7 @@ from homebrew_harness.security.safe_files import canonical_root
 from homebrew_harness.storage.durable_runtime import DurableStore
 from homebrew_harness.runs.store import RunStore
 from homebrew_harness.runtime.output import output_scope
+from homebrew_harness.runtime.limits import limits_scope
 from .config import HostConfig
 from .types import CloseReport, ClosePending, SDKError
 
@@ -18,8 +19,9 @@ class Harness:
         self.config = config or HostConfig.from_files()
         if not isinstance(self.config, HostConfig):
             raise ValueError("Expected HostConfig.")
-        self.store = DurableStore(self.workdir)
-        self.run_store = RunStore(self.workdir)
+        with limits_scope(self.config.settings.runtime_limits):
+            self.store = DurableStore(self.workdir)
+            self.run_store = RunStore(self.workdir)
         self.changed = threading.Event()
         self.closed = False
         self._closed_resources = False
@@ -62,7 +64,8 @@ class Harness:
             self._active += 1
             self._admitted.depth = getattr(self._admitted, "depth", 0) + 1
         try:
-            yield
+            with limits_scope(self.config.settings.runtime_limits):
+                yield
         finally:
             with self._condition:
                 self._admitted.depth -= 1

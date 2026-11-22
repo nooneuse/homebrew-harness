@@ -11,19 +11,22 @@ import os,stat,json,hashlib,base64,sys,signal,time
 profile=json.loads(sys.argv[1])
 # The namespace contains only this invocation. Freeze residual task writers,
 # preserving PID 1 and the collecting exec. A failed freeze aborts export.
-for repeat in range(3):
+freeze_seconds=float(sys.argv[2]) if len(sys.argv)>2 else 2
+freeze_end=time.monotonic()+freeze_seconds
+while True:
+ active=[]
  for entry in os.listdir('/proc'):
   if not entry.isdigit() or int(entry) in {1,os.getpid()}:continue
-  try:os.kill(int(entry),signal.SIGSTOP)
-  except ProcessLookupError:pass
-# Fail closed if the bounded freeze did not reach a quiescent namespace.
-for entry in os.listdir('/proc'):
- if not entry.isdigit() or int(entry) in {1,os.getpid()}:continue
- try:
-  with open('/proc/'+entry+'/status') as status:
-   state=next(line.split()[1] for line in status if line.startswith('State:'))
-  if state not in {'T','t','Z','X'}:raise ValueError('artifact writers remain active')
- except FileNotFoundError:pass
+  try:
+   os.kill(int(entry),signal.SIGSTOP)
+   with open('/proc/'+entry+'/status') as status:
+    state=next(line.split()[1] for line in status if line.startswith('State:'))
+   if state not in {'T','t','Z','X'}:active.append(entry)
+  except (FileNotFoundError,ProcessLookupError):pass
+ if not active:break
+ if time.monotonic()>=freeze_end:
+  raise ValueError('artifact_freeze_timeout: active_writers='+str(len(active))+' seconds='+str(freeze_seconds))
+ time.sleep(min(.01,max(0,freeze_end-time.monotonic())))
 root=os.open('/workspace',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)
 files=[];missing=[];total=0
 try:

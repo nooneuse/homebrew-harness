@@ -280,7 +280,7 @@ class RunnerTests(Fixture):
         self.assertEqual(runner.get(receipt["run_id"])["status"], "passed")
 
     def test_output_limit_stops_and_cannot_count_as_success(self):
-        runner = self.runner("print('x'*100000)", output_bytes=1000)
+        runner = self.runner("print('x'*100000)", output_bytes=1000, hard_output_bytes=1000)
         result = runner.run("suite")
         self.assertEqual(result["status"], "output_limit")
         self.assertFalse(runner.verify("suite", self.root)["ok"])

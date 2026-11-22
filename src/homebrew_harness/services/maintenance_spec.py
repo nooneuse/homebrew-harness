@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Host policy for service proposals; scope selection can only narrow Run defaults."""
 
 from homebrew_harness.runtime.errors import boundary_error
@@ -14,22 +15,25 @@ NAME = re.compile(r"[a-z][a-z0-9_-]{0,63}\Z")
 CATEGORIES = {"bug", "feature", "documentation", "maintenance", "question"}
 DISPOSITIONS = {"accept", "needs_info", "defer", "reject", "merge", "decide"}
 INSTRUCTION_TARGETS = frozenset({
-    "common", "development", "triage", "discussion", "review", "ci_triage",
+    "common", "development", "triage", "discussion", "review", "ci_triage", "validation_plan", "publication",
     "audit", "conversation", "report", "incident", "upgrade_assessment",
 })
 
 
 def text(value, label="text", maximum=64000):
-    if not isinstance(value, str) or not value.strip() or len(value) > maximum:
+    if not isinstance(value, str) or not value.strip() or (current_limits().service_text_chars is not None and len(value) > current_limits().service_text_chars):
         raise boundary_error(ValueError, "service_configuration", label + " must be nonempty bounded text.")
     return value
 
 
 def number(value, label, minimum, maximum, *, integer=False):
+    if value is None and label in {"authority_seconds", "authorization_seconds", "gate_seconds", "ci_wait_seconds", "prepare_seconds", "job_seconds"}:
+        return None
     if (
         type(value) not in ({int} if integer else {int, float})
-        or not math.isfinite(value)
-        or not minimum <= value <= maximum
+        or not integer and not math.isfinite(value)
+        or value < minimum
+        or label in {"cursor", "offset"} and value > 2**63 - 1
     ):
         raise boundary_error(ValueError, "service_configuration", "Invalid " + label)
     return value
@@ -52,8 +56,8 @@ def instructions_for(policy, kind):
 def validate_sources(sources):
     from homebrew_harness.platforms.registry import validate_declaration
 
-    if not isinstance(sources, (list, tuple)) or len(sources) > 8:
-        raise boundary_error(ValueError, "service_configuration", "Sources must contain at most eight host declarations.")
+    if not isinstance(sources, (list, tuple)) or (current_limits().service_sources is not None and len(sources) > current_limits().service_sources):
+        raise boundary_error(ValueError, "service_configuration", "Sources must be a list within any configured service_sources limit.")
     result = [validate_declaration(s, "repository_events", named=True) for s in sources]
     if len({s["name"] for s in result}) != len(result):
         raise boundary_error(ValueError, "service_configuration", "Source names must be unique.")
@@ -81,6 +85,8 @@ def validate_policy(raw, run_spec):
         "job_turns",
         "job_call_warning",
         "job_attempts",
+        "job_attempt_warning",
+        "job_warning_seconds",
         "model_profile",
         "instructions",
     }:
@@ -90,12 +96,14 @@ def validate_policy(raw, run_spec):
         "non_goals": "Do not publish external changes.",
         "scopes": {},
         "auto_categories": [],
-        "authority_seconds": 3600,
+        "authority_seconds": None,
         "report_seconds": 43200,
-        "job_seconds": DEFAULT_TASK_SECONDS,
+        "job_seconds": None,
+        "job_warning_seconds": DEFAULT_TASK_SECONDS,
         "job_turns": None,
         "job_call_warning": 40,
-        "job_attempts": 3,
+        "job_attempts": None,
+        "job_attempt_warning": 3,
         "model_profile": None,
         "instructions": {},
         **raw,
@@ -111,16 +119,19 @@ def validate_policy(raw, run_spec):
         text(value, "task instructions", 8000)
         if redact(value) != value:
             raise boundary_error(ValueError, "service_configuration", "Task instructions cannot contain private connection values.")
-    if sum(map(len, instructions.values())) > 16000:
+    if current_limits().service_text_chars is not None and sum(map(len, instructions.values())) > current_limits().service_text_chars:
         raise boundary_error(ValueError, "service_configuration", "Combined task instructions exceed 16000 characters.")
-    for key in ("authority_seconds", "report_seconds"):
-        number(policy[key], key, 1, 31536000)
-    number(policy["job_seconds"], "job_seconds", 1, 3600)
+    from homebrew_harness.runtime.limits import positive
+    positive(policy["authority_seconds"], "authority_seconds", nullable=True)
+    positive(policy["report_seconds"], "report_seconds")
+    positive(policy["job_seconds"], "job_seconds", nullable=True)
+    positive(policy["job_warning_seconds"], "job_warning_seconds", nullable=True)
+    positive(policy["job_attempt_warning"], "job_attempt_warning", nullable=True, integer=True)
     if policy["job_turns"] is not None:
-        number(policy["job_turns"], "job_turns", 1, 512, integer=True)
+        positive(policy["job_turns"], "job_turns", nullable=True, integer=True)
     if policy["job_call_warning"] is not None:
-        number(policy["job_call_warning"], "job_call_warning", 1, 512, integer=True)
-    number(policy["job_attempts"], "job_attempts", 1, 10, integer=True)
+        positive(policy["job_call_warning"], "job_call_warning", nullable=True, integer=True)
+    positive(policy["job_attempts"], "job_attempts", nullable=True, integer=True)
     if policy["model_profile"] is not None and (
         not isinstance(policy["model_profile"], str)
         or not NAME.fullmatch(policy["model_profile"])
@@ -130,7 +141,7 @@ def validate_policy(raw, run_spec):
         c not in CATEGORIES for c in policy["auto_categories"]
     ):
         raise boundary_error(ValueError, "service_configuration", "Invalid automatically accepted categories.")
-    if not isinstance(policy["scopes"], dict) or len(policy["scopes"]) > 16:
+    if not isinstance(policy["scopes"], dict) or (current_limits().service_scopes is not None and len(policy["scopes"]) > current_limits().service_scopes):
         raise boundary_error(ValueError, "service_configuration", "Invalid scope catalog.")
     scopes = {}
     for name, scope in policy["scopes"].items():

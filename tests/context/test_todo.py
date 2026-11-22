@@ -27,6 +27,7 @@ import homebrew_harness.tools.registry
 from homebrew_harness.runtime.hooks import ToolEvent
 from tests.support.clients import call, fake_client, reply
 from homebrew_harness.context.todo import MAX_TODOS, TODO_REMINDER, TodoManager
+from homebrew_harness.runtime.limits import limits_scope
 
 
 def item(content, status="pending"):
@@ -108,6 +109,9 @@ class TodoTests(unittest.TestCase):
         )
 
     def test_twenty_items_are_valid_and_twenty_one_preserve_previous_state(self):
+        scope = limits_scope({"todo_items": 20, "todo_active_items": 1})
+        scope.__enter__()
+        self.addCleanup(scope.__exit__, None, None, None)
         self.manager.update([item(str(index)) for index in range(MAX_TODOS)])
         previous, revision = self.manager.items, self.manager.revision
         with self.assertRaises(ValueError):
@@ -116,6 +120,9 @@ class TodoTests(unittest.TestCase):
         self.assertEqual(self.manager.revision, revision)
 
     def test_multiple_in_progress_items_are_rejected_atomically(self):
+        scope = limits_scope({"todo_items": 20, "todo_active_items": 1})
+        scope.__enter__()
+        self.addCleanup(scope.__exit__, None, None, None)
         self.manager.update([item("Existing task", "in_progress")])
         previous, revision = self.manager.items, self.manager.revision
         result = json.loads(
@@ -195,6 +202,9 @@ class TodoTests(unittest.TestCase):
         self.assertIn("\\u001b", rendered)
 
     def test_failed_or_blocked_updates_do_not_display_a_new_plan(self):
+        scope = limits_scope({"todo_items": 20, "todo_active_items": 1})
+        scope.__enter__()
+        self.addCleanup(scope.__exit__, None, None, None)
         self.execute([item("Keep")])
         self.stderr.truncate(0)
         self.stderr.seek(0)
@@ -309,6 +319,9 @@ class TodoTests(unittest.TestCase):
         )
 
     def test_failed_todo_update_does_not_reset_the_counter(self):
+        scope = limits_scope({"todo_items": 20, "todo_active_items": 1})
+        scope.__enter__()
+        self.addCleanup(scope.__exit__, None, None, None)
         self.manager.update([item("Keep")])
         _, snapshots, _ = self.run_loop(
             [

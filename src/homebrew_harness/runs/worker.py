@@ -51,6 +51,7 @@ def make_session(store, control, args):
         context_chars=spec.context_chars,
         output_tokens=spec.output_tokens,
         max_turns=spec.episode_model_calls,
+        runtime_limits=getattr(args, "runtime_limits", None) or spec.runtime_limits,
     )
     from homebrew_harness.execution.providers.backends import session_backend_bindings
 

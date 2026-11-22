@@ -16,6 +16,7 @@ from pathlib import PurePosixPath
 from dataclasses import asdict, dataclass, field
 
 from homebrew_harness.runtime.errors import boundary_error
+from homebrew_harness.runtime.limits import current_limits
 from homebrew_harness.runtime.capabilities import CORE_TOOLS
 from homebrew_harness.orchestration.hard_conditions import validate_spec
 from homebrew_harness.security.data_boundary import redact
@@ -66,10 +67,11 @@ class RunSpec:
     tools: tuple = DEFAULT_TOOLS
     allow_tests: tuple = ()
     write_paths: tuple = (".",)
-    approval_seconds: float = 900
+    approval_seconds: float | None = None
     approval_review: dict | None = None
-    repeat_limit: int = 3
-    replan_limit: int = 1
+    repeat_limit: int | None = None
+    repeat_warning: int | None = 3
+    replan_limit: int | None = None
     model_profile: str | None = None
     fallback_models: tuple = ()
     fallback_errors: tuple = (
@@ -79,11 +81,14 @@ class RunSpec:
     )
     context_chars: int = DEFAULT_CONTEXT_CHARS
     output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
-    total_seconds: float = DEFAULT_RUN_SECONDS
-    episode_seconds: float = DEFAULT_TASK_SECONDS
-    episode_model_calls: int = 20
+    total_seconds: float | None = None
+    total_warning_seconds: float | None = DEFAULT_RUN_SECONDS
+    episode_seconds: float | None = DEFAULT_TASK_SECONDS
+    episode_model_calls: int | None = 20
     request_seconds: float = DEFAULT_MODEL_REQUEST_SECONDS
-    retries: int = 3
+    retries: int | None = None
+    retry_warning: int | None = 3
+    runtime_limits: dict = field(default_factory=lambda: current_limits().data())
     retry_delay: float = 2
     heartbeat_seconds: float = 2
     heartbeat_timeout: float = 30
@@ -98,6 +103,11 @@ class RunSpec:
 
     def __post_init__(self):
         import json
+        from homebrew_harness.runtime.limits import RuntimeLimits, positive
+        object.__setattr__(self, "runtime_limits", RuntimeLimits.parse(self.runtime_limits).data())
+        positive(self.repeat_warning, "repeat_warning", nullable=True, integer=True)
+        positive(self.retry_warning, "retry_warning", nullable=True, integer=True)
+        positive(self.total_warning_seconds, "total_warning_seconds", nullable=True)
 
         try:
             context_size = len(json.dumps(self.work_context, allow_nan=False))
@@ -105,7 +115,7 @@ class RunSpec:
             raise ValueError("Invalid Service work context.") from None
         if (
             not isinstance(self.work_context, dict)
-            or context_size > 32000
+            or context_size > self.runtime_limits["work_context_chars"]
             or self.work_context
             and (
                 not isinstance(self.work_context.get("work_id"), str)
@@ -155,7 +165,7 @@ class RunSpec:
             raise ValueError("Invalid managed memory mode.")
         if not isinstance(self.prompt, str) or not self.prompt.strip():
             raise ValueError("Run prompt must be nonempty text.")
-        if len(self.prompt) > MAX_RUN_PROMPT_CHARS:
+        if len(self.prompt) > self.runtime_limits["run_prompt_chars"]:
             raise boundary_error(
                 ValueError,
                 "run_prompt_limit",
@@ -163,7 +173,7 @@ class RunSpec:
                 source="run",
                 phase="prepare",
                 limit_name="run.prompt_characters",
-                limit_value=MAX_RUN_PROMPT_CHARS,
+                limit_value=self.runtime_limits["run_prompt_chars"],
                 observed_value=len(self.prompt),
                 unit="characters",
             )
@@ -194,7 +204,6 @@ class RunSpec:
             object.__setattr__(self, name, tuple(values))
         if (
             not self.write_paths
-            or len(self.write_paths) > 64
             or any(
                 len(v) > 1000
                 or PurePosixPath(v).is_absolute()
@@ -208,7 +217,7 @@ class RunSpec:
             )
         from .stages import validate_stages, STAGE_TOOLS
 
-        object.__setattr__(self, "stages", validate_stages(self.stages))
+        object.__setattr__(self, "stages", validate_stages(self.stages, self.runtime_limits))
         if self.goal and any(
             predicate["workspace"].startswith("stage:")
             and predicate["workspace"][6:]
@@ -218,7 +227,7 @@ class RunSpec:
             raise ValueError("Final goal references an unknown managed stage.")
         from .team import validate_members
 
-        object.__setattr__(self, "members", validate_members(self.members, self.stages))
+        object.__setattr__(self, "members", validate_members(self.members, self.stages, self.runtime_limits))
         if ("teams" in self.enabled and not self.members) or (
             "worktrees" in self.enabled
             and not any(stage["isolated"] for stage in self.stages)
@@ -303,39 +312,16 @@ class RunSpec:
         object.__setattr__(
             self, "tools", tuple(sorted(set(self.tools) | RUN_CONTROL_TOOLS))
         )
-        if len(self.effective_tools()) > 128:
+        if self.runtime_limits["tool_pool_size"] is not None and len(self.effective_tools()) > self.runtime_limits["tool_pool_size"]:
             raise ValueError("Effective managed tool pool exceeds 128 tools.")
-        for name, low, high in (
-            ("min_free_bytes", 0, 100_000_000_000),
-            ("context_chars", 10000, 2000000),
-            ("output_tokens", 128, 32768),
-            ("episode_model_calls", 1, 100),
-            ("retries", 0, 10),
-            ("repeat_limit", 2, 20),
-            ("replan_limit", 0, 3),
-        ):
-            if (
-                type(getattr(self, name)) is not int
-                or not low <= getattr(self, name) <= high
-            ):
-                raise ValueError("Invalid managed integer limit: " + name)
-        for name, low, high in (
-            ("total_seconds", 0.1, 604800),
-            ("episode_seconds", 0.01, 3600),
-            ("request_seconds", 0.01, 3600),
-            ("retry_delay", 0.01, 300),
-            ("heartbeat_seconds", 0.01, 30),
-            ("heartbeat_timeout", 0.05, 300),
-            ("shutdown_seconds", 0.01, 60),
-            ("approval_seconds", 1, 86400),
-        ):
-            value = getattr(self, name)
-            if (
-                type(value) not in {int, float}
-                or not math.isfinite(value)
-                or not low <= value <= high
-            ):
-                raise ValueError("Invalid managed time limit: " + name)
+        for name, zero in (("min_free_bytes", True), ("context_chars", False), ("output_tokens", False),
+                           ("episode_model_calls", False), ("retries", True), ("repeat_limit", False),
+                           ("replan_limit", True)):
+            positive(getattr(self, name), name, nullable=name in {"retries", "repeat_limit", "replan_limit", "episode_model_calls"},
+                     integer=True, zero=zero)
+        for name in ("total_seconds", "episode_seconds", "request_seconds", "retry_delay", "heartbeat_seconds",
+                     "heartbeat_timeout", "shutdown_seconds", "approval_seconds"):
+            positive(getattr(self, name), name, nullable=name in {"total_seconds", "approval_seconds", "episode_seconds"})
         if self.heartbeat_timeout <= self.heartbeat_seconds:
             raise ValueError("Heartbeat timeout must exceed its update interval.")
         if len(self.fallback_models) > 3 or any(

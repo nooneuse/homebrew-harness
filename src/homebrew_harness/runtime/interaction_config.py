@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Small host configuration for automatic entry; no CLI Namespace in runtime."""
 
 from homebrew_harness.configuration import (
@@ -7,13 +8,12 @@ from homebrew_harness.configuration import (
     DEFAULT_RUN_SECONDS,
     DEFAULT_TASK_SECONDS,
     DEFAULT_SHUTDOWN_SECONDS,
-    DEFAULT_GIT_QUERY_SECONDS,
 )
 
 import json
 import math
 from contextlib import ExitStack
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from homebrew_harness.execution.bash_policy import HOST_POLICY, load_bash_policy
@@ -44,15 +44,22 @@ class InteractionConfig:
     model_planning: bool = True
     prefer_session: bool = False
     detached: bool = False
-    total_seconds: float = DEFAULT_RUN_SECONDS
-    turn_seconds: float = DEFAULT_TASK_SECONDS
+    total_seconds: float | None = None
+    turn_seconds: float | None = None
     request_seconds: float = DEFAULT_MODEL_REQUEST_SECONDS
     shutdown_seconds: float = DEFAULT_SHUTDOWN_SECONDS
     context_chars: int = DEFAULT_CONTEXT_CHARS
     output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
-    max_turns: int = 20
+    max_turns: int | None = None
+    model_call_warning: int | None = 20
+    turn_warning_seconds: float | None = DEFAULT_TASK_SECONDS
+    runtime_limits: dict = field(default_factory=dict)
 
     def __post_init__(self):
+        from homebrew_harness.runtime.limits import RuntimeLimits, positive
+        object.__setattr__(self, "runtime_limits", RuntimeLimits.parse(self.runtime_limits).data())
+        positive(self.model_call_warning, "model_call_warning", nullable=True, integer=True)
+        positive(self.turn_warning_seconds, "turn_warning_seconds", nullable=True)
         if self.approval_review is not None:
             from homebrew_harness.security.approval_review import ReviewConfig
             ReviewConfig.parse(self.approval_review)
@@ -87,10 +94,12 @@ class InteractionConfig:
             "shutdown_seconds",
         ):
             value = getattr(self, name)
+            if value is None and name in {"total_seconds", "turn_seconds"}:
+                continue
             if (
                 type(value) not in {int, float}
                 or not math.isfinite(value)
-                or not (0.1 if name == "total_seconds" else 0.01) <= value <= 604800
+                or value <= 0
             ):
                 raise ValueError("Invalid host deadline: " + name)
         for name, low, high in (
@@ -98,10 +107,9 @@ class InteractionConfig:
             ("output_tokens", 128, 32768),
             ("max_turns", 1, 100),
         ):
-            if (
-                type(getattr(self, name)) is not int
-                or not low <= getattr(self, name) <= high
-            ):
+            if name == "max_turns" and self.max_turns is None:
+                continue
+            if type(getattr(self, name)) is not int or getattr(self, name) < low:
                 raise ValueError("Invalid host limit: " + name)
         for name in ("allow_tests", "write_paths"):
             if not isinstance(getattr(self, name), (tuple, list)) or any(
@@ -123,9 +131,9 @@ class InteractionConfig:
                     "Automatic host configuration must be outside the workspace."
                 )
             with path.open("rb") as stream:
-                raw = stream.read(65537)
-            if len(raw) > 65536:
-                raise ValueError("Automatic host configuration exceeds 64 KiB.")
+                raw = stream.read(current_limits().config_file_bytes + 1)
+            if len(raw) > current_limits().config_file_bytes:
+                raise ValueError("Automatic host configuration exceeds runtime_limits.config_file_bytes.")
             data = json.loads(raw)
             if not isinstance(data, dict) or set(data) - set(cls.__dataclass_fields__):
                 raise ValueError("Unknown automatic host settings.")
@@ -165,6 +173,7 @@ class InteractionConfig:
             args.extend(("--model-selection", json.dumps(self.model_selection)))
         if self.approval_review is not None:
             args.extend(("--approval-review", json.dumps(self.approval_review)))
+        args.extend(("--runtime-limits", json.dumps(self.runtime_limits)))
         return tuple(args)
 
     def identity(self):
@@ -455,6 +464,9 @@ class InteractionAssembler:
                 turn_timeout=c.turn_seconds,
                 shutdown_timeout=c.shutdown_seconds,
                 max_turns=c.max_turns,
+                model_call_warning=c.model_call_warning,
+                turn_warning_seconds=c.turn_warning_seconds,
+                runtime_limits=c.runtime_limits,
                 resume_session=resume,
             )
             resources.pop_all()
@@ -536,7 +548,7 @@ class InteractionAssembler:
                     ["git", "status", "--porcelain"],
                     cwd=self.workdir,
                     capture_output=True,
-                    timeout=DEFAULT_GIT_QUERY_SECONDS,
+                    timeout=current_limits().git_query_seconds,
                     check=True,
                 )
                 if result.stdout:

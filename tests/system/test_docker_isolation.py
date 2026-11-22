@@ -238,9 +238,10 @@ print(json.dumps({'limited':limited,'children':len(children)}))
         self.assertTrue(backend.observed[-1]["State"]["OOMKilled"])
         self.assertTrue(result["isolation"]["cleanup_complete"])
 
-    def test_output_limit_and_container_removal(self):
+    def test_output_capture_preserves_exit_and_container_removal(self):
         result, backend = self.run_probe("print('x'*2000000,flush=True)\n", output=1024)
-        self.assertEqual(result["status"], "output_limit", result)
+        self.assertEqual(result["status"], "passed", result)
+        self.assertTrue(result["output_capture"]["stdout"]["truncated"])
         self.assertLessEqual(len(result["stdout_preview"].encode()), 1024)
         self.assertTrue(result["isolation"]["cleanup_complete"])
         self.assertTrue(backend.wait_closed(0.2))
@@ -376,9 +377,9 @@ print(json.dumps({'limited':limited}))
 
     def test_readonly_snapshot_preserves_script_execute_and_strips_special_bits(self):
         script = self.workspace / "probe.py"
-        script.write_text("#!/bin/sh\nprintf executable-test\n")
+        script.write_text("#!/usr/local/bin/python\nprint('executable-test')\n")
         script.chmod(0o6755)
-        argv = ("/bin/sh", str(script))
+        argv = (sys.executable, str(script))
         backend = ObservedBackend(
             ContainerPolicy(CLI, IMAGE, ("/workspace/probe.py",), argv)
         )

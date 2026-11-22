@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Local host commands for persistent managed runs."""
 
 import json
@@ -127,8 +128,8 @@ def execute(args, parser):
         if args.command == "start":
             spec_path = args.spec.expanduser().resolve()
             with spec_path.open("rb") as f:
-                raw = f.read(100001)
-            if len(raw) > 100000:
+                raw = f.read(current_limits().source_control_bytes + 1)
+            if len(raw) > current_limits().source_control_bytes:
                 raise ValueError("RunSpec exceeds its size limit.")
             spec = RunSpec.from_dict(json.loads(raw))
             declared = None

@@ -1,5 +1,6 @@
 """Durable host operations, with a live control plane while native writers park."""
 
+from homebrew_harness.runtime.limits import current_limits
 from homebrew_harness.runtime.errors import failure_fields
 import json
 import threading
@@ -115,7 +116,7 @@ class Operations:
                 },
                 "result_available": row.get("result") is not None,
             }
-        if len(json.dumps(value)) > 24000:
+        if len(json.dumps(value)) > current_limits().operation_result_chars:
             value.pop("result", None)
             value.update(
                 result_available=row.get("result") is not None,
@@ -164,7 +165,7 @@ class Operations:
                 return None
             row = json.loads(raw[0])
             if row["state"] == "queued":
-                row["deadline_at"] = time.time() + self.spec["operation_seconds"]
+                row["deadline_at"] = None if self.spec["operation_seconds"] is None else time.time() + self.spec["operation_seconds"]
             row.update(
                 state="running",
                 generation=self.runtime.header["generation"],
@@ -190,7 +191,7 @@ class Operations:
                 try:
                     with (
                         control_scope(
-                            Deadline.after(max(0, row["deadline_at"] - time.time()))
+                            Deadline.after(None if row["deadline_at"] is None else max(0, row["deadline_at"] - time.time()))
                         ),
                         self.runtime.leases.use("service-operation"),
                     ):
@@ -407,7 +408,7 @@ class Operations:
             )
             if job["state"] == "completed":
                 return {"job_id": job["id"], "assessment": job["result"]}
-            if job["attempts"] >= ms.policy["job_attempts"]:
+            if ms.policy["job_attempts"] is not None and job["attempts"] >= ms.policy["job_attempts"]:
                 raise ValueError("Operations reasoning attempts exhausted.")
             job.update(
                 state="running",

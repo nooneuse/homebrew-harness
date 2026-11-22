@@ -31,7 +31,7 @@ class JobContextFlows(unittest.TestCase):
                 envelopes = [json.loads(m["content"]) for m in request["messages"]
                     if m.get("role") == "user" and m.get("content", "").startswith('{"job":')]
                 if envelopes and envelopes[0]["job"]["kind"] == "ci_triage":
-                    value = original_completion(tool="service_propose", arguments={"proposal": json.dumps({
+                    value = original_completion(tool="service_propose", arguments={"proposal": json.dumps({"next_action": "repair",
                         "classification": "code", "reason": "Recorded sufficient evidence.",
                         "plan": "Set src/value.txt to 2 and preserve the fixed tests."})})
             call_id += 1
@@ -173,7 +173,7 @@ class JobContextFlows(unittest.TestCase):
                 envelopes = [json.loads(m["content"]) for m in current["messages"]
                     if m.get("role") == "user" and m.get("content", "").startswith('{"job":')]
                 if envelopes and envelopes[0]["job"]["kind"] == "ci_triage":
-                    value = original_completion(tool="service_propose", arguments={"proposal": json.dumps({
+                    value = original_completion(tool="service_propose", arguments={"proposal": json.dumps({"next_action": "repair",
                         "classification": "code", "reason": "Confirmed current-candidate regression.",
                         "plan": "Set src/value.txt to 2 and preserve the fixed tests."})})
             calls += 1

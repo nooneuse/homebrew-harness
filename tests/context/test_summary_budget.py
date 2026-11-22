@@ -27,7 +27,7 @@ class SummaryBudgetTests(unittest.TestCase):
 
     def compactor(self, responses, **kwargs):
         client, calls = fake_client(responses)
-        return ContextCompactor(client, "fixture", self.root, **kwargs), calls
+        return ContextCompactor(client, "fixture", self.root, **kwargs, runtime_limits={"auto_compact": True}), calls
 
     def test_saved_failure_equivalent_summary_fits_without_correction(self):
         summary = "S" * 6479 + "\n" * 50
@@ -277,6 +277,7 @@ class SummaryBudgetTests(unittest.TestCase):
                 [{"role": "user", "content": "Task"}],
                 "Task",
                 tools=[{"description": "x" * 10000}],
+                required=True,
             )
         self.assertEqual(failure.exception.code, "context_fixed_limit")
         self.assertEqual(calls, [])

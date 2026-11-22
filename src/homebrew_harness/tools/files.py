@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from homebrew_harness.runtime.limits import current_limits
 import json
 from contextlib import contextmanager
 from pathlib import Path
@@ -36,6 +37,8 @@ def run_read(
     path: str, workdir: Path, limit: int | None = None, offset: int = 0,
     expected_version: str | None = None, raw: bool = False,
 ) -> str:
+    from homebrew_harness.runtime.limits import current_limits
+    output_limit = current_limits().file_read_chars
     assert_visible(workdir, path)
     if type(raw) is not bool:
         raise ValueError("raw must be Boolean.")
@@ -62,7 +65,7 @@ def run_read(
                 break
             remaining -= len(skipped)
         execution_check()
-        content = reader.read(OUTPUT_CHAR_LIMIT + 1)
+        content = reader.read(output_limit + 1)
         reader.detach()
         observed = target.read_version(stream)
         if observed != version:
@@ -73,8 +76,8 @@ def run_read(
     selected = (
         content if limit is None else "".join(content.splitlines(keepends=True)[:limit])
     )
-    shown = selected[:OUTPUT_CHAR_LIMIT]
-    truncated = len(selected) < len(content) or len(selected) > OUTPUT_CHAR_LIMIT
+    shown = selected[:output_limit]
+    truncated = len(selected) < len(content) or len(selected) > output_limit
     return read_response(
         {
             "path": relative,
@@ -89,7 +92,8 @@ def run_read(
 
 def read_response(value):
     """Bound the complete JSON response, including escaping and metadata."""
-    content = value["content"][:OUTPUT_CHAR_LIMIT]
+    output_limit = current_limits().file_read_chars
+    content = value["content"][:output_limit]
     original_size = len(value["content"])
     source = value.get("source")
 
@@ -105,21 +109,21 @@ def read_response(value):
         return json.dumps(result, ensure_ascii=False)
 
     full = encode(len(content))
-    if len(full) <= OUTPUT_CHAR_LIMIT:
+    if len(full) <= output_limit:
         return full
-    if len(encode(0)) > OUTPUT_CHAR_LIMIT:
+    if len(encode(0)) > output_limit:
         raise boundary_error(ValueError, "file_read_response_limit", "File-read metadata exceeds the response budget.",
-            limit_name="file_read_response_characters", limit_value=OUTPUT_CHAR_LIMIT, observed_value=len(encode(0)), unit="characters", file_path=value["path"])
+            limit_name="file_read_response_characters", limit_value=output_limit, observed_value=len(encode(0)), unit="characters", file_path=value["path"])
     low, high = 0, len(content)
     while low < high:
         middle = (low + high + 1) // 2
-        if len(encode(middle)) <= OUTPUT_CHAR_LIMIT:
+        if len(encode(middle)) <= output_limit:
             low = middle
         else:
             high = middle - 1
     if not low and content:
         raise boundary_error(ValueError, "file_read_response_limit", "File-read metadata leaves no room for a content page.",
-            limit_name="file_read_response_characters", limit_value=OUTPUT_CHAR_LIMIT, observed_value=len(encode(0)), unit="characters", file_path=value["path"])
+            limit_name="file_read_response_characters", limit_value=output_limit, observed_value=len(encode(0)), unit="characters", file_path=value["path"])
     return encode(low)
 
 
@@ -193,6 +197,7 @@ def run_delete(path: str, workdir: Path, expected_version: str | None = None) ->
 
 def run_glob(pattern: str, workdir: Path) -> str:
     from .file_iteration import FileWalk
+    result_limit = current_limits().glob_results
 
     walk = FileWalk(workdir, pattern)
     paths = []
@@ -204,15 +209,15 @@ def run_glob(pattern: str, workdir: Path) -> str:
         except (OSError, ValueError):
             walk.skipped += 1
             walk.truncated, walk.reason = True, "unreadable_file"
-        if len(paths) > GLOB_RESULT_LIMIT:
+        if len(paths) > result_limit:
             break
-    truncated = len(paths) > GLOB_RESULT_LIMIT or walk.truncated
+    truncated = len(paths) > result_limit or walk.truncated
     return json.dumps(
         {
-            "paths": sorted(paths[:GLOB_RESULT_LIMIT]),
+            "paths": sorted(paths[:result_limit]),
             "truncated": truncated,
             "stop_reason": "result_limit"
-            if len(paths) > GLOB_RESULT_LIMIT
+            if len(paths) > result_limit
             else walk.reason,
         },
         ensure_ascii=False,

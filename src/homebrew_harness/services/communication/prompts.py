@@ -5,6 +5,7 @@ from pathlib import Path
 
 from homebrew_harness.security.safe_files import SafeFile
 from homebrew_harness.services.protocol import fingerprint
+from homebrew_harness.runtime.limits import current_limits
 
 NAMES = {"assessment": "discussion-assessment.md", "draft": "discussion-draft.md"}
 
@@ -14,12 +15,12 @@ def read(path):
     if path.is_symlink() or any(parent.is_symlink() for parent in path.parents):
         raise ValueError("Discussion prompt files cannot be symlinks.")
     with SafeFile(path.parent, path.name) as file:
-        raw, _, _ = file.snapshot(max_bytes=16384)
+        raw, _, _ = file.snapshot(max_bytes=max(current_limits().config_file_bytes, current_limits().communication_prompt_chars * 4))
     if raw is None:
         raise FileNotFoundError(path)
     text = raw.decode("utf-8")
-    if not text.strip() or len(text) > 8000:
-        raise ValueError("Discussion prompt text must be nonempty and at most 8000 characters.")
+    if not text.strip() or len(text) > current_limits().communication_prompt_chars:
+        raise ValueError("Discussion prompt text must be nonempty and within communication_prompt_chars.")
     return text
 
 

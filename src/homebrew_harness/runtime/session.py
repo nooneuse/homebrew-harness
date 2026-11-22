@@ -110,7 +110,10 @@ class HarnessSession:
         team_manager=None,
         mcp_runtime=None,
         context_chars: int = DEFAULT_CONTEXT_CHARS,
-        max_turns: int = 20,
+        max_turns: int | None = None,
+        model_call_warning: int | None = 20,
+        turn_warning_seconds: float | None = DEFAULT_TASK_SECONDS,
+        runtime_limits=None,
         clock=datetime.now,
         poll_interval: float = 1,
         dispatch_interval: float = 0.2,
@@ -119,15 +122,15 @@ class HarnessSession:
         goal_controller=None,
         goal_evaluator_model=None,
         goal_check_tokens=DEFAULT_GOAL_OUTPUT_TOKENS,
-        goal_input_chars=12000,
-        stop_block_cap=8,
+        goal_input_chars=None,
+        stop_block_cap=None,
         mode="interactive",
         shutdown_timeout=DEFAULT_SHUTDOWN_SECONDS,
         gateway=None,
         gateway_limits=None,
         test_runner=None,
         resume_session=None,
-        turn_timeout=DEFAULT_TASK_SECONDS,
+        turn_timeout=None,
         model_profile=None,
         worker_output_tokens=None,
         capabilities=None,
@@ -140,6 +143,13 @@ class HarnessSession:
         fork_seed=None,
         run_control=None,
     ):
+        from homebrew_harness.runtime.limits import RuntimeLimits, positive, current_limits
+        positive(max_turns, "max_turns", nullable=True, integer=True)
+        positive(model_call_warning, "model_call_warning", nullable=True, integer=True)
+        positive(turn_warning_seconds, "turn_warning_seconds", nullable=True)
+        self.runtime_limits = RuntimeLimits.parse(runtime_limits if runtime_limits is not None else current_limits())
+        self.model_call_warning = model_call_warning
+        self.turn_warning_seconds = turn_warning_seconds
         created, bindings = [], []
         self.run_control = run_control
         from homebrew_harness.runtime.conversation_commands import (
@@ -187,7 +197,7 @@ class HarnessSession:
                 or shutdown_timeout < 0
             ):
                 raise ValueError("Invalid host mode or shutdown timeout.")
-            if not math.isfinite(turn_timeout) or turn_timeout <= 0:
+            if turn_timeout is not None and (not math.isfinite(turn_timeout) or turn_timeout <= 0):
                 raise ValueError("Turn timeout must be finite positive seconds.")
             from homebrew_harness.execution.bash_policy import current_bash_policy
 
@@ -323,6 +333,7 @@ class HarnessSession:
                     todo_manager=todo_manager,
                     test_runner=test_runner,
                     context_chars=context_chars,
+                    runtime_limits=runtime_limits,
                     archive_namespace="lead-" + uuid.uuid4().hex,
                 ),
                 created,
@@ -420,6 +431,7 @@ class HarnessSession:
                                 context_chars=context_chars,
                                 mcp_runtime=mcp_runtime,
                             ),
+                            max_members=self.runtime_limits.team_members,
                             background_manager=self.background,
                             bash_policy=self.bash_policy,
                             worktrees=self.capabilities.has("worktrees"),
@@ -559,6 +571,7 @@ class HarnessSession:
                     ),
                     block_cap=stop_block_cap,
                     input_chars=goal_input_chars,
+                    runtime_limits=self.runtime_limits,
                 ),
             )
             bind(
@@ -779,6 +792,9 @@ class HarnessSession:
 
         return LoopComponents(
             operations=self.operations,
+            runtime_limits=self.runtime_limits,
+            model_call_warning=self.model_call_warning,
+            turn_warning_seconds=self.turn_warning_seconds,
             hooks=self.hooks,
             todo_manager=self.todo,
             skill_loader=self.skills,
@@ -1498,7 +1514,7 @@ class HarnessSession:
             finally:
                 self.lock.release()
             # Also wake periodically for workers with no mailbox event yet.
-            self._drain_changed.wait(min(remaining, self.dispatch_interval))
+            self._drain_changed.wait(min(remaining, max(self.dispatch_interval, self.runtime_limits.observation_poll_seconds)))
 
     def exit_report(self, status):
         return {
@@ -1572,11 +1588,17 @@ class HarnessSession:
 
     def _consume_user_input(self):
         self._input_dispatching.set()
+        changed = False
         try:
-            return self._dispatch_user_input()
+            changed = self._dispatch_user_input()
+            return changed
+        except BaseException:
+            changed = True
+            raise
         finally:
             self._input_dispatching.clear()
-            self._drain_changed.set()
+            if changed:
+                self._drain_changed.set()
 
     def _dispatch_user_input(self):
         if getattr(self, "_api_pending_turn_id", None):

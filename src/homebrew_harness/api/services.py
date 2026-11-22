@@ -188,6 +188,7 @@ class Services:
                     "episode_seconds": settings.turn_seconds,
                     "request_seconds": settings.request_seconds,
                     "episode_model_calls": settings.max_turns,
+                    "runtime_limits": settings.runtime_limits,
                     "memory_mode": settings.memory_mode,
                     "write_paths": settings.write_paths,
                     "allow_tests": settings.allow_tests,

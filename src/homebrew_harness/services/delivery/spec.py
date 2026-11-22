@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Host delivery declarations; values and publishing credentials remain external."""
 
 import ipaddress
@@ -61,18 +62,19 @@ def validate(raw):
         "check_app_ids": [],
         "reviewer_ids": [],
         "required_approvals": 0,
-        "require_review": True,
+        "require_review": False,
         "review_model": None,
         "merge": {"mode": "manual", "poll_seconds": 300},
         "auto_actions": [],
         "request_seconds": 10,
-        "gate_seconds": 120,
-        "authorization_seconds": 3600,
+        "gate_seconds": None,
+        "authorization_seconds": None,
         "ci_poll_seconds": 30,
-        "ci_wait_seconds": 3600,
+        "ci_wait_seconds": None,
+        "ci_wait_warning_seconds": 3600,
         "ci_fix_limit": None,
         "ci_fix_warning": 2,
-        "auto_ci_fix": False,
+        "auto_ci_fix": True,
         "credentials_file": None,
         "git_token_env": None,
         "git_user_env": None,
@@ -145,9 +147,9 @@ def validate(raw):
         "check_app_ids",
         "reviewer_ids",
     ):
-        if not isinstance(value[key], (tuple, list)) or len(value[key]) > 32:
+        if not isinstance(value[key], (tuple, list)) :
             raise ValueError("Invalid delivery collection: " + key)
-    if not value["required_tests"] or any(
+    if any(
         not isinstance(n, str) or not n or len(n) > 100
         for n in [*value["required_tests"], *value["required_checks"]]
     ):
@@ -156,6 +158,8 @@ def validate(raw):
         raise ValueError("Invalid trusted CI app IDs.")
     if any(type(n) is not int or n < 1 for n in value["reviewer_ids"]):
         raise ValueError("Invalid trusted reviewer IDs.")
+    if value["reviewer_ids"] and value["required_approvals"] > len(set(value["reviewer_ids"])):
+        raise ValueError("required_approvals exceeds the eligible reviewer set.")
     number(
         value["required_approvals"],
         "required_approvals",
@@ -226,10 +230,10 @@ def read_values(spec, environment, roots):
                     "Delivery credentials must be an owner-only regular file."
                 )
             with os.fdopen(fd, "r", closefd=False) as stream:
-                raw = stream.read(65537)
+                raw = stream.read(current_limits().config_file_bytes + 1)
         finally:
             os.close(fd)
-        if len(raw) > 65536:
+        if len(raw) > current_limits().config_file_bytes:
             raise ValueError("Delivery credential file exceeds its limit.")
         import io
         from dotenv import dotenv_values

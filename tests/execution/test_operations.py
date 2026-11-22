@@ -111,7 +111,7 @@ class OwnedExecutions(unittest.TestCase):
         })), self.root, hooks=create_hooks(), handlers={
             'stop_execution': partial(self.manager.run_tool, 'stop_execution')
         }, operations=self.manager))
-        self.assertIn('at most 200 characters', result['error'])
+        self.assertIn('200', result['error'])
         self.assertEqual(handle.snapshot().revision, before)
 
 

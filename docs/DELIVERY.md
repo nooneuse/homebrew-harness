@@ -1,5 +1,7 @@
 # Repository delivery
 
+Current budget defaults and migration: [Runtime budgets](LIMITS.md).
+
 [简体中文](DELIVERY.zh-CN.md)
 
 Optional Service delivery turns completed development into a fixed Git candidate, local quality checks, a review branch and a PR. The default waits for a project maintainer to merge through the platform. An optional mode lets the service perform a native merge after an operator approves that exact plan. The runtime then verifies the actual merged contents before completing the Work.

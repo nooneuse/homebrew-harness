@@ -69,6 +69,16 @@ class ConversationCommands(unittest.TestCase):
         session.run_user('Explain project')
         self.assertTrue(any('small functions' in m.get('content','') for m in payloads[-1] if m.get('name')=='project_guidance'))
 
+    def test_init_can_continue_past_ten_calls_before_publishing(self):
+        (self.root/'README.md').write_text('Project purpose and test commands.')
+        responses = [reply(calls=[call(str(i), name='read_file', arguments='{"path":"README.md"}')]) for i in range(11)]
+        session, client, payloads = self.session([*responses, reply('# Guide\nUse project tests.')], runtime_limits={'subagent_call_warning': 2})
+        value = json.loads(session.run_user('/init'))
+        self.assertTrue(value['published'])
+        self.assertEqual(client.chat.completions.create.call_count, 12)
+        self.assertEqual((self.root/'AGENTS.md').read_text(), '# Guide\nUse project tests.\n')
+        self.assertTrue(any(m.get('name') == 'execution_advisories' for m in payloads[-1]))
+
     def test_init_existing_file_is_previewed_and_apply_checks_version(self):
         (self.root/'AGENTS.md').write_text('Manual conventions')
         session,client,_=self.session([reply('Manual conventions\nAdd testing commands.')])

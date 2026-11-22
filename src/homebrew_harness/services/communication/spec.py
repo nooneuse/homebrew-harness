@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Host declarations; transport values and write credentials remain external."""
 
 from homebrew_harness.runtime.errors import boundary_error
@@ -47,9 +48,9 @@ def validate(raw, sources):
         "poll_seconds": 43200,
         "debounce_seconds": 10,
         "max_debounce_seconds": 60,
-        "authorization_seconds": 3600,
+        "authorization_seconds": None,
         "request_seconds": 10,
-        "prepare_seconds": 120,
+        "prepare_seconds": None,
         "no_progress_rounds": 3,
         "model_profile": None,
         "review_model": None,
@@ -131,7 +132,7 @@ def validate(raw, sources):
     for name in ("review_globs", "required_tests"):
         if (
             not isinstance(value[name], list)
-            or len(value[name]) > 32
+
             or any(not isinstance(v, str) or not v for v in value[name])
         ):
             raise boundary_error(ValueError, "communication_contract", "Invalid review scope or tests.")
@@ -246,9 +247,10 @@ def validate_proposal(raw, policy):
         or type(raw.get("requirements_changed", False)) is not bool
     ):
         raise boundary_error(ValueError, "communication_contract", "Discussion flags must be Boolean.")
-    for name, limit in [("facts", 32), ("questions", 16), ("findings", 32)]:
+    limits = current_limits()
+    for name, limit in [("facts", limits.communication_facts), ("questions", limits.communication_questions), ("findings", limits.communication_findings)]:
         values = raw.get(name, [])
-        if not isinstance(values, list) or len(values) > limit:
+        if not isinstance(values, list) or limit is not None and len(values) > limit:
             raise boundary_error(ValueError, "communication_contract", "Discussion projection exceeds its bounds.")
         ids = set()
         for entry in values:
@@ -273,7 +275,7 @@ def validate_proposal(raw, policy):
             text(entry.get("text"), "projection text", 8000)
             if (
                 not isinstance(entry.get("sources", []), list)
-                or len(entry.get("sources", [])) > 32
+                or limits.discussion_source_refs is not None and len(entry.get("sources", [])) > limits.discussion_source_refs
                 or any(not isinstance(s, str) for s in entry.get("sources", []))
             ):
                 raise boundary_error(ValueError, "communication_contract", "Invalid discussion evidence references.")
@@ -317,7 +319,7 @@ def validate_proposal(raw, policy):
     if raw.get("communication") is not None:
         plan = validate_plan(raw["communication"])
         validate_public_questions(plan, raw)
-    if len(json.dumps(raw, allow_nan=False)) > 96000:
+    if len(json.dumps(raw, allow_nan=False)) > current_limits().service_proposal_chars:
         raise boundary_error(ValueError, "communication_contract", "Discussion proposal exceeds its size limit.")
     return raw
 
@@ -352,7 +354,7 @@ def validate_plan(plan):
     if plan.get("kind") not in ACTIONS or plan.get("intent") not in INTENTS:
         raise boundary_error(ValueError, "communication_contract", "Unknown publication kind or intent.")
     ids = plan.get("question_ids", [])
-    if (not isinstance(ids, list) or len(ids) > 16
+    if (not isinstance(ids, list) or (current_limits().communication_question_ids is not None and len(ids) > current_limits().communication_question_ids)
             or any(not isinstance(identity, str) for identity in ids)
             or len(set(ids)) != len(ids)):
         raise boundary_error(ValueError, "communication_contract", "Public question IDs must be a bounded unique list.")
@@ -370,7 +372,7 @@ def validate_plan(plan):
         if plan["intent"] != intent:
             raise boundary_error(ValueError, "communication_contract", "Review event and intent disagree.")
     comments = plan.get("comments", [])
-    if not isinstance(comments, list) or len(comments) > 32:
+    if not isinstance(comments, list) or (current_limits().communication_inline_comments is not None and len(comments) > current_limits().communication_inline_comments):
         raise boundary_error(ValueError, "communication_contract", "Inline review exceeds its bounds.")
     for comment in comments:
         if not isinstance(comment, dict) or set(comment) - {

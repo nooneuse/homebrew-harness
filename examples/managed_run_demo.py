@@ -875,9 +875,11 @@ def run_demo(base, *, timeout=360):
             if value:
                 return value
             if processes and processes[-1].poll() is not None:
-                raise RuntimeError(
-                    "Supervisor exited before the expected stage; inspect private logs."
-                )
+                current = next(iter(store.runtime.items("runs").values()), {})
+                logs = {path.name: path.read_text(errors="replace")[-1500:] for path in private.glob("*supervisor*.log")}
+                raise RuntimeError("Supervisor exited before the expected stage. " + json.dumps(
+                    {"returncode": processes[-1].returncode, "status": current.get("status"),
+                     "outcome": current.get("last_outcome"), "logs": logs}))
             time.sleep(0.05)
         raise TimeoutError("A-E demo exceeded its deadline; inspect the private logs.")
 

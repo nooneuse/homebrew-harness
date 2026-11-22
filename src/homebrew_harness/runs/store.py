@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Run control records in the existing SQLite database."""
 
 import copy
@@ -194,7 +195,7 @@ class RunStore:
                 uri=True,
                 isolation_level=None,
                 check_same_thread=False,
-                timeout=DEFAULT_STORAGE_OPEN_SECONDS,
+                timeout=self.runtime.backend().open_timeout,
             )
             try:
                 connection.execute("PRAGMA journal_mode").fetchone()
@@ -253,7 +254,7 @@ class RunStore:
             "id": identity,
             "spec": spec.data(),
             "created_at": now,
-            "deadline_at": now + spec.total_seconds,
+            "deadline_at": None if spec.total_seconds is None else now + spec.total_seconds,
             "last_clock": now,
             "status": "queued",
             "revision": 0,
@@ -379,10 +380,10 @@ class RunStore:
             limit = value["spec"]["total_seconds"]
             duration = limit if seconds is None else seconds
             if (
-                isinstance(duration, bool)
+                duration is not None and (isinstance(duration, bool)
                 or not isinstance(duration, (int, float))
                 or not math.isfinite(duration)
-                or not 0 < duration <= limit
+                or duration <= 0 or limit is not None and duration > limit)
             ):
                 raise ValueError(
                     "Retry seconds must be positive and no greater than the Run's configured total_seconds."
@@ -410,24 +411,22 @@ class RunStore:
                 raise ValueError(
                     "Retry requires a paused or blocked Run with completed execution cleanup."
                 )
-            if len(windows) >= 32:
+            from homebrew_harness.runtime.limits import RuntimeLimits, minimum, expiry, remaining, expired, reached
+            configured = RuntimeLimits.parse(value["spec"].get("runtime_limits"))
+            if reached(configured.run_retry_windows, len(windows)):
                 raise ValueError("Run retry-window limit reached; start a new Run.")
             now = time.time()
             if now < value.get("last_clock", value["created_at"]) - 1:
                 raise ValueError("Clock moved backwards; retry window was not granted.")
-            deadline = (
-                min(now + duration, expires_at)
-                if expires_at is not None
-                else now + duration
-            )
-            if deadline <= now:
+            deadline = minimum(expiry(duration, now), expires_at)
+            if expired(deadline, now):
                 raise ValueError("Retry authority has expired; no window was granted.")
             old = db._get(conn, "run_controls", identity, {"revision": 0})
             checkpoint = db._get(conn, "checkpoints", value.get("checkpoint"), {})
             window = {
                 "request_id": request_id,
                 "at": now,
-                "seconds": deadline - now,
+                "seconds": remaining(deadline, now),
                 "requested_seconds": duration,
                 "expires_at": expires_at,
                 "previous_deadline_at": value["deadline_at"],
@@ -575,7 +574,7 @@ class RunStore:
         if (
             not isinstance(text, str)
             or not text.strip()
-            or len(text) > 64000
+            or len(text) > current_limits().input_text_chars
             or not literal
             and HostCommand.parse(text).name
         ):

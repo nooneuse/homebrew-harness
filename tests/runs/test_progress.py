@@ -20,7 +20,7 @@ class ProgressTests(support.ManagedRunFixture):
             for i in range(7)
         ]
         control, session, api, _ = self.session(
-            writes, spec=RunSpec("Keep writing same.txt", episode_model_calls=1)
+            writes, spec=RunSpec("Keep writing same.txt", episode_model_calls=1, repeat_limit=3, replan_limit=1)
         )
         self.assertEqual(control.execute().reason_code, "no_progress")
         state = ProgressTracker(self.store).get(control.id)

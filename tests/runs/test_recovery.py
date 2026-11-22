@@ -59,6 +59,7 @@ class RecoveryTests(unittest.TestCase):
         control, session, client = self.session(
             [reply("not yet") for _ in range(10)],
             RunSpec("Create file", goal=self.goal(), episode_model_calls=1),
+            stop_block_cap=8,
         )
         outcome = control.execute()
         self.assertEqual(outcome.status, "blocked")

@@ -14,6 +14,7 @@ from homebrew_harness.execution.execution_leases import ExecutionLeases
 from homebrew_harness.execution.source_snapshot import snapshot, content_digest
 from homebrew_harness.security.safe_files import SafeFile
 from homebrew_harness.services.maintenance_spec import within
+from homebrew_harness.runtime.limits import current_limits
 
 
 class StaleDelivery(ValueError):
@@ -542,8 +543,8 @@ from contextlib import contextmanager
 @contextmanager
 def target_file_read(file):
     with file.open_read() as stream:
-        data = stream.read(64_000_001)
+        data = stream.read(current_limits().candidate_file_bytes + 1)
     file.verify_binding()
-    if len(data) > 64_000_000:
+    if len(data) > current_limits().candidate_file_bytes:
         raise ValueError("Candidate file exceeds its byte limit.")
     yield data

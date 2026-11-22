@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from homebrew_harness.runtime.limits import limits_scope
 from homebrew_harness.runtime.output import print
 
 import sys
@@ -51,17 +52,20 @@ class _PreparedLoop:
     def run(
         self,
         messages,
-        max_turns=20,
+        max_turns=None,
         *,
         active_request=None,
         on_first_response=None,
         collect_background=True,
         goal_controller=None,
-        stop_block_cap=8,
+        stop_block_cap=None,
         goal_observer=None,
     ):
-        if type(stop_block_cap) is not int or not 1 <= stop_block_cap <= 100:
-            raise GoalError("Stop continuation cap must be between 1 and 100.")
+        from homebrew_harness.runtime.limits import positive
+        try:
+            positive(stop_block_cap, "stop_block_cap", nullable=True, integer=True)
+        except ValueError as error:
+            raise GoalError(str(error)) from error
         if self.components.subagent or self.components.team_member is not None:
             goal_controller = goal_observer = None
         import homebrew_harness.runtime.loop
@@ -73,7 +77,7 @@ class _PreparedLoop:
                 if controller and controller.active_id is None
                 else nullcontext()
             )
-            with context:
+            with context, limits_scope(self.components.runtime_limits):
                 return homebrew_harness.runtime.loop._agent_loop(
                     self.client,
                     self.model,
@@ -143,6 +147,7 @@ def prepare_context(client, model, workdir, components: LoopComponents):
             workdir,
             context_chars=components.context_chars,
             archive_namespace=components.archive_namespace,
+            runtime_limits=components.runtime_limits,
         )
     compactor.worker_output_tokens = components.worker_output_tokens
     todo = None if components.subagent else components.todo_manager
@@ -201,6 +206,9 @@ def prepare_core(client, model, workdir, components: LoopComponents, owned):
 
 @contextmanager
 def _prepare_loop(client, model, workdir, components: LoopComponents):
+    from homebrew_harness.runtime.limits import current_limits
+    if components.runtime_limits is None:
+        components = replace(components, runtime_limits=current_limits())
     """Prepare once before recall; release only resources created by this scope."""
     task_store, background_manager = (
         components.task_store,
@@ -231,7 +239,8 @@ def _prepare_loop(client, model, workdir, components: LoopComponents):
     )
     owned, cleanup_errors = [], []
     failure = None
-    with capability_scope(selected), bash_policy_scope(policy):
+    from homebrew_harness.runtime.limits import limits_scope
+    with capability_scope(selected), bash_policy_scope(policy), limits_scope(components.runtime_limits):
         try:
             components = prepare_core(client, model, workdir, components, owned)
             compactor = components.compactor

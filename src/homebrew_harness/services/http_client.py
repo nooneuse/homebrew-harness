@@ -96,8 +96,11 @@ class ControlConnection:
     service_id: str
     token: str = field(repr=False)
     instance: str | None = None
+    max_frame_bytes: int = 256 * 1024
 
     def __post_init__(self):
+        from homebrew_harness.runtime.limits import positive
+        positive(self.max_frame_bytes, "control.max_frame_bytes", integer=True)
         object.__setattr__(self, "endpoint", validate_endpoint(self.endpoint))
         if not isinstance(self.service_id, str) or not SERVICE_ID.fullmatch(
             self.service_id
@@ -132,6 +135,7 @@ class ControlConnection:
                 "token_file",
                 "token_env",
                 "instance",
+                "max_frame_bytes",
             }
             or type(value.get("version")) is not int
             or value["version"] != VERSION
@@ -159,7 +163,7 @@ class ControlConnection:
             ):
                 raise ValueError("Invalid control credential environment reference.")
             token = os.environ.get(name)
-        return cls(value["endpoint"], value["service_id"], token, value.get("instance"))
+        return cls(value["endpoint"], value["service_id"], token, value.get("instance"), value.get("max_frame_bytes", 256 * 1024))
 
 
 def descriptor_path(root):
@@ -231,7 +235,7 @@ class ControlClient:
                 "Control connection targets another service.", code="control_identity"
             )
         raw = json.dumps(value, ensure_ascii=False, allow_nan=False).encode()
-        if len(raw) > MAX_FRAME:
+        if len(raw) > connection.max_frame_bytes:
             raise ValueError("Control request exceeds its body limit.")
         headers = {
             "Authorization": "Bearer " + connection.token,
@@ -250,7 +254,7 @@ class ControlClient:
                 body = bytearray()
                 for chunk in response.iter_bytes():
                     body.extend(chunk)
-                    if len(body) > MAX_FRAME:
+                    if len(body) > connection.max_frame_bytes:
                         raise SDKError(
                             "Control response exceeds its limit.",
                             code="control_response",

@@ -1,6 +1,7 @@
 """Deterministic, host-selected completion predicates; no model verdicts."""
 
 from __future__ import annotations
+from homebrew_harness.runtime.limits import current_limits
 
 import hashlib
 import json
@@ -23,13 +24,13 @@ def validate_spec(spec):
             "Structured goal must contain condition, predicates and optional judge."
         )
     condition, predicates = spec.get("condition"), spec.get("predicates")
-    if not isinstance(condition, str) or not 1 <= len(condition.strip()) <= 4000:
+    if not isinstance(condition, str) or not condition.strip() or (current_limits().goal_condition_chars is not None and len(condition) > current_limits().goal_condition_chars):
         raise ConditionError(
             "Structured completion condition must be nonempty text under 4000 characters."
         )
     if (
         not isinstance(predicates, list)
-        or not 1 <= len(predicates) <= 16
+        or not predicates or (current_limits().goal_predicates is not None and len(predicates) > current_limits().goal_predicates)
         or type(spec.get("judge", True)) is not bool
     ):
         raise ConditionError(
@@ -85,13 +86,13 @@ def validate_spec(spec):
             except ValueError as error:
                 raise ConditionError(str(error)) from error
             minimum = raw.get("min_bytes", 0)
-            if type(minimum) is not int or not 0 <= minimum <= 16_000_000:
+            if type(minimum) is not int or minimum < 0:
                 raise ConditionError("Invalid predicate minimum size.")
             if kind == "file_contains":
                 fields.add("text")
                 if (
                     not isinstance(raw.get("text"), str)
-                    or not 1 <= len(raw["text"]) <= 4096
+                    or not raw["text"] or len(raw["text"]) > current_limits().goal_file_bytes
                 ):
                     raise ConditionError(
                         "file_contains requires a nonempty exact text under 4096 characters."
@@ -108,7 +109,7 @@ def validate_spec(spec):
             fields.update({'recipe', 'selection'})
             if 'selection' in raw:
                 selection = raw['selection']
-                if not isinstance(selection, dict) or set(selection)-{'targets','filter'} or not isinstance(selection.get('targets'), list) or not 1 <= len(selection['targets']) <= 100 or any(not isinstance(target,str) or not target.strip() for target in selection['targets']) or 'filter' in selection and (not isinstance(selection['filter'],str) or not selection['filter'].strip()):
+                if not isinstance(selection, dict) or set(selection)-{'targets','filter'} or not isinstance(selection.get('targets'), list) or not selection["targets"] or (current_limits().test_selection_targets is not None and len(selection["targets"]) > current_limits().test_selection_targets) or any(not isinstance(target,str) or not target.strip() for target in selection['targets']) or 'filter' in selection and (not isinstance(selection['filter'],str) or not selection['filter'].strip()):
                     raise ConditionError('Test Goal selection requires bounded nonempty targets and an optional filter.')
             if not isinstance(raw.get("recipe"), str) or not re.fullmatch(
                 r"[a-z][a-z0-9_-]{0,63}", raw["recipe"]
@@ -181,11 +182,11 @@ class HardVerifier:
                         target.open_read() as stream,
                     ):
                         info = os.fstat(stream.fileno())
-                        if info.st_size > 16_000_000:
+                        if info.st_size > current_limits().goal_file_bytes:
                             raise ConditionError(
                                 "Hard file check exceeds the host read budget."
                             )
-                        content = stream.read(16_000_001)
+                        content = stream.read(current_limits().goal_file_bytes + 1)
                         after = os.fstat(stream.fileno())
                         target.verify_binding()
                         named = os.stat(

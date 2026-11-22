@@ -1,5 +1,7 @@
 # Approval review
 
+Current budget defaults and migration: [Runtime budgets](LIMITS.md).
+
 **English** | [简体中文](APPROVALS.zh-CN.md) · [README](../README.md)
 
 Tool permissions first resolve to `allow`, `deny`, or `ask`. The default approval mode is `manual`. Optional `auto_review` assesses each `ask` request against the original task, accepted amendments, and host policy in an independent model conversation. Existing allow and deny rules need no review call.
@@ -31,14 +33,14 @@ Run specifications accept the same `approval_review` object. A non-null Run sett
 | `model_profile` | Unset | Model catalog alias, required for `profile` |
 | `requester_fallback` | Unset | Explicit `lead` fallback if requester provenance is unavailable |
 | `kinds` | `["tool", "test_grant"]` | Approval kinds delegated to the reviewer |
-| `timeout_seconds` | `120` | Review deadline, from `0.01` to `500` seconds |
-| `max_turns` | `6` | Maximum review model calls, from `1` to `8` |
+| `timeout_seconds` | `null` | Explicit review deadline; default elapsed reminder is 500 seconds |
+| `max_turns` | `null` | Explicit call budget; default reminder is 6 calls |
 
 Every model source uses an independent context and its complete model binding through ModelGateway, including protocol, options, output allowance and context window. Calls and usage enter the existing observations. `requester` captures the actual subagent or teammate binding where available. Missing provenance requires human review unless the host explicitly sets `requester_fallback: "lead"`. A model connection failure also falls back to human review.
 
 For a dedicated reviewer, set `model_source: "profile"` and `model_profile: "safety"`. Configure `safety` in the external model catalog; connection secrets remain in the host environment. See [Models](MODELS.md).
 
-The reviewer reads UTF-8 files through `read_review_file(path, offset=0, limit=10000)`. Offsets count Unicode characters. Pages describe the file version, viewed range and next offset. Missing paths and ordinary query errors return structured tool feedback; the model decides which evidence matters and whether another page is needed. Changed evidence returns to the conversation for a current decision. Reads remain limited to 16 files, 16 MiB of distinct content and 64 pages, with an 8 MiB limit per file.
+The reviewer reads UTF-8 files through `read_review_file(path, offset=0, limit=10000)`. Offsets count Unicode characters. Pages describe the file version, viewed range and next offset. Missing paths and ordinary query errors return structured tool feedback; the model decides which evidence matters and whether another page is needed. Changed evidence returns to the conversation for a current decision. Distinct-content and per-file capture windows default to 16 MiB and 8 MiB. File/page counts are open by default; optional limits are configurable.
 
 The final result contains `decision` and `reason`; `risk` is optional. There is no separate `authorization` decision. Invalid output is explained to the model so it can correct its answer. Model-service errors allow up to three consecutive attempts within the same deadline and model-call limit. Historical failures do not disable future model requests.
 

@@ -1,6 +1,9 @@
 """Host-registered test commands, scoped grants and current-session receipts."""
 
 from __future__ import annotations
+from homebrew_harness.runtime.limits import positive
+from homebrew_harness.runtime.limits import current_limits
+from homebrew_harness.execution.execution_control import check
 
 from homebrew_harness.runtime.errors import boundary_error
 
@@ -100,12 +103,14 @@ class TestRecipe:
     env: tuple[tuple[str, str], ...] = ()
     timeout: float | None = None
     output_bytes: int = 1_000_000
+    hard_output_bytes: int | None = None
     cpu_seconds: int | None = None
     file_bytes: int = 64_000_000
     open_files: int = 256
     memory_mb: int | None = None
-    max_runs: int = 10
-    approval_seconds: float = 900
+    max_runs: int | None = None
+    run_warning: int | None = 10
+    approval_seconds: float | None = None
     allow_worktrees: bool = True
     snapshot_limits: dict = field(default_factory=dict)
     _identity: dict = field(init=False, repr=False, compare=False)
@@ -127,14 +132,14 @@ class TestRecipe:
             raise TestRunnerError("Invalid registered test name.")
         if (
             not self.argv
-            or len(self.argv) > 64
-            or sum(len(arg) for arg in self.argv if isinstance(arg, str)) > 16_000
+            or current_limits().fixed_argv_items is not None and len(self.argv) > current_limits().fixed_argv_items
+            or sum(len(arg) for arg in self.argv if isinstance(arg, str)) > current_limits().fixed_argv_chars
             or any(
                 not isinstance(arg, str) or not arg or "\0" in arg for arg in self.argv
             )
         ):
             raise TestRunnerError("Test argv must be a fixed nonempty string array.")
-        if not isinstance(self.description, str) or len(self.description) > 500:
+        if not isinstance(self.description, str) :
             raise TestRunnerError("Test description must be short text.")
         if not self.roles or not set(self.roles) <= {"lead", "subagent", "teammate"}:
             raise TestRunnerError("Invalid TestRunner roles.")
@@ -157,6 +162,8 @@ class TestRecipe:
             "open_files",
             "max_runs",
         ):
+            if name == "max_runs" and self.max_runs is None:
+                continue
             if type(getattr(self, name)) is not int or getattr(self, name) < 1:
                 raise TestRunnerError("Test resource limits must be positive integers.")
         if self.cpu_seconds is not None and (
@@ -181,16 +188,16 @@ class TestRecipe:
             raise TestRunnerError("Test roots must be relative directories.")
         for key in ("timeout", "approval_seconds"):
             value = getattr(self, key)
-            if value is None and key == "timeout":
+            if value is None:
                 continue
             if (
                 isinstance(value, bool)
                 or type(value) not in (int, float)
                 or not math.isfinite(value)
-                or not 0 < value <= 3600
+                or value <= 0
             ):
                 raise TestRunnerError(
-                    "Test time limits must be positive and at most one hour."
+                    "Test time limits must be finite and positive."
                 )
         if self.memory_mb is not None and (
             type(self.memory_mb) is not int
@@ -232,6 +239,9 @@ class TestRecipe:
                 raise TestRunnerError(
                     "Recipe environment contains an unsafe or private setting."
                 )
+        from homebrew_harness.runtime.limits import positive
+        positive(self.hard_output_bytes, "test.hard_output_bytes", nullable=True, integer=True)
+        positive(self.run_warning, "test.run_warning", nullable=True, integer=True)
         object.__setattr__(self, "_identity", executable_identity(self.argv[0]))
 
     def fingerprint(self):
@@ -248,6 +258,7 @@ class TestRecipe:
                 "test_roots": self.test_roots,
                 "timeout": self.timeout,
                 "output": self.output_bytes,
+                "hard_output": self.hard_output_bytes,
                 "cpu": self.cpu_seconds,
                 "file": self.file_bytes,
                 "fds": self.open_files,
@@ -265,8 +276,8 @@ class Grant:
     roles: tuple[str, ...]
     cwd: str | None
     task_id: str | None
-    expires: float
-    remaining: int
+    expires: float | None
+    remaining: int | None
     id: str = field(default_factory=lambda: uuid.uuid4().hex)
 
 
@@ -315,7 +326,7 @@ from .test_selection import (
 
 class TestRunner:
     def __init__(
-        self, workdir, recipes=(), *, max_runs=20, total_seconds=None, backend=None
+        self, workdir, recipes=(), *, max_runs=None, total_seconds=None, run_warning=20, backend=None
     ):
         from homebrew_harness.execution.execution_backend import NativeBackend
 
@@ -342,9 +353,10 @@ class TestRunner:
         self._run_cancel = None
         self._active_run_id = None
         self.max_runs, self.total_seconds = max_runs, total_seconds
+        positive(run_warning, "test.run_warning", nullable=True, integer=True)
+        self.run_warning = run_warning
         if (
-            type(max_runs) is not int
-            or max_runs < 1
+            max_runs is not None and (type(max_runs) is not int or max_runs < 1)
             or total_seconds is not None
             and (
                 type(total_seconds) not in (int, float)
@@ -372,7 +384,7 @@ class TestRunner:
                 if grant.id in self._private_grants:
                     continue
                 expires = self._handoff_expiry.setdefault(
-                    grant.id, time.time() + grant.expires - time.monotonic()
+                    grant.id, None if grant.expires is None else time.time() + grant.expires - time.monotonic()
                 )
                 grants.append(
                     {
@@ -422,9 +434,9 @@ class TestRunner:
                 row["identity"]["fingerprint"] != self._fingerprint(recipe)
                 or not isinstance(row["roles"], list)
                 or not set(row["roles"]) <= set(recipe.roles)
-                or type(row["remaining"]) is not int
-                or not 0 <= row["remaining"] <= recipe.max_runs
-                or not math.isfinite(row["expires_at"])
+                or row["remaining"] is not None and (type(row["remaining"]) is not int
+                    or row["remaining"] < 0 or recipe.max_runs is not None and row["remaining"] > recipe.max_runs)
+                or row["expires_at"] is not None and not math.isfinite(row["expires_at"])
             ):
                 raise TestRunnerError(
                     "Saved test grant changed before Session recovery."
@@ -437,7 +449,7 @@ class TestRunner:
                     tuple(row["roles"]),
                     row["cwd"],
                     row["task_id"],
-                    time.monotonic() + row["expires_at"] - time.time(),
+                    None if row["expires_at"] is None else time.monotonic() + row["expires_at"] - time.time(),
                     row["remaining"],
                     id=row["id"],
                 )
@@ -524,8 +536,8 @@ class TestRunner:
             )
         runs = recipe.max_runs if max_runs is None else max_runs
         if (
-            type(runs) is not int
-            or not 1 <= runs <= recipe.max_runs
+            runs is not None and (type(runs) is not int or runs < 1
+                                  or recipe.max_runs is not None and runs > recipe.max_runs)
             or role is not None
             and role not in recipe.roles
         ):
@@ -537,7 +549,7 @@ class TestRunner:
             (role,) if role else recipe.roles,
             str(target) if cwd is not None else None,
             task_id,
-            time.monotonic() + recipe.approval_seconds,
+            None if recipe.approval_seconds is None else time.monotonic() + recipe.approval_seconds,
             runs,
         )
         if type(private) is not bool:
@@ -581,8 +593,8 @@ class TestRunner:
                 if grant.recipe == recipe.name
                 and self._visible_grant(grant)
                 and grant.fingerprint == self._fingerprint(recipe)
-                and grant.remaining > 0
-                and grant.expires > time.monotonic()
+                and (grant.remaining is None or grant.remaining > 0)
+                and (grant.expires is None or grant.expires > time.monotonic())
                 and context.role in grant.roles
                 and (grant.cwd is None or grant.cwd == str(cwd))
                 and (grant.task_id is None or grant.task_id == context.task_id)
@@ -666,8 +678,8 @@ class TestRunner:
             return any(
                 grant.recipe == name
                 and self._visible_grant(grant)
-                and grant.remaining > 0
-                and grant.expires > time.monotonic()
+                and (grant.remaining is None or grant.remaining > 0)
+                and (grant.expires is None or grant.expires > time.monotonic())
                 and grant.fingerprint == self._fingerprint(recipe)
                 and grant.locked == protected
                 and (grant.cwd is None or grant.cwd == str(cwd))
@@ -752,7 +764,7 @@ class TestRunner:
         try:
             if self.closed.is_set():
                 raise TestRunnerError("TestRunner is closed.")
-            if self.runs >= self.max_runs:
+            if self.max_runs is not None and self.runs >= self.max_runs:
                 raise boundary_error(
                     TestRunnerError,
                     "test_run_limit",
@@ -799,7 +811,8 @@ class TestRunner:
                         )
                     self.authorizations.consume_projection()
             with self._account_lock:
-                grant.remaining -= 1
+                if grant.remaining is not None:
+                    grant.remaining -= 1
                 self.active_test = (name, str(cwd), context.task_id)
                 self.runs += 1
             run_id = "test_" + uuid.uuid4().hex
@@ -826,6 +839,8 @@ class TestRunner:
                 "TMPDIR": str(self.workdir / prefix / "tmp"),
             }
             streams = {"stdout": bytearray(), "stderr": bytearray()}
+            tails = {"stdout": bytearray(), "stderr": bytearray()}
+            received = {"stdout": 0, "stderr": 0}
             status, after, stable, execution_error = "error", {}, False, None
             isolation = None
             diagnostic = None
@@ -917,11 +932,13 @@ class TestRunner:
                             if not chunk:
                                 selector.unregister(key.fileobj)
                             else:
-                                remaining = recipe.output_bytes - sum(
-                                    map(len, streams.values())
-                                )
-                                streams[key.data].extend(chunk[:remaining])
-                                if len(chunk) > remaining:
+                                received[key.data] += len(chunk)
+                                capture_left = max(0, recipe.output_bytes - sum(map(len, streams.values())))
+                                streams[key.data].extend(chunk[:capture_left])
+                                tails[key.data].extend(chunk)
+                                if len(tails[key.data]) > recipe.output_bytes:
+                                    del tails[key.data][:-recipe.output_bytes]
+                                if recipe.hard_output_bytes is not None and sum(received.values()) > recipe.hard_output_bytes:
                                     status = "output_limit"
                                     break
                         if status != "completed":
@@ -1002,6 +1019,7 @@ class TestRunner:
                     else None
                 ),
                 "output_bytes": recipe.output_bytes,
+                "hard_output_bytes": recipe.hard_output_bytes,
                 "cpu_seconds": recipe.cpu_seconds,
                 "memory_mb": recipe.memory_mb,
                 "shared_max_runs": self.max_runs,
@@ -1030,6 +1048,14 @@ class TestRunner:
                     receipt[kind],
                     bytes(data[: recipe.output_bytes]).decode("utf-8", "replace"),
                 )
+            receipt["output_capture"] = {kind: {"received_bytes": received[kind], "captured_prefix_bytes": len(streams[kind]),
+                                                     "truncated": received[kind] > len(streams[kind])}
+                                         for kind in streams}
+            for kind, data in tails.items():
+                if received[kind] > len(streams[kind]):
+                    receipt[kind + "_tail"] = prefix + "/" + kind + "-tail.txt"
+                    receipt["output_capture"][kind]["tail_start_byte"] = received[kind] - len(data)
+                    self._save(receipt[kind + "_tail"], bytes(data).decode("utf-8", "replace"))
             self._save(prefix + "/receipt.json", encoded(receipt))
             if durable_scope is not None:
                 from homebrew_harness.storage.durable_runtime import DurableStore
@@ -1264,6 +1290,8 @@ class TestRunner:
 
 
 def load_test_runner(path, workdir, *, missing_ok=False):
+    if path is None:
+        return TestRunner.default(workdir)
     path = Path(path)
     if not path.exists() and missing_ok:
         return TestRunner.default(workdir)
@@ -1345,7 +1373,7 @@ def load_test_runner(path, workdir, *, missing_ok=False):
                     "A container registry binds only its exact declared native recipe."
                 )
         limits = raw.get("limits", {})
-        if not isinstance(limits, dict) or set(limits) - {"max_runs", "total_seconds"}:
+        if not isinstance(limits, dict) or set(limits) - {"max_runs", "total_seconds", "run_warning"}:
             raise ValueError("Invalid test limits.")
         runner = TestRunner(workdir, recipes, backend=backend, **limits)
         for name in approvals:

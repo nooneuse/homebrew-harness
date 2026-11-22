@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Independent approval judgment; native policy and decision publishers stay authoritative."""
 
 from homebrew_harness.runtime.errors import boundary_error, error_info, error_message
@@ -54,8 +55,11 @@ class ReviewConfig:
     model_profile: str | None = None
     requester_fallback: str | None = None
     kinds: tuple = ("tool", "test_grant")
-    timeout_seconds: float = DEFAULT_MODEL_REQUEST_SECONDS
-    max_turns: int = 6
+    timeout_seconds: float | None = None
+    warning_seconds: float | None = DEFAULT_MODEL_REQUEST_SECONDS
+    max_turns: int | None = None
+    turn_warning: int | None = 6
+    request_retries: int = 3
 
     def __post_init__(self):
         if self.mode not in {"manual", "auto_review"} or self.model_source not in {
@@ -83,14 +87,12 @@ class ReviewConfig:
             raise ValueError(
                 "Approval review kinds must be distinct host-delegated approval kinds."
             )
-        if (
-            type(self.timeout_seconds) not in {int, float}
-            or not math.isfinite(self.timeout_seconds)
-            or not 0.01 <= self.timeout_seconds <= 500
-            or type(self.max_turns) is not int
-            or not 1 <= self.max_turns <= 8
-        ):
-            raise ValueError("Approval review needs bounded deadlines and turns.")
+        from homebrew_harness.runtime.limits import positive
+        positive(self.timeout_seconds, "review.timeout_seconds", nullable=True)
+        positive(self.warning_seconds, "review.warning_seconds", nullable=True)
+        positive(self.max_turns, "review.max_turns", nullable=True, integer=True)
+        positive(self.turn_warning, "review.turn_warning", nullable=True, integer=True)
+        positive(self.request_retries, "review.request_retries", integer=True)
         object.__setattr__(self, "kinds", tuple(self.kinds))
         if redact(self.data()) != self.data():
             raise ValueError(
@@ -163,14 +165,14 @@ def review_verdict(text, evidence):
         return None, {"code": "unexpected_fields", "field": "result", "message": "Only decision, reason, risk and evidence_paths are accepted."}
     if not isinstance(value.get("decision"), str) or value["decision"] not in {"approve", "deny", "human_required"}:
         return None, {"code": "invalid_decision", "field": "decision", "message": "Use approve, deny or human_required."}
-    if not isinstance(value.get("reason"), str) or not value["reason"].strip() or len(value["reason"]) > 4000:
-        return None, {"code": "invalid_reason", "field": "reason", "message": "Use nonempty text of at most 4000 characters."}
+    if not isinstance(value.get("reason"), str) or not value["reason"].strip() or (current_limits().approval_reason_chars is not None and len(value["reason"]) > current_limits().approval_reason_chars):
+        return None, {"code": "invalid_reason", "field": "reason", "message": "Use nonempty text within any configured approval_reason_chars budget."}
     if "risk" in value and (not isinstance(value["risk"], str) or value["risk"] not in {"low", "medium", "high", "critical"}):
         return None, {"code": "invalid_risk", "field": "risk", "message": "Use low, medium, high or critical."}
     paths = value.get("evidence_paths")
     if "evidence_paths" in value:
-        if not isinstance(paths, list) or len(paths) > 16 or any(not isinstance(path, str) for path in paths):
-            return None, {"code": "invalid_evidence_paths", "field": "evidence_paths", "message": "Use an array of at most 16 already read file paths."}
+        if not isinstance(paths, list) or (current_limits().review_evidence_paths is not None and len(paths) > current_limits().review_evidence_paths) or any(not isinstance(path, str) for path in paths):
+            return None, {"code": "invalid_evidence_paths", "field": "evidence_paths", "message": "Use an array of already read file paths within any configured review_evidence_paths budget."}
         missing = [path for path in paths if path not in evidence.files]
         if missing:
             from homebrew_harness.security.file_visibility import model_parts
@@ -203,6 +205,24 @@ FIND_TOOL = navigation_tool("find_review_files", "Find visible files using a rel
 SEARCH_TOOL = navigation_tool("search_review_text", "Locate a literal text in visible UTF-8 files. Returns the first matching line per file, bounded snippets and next_cursor. Read a relevant file with read_review_file for approval evidence.", search=True)
 
 
+def review_tools():
+    """Bind schemas to the same host windows used by evidence readers."""
+    import copy
+    limits = current_limits()
+    tools = copy.deepcopy([FILE_TOOL, FIND_TOOL, SEARCH_TOOL])
+    file = tools[0]["function"]["parameters"]["properties"]
+    file["offset"]["maximum"] = limits.review_file_bytes
+    file["limit"].update(maximum=limits.review_page_chars, default=limits.review_page_chars)
+    for tool in tools[1:]:
+        properties = tool["function"]["parameters"]["properties"]
+        properties["pattern"]["maxLength"] = limits.query_pattern_chars
+        properties["cursor"]["maximum"] = limits.review_navigation_paths
+        properties["limit"].update(maximum=limits.query_results, default=min(50, limits.query_results))
+        if "text" in properties:
+            properties["text"]["maxLength"] = limits.query_pattern_chars
+    return tools
+
+
 class ApprovalReviewer:
     def __init__(self, config, store, registry, gateway, lead_binding):
         self.config = ReviewConfig.parse(config)
@@ -231,7 +251,7 @@ class ApprovalReviewer:
         observations = observations if observations is not None else []
         observed_evidence = observed_evidence if observed_evidence is not None else []
         gateway = self.gateway.bind(binding.client)
-        tools = [FILE_TOOL, FIND_TOOL, SEARCH_TOOL] if gateway._adapter.capabilities.tools else []
+        tools = review_tools() if gateway._adapter.capabilities.tools else []
         messages = [
             {"role": "system", "content": SYSTEM},
             {"role": "user", "content": json.dumps(redact(
@@ -251,9 +271,17 @@ class ApprovalReviewer:
         failures = 0
         try:
             with gateway.scope(role="approval_reviewer", context_id="approval:" + request["id"], deadline=deadline):
-                for round_number in range(1, self.config.max_turns + 1):
+                import itertools
+                advisory_started = time.monotonic()
+                advisory_seen = {}
+                for round_number in itertools.count(1):
+                    if self.config.max_turns is not None and round_number > self.config.max_turns:
+                        break
+                    from homebrew_harness.runtime.limits import observe
+                    observe(messages, [("approval_model_calls", round_number - 1, self.config.turn_warning, "calls"),
+                                       ("approval_elapsed", time.monotonic() - advisory_started, self.config.warning_seconds, "seconds")], advisory_seen)
                     check(deadline)
-                    progress = {"round": round_number, "remaining_model_turns_including_this": self.config.max_turns - round_number + 1,
+                    progress = {"round": round_number, "remaining_model_turns_including_this": None if self.config.max_turns is None else self.config.max_turns - round_number + 1,
                         "observed_evidence": evidence.observed(),
                         "context_limit_characters": binding.context_chars,
                         "input_characters": 0, "remaining_input_characters": 0,
@@ -268,7 +296,7 @@ class ApprovalReviewer:
                         messages[-1]["content"] = json.dumps(progress)
                     size = gateway.input_size(binding.model, messages, tools, self.store.workdir,
                                               binding.max_output_tokens)
-                    if size >= binding.context_chars:
+                    if current_limits().hard_context_chars is not None and size >= current_limits().hard_context_chars:
                         raise boundary_error(ValueError, "review_context_limit", "Required review context exceeds the selected model's window.", limit_name="context_chars", limit_value=binding.context_chars, observed_value=size, unit="serialized_characters")
                     try:
                         response = gateway.request(
@@ -287,7 +315,7 @@ class ApprovalReviewer:
                                             "status": getattr(error, "status_code", None), "attempt": failures,
                                             "provider_kind": getattr(error, "kind", None), "provider_code": getattr(error, "code", None),
                                             "detail": getattr(error, "message", None), "settled": getattr(error, "settled", True)})
-                        if failures >= 3 or deadline.remaining() == 0:
+                        if failures >= self.config.request_retries or deadline.remaining() == 0:
                             raise
                         from homebrew_harness.execution.model_retry import wait_retry
                         wait_retry(gateway, error, failures - 1, deadline)

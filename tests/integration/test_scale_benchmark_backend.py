@@ -44,7 +44,7 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(len(result["uncovered"]), 2)
 
     def test_invalid_runtime_limits_and_removed_budgets_are_rejected(self):
-        for kwargs in ({"max_turns": 101}, {"count": 4}, {"timeout_seconds": 0}):
+        for kwargs in ({"max_turns": True}, {"count": 4}, {"timeout_seconds": 0}):
             with self.assertRaises(ValueError):
                 run_benchmark(**kwargs)
         for kwargs in ({"max_calls": 1}, {"max_tokens": 100}):

@@ -422,6 +422,7 @@ class Runs:
             turn_seconds=spec.episode_seconds,
             request_seconds=spec.request_seconds,
             max_turns=spec.episode_model_calls,
+            runtime_limits=spec.runtime_limits,
             memory_mode=spec.memory_mode,
             write_paths=spec.write_paths,
             allow_tests=spec.allow_tests,

@@ -33,6 +33,7 @@ class BashPolicy:
     pids: int = 64
     timeout: float | None = None
     output_bytes: int = 8 * 1024 * 1024
+    hard_output_bytes: int | None = None
     workspace_bytes: int = 128 * 1024 * 1024
     max_files: int = 5000
     max_input_bytes: int = 64 * 1024 * 1024
@@ -45,6 +46,9 @@ class BashPolicy:
     def __post_init__(self):
         if not isinstance(self.mode, str) or self.mode not in {"host", "container"}:
             raise BashPolicyError("Bash mode must be host or container.")
+        from homebrew_harness.runtime.limits import positive
+        positive(self.output_bytes, "bash.output_bytes", integer=True)
+        positive(self.hard_output_bytes, "bash.hard_output_bytes", integer=True, nullable=True)
         from homebrew_harness.execution.artifact_policy import output_profiles
 
         object.__setattr__(self, "outputs", output_profiles(self.outputs))
@@ -84,7 +88,7 @@ class BashPolicy:
                 "Container Bash executable must be an absolute image path."
             )
         uid = self.uid if self.uid is not None else os.getuid() or 65534
-        if type(uid) is not int or not 1 <= uid <= 65534:
+        if type(uid) is not int or uid < 1:
             raise BashPolicyError(
                 "Container Bash requires a non-root UID within supported bounds."
             )
@@ -103,7 +107,7 @@ class BashPolicy:
             value = getattr(self, name)
             if name == "cpu_seconds" and value is None:
                 continue
-            if type(value) is not int or not lower <= value <= upper:
+            if type(value) is not int or value < lower:
                 raise BashPolicyError("Invalid container Bash limit: " + name)
         for name, lower, upper in (("cpus", 0.1, 8), ("timeout", 0.01, 600)):
             value = getattr(self, name)
@@ -112,7 +116,7 @@ class BashPolicy:
             if (
                 type(value) not in (int, float)
                 or not math.isfinite(value)
-                or not lower <= value <= upper
+                or value < lower
             ):
                 raise BashPolicyError("Invalid container Bash limit: " + name)
 
@@ -287,7 +291,7 @@ def bash_snapshot(root, policy, deadline=None, cancel_events=()):
                 continue
             with SafeFile(root, str(relative / name)) as target:
                 raw, version, mode = target.snapshot(
-                    max_bytes=min(policy.max_input_bytes, 32_000_000)
+                    max_bytes=policy.max_input_bytes
                 )
             if raw is None:
                 raise BashPolicyError(

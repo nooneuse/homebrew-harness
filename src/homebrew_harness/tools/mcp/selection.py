@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Host-selected MCP names and stable declarations, independent of live sockets."""
 
 import hashlib
@@ -44,13 +45,13 @@ def alias(server, tool):
     from .runtime import normalize_mcp_name
 
     value = "mcp__" + normalize_mcp_name(server) + "__" + normalize_mcp_name(tool)
-    if len(value) > 64:
+    if len(value) > current_limits().mcp_tool_name_chars:
         raise ValueError("Selected MCP alias exceeds the tool-name limit.")
     return value
 
 
 def validate_selection(value):
-    if not isinstance(value, dict) or len(value) > 16:
+    if not isinstance(value, dict) or current_limits().mcp_selected_servers is not None and len(value) > current_limits().mcp_selected_servers:
         raise ValueError("MCP selection must map up to 16 server names to tool lists.")
     result, names = {}, set()
     for server, tools in value.items():
@@ -60,7 +61,7 @@ def validate_selection(value):
             or server == "*"
             or len(server) > 100
             or not isinstance(tools, (list, tuple))
-            or not 1 <= len(tools) <= 64
+            or not tools or current_limits().mcp_server_tools is not None and len(tools) > current_limits().mcp_server_tools
             or any(not isinstance(t, str) or not t or len(t) > 100 for t in tools)
             or len(set(tools)) != len(tools)
             or "*" in tools
@@ -74,7 +75,7 @@ def validate_selection(value):
                 raise ValueError("Selected MCP names collide after normalization.")
             names.add(name)
         result[server] = sorted(tools)
-    if len(names) > 128:
+    if current_limits().mcp_selected_tools is not None and len(names) > current_limits().mcp_selected_tools:
         raise ValueError("MCP selection exceeds the effective tool-pool limit.")
     return dict(sorted(result.items()))
 

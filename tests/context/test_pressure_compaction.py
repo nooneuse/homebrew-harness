@@ -22,7 +22,7 @@ class PressureCompactionTests(unittest.TestCase):
         self.addCleanup(capture.__exit__, None, None, None)
 
     def test_fifty_short_messages_do_not_drop_middle_fact(self):
-        c = ContextCompactor(self.client, "fixture", self.root)
+        c = ContextCompactor(self.client, "fixture", self.root, runtime_limits={"auto_compact": True})
         history = [
             {
                 "role": "user" if i % 2 == 0 else "assistant",
@@ -45,7 +45,7 @@ class PressureCompactionTests(unittest.TestCase):
             context_chars=10000,
             trigger_messages=20,
             target_messages=10,
-        )
+        runtime_limits={"auto_compact": True})
         history = [{"role": "user", "content": "Continue"}]
         for i in range(15):
             history.extend(batch(str(i), ["x" * 800]))
@@ -67,7 +67,7 @@ class PressureCompactionTests(unittest.TestCase):
             context_chars=25000,
             trigger_messages=20,
             target_messages=10,
-        )
+        runtime_limits={"auto_compact": True})
         history = [
             {"role": "user" if i % 2 == 0 else "assistant", "content": "message" * 20}
             for i in range(30)

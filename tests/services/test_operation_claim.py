@@ -33,6 +33,7 @@ class AuditClaim(unittest.TestCase):
                 maintenance=runtime.maintenance,
             )
         )
+        manager.spec = {**manager.spec, "operation_seconds": 120}
         runtime.operations.stop.set()
         self.assertTrue(runtime.operations.finished.wait(5))
         with runtime.store.db.write() as conn:

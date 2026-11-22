@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import expired
 """Service commands, work acceptance and schedules in the existing SQLite store."""
 
 import json
@@ -147,7 +148,7 @@ class ServiceStore:
                 if (
                     plan
                     and plan["state"] == "armed"
-                    and plan["expires_at"] > time.time()
+                    and not expired(plan["expires_at"], time.time())
                     and plan["generation"] == value["generation"]
                     and plan["old_binding"] == value["binding"]
                     and plan["new_binding"] == binding

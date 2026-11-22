@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import expired, expiry, minimum, reached
 """Task-scoped fixed-test grants backed by the Run acceptance transaction."""
 
 import copy
@@ -191,8 +192,8 @@ class TestAuthorizations:
             and record.get("test_grant_context") == ctx
             and operation[1] not in self.spent
         )
-        remaining = grant["max_runs"] - grant["used"]
-        if not reserved and (remaining <= 0 or grant["expires_at"] <= time.time()):
+        remaining = None if grant["max_runs"] is None else grant["max_runs"] - grant["used"]
+        if not reserved and (remaining is not None and remaining <= 0 or expired(grant["expires_at"], time.time())):
             return None
         return Grant(
             recipe.name,
@@ -201,12 +202,8 @@ class TestAuthorizations:
             (execution.role,),
             str(cwd),
             execution.task_id,
-            time.monotonic()
-            + (
-                max(1, c.deadline().remaining())
-                if reserved
-                else grant["expires_at"] - time.time()
-            ),
+            expiry(c.deadline().remaining() if reserved else
+                   (None if grant["expires_at"] is None else max(0, grant["expires_at"] - time.time())), time.monotonic()),
             1 if reserved else remaining,
         )
 
@@ -217,8 +214,8 @@ class TestAuthorizations:
         if (
             not grant
             or state["status"] in {"completed", "cancelled", "failed"}
-            or grant["used"] >= grant["max_runs"]
-            or grant["expires_at"] <= time.time()
+            or reached(grant["max_runs"], grant["used"])
+            or expired(grant["expires_at"], time.time())
         ):
             return False
         if grant["identity"] != c.session.tests.approval_identity(recipe.name, cwd):
@@ -316,15 +313,14 @@ def decide(store, run_id, identity, revision, action, *, runs=None, seconds=None
 
     request = store.runtime.get("run_requests", identity)
     ctx = request["context"]
-    runs = 1 if runs is None else runs
+    runs = ctx["max_runs"] if runs is None else runs
     seconds = ctx["approval_seconds"] if seconds is None else seconds
     if (
         action not in {"approve", "deny"}
-        or type(runs) is not int
-        or not 1 <= runs <= ctx["max_runs"]
-        or type(seconds) not in {int, float}
-        or not math.isfinite(seconds)
-        or not 0 < seconds <= ctx["approval_seconds"]
+        or runs is not None and (type(runs) is not int or runs < 1)
+        or ctx["max_runs"] is not None and (runs is None or runs > ctx["max_runs"])
+        or seconds is not None and (type(seconds) not in {int, float} or not math.isfinite(seconds) or seconds <= 0)
+        or ctx["approval_seconds"] is not None and (seconds is None or seconds > ctx["approval_seconds"])
     ):
         raise ValueError(
             "Renewal must remain within the registered run and time limits."
@@ -347,7 +343,7 @@ def decide(store, run_id, identity, revision, action, *, runs=None, seconds=None
             if (
                 request["state"] != "pending"
                 or request["revision"] != revision
-                or time.time() > request["expires_at"]
+                or expired(request["expires_at"], time.time())
                 or not valid(store, run, ctx, conn=conn)
             ):
                 raise ValueError(
@@ -396,7 +392,7 @@ def decide(store, run_id, identity, revision, action, *, runs=None, seconds=None
                     "context": ctx,
                     "used": 0,
                     "max_runs": runs,
-                    "expires_at": min(run["deadline_at"], time.time() + seconds),
+                    "expires_at": minimum(run["deadline_at"], expiry(seconds, time.time())),
                 }
                 db._put(
                     conn,
@@ -448,15 +444,15 @@ def accept(db, conn, state, record):
     key = record.get("test_grant_key", name)
     grant = copy.deepcopy(state["test_grants"].get(key))
     attempts = state.get("test_attempts", {})
-    if sum(attempts.values()) >= state["test_limits"]["max_runs"]:
+    if reached(state["test_limits"]["max_runs"], sum(attempts.values())):
         raise RunAuthorizationLimit("Run's fixed-test execution limit is exhausted.")
     if not record.get("approval_id"):
         if (
             not grant
             or grant["id"] != record.get("test_grant_id")
             or grant["context"] != record.get("test_grant_context")
-            or grant["expires_at"] <= time.time()
-            or grant["used"] >= grant["max_runs"]
+            or expired(grant["expires_at"], time.time())
+            or reached(grant["max_runs"], grant["used"])
         ):
             raise RunAuthorizationLimit("Fixed-test grant changed or is exhausted.")
         # Validation reads the current task/epoch under the same acceptance transaction.

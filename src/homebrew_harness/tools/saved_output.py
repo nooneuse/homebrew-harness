@@ -25,6 +25,9 @@ def file_response(value):
 
 
 def read_view(workdir, path, offset, limit, expected_version):
+    from homebrew_harness.runtime.limits import current_limits
+    import itertools
+    limits = current_limits()
     store = current_archive_store(workdir)
     if store is None or not store.owns(path) or Path(path).parent.name != "tool-results":
         return None
@@ -41,7 +44,9 @@ def read_view(workdir, path, offset, limit, expected_version):
                   "truncated": result["truncated"], "next_offset": result["next_offset"]}
         return {**result, "path": path, "version": first_version,
                 "view": "recorded_tool_output", "source": source}
-    for _ in range(MAX_LINKS):
+    for index in itertools.count():
+        if limits.saved_output_links is not None and index >= limits.saved_output_links:
+            break
         canonical = str((Path(workdir) / reference).resolve())
         if canonical in visited:
             raise ValueError("Saved output reference cycle; inspect the raw archive with raw=true.")
@@ -56,13 +61,13 @@ def read_view(workdir, path, offset, limit, expected_version):
                 first_version = version
             check()
             reader = io.TextIOWrapper(stream, encoding="utf-8", newline="")
-            text = reader.read(PARSE_CHARS + 1)
+            text = reader.read(limits.saved_output_parse_chars + 1)
             reader.detach()
             check()
             if target.read_version(stream) != version:
                 raise boundary_error(ValueError, "file_read_changed", "Saved output changed during reading.",
                     file_path=reference, expected_version=version, observed_version=target.read_version(stream), restart_offset=0)
-        if len(text) > PARSE_CHARS:
+        if len(text) > limits.saved_output_parse_chars:
             return raw_link_view(reference, version)
         try:
             value = json.loads(text)
@@ -88,4 +93,4 @@ def read_view(workdir, path, offset, limit, expected_version):
                 "truncated": offset + len(content) < len(value["content"]),
                 "next_offset": None, "view": value.get("view") if is_view else "recorded_file_content", "source": dict(source)}
     raise boundary_error(ValueError, "saved_output_link_limit", "Saved output nesting reached its readable-view bound; use raw=true to inspect it.",
-        limit_name="saved_output_links", limit_value=MAX_LINKS, observed_value=MAX_LINKS + 1, unit="links", file_path=path)
+        limit_name="saved_output_links", limit_value=limits.saved_output_links, observed_value=limits.saved_output_links + 1, unit="links", file_path=path)

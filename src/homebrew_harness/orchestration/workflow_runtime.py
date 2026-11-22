@@ -1,6 +1,7 @@
 """s16: trusted orchestration, durable inference checkpoints and observed usage."""
 
 from __future__ import annotations
+from homebrew_harness.runtime.limits import current_limits
 
 from homebrew_harness.runtime.errors import annotate_error
 
@@ -187,26 +188,29 @@ class WorkflowLimits:
     concurrency: int = 2
     max_output_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
     max_input_chars: int = 64_000
-    timeout_seconds: float = DEFAULT_TASK_SECONDS
+    timeout_seconds: float | None = None
+    warning_seconds: float | None = DEFAULT_TASK_SECONDS
     cleanup_seconds: float = 0.2
 
     def __post_init__(self):
+        from homebrew_harness.runtime.limits import positive
+        positive(self.warning_seconds, "workflow.warning_seconds", nullable=True)
         if (
             not math.isfinite(self.cleanup_seconds)
-            or not 0 <= self.cleanup_seconds <= 60
+            or self.cleanup_seconds < 0
         ):
             raise WorkflowError(
                 "Workflow cleanup window must be bounded nonnegative seconds."
             )
-        if not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0:
+        if self.timeout_seconds is not None and (not math.isfinite(self.timeout_seconds) or self.timeout_seconds <= 0):
             raise WorkflowError("Workflow timeout must be finite positive seconds.")
         for name, lower, upper in (
-            ("concurrency", 1, 16),
-            ("max_output_tokens", 1, 32_000),
-            ("max_input_chars", 100, 200_000),
+            ("concurrency", 1, None),
+            ("max_output_tokens", 1, None),
+            ("max_input_chars", 1, None),
         ):
             value = getattr(self, name)
-            if type(value) is not int or not lower <= value <= upper:
+            if type(value) is not int or value < lower:
                 raise WorkflowError("Invalid host workflow limit: " + name)
 
 
@@ -390,8 +394,8 @@ class WorkflowStore:
                 SafeFile(self.workdir, str(path)) as target,
                 target.open_read() as handle,
             ):
-                raw = handle.read(16 * 1024 * 1024 + 1)
-                if len(raw) > 16 * 1024 * 1024:
+                raw = handle.read(current_limits().workflow_state_bytes + 1)
+                if len(raw) > current_limits().workflow_state_bytes:
                     raise ValueError("Workflow state exceeds its bound")
                 target.verify_binding()
                 value = json.loads(raw)
@@ -503,8 +507,8 @@ class WorkflowJournal:
             flags = os.O_WRONLY | os.O_NOFOLLOW | os.O_NONBLOCK
             if resume:
                 with self.target.open_read() as stream:
-                    raw = stream.read(64 * 1024 * 1024 + 1)
-                    if len(raw) > 64 * 1024 * 1024:
+                    raw = stream.read(current_limits().workflow_journal_bytes + 1)
+                    if len(raw) > current_limits().workflow_journal_bytes:
                         raise ValueError("Workflow journal exceeds bound")
                     self.target.verify_binding()
                 for line in raw.splitlines():
@@ -748,7 +752,11 @@ class ExecutionState:
 
     async def _agent(self, key, prompt, schema, validator, label, phase):
         self.progress("agent", label=label, phase=phase, status="started")
-        for attempt in range(2):
+        import itertools
+        from homebrew_harness.runtime.limits import advisory
+        original_prompt = prompt
+        limits = current_limits()
+        for attempt in itertools.count():
             try:
                 output = await self._request(prompt, schema, label)
             except WorkflowError:
@@ -767,14 +775,20 @@ class ExecutionState:
                 )
                 self.progress("agent", label=label, phase=phase, status="done")
                 return value
-            if attempt == 0:
-                self.progress("agent", label=label, phase=phase, status="retry")
-                prompt += "\nYour previous response was incomplete or failed validation. Return a complete concise answer and, when specified, valid JSON matching the schema."
-                if output.error_info:
-                    prompt += "\nPrevious response diagnostic: " + json_text(output.error_info)
-                if len(prompt) > self.runtime.limits.max_input_chars:
-                    raise boundary_error(WorkflowError, "workflow_input_limit", "Corrective step input exceeds the host character limit.", limit_name="max_input_chars", limit_value=self.runtime.limits.max_input_chars, observed_value=len(prompt), unit="characters")
-        error = WorkflowError("Workflow step failed output validation after one correction.")
+            if limits.workflow_output_attempts is not None and attempt + 1 >= limits.workflow_output_attempts:
+                break
+            self.progress("agent", label=label, phase=phase, status="retry")
+            prompt = original_prompt + "\nYour previous response was incomplete or failed validation. Return a complete concise answer and, when specified, valid JSON matching the schema."
+            preview = json_text(output.value)
+            prompt += "\nPrevious output observation: " + json_text({"value_preview": preview[:limits.workflow_result_chars], "truncated": len(preview) > limits.workflow_result_chars})
+            observation = advisory(attempt + 1, limits.workflow_output_warning, "workflow_output_attempts", unit="attempts")
+            if observation:
+                prompt += "\nProgress observation: " + json_text(observation)
+            if output.error_info:
+                prompt += "\nPrevious response diagnostic: " + json_text(output.error_info)
+            if len(prompt) > self.runtime.limits.max_input_chars:
+                raise boundary_error(WorkflowError, "workflow_input_limit", "Corrective step input exceeds the host character limit.", limit_name="max_input_chars", limit_value=self.runtime.limits.max_input_chars, observed_value=len(prompt), unit="characters")
+        error = WorkflowError("Workflow step exhausted the explicit workflow_output_attempts budget without valid output.")
         if output.error_info:
             annotate_error(error, code=output.error_info["code"], **output.error_info["details"])
         else:
@@ -784,7 +798,7 @@ class ExecutionState:
     async def parallel(self, thunks):
         if (
             not isinstance(thunks, (list, tuple))
-            or len(thunks) > 1000
+            or (current_limits().workflow_batch_items is not None and len(thunks) > current_limits().workflow_batch_items)
             or any(not callable(thunk) for thunk in thunks)
         ):
             raise WorkflowError("parallel requires at most 1000 callable branches.")
@@ -1169,6 +1183,12 @@ class WorkflowRuntime:
         )
 
     async def request_runner(self, ctx, *args):
+        from homebrew_harness.runtime.limits import advisory
+        elapsed = time.time() - ctx.task.get("started_at", time.time())
+        notice = advisory(elapsed, self.limits.warning_seconds, "workflow_elapsed", unit="seconds")
+        if notice:
+            ctx.task["advisory"] = notice
+            args = (args[0] + "\n\nWorkflow progress observation: " + json_text(notice), *args[1:])
         if isinstance(self.runner, ModelWorkflowRunner):
             return await self.runner.arun(*args, on_attempt=ctx.model_attempt)
         result = Future()
@@ -1406,6 +1426,7 @@ class WorkflowRuntime:
                 "run_id": run_id,
                 "name": name,
                 "status": "running",
+                "started_at": time.time(),
                 "runner": self.runner.identity,
                 "progress": {"calls": 0, "cached_steps": 0},
                 "model_usage_source": "gateway"
@@ -1672,7 +1693,7 @@ class WorkflowRuntime:
             )
         if out["task"]["status"] != "completed":
             out["error"] = out["result"]["error"]
-        if len(json_text(out["result"])) > 6000:
+        if len(json_text(out["result"])) > current_limits().workflow_result_chars:
             out["result"] = {
                 "saved_to": out["task"]["result_file"],
                 "preview": json_text(out["result"])[:1200],

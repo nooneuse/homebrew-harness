@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import limits_scope
 """Real SDK stdio on a fake process backend; OS isolation uses separate Docker probes."""
 
 import io
@@ -411,6 +412,9 @@ class MCPContainerTests(unittest.TestCase):
         self.assertEqual((self.root / "input.txt").read_text(), "updated")
 
     def test_global_tools_must_fit_each_existing_workspace_pool(self):
+        scope = limits_scope({"tool_pool_size": 128})
+        scope.__enter__()
+        self.addCleanup(scope.__exit__, None, None, None)
         shared = replace(
             self.spec, name="shared", execution=replace(self.policy, inputs="none")
         )
@@ -422,7 +426,7 @@ class MCPContainerTests(unittest.TestCase):
         self.addCleanup(lambda: runtime.wait_closed(5))
         self.addCleanup(runtime.close)
         runtime.connect("docs")
-        with self.assertRaisesRegex(MCPError, "128"):
+        with self.assertRaisesRegex(MCPError, "tool_pool_size"):
             runtime.connect("shared")
         self.assertEqual(len(runtime.snapshot()[0]), 2)
         self.assertTrue(self.binding(runtime).connection.owner._leased)

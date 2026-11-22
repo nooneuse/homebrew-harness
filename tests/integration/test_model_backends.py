@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import limits_scope
 """Real optional SDK clients and HTTP share one protocol and recovery contract."""
 
 import asyncio
@@ -417,10 +418,7 @@ class BackendTests(unittest.TestCase):
                     self.assertEqual(len(server.requests), 1)
                     server = self.service([(500, {"error": {"message": "x" * 1000}})])
                     adapter = self.adapter(protocol, server, transport)
-                    with patch(
-                        "homebrew_harness.execution.providers.backends.MAX_RESPONSE_BYTES",
-                        128,
-                    ):
+                    with limits_scope({"model_response_bytes": 128}):
                         with self.assertRaisesRegex(ModelProtocolError, "bounded size"):
                             adapter.execute(
                                 request, adapter.prepare(request), 3, lambda: None

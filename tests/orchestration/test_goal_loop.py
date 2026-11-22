@@ -105,7 +105,7 @@ class GoalTests(unittest.TestCase):
     def session(self, responses, action=tool_ok, **kwargs):
         evaluator = Evaluator(action)
         goal = GoalController(
-            self.root, evaluator, block_cap=kwargs.get("stop_block_cap", 8)
+            self.root, evaluator, block_cap=kwargs.get("stop_block_cap", 8), runtime_limits=kwargs.get("runtime_limits")
         )
         client, requests = fake_client(responses)
         session = HarnessSession(
@@ -174,7 +174,7 @@ class GoalTests(unittest.TestCase):
         self.assertEqual(len(evaluator.calls), 1)
 
     def test_invalid_condition_preserves_current_goal(self):
-        goal = GoalController(self.root, Evaluator(final_ok))
+        goal = GoalController(self.root, Evaluator(final_ok), runtime_limits={"goal_condition_chars": 4000})
         self.addCleanup(goal.close)
         goal.set_goal("valid condition")
         before = copy.deepcopy(goal.state)
@@ -184,7 +184,7 @@ class GoalTests(unittest.TestCase):
             self.assertEqual(goal.state, before)
 
     def test_invalid_command_does_not_suspend_a_valid_existing_goal(self):
-        session, client, requests, evaluator = self.session([])
+        session, client, requests, evaluator = self.session([], runtime_limits={"goal_condition_chars": 4000})
         session.goal.set_goal("valid condition")
         before = copy.deepcopy(session.goal.state)
         with self.assertRaises(GoalError):
@@ -633,7 +633,10 @@ class GoalTests(unittest.TestCase):
                 "background",
                 {"bg_id": str(index), "result": {"exit_code": 0, "stdout": "x" * 5000}},
             )
-        packet = goal.packet("answer " * 1000)
+        with self.assertRaises(GoalError):
+            goal.packet("answer " * 1000)
+        packet = goal.packet("complete answer")
+        self.assertEqual(packet["final_answer"]["content"], "complete answer")
         self.assertLessEqual(
             len(
                 json.dumps(

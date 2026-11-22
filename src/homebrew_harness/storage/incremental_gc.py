@@ -5,6 +5,7 @@ import json
 
 from homebrew_harness.storage.durable_runtime import DurableStore
 from homebrew_harness.storage.storage_admin import canonical, maintenance
+from homebrew_harness.runtime.limits import current_limits
 
 LIVE = """WITH RECURSIVE live(doc,revision) AS (
  SELECT doc,revision FROM inc_heads WHERE root=1
@@ -15,7 +16,7 @@ LIVE = """WITH RECURSIVE live(doc,revision) AS (
 def inventory(engine, conn):
     live = set(conn.execute(LIVE).fetchall())
     versions = conn.execute("SELECT doc,revision,body FROM inc_versions").fetchall()
-    if len(versions) > 100000:
+    if len(versions) > current_limits().storage_inventory_versions:
         raise ValueError("Incremental version inventory exceeds its bound.")
     epochs = {}
     headers = set()
@@ -32,7 +33,7 @@ def inventory(engine, conn):
             if ref["kind"] == "value":
                 components.add((doc, name, ref["revision"]))
     views = conn.execute("SELECT epoch,seq,owner,message FROM inc_views").fetchall()
-    if len(views) > 1000000:
+    if len(views) > current_limits().storage_inventory_views:
         raise ValueError("Incremental message inventory exceeds its bound.")
     removed_views = []
     kept_messages = set(headers)

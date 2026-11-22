@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Filter current decision references before returning a bounded cursor page."""
 
 import json
@@ -169,7 +170,7 @@ def page(maintenance, *, work_id=None, cursor=0, limit=20, expired=False):
     more = len(items) > limit
     for position, value in items[:limit]:
         size = len(json.dumps(value, ensure_ascii=False).encode())
-        if selected and total + size > MAX_FRAME - 16384:
+        if selected and total + size > current_limits().control_frame_bytes - 16384:
             more = True
             break
         total += size

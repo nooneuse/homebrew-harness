@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Platform-neutral change feedback ingestion and native execution fences."""
 
 from homebrew_harness.runtime.errors import error_info
@@ -77,7 +78,7 @@ class ChangeRequestSource:
                     "status": item.status,
                     "conclusion": item.conclusion,
                 }
-                if len(json.dumps(event, ensure_ascii=False)) > 64000:
+                if len(json.dumps(event, ensure_ascii=False)) > current_limits().source_record_chars:
                     raise ValueError("Source object exceeds its body limit.")
                 allowed = type(item.actor_id) is int and item.actor_id in (
                     self.app_ids if item.actor_kind == "app" else self.actor_ids

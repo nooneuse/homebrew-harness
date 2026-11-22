@@ -331,9 +331,9 @@ class GatewayState:
         self.worker_output_tokens = int(
             os.getenv("HARNESS_WORKER_OUTPUT_TOKENS", "").strip() or str(DEFAULT_MAX_OUTPUT_TOKENS)
         )
-        if not 128 <= self.worker_output_tokens <= 32768:
+        if self.worker_output_tokens < 1:
             raise ValueError(
-                "HARNESS_WORKER_OUTPUT_TOKENS must be between 128 and 32768."
+                "HARNESS_WORKER_OUTPUT_TOKENS must be a positive integer."
             )
 
     def check(self, deadline=Deadline(), cancel_events=(), connection=None):
@@ -610,8 +610,8 @@ class ModelGateway:
         return self._state.worker_output_tokens
 
     def configure_worker_output(self, value):
-        if type(value) is not int or not 128 <= value <= 32768:
-            raise ValueError("Worker output tokens must be between 128 and 32768.")
+        if type(value) is not int or value < 1:
+            raise ValueError("Worker output tokens must be a positive integer.")
         if self._state.attempts or self._state.inflight:
             raise ValueError("Configure worker output before starting model work.")
         self._state.worker_output_tokens = value

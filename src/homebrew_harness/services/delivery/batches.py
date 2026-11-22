@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Frozen request groups; decisions remain per-item and independently replayable."""
 
 import time
@@ -9,7 +10,7 @@ class DecisionBatches:
         self.runtime, self.ms = runtime, maintenance
 
     def create(self, refs, request_id):
-        if not isinstance(refs, list) or not 1 <= len(refs) <= 100:
+        if not isinstance(refs, list) or not refs or current_limits().delivery_batch_items is not None and len(refs) > current_limits().delivery_batch_items:
             raise ValueError("Batch requires bounded exact request references.")
         key = "batch_" + request_key("batch", self.runtime.id, request_id)
         prior = (
@@ -56,7 +57,8 @@ class DecisionBatches:
     def apply(self, identity, revision, decisions, request_id):
         if (
             not isinstance(decisions, list)
-            or len(decisions) > 100
+            or current_limits().batch_decisions is not None
+            and len(decisions) > current_limits().batch_decisions
             or any(
                 not isinstance(d, dict)
                 or not {"id", "decision"} <= set(d)

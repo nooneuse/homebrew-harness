@@ -116,7 +116,7 @@ class UserInputController:
             if mode == "interrupt" and self.active_id is not None:
                 self.cancel.set()
             return {**receipt, "mode": mode, "target": target}
-        if not isinstance(text, str) or not text.strip() or len(text) > 64000:
+        if not isinstance(text, str) or not text.strip() or len(text) > self.session.runtime_limits.input_text_chars:
             raise ValueError(
                 "User input must be nonempty text within 64,000 characters."
             )
@@ -149,7 +149,8 @@ class UserInputController:
                 r"usr_[0-9a-f]{32}", identity
             ):
                 raise ValueError("Invalid stable user input ID.")
-            if len(self.pending()) >= 64:
+            queue_limit = self.session.runtime_limits.user_input_queue
+            if queue_limit is not None and len(self.pending()) >= queue_limit:
                 raise ValueError(
                     "User input queue is full; wait for accepted inputs to be consumed."
                 )

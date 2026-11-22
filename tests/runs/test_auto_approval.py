@@ -203,12 +203,20 @@ class NativeReviewLifecycleTests(unittest.TestCase):
             if 'independent approval reviewer' in kwargs['messages'][0]['content']:
                 entered.set(); release.wait(5)
                 return reply(json.dumps({'decision': verdict, 'reason': 'Exact registered invocation.'}))
+            if any(row['state'] == 'denied' for row in control.requests.records(control.id)):
+                return reply('The test request was denied; no test was executed.')
             return reply(calls=[call('test', name='run_tests', arguments=json.dumps({'name': 'quality', 'execution': {'mode': 'interactive', 'wait_seconds': .02}}))])
         client.chat.completions.create.side_effect = respond
         outcomes = []
         worker = threading.Thread(target=lambda: outcomes.append(control.execute()))
         worker.start()
-        self.addCleanup(lambda: worker.join(5))
+        def settle_worker():
+            if control.store.get(control.id)["status"] not in {"completed", "cancelled", "failed"}:
+                control.store.control(control.id, "cancel")
+            release.set()
+            worker.join(5)
+            self.assertFalse(worker.is_alive())
+        self.addCleanup(settle_worker)
         self.assertTrue(entered.wait(3))
         return control, session, worker, outcomes, release, runner
 
@@ -255,7 +263,8 @@ class NativeReviewLifecycleTests(unittest.TestCase):
     def test_default_request_window_covers_review_and_closing_allowance(self):
         from homebrew_harness.security.approval_review import ReviewConfig
         from homebrew_harness.configuration import DEFAULT_SHUTDOWN_SECONDS
-        self.assertGreater(RunSpec('Task').approval_seconds, ReviewConfig().timeout_seconds + DEFAULT_SHUTDOWN_SECONDS)
+        self.assertIsNone(RunSpec("Task").approval_seconds)
+        self.assertIsNone(ReviewConfig().timeout_seconds)
 
     def test_request_publication_window_is_owned_before_request_row_exists(self):
         control, session, client, payloads = self.controller([], spec=RunSpec('Task', approval_review={'mode': 'auto_review'}))

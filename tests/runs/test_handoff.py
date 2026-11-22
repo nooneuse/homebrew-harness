@@ -380,3 +380,34 @@ class HandoffTests(unittest.TestCase):
                 second.wait_closed(5)
                 control.close_heartbeat()
                 self.store.ended(control.header, cleanup=True)
+
+
+class AdvisoryFallbackTests(unittest.TestCase):
+    setUp = HandoffTests.setUp
+    registry = HandoffTests.registry
+    closed = HandoffTests.closed
+
+    def test_retrying_request_failure_can_use_an_admitted_backup(self):
+        from types import SimpleNamespace
+        from homebrew_harness.runs.supervisor import RunSupervisor
+        registry = self.registry()
+        state = self.closed(registry)
+        state.update(status='retrying', cleanup_complete=True,
+                     last_outcome={'reason_code': 'provider_transient', 'details': {'error_info': {'details': {'kind': 'server_error'}}}})
+        selected = []
+        supervisor = SimpleNamespace(model_handoff=lambda owner, value, alias: selected.append(alias))
+        self.assertTrue(RunSupervisor.try_model_handoff(supervisor, state))
+        self.assertEqual(selected, ['backup'])
+        state['cleanup_complete'] = False
+        self.assertFalse(RunSupervisor.try_model_handoff(supervisor, state))
+
+    def test_previous_use_does_not_permanently_exclude_a_declared_model(self):
+        registry = self.registry()
+        state = self.closed(registry)
+        state['used_fallbacks'] = ['backup']
+        self.store.runtime.put('runs', state['id'], state)
+        switch_model(self.store, state['id'], 'backup', state['revision'], registry,
+                     reason='Retry the declared alternate after a transient failure.')
+        current = self.store.get(state['id'])
+        self.assertEqual(current['selected_model'], 'backup')
+        self.assertEqual(current['used_fallbacks'], ['backup', 'backup'])

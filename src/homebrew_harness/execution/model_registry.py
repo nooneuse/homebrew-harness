@@ -1,6 +1,7 @@
 """Host model aliases; connections stay private and selections bind at creation."""
 
 from __future__ import annotations
+from homebrew_harness.runtime.limits import current_limits
 
 from homebrew_harness.runtime.errors import boundary_error
 from homebrew_harness.configuration import (
@@ -88,18 +89,18 @@ class ModelSpec:
             raise boundary_error(ValueError, "model_configuration",
                 "Model endpoint must be an HTTP(S) address without embedded credentials."
             )
-        if not isinstance(self.description, str) or len(self.description) > 500:
+        if not isinstance(self.description, str) :
             raise boundary_error(ValueError, "model_configuration", "Model description must contain at most 500 characters.")
         if self.context_chars is not None and (
             type(self.context_chars) is not int
-            or not 10000 <= self.context_chars <= 2000000
+            or self.context_chars < 10000
         ):
-            raise boundary_error(ValueError, "model_configuration", "Model context_chars must be between 10000 and 2000000.")
+            raise boundary_error(ValueError, "model_configuration", "Model context_chars must be at least 10000.")
         if self.max_output_tokens is not None and (
             type(self.max_output_tokens) is not int
-            or not 128 <= self.max_output_tokens <= 32768
+            or self.max_output_tokens < 1
         ):
-            raise boundary_error(ValueError, "model_configuration", "Model max_output_tokens must be between 128 and 32768.")
+            raise boundary_error(ValueError, "model_configuration", "Model max_output_tokens must be a positive integer.")
 
     def identity(self):
         return _hash(
@@ -142,7 +143,7 @@ class ModelRegistry:
     ):
         values = list(specs)
         if (
-            len(values) > 16
+            current_limits().binding_catalog_entries is not None and len(values) > current_limits().binding_catalog_entries
             or any(not isinstance(s, ModelSpec) for s in values)
             or len({s.name for s in values}) != len(values)
         ):
@@ -394,8 +395,8 @@ def load_model_registry(path, workdir, *, client_factory=None, environment=None)
     field = "document"
     try:
         with path.open("rb") as stream:
-            raw = stream.read(65537)
-        if len(raw) > 65536:
+            raw = stream.read(current_limits().config_file_bytes + 1)
+        if len(raw) > current_limits().config_file_bytes:
             raise boundary_error(ValueError, "model_configuration", "Model configuration exceeds 64 KiB.")
 
         def unique(pairs):

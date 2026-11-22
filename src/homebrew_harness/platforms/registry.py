@@ -80,15 +80,12 @@ def validate_declaration(raw, capability, *, named=False):
     }
     import math
 
-    for field, maximum in (
-        ("poll_seconds", 31536000 if named else 3600),
-        ("max_pages", 100),
-    ):
+    for field in ("poll_seconds", "max_pages"):
         value = result[field]
         if (
             type(value) not in ({int} if field == "max_pages" else {int, float})
             or not math.isfinite(value)
-            or not (1 if field == "max_pages" else 0.1) <= value <= maximum
+            or value < (1 if field == "max_pages" else 0.1)
         ):
             raise ValueError("Invalid platform polling bounds.")
     if not named:

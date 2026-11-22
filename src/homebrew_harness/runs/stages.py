@@ -16,8 +16,10 @@ from .store import owner_guard
 STAGE_TOOLS = {"list_tasks", "get_task", "claim_task", "resume_task", "complete_task"}
 
 
-def validate_stages(values):
-    if not isinstance(values, (tuple, list)) or len(values) > 32:
+def validate_stages(values, runtime_limits=None):
+    from homebrew_harness.runtime.limits import RuntimeLimits
+    limits = RuntimeLimits.parse(runtime_limits)
+    if not isinstance(values, (tuple, list)) or limits.declared_stages is not None and len(values) > limits.declared_stages:
         raise ValueError("Run stages must contain at most 32 definitions.")
     result, keys = [], set()
     for raw in values:
@@ -76,7 +78,7 @@ def validate_stages(values):
             or type(raw.get("isolated", False)) is not bool
             or type(raw.get("publish", False)) is not bool
             or not isinstance(paths, (list, tuple))
-            or not 1 <= len(paths) <= 32
+            or not paths
             or any(
                 not isinstance(path, str)
                 or not path
@@ -106,7 +108,7 @@ def validate_stages(values):
         read_paths = raw.get("source_paths", [])
         if (
             not isinstance(read_paths, (list, tuple))
-            or len(read_paths) > 32
+            or limits.stage_read_paths is not None and len(read_paths) > limits.stage_read_paths
             or any(
                 not isinstance(path, str)
                 or not path
@@ -119,7 +121,7 @@ def validate_stages(values):
         ):
             raise ValueError("Stage source_paths must be bounded relative prefixes.")
         inputs = raw.get("inputs", [])
-        if not isinstance(inputs, (list, tuple)) or len(inputs) > 16:
+        if not isinstance(inputs, (list, tuple)) or limits.stage_inputs is not None and len(inputs) > limits.stage_inputs:
             raise ValueError("Stage inputs must be a bounded source list.")
         normalized_inputs = []
         for item in inputs:
@@ -134,7 +136,7 @@ def validate_stages(values):
             source_paths = item["paths"]
             if (
                 not isinstance(source_paths, (list, tuple))
-                or not 1 <= len(source_paths) <= 32
+                or not source_paths
                 or any(
                     not isinstance(path, str)
                     or not path

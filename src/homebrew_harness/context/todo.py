@@ -1,6 +1,7 @@
 """s05: a validated, session-local plan with no execution or persistence."""
 
 from __future__ import annotations
+from homebrew_harness.runtime.limits import current_limits
 
 import json
 from dataclasses import dataclass
@@ -16,7 +17,6 @@ TODO_REMINDER = (
 TODO_INPUT_SCHEMA = {
     "type": "array",
     "description": "Use an array of items.",
-    "maxItems": MAX_TODOS,
     "items": {
         "type": "object",
         "properties": {
@@ -52,8 +52,8 @@ class TodoManager:
         """Validate everything before replacing the current list."""
         if not isinstance(todos, list):
             raise ValueError("todos must be an array.")
-        if len(todos) > MAX_TODOS:
-            raise ValueError(f"At most {MAX_TODOS} todos are allowed.")
+        if current_limits().todo_items is not None and len(todos) > current_limits().todo_items:
+            raise ValueError("Configured todo_items limit reached.")
 
         validated = []
         for index, item in enumerate(todos):
@@ -69,8 +69,8 @@ class TodoManager:
                     f"todos[{index}].status must be pending, in_progress, or completed."
                 )
             validated.append(TodoItem(content.strip(), status))
-        if sum(item.status == "in_progress" for item in validated) > 1:
-            raise ValueError("At most one todo may be in_progress.")
+        if current_limits().todo_active_items is not None and sum(item.status == "in_progress" for item in validated) > current_limits().todo_active_items:
+            raise ValueError("Configured todo_active_items limit reached.")
 
         self._items = tuple(validated)
         self._revision += 1

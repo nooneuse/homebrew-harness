@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Serializable model contract. SDK objects belong to provider adapters only."""
 
 from homebrew_harness.configuration import DEFAULT_MAX_OUTPUT_TOKENS
@@ -154,7 +155,7 @@ class ModelResponse:
             raise ModelOutputError("Model text must be a string.")
         calls = self.tool_calls
         if (
-            len(calls) > 128
+            current_limits().model_tool_calls is not None and len(calls) > current_limits().model_tool_calls
             or len({c.id for c in calls}) != len(calls)
             or any(c.kind != "function" for c in calls)
         ):
@@ -203,7 +204,7 @@ class ModelResponse:
             parts.append({"type": "text", "text": text})
         parts.extend({"type": "tool_call", "call": c.history()} for c in calls)
         ids = [c.id for c in calls]
-        if len(ids) != len(set(ids)) or len(ids) > 128:
+        if len(ids) != len(set(ids)) or (current_limits().model_tool_calls is not None and len(ids) > current_limits().model_tool_calls):
             raise ModelProtocolError(
                 "Provider tool identities collide or exceed the limit."
             )
@@ -241,7 +242,7 @@ def save_replay(root, owner, binding, payload):
     raw = json.dumps(
         {"owner": owner, "binding": binding, "payload": payload}, ensure_ascii=False
     ).encode()
-    if len(raw) > 2_000_000:
+    if len(raw) > current_limits().protocol_replay_bytes:
         raise ModelProtocolError(
             "Provider replay state exceeds its private size limit."
         )
@@ -286,7 +287,7 @@ def load_replay(root, owner, binding, reference):
                 _REPLAY_CACHE.move_to_end(key)
                 return copy.deepcopy(cached[1])
         raw = stream.read(2_000_001)
-        if len(raw) > 2_000_000:
+        if len(raw) > current_limits().protocol_replay_bytes:
             raise ModelProtocolError("Provider replay state exceeds its size limit.")
         target.verify_binding()
         after = os.fstat(stream.fileno())
@@ -306,8 +307,8 @@ def load_replay(root, owner, binding, reference):
     with _REPLAY_LOCK:
         _REPLAY_CACHE[key] = (stamp, value["payload"], len(raw))
         while (
-            len(_REPLAY_CACHE) > 32
-            or sum(v[2] for v in _REPLAY_CACHE.values()) > 8_000_000
+            len(_REPLAY_CACHE) > current_limits().replay_cache_entries
+            or sum(v[2] for v in _REPLAY_CACHE.values()) > current_limits().replay_cache_bytes
         ):
             _REPLAY_CACHE.popitem(last=False)
     return copy.deepcopy(value["payload"])

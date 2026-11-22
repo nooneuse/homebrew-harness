@@ -2,6 +2,7 @@ import copy
 import io
 import json
 import tempfile
+import threading
 import time
 import unittest
 from contextlib import redirect_stdout, redirect_stderr
@@ -70,6 +71,36 @@ class RunTests(unittest.TestCase):
                 )
             ]
         )
+
+    def test_preparation_reports_live_heartbeat_before_model_execution(self):
+        control, session, client, _ = self.controller([reply('done')], RunSpec('Finish', heartbeat_seconds=0.02))
+        entered, release = threading.Event(), threading.Event()
+        self.addCleanup(release.set)
+        original = control.prepare
+        def prepare():
+            entered.set()
+            self.assertTrue(release.wait(5))
+            return original()
+        outcomes = []
+        with patch.object(control, 'prepare', side_effect=prepare):
+            from homebrew_harness.runtime.runtime_control import Workers
+            workers = Workers()
+            workers.start(lambda: outcomes.append(control.execute()))
+            try:
+                self.assertTrue(entered.wait(2))
+                deadline = time.monotonic() + 2
+                heartbeat = {}
+                while time.monotonic() < deadline:
+                    heartbeat = self.store.runtime.get('run_heartbeats', control.id, {})
+                    if heartbeat.get('phase') == 'preparing':
+                        break
+                    time.sleep(0.01)
+                self.assertEqual(heartbeat.get('phase'), 'preparing')
+                self.assertEqual(client.chat.completions.create.call_count, 0)
+            finally:
+                release.set()
+                self.assertTrue(workers.wait(10))
+        self.assertEqual(outcomes[0].status, 'completed')
 
     def test_multiple_episodes_submit_original_once_and_preserve_results(self):
         control, session, client, _ = self.controller(
@@ -330,7 +361,7 @@ class RunTests(unittest.TestCase):
         client.chat.completions.create.assert_not_called()
 
     def test_clock_rollback_blocks_without_extending_time(self):
-        control, session, client, _ = self.controller([])
+        control, session, client, _ = self.controller([], RunSpec("Clock-bound work", total_seconds=60))
         with patch(
             "homebrew_harness.runs.controller.time.time",
             return_value=control.started_clock - 10,
@@ -539,7 +570,8 @@ class LongRunPromptTests(unittest.TestCase):
         prompt = "Accepted requirement. " + "Preserved direction. " * 4000
         control, session, client, requests = self.controller(
             [reply("unused")],
-            spec=RunSpec(prompt, context_chars=20000),
+            spec=RunSpec(prompt, context_chars=20000, runtime_limits={"hard_context_chars":20000}),
+            runtime_limits={"hard_context_chars":20000},
             context_chars=20000,
         )
         outcome = control.execute()

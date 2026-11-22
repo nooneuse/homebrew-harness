@@ -114,6 +114,7 @@ class ServiceRuntime:
                 self.dispatch,
                 service_id=self.id,
                 port=self.spec.control_port,
+                runtime_limits=self.core.config.settings.runtime_limits,
             )
             from .operations.runtime import Operations
 
@@ -133,6 +134,11 @@ class ServiceRuntime:
             raise
 
     def start(self):
+        from homebrew_harness.runtime.limits import limits_scope
+        with limits_scope(self.core.config.settings.runtime_limits):
+            return self._start()
+
+    def _start(self):
         from homebrew_harness.runtime.runtime_control import WorkAccepted
 
         if self.started:

@@ -314,7 +314,7 @@ class ProtocolInputContracts(unittest.TestCase):
                 ]
             },
         )
-        compactor = ContextCompactor(gateway, "fixture", self.root, context_chars=10000)
+        compactor = ContextCompactor(gateway, "fixture", self.root, context_chars=10000, runtime_limits={"auto_compact": True})
         messages = [
             {"role": "user", "content": "continue"},
             {"role": "assistant", "content": "short", "_protocol_state": state},

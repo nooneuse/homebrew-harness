@@ -85,7 +85,7 @@ class JobContracts(unittest.TestCase):
         from homebrew_harness.services.protocol import fingerprint
         work, contract = self.candidate_job()
         self.agent.phase_signature = {"primary": fingerprint(contract.input())}
-        self.agent.proposal = {"classification": "code", "reason": "Known defect.", "plan": "Repair."}
+        self.agent.proposal = {"next_action": "repair", "classification": "code", "reason": "Known defect.", "plan": "Repair."}
         with self.store.db.write() as conn:
             current = self.store.get("work", work.id, conn)
             current["execution_context"].append("Preserve the newly clarified execution constraint.")
@@ -136,7 +136,7 @@ class JobContracts(unittest.TestCase):
             },
             "review": {"text": "Reviewed fixed candidate.", "findings": []},
             "publication": {"title": "Describe the change", "body": "Recorded changes and verification."},
-            "ci_triage": {
+            "ci_triage": {"next_action": "wait",
                 "classification": "unknown",
                 "reason": "Missing facts.",
                 "plan": "Read logs.",
@@ -147,7 +147,7 @@ class JobContracts(unittest.TestCase):
             "incident": {"text": "Recorded diagnosis."},
             "upgrade_assessment": {"text": "Recorded assessment."},
         }
-        self.assertEqual(set(valid), set(HANDLERS))
+        self.assertEqual(set(valid) | {"validation_plan"}, set(HANDLERS))
         for kind, candidate in valid.items():
             with self.subTest(kind=kind):
                 contract = JobContract(self.store, {**job, "kind": kind})

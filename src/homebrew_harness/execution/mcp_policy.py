@@ -19,7 +19,7 @@ class MCPExecutionPolicy:
     cpus: float = 1
     memory_mb: int = 512
     pids: int = 64
-    cpu_seconds: int = 3600
+    cpu_seconds: int | None = None
     file_bytes: int = 64 * 1024 * 1024
     open_files: int = 256
     max_files: int = 5000
@@ -56,13 +56,13 @@ class MCPExecutionPolicy:
                 "Container MCP needs an absolute Docker CLI and immutable image digest."
             )
         uid = self.uid if self.uid is not None else os.getuid() or 65534
-        if type(uid) is not int or not 1 <= uid <= 65534:
+        if type(uid) is not int or uid < 1:
             raise ValueError("Container MCP requires a supported non-root UID.")
         object.__setattr__(self, "uid", uid)
         if (
             type(self.cpus) not in (int, float)
             or not math.isfinite(self.cpus)
-            or not 0.1 <= self.cpus <= 8
+            or self.cpus < 0.1
         ):
             raise ValueError("Invalid MCP CPU quota.")
         for name, low, high in [
@@ -75,7 +75,9 @@ class MCPExecutionPolicy:
             ("max_input_bytes", 1024, 256 * 1024 * 1024),
         ]:
             value = getattr(self, name)
-            if type(value) is not int or not low <= value <= high:
+            if name == "cpu_seconds" and value is None:
+                continue
+            if type(value) is not int or value < low:
                 raise ValueError("Invalid container MCP limit: " + name)
 
     def fingerprint(self):

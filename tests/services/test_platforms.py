@@ -61,6 +61,12 @@ class PlatformTests(unittest.TestCase):
             ],
         )
 
+    def test_explicit_polling_configuration_has_no_arbitrary_upper_ceiling(self):
+        source = self.source(poll_seconds=40_000_000, max_pages=200)
+        self.assertEqual(source.spec['poll_seconds'], 40_000_000)
+        self.assertEqual(source.spec['max_pages'], 200)
+        self.assertEqual(self.peer.source_requests, [])
+
     def test_cursor_cannot_cross_instances_or_projects(self):
         source = self.source()
         page = source.poll({}, Deadline.after(5))

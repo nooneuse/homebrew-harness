@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import expired
 """Small shared transitions for accepted external effects."""
 
 import time
@@ -30,7 +31,7 @@ def start_attempt(action, generation):
     if (
         action["state"] != "queued"
         or not action.get("authorization")
-        or action["expires_at"] <= time.time()
+        or expired(action["expires_at"], time.time())
     ):
         raise ValueError("Action is not authorized or has expired.")
     return {

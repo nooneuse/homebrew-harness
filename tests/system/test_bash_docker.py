@@ -131,12 +131,13 @@ print(json.dumps({'limited':limited}))
         self.assertTrue(json.loads(output["stdout"])["limited"])
         self.assertFalse(list(self.cwd.glob("output-*")))
 
-    def test_output_limit_is_shared_and_container_is_removed(self):
+    def test_output_capture_does_not_stop_the_container(self):
         output, runner = self.execute(
             "python -c \"import sys;print('x'*2000000);print('y'*2000000,file=sys.stderr)\"",
             output_bytes=1024,
         )
-        self.assertTrue(output["output_limit"], output)
+        self.assertEqual(output["exit_code"], 0, output)
+        self.assertTrue(any(v["truncated"] for v in output["output_capture"].values()))
         self.assertLessEqual(
             len(output["stdout"].encode()) + len(output["stderr"].encode()), 1024
         )

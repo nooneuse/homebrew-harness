@@ -136,7 +136,7 @@ class RunMCPCombinations(unittest.TestCase):
             "two": ["t" + str(i) for i in range(64)],
         }
         with self.assertRaisesRegex(ValueError, "128"):
-            RunSpec("Oversized effective selection", mcp=selection)
+            RunSpec("Oversized effective selection", mcp=selection, runtime_limits={"tool_pool_size": 128})
 
     def test_malformed_selections_and_delegation_fail_as_configuration_errors(self):
         for fields in (

@@ -97,19 +97,22 @@ class EvidencePages(unittest.TestCase):
         (self.root / 'too-large').write_bytes(b'x' * (FILE_BYTES + 1))
         with self.assertRaisesRegex(EvidenceLimitReached, 'size limit'):
             self.evidence.read({'path': 'too-large'})
-        self.evidence = ReviewEvidence(self.root)
+        from homebrew_harness.runtime.limits import limits_scope
+        with limits_scope({"review_pages": MAX_PAGES, "review_files": MAX_FILES}):
+            self.evidence = ReviewEvidence(self.root)
         (self.root / 'guide').write_text('text')
         for _ in range(MAX_PAGES):
             self.evidence.read({'path': 'guide'})
         with self.assertRaisesRegex(EvidenceLimitReached, 'page limit'):
             self.evidence.read({'path': 'guide'})
-        evidence = ReviewEvidence(self.root)
+        with limits_scope({"review_pages": MAX_PAGES, "review_files": MAX_FILES}):
+            evidence = ReviewEvidence(self.root)
         for index in range(MAX_FILES):
             (self.root / str(index)).write_text('text')
             evidence.read({'path': str(index)})
         with self.assertRaisesRegex(EvidenceLimitReached, 'file limit'):
             evidence.read({'path': 'guide'})
-        with patch('homebrew_harness.security.review_evidence.TOTAL_BYTES', 7):
+        with limits_scope({"review_total_bytes": 7}):
             evidence = ReviewEvidence(self.root)
             evidence.read({'path': 'guide'})
             with self.assertRaisesRegex(EvidenceLimitReached, 'content limit'):

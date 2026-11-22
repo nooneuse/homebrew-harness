@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Isolated network executors; protocol conversion and tool execution stay elsewhere."""
 
 from homebrew_harness.configuration import (
@@ -34,7 +35,6 @@ SDKS = {
     "dashscope_generation": "dashscope",
 }
 
-MAX_RESPONSE_BYTES = 8_000_000
 
 _PINS = ContextVar("model_backend_pins", default={})
 _CHECK = ContextVar("model_response_check", default=lambda: None)
@@ -143,7 +143,7 @@ def json_body(response, check, *, error_body=False):
     for chunk in response.iter_bytes():
         check()
         size += len(chunk)
-        if size > MAX_RESPONSE_BYTES:
+        if size > current_limits().model_response_bytes:
             raise ModelProtocolError("Model response exceeds its bounded size.")
         chunks.append(chunk)
     try:
@@ -166,7 +166,7 @@ def sse_events(response, check):
         for chunk in response.iter_bytes():
             check()
             size += len(chunk)
-            if size > MAX_RESPONSE_BYTES:
+            if size > current_limits().model_response_bytes:
                 raise ModelProtocolError("Model stream exceeds its bounded size.")
             pending.extend(chunk)
             while b"\n" in pending:
@@ -197,7 +197,7 @@ def sse_events(response, check):
             if raw == "[DONE]":
                 return
             count += 1
-            if count > 10000:
+            if current_limits().model_stream_events is not None and count > current_limits().model_stream_events:
                 raise ModelProtocolError("Model stream exceeds its event limit.")
             try:
                 value = json.loads(raw)

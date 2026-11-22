@@ -1,3 +1,4 @@
+from homebrew_harness.runtime.limits import current_limits
 """Bounded child facts and parent-owned result lookup on existing checkpoints."""
 
 import json
@@ -47,7 +48,7 @@ def result_for(writer, identity, status, *, result="", error=None, owner_operati
 
 
 def read_result(*, workdir, run_id, operation_id=None, offset=0, limit=4000):
-    if not re.fullmatch(r"sub-[0-9a-f]{32}", run_id) or type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= 16000:
+    if not re.fullmatch(r"sub-[0-9a-f]{32}", run_id) or type(offset) is not int or offset < 0 or type(limit) is not int or not 1 <= limit <= current_limits().operation_read_chars:
         raise ValueError("Use an owned subagent ID and character offset/limit within 16000.")
     parent = active_writer()
     if parent is None:

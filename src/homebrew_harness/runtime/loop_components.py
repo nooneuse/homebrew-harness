@@ -31,6 +31,9 @@ class LoopComponents:
     stop_event: object = None
     tool_allowlist: object = None
     context_chars: int = DEFAULT_CONTEXT_CHARS
+    runtime_limits: object = None
+    model_call_warning: int | None = 20
+    turn_warning_seconds: float | None = 1500
     archive_namespace: str | None = None
     model_registry: object = None
     worker_output_tokens: int | None = None
