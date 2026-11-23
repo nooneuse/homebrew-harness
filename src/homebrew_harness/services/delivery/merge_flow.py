@@ -78,6 +78,11 @@ def gate(feedback, spec):
     }
 
 
+def platform_mergeable(observed):
+    return (not observed.get("draft") and observed.get("mergeable") is True
+            and observed.get("mergeable_state") not in {"blocked", "behind", "dirty", "draft", "unknown"})
+
+
 def observe(delivery, row):
     if not row.get("change_request") or row.get("next_merge", 0) > time.time():
         return False
@@ -157,6 +162,15 @@ def observe(delivery, row):
         )
         return True
     delivery.store.observation(row["id"], observed, time.time() + delay)
+    if delivery.spec.get("base_update") == "periodic":
+        # Periodic integration records target drift without replacing the CI gate
+        # or discarding current-head review and test evidence.
+        if row["state"] == "merge_ready" and not platform_mergeable(observed):
+            delivery.store.update("changesets", row["id"], state="review_waiting", next_ci=0,
+                                  error="platform_merge_waiting")
+            delivery.store.invalidate_merges(row["id"])
+            return True
+        return False
     if (
         row["state"] in {"ci_waiting", "review_waiting", "merge_ready"}
         and observed["base"] != row["candidate"]["target_base"]
@@ -242,14 +256,24 @@ def verify_result(delivery, row):
             delivery.preparing = False
 
 
-def refresh_fence(delivery, row, conn):
+def refresh_fence(delivery, row, conn, *, periodic_plan=None):
     """Do not replace a candidate while its external publication is uncertain."""
     from homebrew_harness.runtime.errors import boundary_error
-    delivery.runtime.store.guard(conn, delivery.runtime.header)
+    meta = delivery.runtime.store.guard(conn, delivery.runtime.header)
     current = delivery.store.get("changesets", row["id"], conn)
-    delivery.store.current(current, conn)
+    work = delivery.store.current(current, conn)
     if current.get("frozen") != row.get("frozen") or current.get("merge"):
         raise ValueError("Delivery changed while refreshing the fixed candidate.")
+    if periodic_plan is not None:
+        from .periodic import eligible, has_risk
+
+        schedule = current.get("integration_schedule") or {}
+        if (meta["state"] != "running" or not eligible(delivery, current, work)
+                or not delivery.ms.valid_authority(work)
+                or schedule.get("state") != "selected" or schedule.get("selection") != periodic_plan
+                or current["candidate"]["commit"] != periodic_plan["head"]
+                or not has_risk(delivery.spec, current)):
+            raise ValueError("Periodic integration selection no longer applies.")
     pending = conn.execute(
         "SELECT key FROM records WHERE section='service_actions' AND owner=? "
         "AND json_extract(value,'$.work_id')=? "
@@ -285,7 +309,7 @@ def refresh_waiting(delivery, row):
                     delivery.store.put(conn, "changesets", current)
 
 
-def refresh(delivery, identity):
+def refresh(delivery, identity, *, periodic_plan=None):
     from homebrew_harness.execution.execution_control import (
         cleanup_scope,
         control_scope,
@@ -308,18 +332,19 @@ def refresh(delivery, identity):
         return delivery.store.update(
             "changesets", identity, state="merged_verifying", error=None, next_merge=0
         )
-    if row["state"] not in {
+    if (row["state"] not in {
         "integration_required",
         "ci_waiting",
         "review_waiting",
         "merge_ready",
         "blocked",
         "closed_unmerged",
-    }:
+    } and not (periodic_plan is not None and row["state"] == "diagnosis_waiting")):
         raise ValueError("Refresh a waiting PR or a blocked integration verification.")
     delivery.store.current(row)
+    fence_options = {"periodic_plan": periodic_plan} if periodic_plan is not None else {}
     with delivery.ms.db.write() as conn:
-        refresh_fence(delivery, row, conn)
+        refresh_fence(delivery, row, conn, **fence_options)
     with delivery.runtime.lock:
         if delivery.preparing:
             raise ValueError("Delivery already owns a slow preparation.")
@@ -345,6 +370,13 @@ def refresh(delivery, identity):
                 raise ValueError(
                     "Reopen or restore the registered PR before refreshing."
                 )
+            if periodic_plan is not None:
+                from .periodic import has_risk
+
+                if observed["head"] != periodic_plan["head"] or not has_risk(delivery.spec, row, observed):
+                    delivery.store.observation(identity, observed, time.time())
+                    return row  # Observe the new eligibility before any local preparation.
+                observed = {**observed, "base": periodic_plan["target"]}
             if (
                 observed["head"] == row["candidate"]["commit"]
                 and observed["base"] == row["candidate"]["target_base"]
@@ -372,9 +404,10 @@ def refresh(delivery, identity):
                 observed,
                 directory,
                 linear=delivery.spec["merge"].get("method") == "rebase",
+                **({"fixed_target": True} if periodic_plan is not None else {}),
             )
             with delivery.ms.db.write() as conn:
-                current = refresh_fence(delivery, row, conn)
+                current = refresh_fence(delivery, row, conn, **fence_options)
                 history = {
                     k: row["candidate"][k]
                     for k in (
@@ -418,6 +451,10 @@ def refresh(delivery, identity):
                         "previous_head": row["candidate"]["commit"], "conflicts": conflicts}
                     current.pop("ci_diagnosis", None)
                 current.setdefault("read_errors", {}).pop("integration", None)
+                if current.get("integration_schedule"):
+                    from .periodic import after_preparation, now
+
+                    current["integration_schedule"] = after_preparation(current, now())
                 delivery.store.put(conn, "changesets", current)
                 if conflicts:
                     delivery.ms.job(conn, "ci_triage", identity, current["revision"], {},

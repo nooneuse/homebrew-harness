@@ -83,7 +83,28 @@ Conflict repair Runs receive an index of read-only Git source snapshots under `.
 
 Development uses a fixed Git input base by default (`base_update="manual"`). Candidate preparation uses the Work's recorded input commit when available; an input without a recorded Git commit resolves a base at its first preparation. Candidate tests and independent review refer to that exact tree. A changing target branch does not rewrite development source or invalidate those fixed-version receipts. PR publication and latest-target integration are separate stages.
 
-A changed PR head or target base enters `integration_required`. By default this records an observation and preserves the published head, candidate and verification history; it does not launch a refresh or conflict-repair Run. Explicit `delivery refresh` authorizes a later integration attempt. Set `base_update="automatic"` to opt into latest-target preparation and automatic target-change refresh. CI failures on the published head still follow the existing model-led CI diagnosis and configured repair authority. Merge actions still require current target, CI, reviewer and platform policy evidence. Explicit `delivery refresh` can integrate the accepted delta with the current target, or adopt a platform branch update only when its content is the same deterministic integration. It preserves the PR and original conditions and repeats tests/review. New code outside that delta requires a Work decision. A service rebase refresh may replace its review head using an exact-head conditional lease; target-branch writes remain unavailable.
+Under the default manual policy, a changed PR head or target base enters `integration_required`. This records an observation and preserves the published head, candidate and verification history; it does not launch a refresh or conflict-repair Run. Explicit `delivery refresh` authorizes a later integration attempt. Set `base_update="automatic"` to opt into latest-target preparation and automatic target-change refresh. CI failures on the published head still follow the existing model-led CI diagnosis and configured repair authority. Merge actions still require current target, CI, reviewer and platform policy evidence. Explicit `delivery refresh` can integrate the accepted delta with the current target, or adopt a platform branch update only when its content is the same deterministic integration. It preserves the PR and original conditions and repeats tests/review. New code outside that delta requires a Work decision. A service rebase refresh may replace its review head using an exact-head conditional lease; target-branch writes remain unavailable.
+
+### Periodic integration
+
+Set `base_update: "periodic"` to keep the fixed development baseline and assess integration only when a published PR shows an integration risk. A clean PR whose target advances does not by itself require another candidate. The existing platform gates still apply, including any strict current-base CI requirement. Periodic scheduling is opt-in; `manual` remains the default and `automatic` retains its previous behavior.
+
+These optional Delivery settings default to:
+
+```json
+{
+  "base_update": "periodic",
+  "periodic_integration": {
+    "assessment_seconds": 21600,
+    "min_integration_seconds": 21600,
+    "max_deferral_seconds": 86400
+  }
+}
+```
+
+Observations preserve the first unresolved risk time, exact published head and evidence. At the assessment deadline, the Service probes an exact head/target pair in a temporary Git repository and supplies actual conflict paths, the latest recorded CI/review/feedback status and the previous decision to a model. It may select integration, defer with a reason, or record a concrete blocker. Before the deadline it can assess early if other merge conditions are met, if a CI diagnosis confirms a baseline blocker, or if the operator requests it. A deferral cannot extend the original window (24 hours by default); an overdue assessment must select integration or explain what blocks it. The cooldown applies to scheduled work, not an explicitly authorized `delivery refresh`.
+
+The chosen target is fixed even while the target branch advances. Preparation refuses a rewritten target that no longer contains the selected base, or a changed source head; it never overwrites another contributor's update. The result goes through existing validation, scoped conflict repair authority and publication before it can be considered for merge. Integration does not grant merge or publication authority. `delivery show` exposes `integration_schedule` with the risk time, decision and due time. Use `delivery assess-integration CHANGESET_ID` (Python: `service.assess_integration(id)`) to request an early assessment or re-evaluate a blocker after fixing its cause; this is not a merge or a manual refresh.
 
 Closing without merge enters `closed_unmerged`. Reopening is observed from the platform. After a successful merge, deletion of the source branch does not remove its recorded SHA. Temporary PR/CI read failures retain the state and retry with backoff; they do not resend a merge or invoke the model repeatedly.
 

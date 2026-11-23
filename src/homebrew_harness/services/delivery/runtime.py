@@ -324,6 +324,14 @@ class Delivery:
         from .merge_flow import OBSERVING, PASSIVE, observe, verify_result
 
         if row["state"] == "diagnosis_waiting":
+            if self.spec.get("base_update") == "periodic" and row.get("change_request"):
+                from .periodic import tick
+
+                if observe(self, row) or tick(self, row["id"]):
+                    return
+                current = self.store.get("changesets", row["id"])
+                if (current.get("integration_schedule") or {}).get("state") in {"assessing", "selected"}:
+                    return
             if row.get("next_ci", 0) <= time.time():
                 with self.ms.db.write() as conn:
                     current = self.store.get("changesets", row["id"], conn)
@@ -352,6 +360,11 @@ class Delivery:
 
                 if promote(self.ms.communication, row):
                     self.store.invalidate_merges(row["id"])
+                    return
+            if self.spec.get("base_update") == "periodic":
+                from .periodic import tick
+
+                if tick(self, row["id"]):
                     return
             if row["state"] in OBSERVING and row["state"] not in {
                 "ci_waiting",
@@ -649,6 +662,12 @@ class Delivery:
             evaluation = gate(feedback, self.spec)
             ready, failed = evaluation["ci_ready"], evaluation["failed"]
             review_gate = evaluation["review_gate"]
+            baseline_wait = False
+            if failed and self.spec.get("base_update") == "periodic" and row.get("integration_ci_basis"):
+                from .periodic import ci_failure_basis, ci_integration_eligible
+
+                baseline_wait = (ci_integration_eligible(self.spec, {**row, "ci": feedback})
+                                 and ci_failure_basis(self.spec, feedback) == row["integration_ci_basis"])
             changes = {
                 "ci": feedback,
                 "review_gate": review_gate,
@@ -660,7 +679,8 @@ class Delivery:
                     state="review_waiting", error="review_authority_required"
                 )
             elif ready:
-                if feedback["base"] != row["candidate"]["target_base"]:
+                if (self.spec.get("base_update") != "periodic"
+                        and feedback["base"] != row["candidate"]["target_base"]):
                     changes.update(
                         state="integration_required", error="target_base_changed"
                     )
@@ -675,6 +695,10 @@ class Delivery:
                     )
                 else:
                     changes.update(state="merge_ready", next_merge=0)
+                    if self.spec.get("base_update") == "periodic":
+                        # A new readiness window needs a fresh action if an
+                        # indeterminate observation superseded the previous one.
+                        changes["merge_readiness_revision"] = row.get("merge_readiness_revision", 0) + 1
                     if self.spec["merge"]["mode"] == "service_approved":
                         try:
                             changes["merge_rules"] = self.adapter.merge_gate(
@@ -688,6 +712,8 @@ class Delivery:
                             )
                         else:
                             request_merge = True
+            elif baseline_wait:
+                changes.update(state="review_waiting", error="baseline_ci_integration_pending")
             elif failed:
                 changes.update(state="ci_diagnosing")
             elif (
@@ -705,7 +731,7 @@ class Delivery:
                 "ci_wait_elapsed",
                 unit="seconds",
             )
-            diagnose = failed
+            diagnose = failed and not baseline_wait
             if (
                 not ready
                 and not failed
@@ -750,7 +776,7 @@ class Delivery:
             ):
                 return
             if action["kind"] == "merge_change_request":
-                from .merge_flow import gate
+                from .merge_flow import gate, platform_mergeable
 
                 if self.ms.communication is not None:
                     from homebrew_harness.services.communication.followup import basis, pending
@@ -775,6 +801,7 @@ class Delivery:
                     evaluation["hash"] != action["plan"]["gate_hash"]
                     or not evaluation["ci_ready"]
                     or not evaluation["review_gate"]["ready"]
+                    or (self.spec.get("base_update") == "periodic" and not platform_mergeable(observed))
                 ):
                     self.store.update(
                         "changesets",
@@ -870,6 +897,8 @@ class Delivery:
             return self.store.settle_action(action, "unknown", error=error)
 
     def repair(self, row, work):
+        if work.get("pause_requested"):
+            return
         if not self.store.repair_allowed(row, work):
             from homebrew_harness.runtime.errors import boundary_error
 
@@ -1029,7 +1058,12 @@ class Delivery:
             }
         )
         with self.ms.db.write() as conn:
-            current = self.store.current(row, conn)
+            meta = self.runtime.store.guard(conn, self.runtime.header)
+            pending = self.store.get("changesets", row["id"], conn)
+            current = self.store.current(pending, conn)
+            if (meta["state"] != "running" or current.get("pause_requested")
+                    or pending["revision"] != row["revision"] or pending["state"] != "repair_approved"):
+                return
             if (
                 not self.ms.valid_authority(current)
                 or current.get("ci_fix_attempts", 0) != count - 1
@@ -1060,8 +1094,8 @@ class Delivery:
             )
             current.pop("result", None)
             self.ms.db._put(conn, "service_work", work["id"], current)
-            row.update(state="repairing")
-            self.store.put(conn, "changesets", row)
+            pending.update(state="repairing", revision=pending["revision"] + 1)
+            self.store.put(conn, "changesets", pending)
             self.ms.changed(conn, work["id"])
 
     def has_pending_sync(self):

@@ -50,7 +50,15 @@ CI 绑定当前 head 和可信应用。诊断区分代码、基线、偶发、�
 
 默认采用固定 Git 输入基线开发（`base_update="manual"`）。准备候选时使用 Work 记录的输入 commit；输入未记录 Git commit 时，在首次准备时确定基线。候选测试与独立审查对应确切的代码树。目标分支推进不会改写开发源码，也不会作废这些固定版本的回执。PR 发布与最新目标分支集成属于不同阶段。
 
-head 或目标基线变化进入 integration_required。默认仅记录观察并保留已发布 head、候选和验证历史，不自动刷新或创建冲突修复 Run。显式 `delivery refresh` 授权后续一次集成准备。设置 `base_update="automatic"` 可以主动选择最新目标基线准备和目标变化后的自动刷新。已发布 head 的真实 CI 失败仍走模型研判与既有修复授权。合并动作仍要求当前目标、CI、审查和平台策略证据。显式 delivery refresh 可以把已接受差量与最新基线合成，或仅在内容相同的确定性集成条件下接纳平台更新的分支。它保留 PR 和原条件，重新测试与审查；其他新代码需要 Work 决定。服务 rebase 刷新可通过绑定确切旧 head 的条件租约替换其审查分支，目标分支仍不可直接写入。
+默认的 manual 策略下，head 或目标基线变化进入 integration_required，仅记录观察并保留已发布 head、候选和验证历史，不自动刷新或创建冲突修复 Run。显式 `delivery refresh` 授权后续一次集成准备。设置 `base_update="automatic"` 可以主动选择最新目标基线准备和目标变化后的自动刷新。已发布 head 的真实 CI 失败仍走模型研判与既有修复授权。合并动作仍要求当前目标、CI、审查和平台策略证据。显式 delivery refresh 可以把已接受差量与最新基线合成，或仅在内容相同的确定性集成条件下接纳平台更新的分支。它保留 PR 和原条件，重新测试与审查；其他新代码需要 Work 决定。服务 rebase 刷新可通过绑定确切旧 head 的条件租约替换其审查分支，目标分支仍不可直接写入。
+
+### 定期集成评估
+
+设置 `base_update: "periodic"` 保持固定开发基线，仅对已发布且观察到集成风险的 PR 定期评估。平台仍认为可合并的 PR 不因为目标分支前进而自动重做候选；严格的当前基线 CI 等平台门槛仍然生效。`periodic` 按部署选择，`manual` 仍是默认值，`automatic` 的行为不变。
+
+可选的 `periodic_integration` 配置包含 `assessment_seconds`（默认 21600）、`min_integration_seconds`（21600）与 `max_deferral_seconds`（86400）。首次未解决风险的时钟不会被新的目标提交重置。到期在临时 Git 仓库检查固定 head/target 的实际冲突，再向模型提供冲突路径、CI、审查、反馈与上次决定。模型可以选择集成、有理由地延期，或给出具体阻塞；逾期后不能继续延期。其他合并条件已齐备、CI 诊断确认基线阻塞或操作者明确请求时，可提前评估；调度仍遵守普通集成间隔。显式授权的 `delivery refresh` 是独立入口。
+
+执行时固定已评估的目标 SHA。目标分支继续前进不替换本轮计划；目标历史被改写且不再包含选定基线、或远端源 head 被别人更新时，不覆盖对方代码。后续复用现有验证、冲突修复授权和发布流程，不因此增加发布或合并权限。`delivery show` 的 `integration_schedule` 展示风险时间、决定和下次评估；`delivery assess-integration CHANGESET_ID`（Python：`service.assess_integration(id)`）可提前评估，或在具体阻塞消除后重新评估，不会立即刷新或合并。
 
 未合并的关闭保存为 closed_unmerged；重开由平台事实观察。源分支在合并后删除不会丢失已记录 SHA。暂时的 PR／CI 读取故障保留状态并退避读取，不重新合并，也不持续调用模型。
 

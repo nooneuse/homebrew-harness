@@ -124,6 +124,7 @@ MAINTENANCE_COMMANDS = {
     "delivery_request": {"id"},
     "delivery_inspect": {"id", "conclusion", "confirmed", "execution"},
     "delivery_refresh": {"id", "execution"},
+    "delivery_assess_integration": {"id", "revision"},
     "delivery_ci_limits": {"ci_fix_limit", "ci_fix_warning"},
     "delivery_base_update": {"mode"},
     "batch_create": {"refs"},

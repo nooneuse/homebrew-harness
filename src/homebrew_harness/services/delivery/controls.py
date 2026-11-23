@@ -84,6 +84,10 @@ def command(delivery, method, payload, request_id):
 
     def apply(conn):
         meta = runtime.store.guard(conn, runtime.header)
+        if method == "delivery_assess_integration":
+            from .periodic import request_assessment
+
+            return request_assessment(delivery, conn, payload["id"], payload["revision"])
         if method in {"delivery_ci_limits", "delivery_base_update"}:
             import copy, json
             from .spec import validate_ci_limits, validate_base_update

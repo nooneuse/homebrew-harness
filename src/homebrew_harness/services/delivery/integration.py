@@ -6,8 +6,11 @@ from pathlib import Path
 
 from homebrew_harness.execution.source_snapshot import snapshot, content_digest
 from homebrew_harness.platforms.merges import commit
-from homebrew_harness.services.protocol import fingerprint
+from homebrew_harness.runtime.errors import boundary_error
 from homebrew_harness.runtime.limits import current_limits
+from homebrew_harness.services.protocol import fingerprint
+
+from .spec import branch
 
 
 def _git(git, repo, *args, **kwargs):
@@ -18,13 +21,28 @@ def _oid(git, repo, value):
     return commit(_git(git, repo, "rev-parse", value).decode().strip())
 
 
-def _ancestor(git, repo, parent, child):
-    return _git(git, repo, "merge-base", parent, child).decode().strip() == parent
+def _ancestor(git, repo, parent, child, *, accepted_codes=(0,)):
+    raw = _git(git, repo, "merge-base", parent, child, accepted_codes=accepted_codes)
+    return raw.decode().strip() == parent
 
 
 def _merge_tree(git, repo, base, head):
     raw = _git(git, repo, "merge-tree", "--write-tree", base, head)
     return commit(raw.decode().splitlines()[0])
+
+
+def _merge_tree_with_conflicts(git, repo, base, head):
+    raw = _git(
+        git, repo, "merge-tree", "--write-tree", "--name-only", "-z", base, head,
+        accepted_codes=(0, 1),
+    ).split(b"\0")
+    tree = commit(raw[0].decode().strip())
+    conflicts = []
+    for path in raw[1:]:
+        if not path:  # The following section contains messages, not conflict paths.
+            break
+        conflicts.append(path.decode())
+    return tree, conflicts
 
 
 def _patch(git, repo, oid):
@@ -269,61 +287,99 @@ def materialize(git, repo, result, directory, limits, identity, information):
     return value
 
 
-def refresh_candidate(git, candidate, observed, directory, *, linear=False):
-    """Adopt only the deterministic integration of accepted code and current base."""
+def _fetch_branch(git, repo, name):
+    _git(
+        git,
+        repo,
+        "fetch",
+        "--no-tags",
+        "--no-recurse-submodules",
+        git.values["remote"],
+        "refs/heads/" + name,
+        credentials=True,
+    )
+    return _oid(git, repo, "FETCH_HEAD")
+
+
+def _pr_version_changed(
+    expected_head, expected_base, head, base, *, reason, code="pr_version_changed",
+):
+    expected = f"head={expected_head};base={expected_base}"
+    current = f"head={head};base={base}"
+    return boundary_error(
+        ValueError, code,
+        f"{reason}: expected_version={expected}, observed_version={current}.",
+        expected_version=expected, observed_version=current,
+    )
+
+
+def _fetch_integration_refs(git, repo, candidate, observed, *, fixed_target):
+    base, head = observed["base"], observed["head"]
+    source = observed["source_branch"]
+    if fixed_target:
+        base, head = commit(base), commit(candidate["commit"])
+        if observed["head"] != head:
+            raise _pr_version_changed(
+                head, base, observed["head"], base,
+                reason="Observed PR head is not the accepted candidate",
+            )
+        source = branch(source)
+    else:
+        # Non-fixed refreshes may adopt an external integration, so fetch the
+        # original candidate separately from the possibly changed source ref.
+        _git(
+            git, repo, "fetch", "--no-tags", "--no-recurse-submodules",
+            candidate["repo"], candidate["commit"],
+        )
+    tip = _fetch_branch(git, repo, git.spec["target_branch"])
+    published = _fetch_branch(git, repo, source)
+    if published != head or (not fixed_target and tip != base):
+        raise _pr_version_changed(
+            head, base, published, tip,
+            reason="PR refs changed during candidate refresh",
+        )
+    if fixed_target and tip != base:
+        # Use only ancestry fetched by branch, not a raw SHA fetch that could
+        # retrieve an old base which is no longer part of the target history.
+        exists = _git(
+            git, repo, "rev-parse", "--verify", "--quiet", base + "^{commit}",
+            accepted_codes=(0, 1),
+        )
+        if not exists or not _ancestor(git, repo, base, tip, accepted_codes=(0, 1)):
+            raise _pr_version_changed(
+                head, base, published, tip,
+                reason="Observed PR base is not reachable from the current target",
+                code="integration_target_rewritten",
+            )
+    return base, published
+
+
+def probe_candidate(git, candidate, observed):
+    """Report conflicts for the published candidate and exact observed target."""
+    with tempfile.TemporaryDirectory(prefix="harness-integration-") as temp:
+        repo = Path(temp) / "repo.git"
+        git.run(["init", "--bare", "--template=", str(repo)])
+        base, head = _fetch_integration_refs(
+            git, repo, candidate, observed, fixed_target=True,
+        )
+        _, conflicts = _merge_tree_with_conflicts(git, repo, base, head)
+        return conflicts
+
+
+def refresh_candidate(
+    git, candidate, observed, directory, *, linear=False, fixed_target=False,
+):
+    """Integrate accepted code with the current or explicitly pinned target."""
     git.verify(candidate)
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True)
     repo = directory / "repo.git"
     if not repo.exists():
         git.run(["init", "--bare", "--template=", str(repo)])
-    _git(
-        git,
-        repo,
-        "fetch",
-        "--no-tags",
-        "--no-recurse-submodules",
-        candidate["repo"],
-        candidate["commit"],
+    base, published = _fetch_integration_refs(
+        git, repo, candidate, observed, fixed_target=fixed_target,
     )
-    _git(
-        git,
-        repo,
-        "fetch",
-        "--no-tags",
-        "--no-recurse-submodules",
-        git.values["remote"],
-        "refs/heads/" + git.spec["target_branch"],
-        credentials=True,
-    )
-    base = _oid(git, repo, "FETCH_HEAD")
-    _git(
-        git,
-        repo,
-        "fetch",
-        "--no-tags",
-        "--no-recurse-submodules",
-        git.values["remote"],
-        "refs/heads/" + observed["source_branch"],
-        credentials=True,
-    )
-    published = _oid(git, repo, "FETCH_HEAD")
-    if published != observed["head"] or base != observed["base"]:
-        from homebrew_harness.runtime.errors import boundary_error
-        expected = "head=" + observed["head"] + ";base=" + observed["base"]
-        current = "head=" + published + ";base=" + base
-        raise boundary_error(ValueError, "pr_version_changed",
-            "PR refs changed during candidate refresh: expected_version=" + expected
-            + ", observed_version=" + current + ".",
-            expected_version=expected, observed_version=current)
-    merged = _git(git, repo, "merge-tree", "--write-tree", "--name-only", "-z",
-                  base, candidate["commit"], accepted_codes=(0, 1)).split(b"\0")
-    tree = commit(merged[0].decode().strip())
-    conflicts = []
-    for path in merged[1:]:
-        if not path:
-            break
-        conflicts.append(path.decode())
+    tree, conflicts = _merge_tree_with_conflicts(git, repo, base, candidate["commit"])
     cached = directory / "manifest.json"
     prepared = json.loads(cached.read_text()) if cached.exists() else None
     if (

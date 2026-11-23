@@ -259,8 +259,9 @@ class GitBackend:
             raise ValueError("Work changes exceed its approved paths.")
         if previous:
             base = previous["commit"]
-        elif self.spec.get("base_update", "manual") == "manual" and baseline.get(
-            "head"
+        elif (
+            self.spec.get("base_update", "manual") in {"manual", "periodic"}
+            and baseline.get("head")
         ):
             base = baseline["head"]
         else:
@@ -412,24 +413,9 @@ class GitBackend:
                 .decode()
                 .strip()
             )
-            merged = self.run(
-                [
-                    "--git-dir=" + str(repo),
-                    "merge-tree",
-                    "--write-tree",
-                    "--name-only",
-                    "-z",
-                    base,
-                    proposal,
-                ],
-                accepted_codes=(0, 1),
-            ).split(b"\0")
-            tree = merged[0].decode().strip()
-            conflicts = []
-            for path in merged[1:]:
-                if not path:
-                    break
-                conflicts.append(path.decode())
+            from .integration import _merge_tree_with_conflicts
+
+            tree, conflicts = _merge_tree_with_conflicts(self, repo, base, proposal)
         else:
             proposal, conflicts = None, []
         # Delta is relative to the observed target, so already published host

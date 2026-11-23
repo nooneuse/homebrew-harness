@@ -69,6 +69,20 @@ HANDLERS = {
         job_results.ci_triage,
         job_results.apply_delivery,
     ),
+    "integration_assessment": JobHandler(
+        "changesets",
+        "Assess whether to integrate the fixed source_head with the fixed target_commit in the frozen input. "
+        "Use the conflict paths observed by Git, CI and review gate status, pending feedback, timing, "
+        "and prior decision. Do not infer conflicts from platform mergeability alone. "
+        "Return only a JSON object with action ('integrate', 'defer', or 'blocked') and a nonempty reason. "
+        "Only 'defer' may include an optional positive defer_seconds. If input.overdue is true, the maximum "
+        "deferral has elapsed: choose 'integrate' or 'blocked', never 'defer'. For 'blocked', name the concrete "
+        "obstacle and what must change. This proposal does not edit code, publish, merge, or waive any gate.",
+        (),
+        job_results.integration_assessment,
+        job_results.apply_integration_assessment,
+        code=False,
+    ),
     "publication": JobHandler(
         "changesets",
         "Draft the public change-request title and body from the current accepted requirements, confirmed review and verification facts. Apply operator PR-writing guidance and the exact rejection feedback when present. Return title/body, or human_required=true with reason if direction or authority is needed. Keep the content useful to repository reviewers; omit internal Work/Run/job identifiers and control-process notes. Distinguish recorded tests from unavailable live checks. This prepares wording only; new public content still requires its own exact approval. Do not change code, reinterpret a denial as approval or promise an unconfirmed publication.",
@@ -152,12 +166,16 @@ class JobContract:
         if self.kind == "discussion":
             value = {k: v for k, v in self.job["input"].items() if k != "projection"}
             return {**value, "projection_available": True}
+        if self.kind == "integration_assessment":
+            return copy.deepcopy(self.job["input"])
         return self.store.get(self.handler.section, self.job["target"])
 
     def work_context(self, work):
         return work_context(self.store, work)
 
     def input(self, primary=None):
+        if self.kind == "integration_assessment":
+            return self.primary()
         primary = self.primary() if primary is None else primary
         if self.kind == "recovery_plan":
             value = {"work_context": work_context(self.store, primary),
@@ -278,6 +296,13 @@ class JobContract:
             COMMON
             + self.handler.instruction
             + self.followup_instruction()
+            + (
+                " For an existing periodic PR whose exact published head fails CI due to a confirmed "
+                "target-base blocker, choose next_action=assess_integration. This asks for early assessment, "
+                "not immediate integration or a source edit. Do not use it for local candidate failures."
+                if self.kind == "ci_triage" and self.store.delivery is not None
+                and self.store.delivery.spec.get("base_update") == "periodic" else ""
+            )
             + (" The operator explicitly requested applying your scoped recovery choice. Return optional action={mode:resume/fork/adopt_candidate,source_ref,reason,start:Boolean,integration:{method:merge/rebase,target_ref}}. Inspect Work sources and observe a fixed target before selecting references; do not guess IDs. The proposal completes this reasoning phase; native controls apply it afterward under current authority."
                if self.kind=='recovery_plan' and self.job['input'].get('execute_requested') else "")
             + (
@@ -305,6 +330,10 @@ class JobContract:
                 self.store.job_get(identity)
                 return
             raise ValueError("Job evidence is outside the current task.")
+        if self.kind == "integration_assessment":
+            if kind == "changesets" and identity == self.job["target"]:
+                return
+            raise ValueError("Integration assessment reads only its frozen changeset evidence.")
         if self.kind == "conversation":
             if kind == "history":
                 return
@@ -629,6 +658,8 @@ class JobContract:
     def override(self, kind, identity):
         if kind == "policy":
             return self.policy()
+        if self.kind == "integration_assessment" and kind == "changesets":
+            return self.input()
         if self.kind in {"review", "ci_triage", "publication", "validation_plan"}:
             if kind == "changesets":
                 return self.input()

@@ -162,6 +162,8 @@ class DeliveryStore:
         if value["previous"]:
             previous = self.get("changesets", value["previous"], conn)
             value["publish_base"] = previous.get("review_commit") or previous.get("publish_base")
+            if previous.get("integration_schedule"):
+                value["integration_schedule"] = previous["integration_schedule"]
         self.put(conn, "changesets", value)
         work["changeset_id"] = identity
         work["revision"] += 1
@@ -363,6 +365,8 @@ class DeliveryStore:
                 title="Merge reviewed work " + row["work_id"],
                 body="Verified candidate " + row["candidate"]["commit"],
             )
+            if self.spec.get("base_update") == "periodic":
+                content["readiness_revision"] = row.get("merge_readiness_revision", 0)
             if self.ms.communication is not None:
                 from homebrew_harness.services.communication.followup import basis
 
@@ -645,6 +649,9 @@ class DeliveryStore:
             if current["kind"] == "merge_change_request":
                 from .merge_flow import gate
 
+                if (self.spec.get("base_update") == "periodic" and "readiness_revision" in current["plan"]
+                        and current["plan"]["readiness_revision"] != row.get("merge_readiness_revision", 0)):
+                    raise StaleDelivery("Merge readiness changed before admission.")
                 if self.ms.communication is not None:
                     from homebrew_harness.services.communication.followup import basis, pending
 
@@ -737,6 +744,10 @@ class DeliveryStore:
                         ci_started=time.time(),
                         next_ci=0,
                     )
+                    if row.get("integration_schedule") and not action["plan"].get("draft"):
+                        from .periodic import after_publication
+
+                        row["integration_schedule"] = after_publication(row)
                 elif action["kind"] == "merge_change_request":
                     row.update(merge=result, state="merged_verifying", next_merge=0)
                 self.put(conn, "changesets", row)
@@ -793,6 +804,11 @@ class DeliveryStore:
             action = result.get("next_action")
             if action=='retry_prepare':
                 row.update(state='queued',error=None,next_validation=0)
+            elif action == "assess_integration":
+                from .periodic import ci_failure_basis
+
+                row.update(state="review_waiting", error="baseline_ci_integration_pending",
+                           integration_ci_basis=ci_failure_basis(self.spec, row["ci"]), next_merge=0)
             elif action in {"defer", "stop", "human_required"}:
                 row.update(state="blocked", error="model_" + action, error_detail=result["reason"])
             elif action == "plan_validation":
