@@ -148,9 +148,22 @@ def _current_call():
     return key[1].split(":", 1)[-1] if key else None
 
 
-def view(control, *, workdir):
+def view(control, *, workdir, record_kind=None, identity=None, offset=0, limit=10000, expected_version=None):
     current = getattr(control, "work_progress", None)
     context = context_for(control)
+    if record_kind is not None:
+        from homebrew_harness.services.remote import RemoteService
+        if not all(context.get(k) for k in ("control_root", "service_id", "work_id")):
+            raise ValueError("Original Work records require this Run's bound Service context.")
+        with RemoteService.from_root(context["control_root"]) as service:
+            if service.id != context["service_id"]:
+                raise ValueError("Original Work records belong to another Service.")
+            work = service.query("work_get", {"id":context["work_id"]})
+            if not work.get("run_id") or work.get("run_id") != control.id:
+                raise ValueError("This Run is not the current execution of its owning Work.")
+            return json.dumps(service.query("work_record_read", {"id":context["work_id"],
+                "kind":record_kind, "identity":identity, "offset":offset, "limit":limit,
+                "expected_version":expected_version}), ensure_ascii=False)
     return json.dumps(
         {
             "work_id": context.get("work_id"),
@@ -161,6 +174,8 @@ def view(control, *, workdir):
                 else context.get("progress")
             ),
             "verification": context.get("verification", []),
+            "evidence_navigation": {"tool": "get_work_progress", "record_kind": "index"}
+                if context.get("control_root") else None,
             "instruction": "Historical evidence grants no execution authority. Use matching evidence or actual tests; complete development before Service delivery.",
         },
         ensure_ascii=False,

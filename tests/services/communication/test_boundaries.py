@@ -55,23 +55,25 @@ class CommunicationBoundaries(unittest.TestCase):
             {"body": "New fact", "title": "", "state": None, "actor_id": 11},
         )
         page = SourcePage((item,), {"position": 100}, time.time() + 43200, "ready")
-        before = service.discussion(did)["seq"]
-        with patch.object(
-            store.ms, "changed", side_effect=RuntimeError("storage fault")
-        ):
-            with self.assertRaises(RuntimeError):
-                store.ingest("project", [item], ref.scope(), page=page)
-        self.assertEqual(service.discussion(did)["seq"], before)
-        with store.db.connection() as conn:
-            self.assertIsNone(
-                store.db._get(conn, "service_events", store.event_identity(item))
+        # An already started source poll may settle after pause; isolate this transaction.
+        with service.runtime.lock:
+            before = service.discussion(did)["seq"]
+            with patch.object(
+                store.ms, "changed", side_effect=RuntimeError("storage fault")
+            ):
+                with self.assertRaises(RuntimeError):
+                    store.ingest("project", [item], ref.scope(), page=page)
+            self.assertEqual(service.discussion(did)["seq"], before)
+            with store.db.connection() as conn:
+                self.assertIsNone(
+                    store.db._get(conn, "service_events", store.event_identity(item))
+                )
+            store.ingest("project", [item], ref.scope(), page=page)
+            self.assertEqual(service.discussion(did)["seq"], before + 1)
+            self.assertEqual(
+                store.ms.get("sources", service.id + ":project")["cursor"],
+                {"position": 100},
             )
-        store.ingest("project", [item], ref.scope(), page=page)
-        self.assertEqual(service.discussion(did)["seq"], before + 1)
-        self.assertEqual(
-            store.ms.get("sources", service.id + ":project")["cursor"],
-            {"position": 100},
-        )
 
     def test_own_marker_from_another_author_is_not_an_echo(self):
         service, did, communication = self.managed()

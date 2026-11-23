@@ -292,6 +292,7 @@ class ContextCompactor:
         # Only markers produced here are treated as existing archive references.
         self._references: dict[str, str] = {}
         self._skipped_signature = None
+        self._auto_compact_wait = 0
 
     def estimate_chars(
         self, messages: list[dict], tools: list[dict] | None = None
@@ -1000,6 +1001,7 @@ class ContextCompactor:
 
     def _skip_compaction(self, messages, signature, error, tools):
         self._skipped_signature = signature
+        self._auto_compact_wait = self.runtime_limits.auto_compact_retry_turns
         observation = {
             "role": "user",
             "name": "harness_compaction_observation",
@@ -1274,18 +1276,47 @@ class ContextCompactor:
         self, messages: list[dict], active_request: str, plan: str = "", tools=None
     ) -> list[dict]:
         self.groups(messages)
-        if not self.runtime_limits.auto_compact:
-            from homebrew_harness.runtime.limits import observe
-            prepared = self.tool_result_budget(self.pin_intent(messages, active_request))
-            size = self.estimate_chars(prepared, tools)
-            hard = self.runtime_limits.hard_context_chars
-            if hard is not None and size > hard:
-                raise boundary_error(CompactionError, "context_hard_limit", "Explicit context capacity exceeded.",
-                                     limit_name="hard_context_chars", limit_value=hard, observed_value=size, unit="characters")
-            observe(prepared, [("context_characters", size, self.context_chars, "characters"),
-                               ("context_messages", len(prepared), self.trigger_messages, "messages")],
-                    self.__dict__.setdefault("advisory_seen", {}))
-            return prepared
+        retained = self.tool_result_budget(self.pin_intent(messages, active_request))
+        if not self.runtime_limits.auto_compact or self._auto_compact_wait:
+            self._auto_compact_wait = max(0, self._auto_compact_wait - 1)
+            return self._observe_retained(retained, tools)
+        try:
+            prepared = self._prepare_automatic(retained, active_request, plan, tools)
+        except Exception as error:
+            from homebrew_harness.execution.model_protocol import ProviderError
+            if not isinstance(error, CompactionError) and not (
+                isinstance(error, ProviderError)
+                and (error.transient or error.kind == "context_overflow")
+            ):
+                raise
+            from homebrew_harness.context.tracked_history import set_context
+            from homebrew_harness.runtime.errors import error_info
+            self._auto_compact_wait = self.runtime_limits.auto_compact_retry_turns
+            set_context(retained, "harness_compaction_observation", {
+                "role": "user", "name": "harness_compaction_observation",
+                "content": json.dumps({"error": error_info(error),
+                    "automatic_retry_after_turns": self._auto_compact_wait,
+                    "instruction": "Automatic compaction retained the original working history. Decide whether to continue, call compact with a working state, or change the approach. No summary was accepted; original authority and evidence remain in force."}, ensure_ascii=False),
+            })
+            return self._observe_retained(retained, tools)
+        return self._observe_retained(prepared, tools)
+
+    def _observe_retained(self, prepared, tools):
+        from homebrew_harness.runtime.limits import observe
+        size = self.estimate_chars(prepared, tools)
+        hard = self.runtime_limits.hard_context_chars
+        if hard is not None and size > hard:
+            raise boundary_error(CompactionError, "context_hard_limit", "Explicit context capacity exceeded.",
+                                 limit_name="hard_context_chars", limit_value=hard, observed_value=size, unit="characters")
+        before = list(prepared)
+        observe(prepared, [("context_characters", size, self.context_chars, "characters")],
+                self.__dict__.setdefault("advisory_seen", {}),
+                context_name="harness_context_observation")
+        if hard is not None and self.estimate_chars(prepared, tools) > hard:
+            prepared = before  # An optional notice must not exceed an explicit capacity.
+        return self.intent.pin(prepared)
+
+    def _prepare_automatic(self, messages, active_request, plan, tools):
         copies = [dict(message) for message in messages]
         originals = {id(new): old for new, old in zip(copies, messages)}
         prepared = self.pin_intent(copies, active_request)
@@ -1345,6 +1376,7 @@ class ContextCompactor:
         ]
 
     def request_compact(self, workdir: Path, working_state: str = "") -> str:
+        self._auto_compact_wait = 0
         if (
             not isinstance(working_state, str)
             or len(working_state) > self.SUMMARY_TARGET_CHARS

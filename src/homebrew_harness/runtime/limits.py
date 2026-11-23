@@ -138,7 +138,13 @@ class RuntimeLimits:
     benchmark_model_call_warning: int | None = 4
     artifact_freeze_seconds: float = 2
     observation_poll_seconds: float = 0.05
-    auto_compact: bool = False
+    auto_compact: bool = True
+    auto_compact_retry_turns: int = 4
+    usage_observations: bool = True
+    usage_ledger_bytes: int | None = 64 * 1024 * 1024
+    usage_queue_records: int = 256
+    usage_recent_records: int = 128
+    usage_close_seconds: float = 1
     hard_context_chars: int | None = None
     run_retry_windows: int | None = None
     retry_window_warning: int = 32
@@ -235,11 +241,11 @@ class RuntimeLimits:
                     "artifact_files", "artifact_profiles", "hard_context_chars",
                     "review_files", "review_pages", "mcp_selected_servers", "mcp_selected_tools", "mcp_server_tools", "team_members",
                     "mcp_discovery_pages", "mcp_discovery_tools", "subagent_call_warning", "declared_stages", "stage_read_paths", "stage_inputs", "batch_decisions",
-                    "user_input_queue", "backup_manifest_files", "merge_history_commits", "discussion_source_refs", "assessment_evidence_paths", "operation_audit_patterns", "upgrade_candidates", "delivery_batch_items", "storage_reference_depth", "workflow_output_attempts", "workflow_output_warning", "communication_poll_attempts", "platform_query_pages", "blocker_reason_chars", "blocker_action_chars", "progress_item_chars", "progress_ref_chars"}
+                    "user_input_queue", "backup_manifest_files", "merge_history_commits", "discussion_source_refs", "assessment_evidence_paths", "operation_audit_patterns", "upgrade_candidates", "delivery_batch_items", "storage_reference_depth", "workflow_output_attempts", "workflow_output_warning", "communication_poll_attempts", "platform_query_pages", "blocker_reason_chars", "blocker_action_chars", "progress_item_chars", "progress_ref_chars", "usage_ledger_bytes"}
         for name, value in asdict(self).items():
-            if name == "auto_compact":
+            if name in {"auto_compact", "usage_observations"}:
                 if type(value) is not bool:
-                    raise ValueError("auto_compact must be Boolean.")
+                    raise ValueError(name + " must be Boolean.")
                 continue
             positive(value, name, nullable=name in nullable, integer=not name.endswith("seconds"), zero=name in {"context_overflow_retries", "summary_rewrites", "run_retry_windows", "managed_members", "team_members", "declared_stages", "todo_items", "todo_active_items", "stage_inputs", "stage_read_paths", "batch_decisions"})
         if self.summary_min_chars > self.summary_target_chars or self.summary_target_chars > self.summary_chars:
@@ -284,7 +290,7 @@ def advisory(observed, threshold, name, *, unit="calls"):
                            "Existing authorization and explicit acceptance remain in effect."}
 
 
-def observe(messages, metrics, seen):
+def observe(messages, metrics, seen, *, context_name="execution_advisories"):
     """Replace advisory context only on a new exponentially spaced milestone."""
     import json
     from homebrew_harness.context.tracked_history import set_context
@@ -299,7 +305,7 @@ def observe(messages, metrics, seen):
         seen[name] = bucket
         notices.append(value)
     if changed:
-        set_context(messages, "execution_advisories", {"role": "user", "name": "execution_advisories",
+        set_context(messages, context_name, {"role": "user", "name": context_name,
             "content": json.dumps({"observations": notices}, ensure_ascii=False)})
 
 

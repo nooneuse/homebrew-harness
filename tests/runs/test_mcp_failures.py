@@ -61,7 +61,7 @@ class RunMCPFailures(unittest.TestCase):
             session.mcp.connect("docs")
         self.close(control, session)
 
-    def fault_server(self, *, readonly=False, transport="stdio"):
+    def fault_server(self, *, readonly=False, transport="stdio", timeout_seconds=0.15):
         args = (str(PROJECT_ROOT / "tests/support/run_mcp_server.py"),)
         env = {"MCP_FIXTURE_STATE": str(self.base / "service")}
         spec = ServerSpec(
@@ -71,7 +71,7 @@ class RunMCPFailures(unittest.TestCase):
             args,
             self.base,
             env=env,
-            timeout_seconds=0.15,
+            timeout_seconds=timeout_seconds,
             connect_timeout_seconds=5,
             tools={
                 "read": ToolPolicy("allow", True),
@@ -179,7 +179,9 @@ class RunMCPFailures(unittest.TestCase):
         )
 
     def proposed(self):
-        spec = self.fault_server()
+        # Proposal invalidation needs a completed schema observation, rather than
+        # the deliberately short operation deadline used by transport fault tests.
+        spec = self.fault_server(timeout_seconds=3)
         control, session, _ = self.controller(
             [self.invoke("append", {"text": "stale"})], spec=spec
         )
@@ -199,7 +201,7 @@ class RunMCPFailures(unittest.TestCase):
         self.assertEqual(outcome.status, "blocked", outcome.data())
         self.assertEqual(requests, [])
         self.assertEqual(
-            HumanRequests(self.store).get(control.id, request["id"])["state"], "stale"
+            HumanRequests(self.store).get(control.id, request["id"])["state"], "stale", outcome.data()
         )
         self.close(control, session)
 

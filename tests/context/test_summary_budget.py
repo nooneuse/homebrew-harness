@@ -266,6 +266,9 @@ class SummaryBudgetTests(unittest.TestCase):
         self.assertEqual(c.prepare(result, "Task"), result)
         self.assertEqual(len(calls), 3)
         result.append({"role": "user", "content": "New relevant fact"})
+        for _ in range(c.runtime_limits.auto_compact_retry_turns - 1):
+            c.prepare(result, "Task")
+        self.assertEqual(len(calls),3)
         recovered = c.prepare(result, "Task")
         self.assertEqual(len(calls), 4)
         self.assertTrue(any(m.get("name") == "harness_compaction" for m in recovered))

@@ -138,6 +138,46 @@ class DiagnosticTests(unittest.TestCase):
             finally:
                 transport.close()
 
+    def test_successful_status_with_stalled_body_still_times_out(self):
+        from homebrew_harness.execution.model_gateway import ModelDeadlineExceeded
+        class SlowBody(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                await asyncio.sleep(2)
+                yield b'{}'
+        transport = JsonTransport('http://127.0.0.1', 'fixture')
+        transport.loop.run_until_complete(transport.client.aclose())
+        transport.client = httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, stream=SlowBody())), base_url='http://127.0.0.1')
+        try:
+            with self.assertRaises((TimeoutError, ModelDeadlineExceeded)):
+                transport.request('POST', '/fixture', Deadline.after(0.1))
+        finally:
+            transport.close()
+
+    def test_explicit_cancel_preserves_cancellation_after_failure_headers(self):
+        import threading
+        from homebrew_harness.execution.execution_control import control_scope
+        from homebrew_harness.execution.model_gateway import ModelCancelled
+        cancelled = threading.Event()
+        class SlowBody(httpx.AsyncByteStream):
+            async def __aiter__(self):
+                cancelled.set()
+                await asyncio.sleep(2)
+                yield b'{}'
+        transport = JsonTransport('http://127.0.0.1', 'fixture')
+        transport.loop.run_until_complete(transport.client.aclose())
+        transport.client = httpx.AsyncClient(transport=httpx.MockTransport(
+            lambda request: httpx.Response(403, stream=SlowBody())), base_url='http://127.0.0.1')
+        unhandled = []
+        transport.loop.set_exception_handler(lambda loop, context: unhandled.append(context))
+        try:
+            with control_scope(Deadline.after(3), cancel_events=(cancelled,)):
+                with self.assertRaises(ModelCancelled):
+                    transport.request('POST', '/fixture', Deadline.after(3))
+        finally:
+            transport.close()
+        self.assertEqual(unhandled, [])
+
 
 class ServiceFeedbackTests(unittest.TestCase):
     setUp = maintenance_fixture.MaintenanceTests.setUp

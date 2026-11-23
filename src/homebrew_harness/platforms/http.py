@@ -5,10 +5,12 @@ import json
 import asyncio
 import ssl
 import time
+import sys
 from urllib.parse import urlsplit
 
 import httpx
 from homebrew_harness.execution.execution_control import check
+from homebrew_harness.execution.model_gateway import ModelDeadlineExceeded
 from homebrew_harness.security.data_boundary import register_private_values
 from .contracts import digest
 
@@ -110,7 +112,7 @@ class JsonTransport:
                 return self.loop.run_until_complete(asyncio.wait_for(
                     self._controlled_request(method, path, deadline, params=params, body=body, headers=headers, parse_json=parse_json),
                     timeout=deadline.remaining()))
-            except (httpx.RequestError, TimeoutError) as error:
+            except (httpx.RequestError, TimeoutError, asyncio.TimeoutError) as error:
                 phase = next((name for kind, name in ((httpx.ConnectTimeout, "connect"), (httpx.ReadTimeout, "read"),
                     (httpx.WriteTimeout, "write"), (httpx.PoolTimeout, "pool")) if isinstance(error, kind)), "request")
                 field = "platform_" + phase + "_seconds"
@@ -126,19 +128,33 @@ class JsonTransport:
                     time.sleep(min(limits.observation_poll_seconds, max(0, until-time.monotonic())))
 
     async def _controlled_request(self, method, path, deadline, **kwargs):
-        task = asyncio.create_task(self._request(method, path, deadline, **kwargs))
+        # A failure status is already conclusive even when its optional body stalls.
+        observed = {}
+        task = asyncio.create_task(self._request(method, path, deadline, observed=observed, **kwargs))
+        task.add_done_callback(lambda done: None if done.cancelled() else done.exception())
         try:
             while not task.done():
                 check(deadline)
                 await asyncio.wait({task}, timeout=current_limits().observation_poll_seconds)
             return await task
+        except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError, ModelDeadlineExceeded):
+            if deadline.remaining() == 0 and observed.get("failure") is not None:
+                raise observed["failure"] from None
+            raise
         finally:
+            primary = sys.exc_info()[1]
             if not task.done():
                 task.cancel()
+            try:
                 await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), current_limits().platform_close_seconds)
+            except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError) as cleanup:
+                if primary is None:
+                    raise
+                from homebrew_harness.runtime.errors import annotate_error
+                annotate_error(primary, cleanup_error_type=type(cleanup).__name__)
 
     async def _request(
-        self, method, path, deadline, *, params, body, headers, parse_json
+        self, method, path, deadline, *, params, body, headers, parse_json, observed
     ):
         remaining = deadline.remaining()
         target = self.endpoint if method == "POST" and not path else path
@@ -153,6 +169,7 @@ class JsonTransport:
                 for name in ("connect", "read", "write", "pool")}),
         ) as response:
             if response.status_code < 200 or response.status_code >= 300:
+                observed["failure"] = RemoteFailure(response.status_code, response.headers)
                 detail = None
                 async def read_error():
                     chunks, size = [], 0
@@ -168,9 +185,12 @@ class JsonTransport:
                 try:
                     left = deadline.remaining()
                     detail = await asyncio.wait_for(read_error(), current_limits().platform_error_seconds if left is None else min(current_limits().platform_error_seconds, max(0, left)))
-                except (ValueError, httpx.HTTPError, asyncio.TimeoutError, asyncio.CancelledError):
+                except asyncio.CancelledError:
+                    raise
+                except (ValueError, httpx.HTTPError, asyncio.TimeoutError):
                     pass
-                raise RemoteFailure(response.status_code, response.headers, detail)
+                observed["failure"] = RemoteFailure(response.status_code, response.headers, detail)
+                raise observed["failure"]
             if not parse_json:
                 return None, dict(response.headers)
             chunks, size = [], 0

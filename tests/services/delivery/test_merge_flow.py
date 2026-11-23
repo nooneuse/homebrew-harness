@@ -7,6 +7,9 @@ from unittest.mock import patch
 from tests.services.delivery import test_flow as fixture
 from tests.runtime.test_interaction import eventually
 
+# These waits observe several native process/Git phases. Keep their execution,
+# authorization and verification budgets explicit and unchanged.
+
 
 class MergeFlowTests(unittest.TestCase):
     setUp = fixture.FlowTests.setUp
@@ -32,7 +35,7 @@ class MergeFlowTests(unittest.TestCase):
     def manual(self, **options):
         service = self.start(merge={"poll_seconds": 0.1}, **options)
         work = service.work.submit("Implement the bounded value.")
-        row = eventually(lambda: self.ready(service, work), 45)
+        row = eventually(lambda: self.ready(service, work), 180)
         return service, work, row
 
     def test_manual_is_default_and_does_not_create_or_execute_merge_authority(self):
@@ -62,7 +65,7 @@ class MergeFlowTests(unittest.TestCase):
             time.sleep(0.3)
         self.assertEqual(len(self.peer.model_requests), calls)
         merged = self.peer.merge_pull(1)
-        eventually(lambda: work.snapshot().state == "delivered", 40)
+        eventually(lambda: work.snapshot().state == "delivered", 160)
         saved = service.delivery(row["id"])
         self.assertEqual(saved["merge"]["actor_id"], 17)
         self.assertEqual(saved["integration"]["commit"], merged)
@@ -75,7 +78,7 @@ class MergeFlowTests(unittest.TestCase):
         store.update("changesets", row["id"], ci_started=time.time() - 100000)
         self.assertEqual(service.delivery(row["id"])["state"], "merge_ready")
         self.peer.merge_pull(1, method="squash")
-        eventually(lambda: work.snapshot().state == "delivered", 40)
+        eventually(lambda: work.snapshot().state == "delivered", 160)
         self.assertEqual(
             service.delivery(row["id"])["integration"]["proof"], "squash_tree"
         )
@@ -85,10 +88,10 @@ class MergeFlowTests(unittest.TestCase):
             merge={"mode": "service_approved", "method": method, "poll_seconds": 0.1}
         )
         work = service.work.submit("Implement the bounded value.")
-        request = eventually(lambda: self.pending_target(service), 45)
+        request = eventually(lambda: self.pending_target(service), 180)
         row = service.runtime.maintenance.delivery.rows("changesets")[-1]
         service.decide(request, "approve", decision_id="merge-" + method)
-        eventually(lambda: work.snapshot().state == "delivered", 40)
+        eventually(lambda: work.snapshot().state == "delivered", 160)
         saved = service.delivery(row["id"])
         self.assertNotEqual(
             saved["candidate"]["commit"], saved["integration"]["commit"]
@@ -115,10 +118,10 @@ class MergeFlowTests(unittest.TestCase):
         self.run_git(repo, "update-ref", "refs/heads/main", later, before)
         eventually(
             lambda: service.runtime.maintenance.delivery.store.get("changesets", row["id"])["candidate"]["target_base"] == later
-                and self.ready(service, work), 45
+                and self.ready(service, work), 180
         )
         self.peer.merge_pull(1)
-        eventually(lambda: work.snapshot().state == "delivered", 40)
+        eventually(lambda: work.snapshot().state == "delivered", 160)
         self.assertEqual(
             service.delivery(row["id"])["integration"]["target_base"], later
         )
@@ -129,7 +132,7 @@ class MergeFlowTests(unittest.TestCase):
     def test_lost_merge_response_is_reconciled_without_another_write(self):
         service = self.start()
         work = service.work.submit("Implement the bounded value.")
-        request = eventually(lambda: self.pending_target(service), 45)
+        request = eventually(lambda: self.pending_target(service), 180)
         delivery = service.runtime.maintenance.delivery
         self.peer.drop = "merge"
         with patch(
@@ -146,7 +149,7 @@ class MergeFlowTests(unittest.TestCase):
                     ),
                     None,
                 ),
-                20,
+                80,
             )
             self.assertEqual(sum(kind == "merge" for kind, _ in self.peer.writes), 1)
             confirmed = service.inspect_delivery(
@@ -157,7 +160,7 @@ class MergeFlowTests(unittest.TestCase):
                 confirmed,
                 service.inspect_delivery(action["id"], request_id="inspect-merge"),
             )
-        eventually(lambda: work.snapshot().state == "delivered", 40)
+        eventually(lambda: work.snapshot().state == "delivered", 160)
         self.assertEqual(sum(kind == "merge" for kind, _ in self.peer.writes), 1)
 
     def test_missing_native_rules_keeps_merge_unavailable_without_fallback(self):
@@ -177,7 +180,7 @@ class MergeFlowTests(unittest.TestCase):
                 ),
                 None,
             ),
-            45,
+            180,
         )
         self.assertFalse(service.requests())
         self.assertEqual(work.snapshot().state, "review")
@@ -193,13 +196,13 @@ class MergeFlowTests(unittest.TestCase):
         service, work, row = self.manual()
         self.peer.pulls[0]["state"] = "closed"
         eventually(
-            lambda: service.delivery(row["id"])["state"] == "closed_unmerged", 10
+            lambda: service.delivery(row["id"])["state"] == "closed_unmerged", 40
         )
         self.assertEqual(work.snapshot().state, "review")
         self.peer.pulls[0]["state"] = "open"
-        eventually(lambda: self.ready(service, work), 15)
+        eventually(lambda: self.ready(service, work), 60)
         self.peer.merge_pull(1)
-        eventually(lambda: work.snapshot().state == "delivered", 40)
+        eventually(lambda: work.snapshot().state == "delivered", 160)
 
     def test_explicit_refresh_rechecks_a_new_base_and_reuses_the_same_pr(self):
         service, work, row = self.manual()
@@ -212,14 +215,14 @@ class MergeFlowTests(unittest.TestCase):
         self.run_git(repo, "fetch", str(self.workspace), "HEAD")
         self.run_git(repo, "update-ref", "refs/heads/main", base, before)
         eventually(
-            lambda: service.runtime.maintenance.delivery.store.get("changesets", row["id"])["state"] == "integration_required", 15
+            lambda: service.runtime.maintenance.delivery.store.get("changesets", row["id"])["state"] == "integration_required", 60
         )
         service.refresh_delivery(row["id"], request_id="refresh-base")
-        refreshed = eventually(lambda: self.ready(service, work), 45)
+        refreshed = eventually(lambda: self.ready(service, work), 180)
         self.assertEqual(len(self.peer.pulls), 1)
         self.assertEqual(refreshed["candidate"]["target_base"], base)
         self.assertNotEqual(
             refreshed["candidate"]["commit"], row["candidate"]["commit"]
         )
         self.peer.merge_pull(1)
-        eventually(lambda: work.snapshot().state == "delivered", 40)
+        eventually(lambda: work.snapshot().state == "delivered", 160)

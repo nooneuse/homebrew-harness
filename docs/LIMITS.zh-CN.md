@@ -41,7 +41,7 @@ CI 研判要求分别返回 `classification` 与 `next_action`：前者描述现
   "turn_seconds": null,
   "model_call_warning": 20,
   "runtime_limits": {
-    "auto_compact": false,
+    "auto_compact": true,
     "file_read_chars": 24000,
     "run_retry_windows": null,
     "team_members": 8,
@@ -52,7 +52,7 @@ CI 研判要求分别返回 `classification` 与 `next_action`：前者描述现
 
 缺省字段采用默认值；未知字段、错误类型、负数及非有限数会被拒绝。只有可空预算接受 `null`。次数、模型输出额度、时长和资源配额不再有任意的软件数值天花板；供应商和操作系统仍可能有实际约束。
 
-`context_chars` 默认只提示工作上下文压力，模型可以调用 `compact`。供应商确认上下文溢出时使用既有恢复流程。`auto_compact=true` 显式启用主动压缩；`hard_context_chars` 设置明确的本地输入边界。摘要目标、重写次数、读取覆盖和归档窗口均可配置。可选压缩失败会保留原始历史并返回观察，不会声称压缩成功。
+`auto_compact=true` 默认维护当前工作上下文；`context_chars` 是整理参考容量，模型也可以主动调用 `compact`。可选整理失败保留原历史并返回具体观察，自动重试间隔由 `auto_compact_retry_turns` 配置，手动整理仍可立即执行。显式 `auto_compact=false` 只提醒压力；`hard_context_chars` 单独定义宿主容量边界。供应商确认溢出仍走既有恢复路径。摘要目标、重写次数、读取覆盖和归档窗口均可配置。
 
 ## 保留执行边界的具体理由
 
@@ -176,7 +176,13 @@ CI 研判要求分别返回 `classification` 与 `next_action`：前者描述现
 | `benchmark_model_call_warning` | `4` |
 | `artifact_freeze_seconds` | `2` |
 | `observation_poll_seconds` | `0.05` |
-| `auto_compact` | `false` |
+| `auto_compact` | `true` |
+| `auto_compact_retry_turns` | `4` |
+| `usage_observations` | `true` |
+| `usage_ledger_bytes` | `67108864` |
+| `usage_queue_records` | `256` |
+| `usage_recent_records` | `128` |
+| `usage_close_seconds` | `1` |
 | `hard_context_chars` | `null` |
 | `run_retry_windows` | `null` |
 | `retry_window_warning` | `32` |
@@ -266,3 +272,12 @@ CI 研判要求分别返回 `classification` 与 `next_action`：前者描述现
 | `blocker_action_chars` | `null` |
 | `progress_item_chars` | `null` |
 | `progress_ref_chars` | `null` |
+
+
+## 默认维护能力与显式功能选择
+
+自动压缩默认开启。`context_chars` 是工作目标；可选整理失败会保留原历史、返回具体观察，并按 `auto_compact_retry_turns` 间隔自动重试。模型可以立即调用 `compact`，部署者也可以显式选择 `auto_compact=false`。`hard_context_chars` 单独表达明确的容量合同；供应商确认的上下文溢出继续走既有恢复路径。
+
+用量元数据记录默认开启，独立于详细界面输出。记录模型、请求/供应商回执 ID、用途、Work/Run/job/阶段、输入/输出/缓存/思考 token 及用量完整性，不保存提示词、源码、凭据或接入地址。`usage_observations=false` 可显式关闭落盘，累计计数仍可用。观察文件、队列及近期内存记录窗口可配置；达到观察容量时报告信息缺失，不阻断模型。平台账单仍需按真实计价对账。
+
+本轮恢复的是当前授权工作内的上下文维护与必要观测。以下选择保持显式：可选模块及 MCP 的启用范围、记忆写入、后台驻留、宿主执行模式、演示工作流、自动公共回复/发布、额外独立的事件诊断。它们会改变权限、生命周期、外部动作或启动额外模型任务，并非普通维护能力。`details=false` 仅保留简洁显示，真实状态标志的 false 也不是功能关闭。

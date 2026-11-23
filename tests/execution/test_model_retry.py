@@ -95,27 +95,32 @@ class ModelRetries(unittest.TestCase):
         self.assertEqual(self.create.call_count,1)
 
     def test_request_timeout_waits_for_actual_receipt_before_retry(self):
-        released,finished=threading.Event(),threading.Event()
+        entered,released,finished=threading.Event(),threading.Event(),threading.Event()
         self.addCleanup(released.set)
-        gateway=ModelGateway(self.client,GatewayLimits(request_timeout=0.04),workdir=self.root)
+        gateway=ModelGateway(self.client,GatewayLimits(request_timeout=2),workdir=self.root)
         self.addCleanup(lambda:(gateway.close(),gateway.wait_idle(2)))
         def model(**kwargs):
             if self.create.call_count==1:
+                entered.set()
                 released.wait(5)
                 finished.set()
                 return reply('Late answer')
             self.assertTrue(finished.is_set())
             return reply('Current answer')
         self.create.side_effect=model
+        check = gateway._state.check
+        def expire_started_request(*args, **kwargs):
+            check(*args, **kwargs)
+            if entered.is_set() and not released.is_set():
+                # Inject expiry only after dispatch; a cold preparation must not
+                # consume a 40ms window and release a request that never started.
+                raise ModelDeadlineExceeded('Synthetic request expiry', source='request')
         abandon = gateway._abandon
         def observe_timeout(receipt, error):
             abandon(receipt, error)
             if isinstance(error, ModelDeadlineExceeded) and error.source == 'request':
-                # Release only after the first request really timed out. Give the
-                # fast retry normal scheduling room instead of another 40ms race.
-                gateway._state.limits = GatewayLimits(request_timeout=2)
                 released.set()
-        with patch.object(gateway, '_abandon', observe_timeout):
+        with patch.object(gateway._state, 'check', expire_started_request), patch.object(gateway, '_abandon', observe_timeout):
             with gateway.scope(deadline=Deadline.after(5)):
                 self.assertEqual(request(gateway,**self.params).text,'Current answer')
         self.assertEqual(self.create.call_count,2)

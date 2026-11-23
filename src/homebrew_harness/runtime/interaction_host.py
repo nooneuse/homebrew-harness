@@ -66,6 +66,8 @@ class InteractionHost:
         self.closed = False
         self.wake = threading.Event()
         self._busy = False
+        self._drive_active = False
+        self._control_watching = None
         self.focus = None
         self._request_view = None
         self.observation_errors = []
@@ -277,6 +279,25 @@ class InteractionHost:
         self._control_ids = []
         return session
 
+    def _start_control_watcher(self, session, broker):
+        with self.lock:
+            if self.closed or self._control_watching is session:
+                return
+            if self._control_watching is not None:
+                raise ValueError("Another command Session is still retiring.")
+            self._control_watching = session
+            self._busy = True
+            from homebrew_harness.runtime.runtime_control import WorkAccepted
+            try:
+                self.workers.start(lambda: self._watch_controls(session, broker),
+                                   name="interactive-controls", track_operation=False)
+            except WorkAccepted:
+                raise  # The admitted worker still owns retirement and its receipt.
+            except BaseException:
+                self._control_watching = None
+                self._busy = self._drive_active
+                raise
+
     def _watch_controls(self, session, broker):
         try:
             deadline = None if self.config.turn_seconds is None else time.monotonic() + self.config.turn_seconds
@@ -307,7 +328,9 @@ class InteractionHost:
                     self._control_only = False
         finally:
             with self.lock:
-                self._busy = False
+                if self._control_watching is session:
+                    self._control_watching = None
+                self._busy = self._drive_active or self._control_watching is not None
                 if not self.closed:
                     self._kick()
 
@@ -392,9 +415,8 @@ class InteractionHost:
             receipt = session.submit_user_input(command.query, mode="queued")
         if self._control_only:
             self._control_ids.append(receipt["input_id"])
-        if self._control_only and not self._busy:
-            self._busy = True
-            self.workers.start(lambda: self._watch_controls(session, self.broker), name="interactive-controls", track_operation=False)
+        if self._control_only:
+            self._start_control_watcher(session, self.broker)
         return {"result": "Command accepted; it will run after the current turn.", "command_id": receipt["input_id"]}
 
 
@@ -751,12 +773,17 @@ class InteractionHost:
             if self.closed or self._busy or not self.state.active():
                 return
             self._busy = True
+            self._drive_active = True
+            from homebrew_harness.runtime.runtime_control import WorkAccepted
             try:
                 self.workers.start(
                     self._drive, name="interaction-owner", track_operation=False
                 )
+            except WorkAccepted:
+                raise
             except BaseException:
-                self._busy = False
+                self._drive_active = False
+                self._busy = self._control_watching is not None
                 raise
 
     def _drive(self):
@@ -911,7 +938,8 @@ class InteractionHost:
             self._announce({"error": redact(str(error))})
         finally:
             with self.lock:
-                self._busy = False
+                self._drive_active = False
+                self._busy = self._control_watching is not None
                 self.wake.set()
                 active = self.state.active()
                 if (

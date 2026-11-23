@@ -18,7 +18,7 @@ from pathlib import Path
 
 from homebrew_harness.execution.bash_policy import HOST_POLICY, load_bash_policy
 from homebrew_harness.execution.model_connections import HostModels, read_environment
-from homebrew_harness.execution.model_gateway import GatewayLimits, ModelGateway
+from homebrew_harness.execution.model_gateway import GatewayLimits, ModelGateway, UsageLedger
 from homebrew_harness.execution.test_runner import load_test_runner
 from homebrew_harness.runtime.capabilities import OPTIONAL, Capabilities
 
@@ -261,6 +261,7 @@ class InteractionAssembler:
                 self.binding.client,
                 GatewayLimits(request_timeout=config.request_seconds),
                 workdir=self.workdir,
+                ledger=UsageLedger(self.workdir, runtime_limits=config.runtime_limits),
             )
             self.planning_models.track_gateway(self.gateway)
             self.planning_context["model_aliases"] = sorted(

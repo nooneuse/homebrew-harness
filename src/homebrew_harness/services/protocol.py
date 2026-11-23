@@ -8,6 +8,7 @@ VERSION = 1
 MAX_FRAME = 256 * 1024
 SERVICE_ID = re.compile(r"svc_[0-9a-f]{32}\Z")
 MAINTENANCE_QUERIES = {
+    "work_record_read": {"id", "kind", "identity", "offset", "limit", "expected_version"},
     "work_sources": {"id"},
     "work_source_read": {
         "id",

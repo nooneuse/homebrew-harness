@@ -102,6 +102,7 @@ class BoundaryFeedback(unittest.TestCase):
         self.assertEqual(output["error_info"]["details"]["observed_value"], 5)
 
     def test_workflow_preserves_output_limit_after_its_one_correction(self):
+        from homebrew_harness.runtime.limits import limits_scope
         client, _ = fake_client([reply("partial", finish_reason="length")] * 2)
         async def script(ctx, _args):
             return await ctx.agent("Return the answer")
@@ -109,7 +110,7 @@ class BoundaryFeedback(unittest.TestCase):
                                   WorkflowRegistry([WorkflowSpec("probe", "probe", script, {"type": "object"})]),
                                   limits=WorkflowLimits(max_output_tokens=8192))
         try:
-            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            with limits_scope({'workflow_output_attempts':2}), redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
                 result = runtime.run("probe", {})
             self.assertEqual(result["task"]["status"], "failed")
             self.assertEqual(result["result"]["error_info"]["code"], "model_output_limit")

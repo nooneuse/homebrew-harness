@@ -51,7 +51,8 @@ class CurrentRetirementTests(unittest.TestCase):
     def test_default_details_disabled_session_can_retire_and_restore(self):
         s = self.run_session([reply("done")])
         s.run_user("Complete fixture")
-        self.assertFalse(s.gateway.summary()["details_enabled"])
+        self.assertFalse(s.capabilities.details)
+        self.assertTrue(s.gateway.summary()["details_enabled"])
         self.retirement_roundtrip(s)
 
     def test_successful_subagent_is_settled_for_retirement(self):

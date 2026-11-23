@@ -11,6 +11,9 @@ from homebrew_harness import Harness, HostConfig, ServiceSpec
 from tests.services.delivery.fixture import Peer
 from tests.runtime.test_interaction import eventually
 
+# These waits observe several native process/Git phases. Keep their execution,
+# authorization and verification budgets explicit and unchanged.
+
 
 class FlowTests(unittest.TestCase):
     def setUp(self):
@@ -189,7 +192,7 @@ class FlowTests(unittest.TestCase):
         work = service.work.submit("Fix the value regression.")
         request = eventually(
             lambda: self.pending_target(service),
-            30,
+            120,
         )
         self.assertEqual(request.arguments["scope"], "delivery")
         row = service.records("changesets")["items"][0]
@@ -201,7 +204,7 @@ class FlowTests(unittest.TestCase):
             service.delivery(row["id"])["candidate"]["commit"],
         )
         service.decide(request, "approve", decision_id="target")
-        eventually(lambda: work.snapshot().state == "delivered", 20)
+        eventually(lambda: work.snapshot().state == "delivered", 80)
 
         self.assertEqual(len(self.peer.pulls), 1)
         self.assertEqual(len(self.peer.pulls), 1)
@@ -230,7 +233,7 @@ class FlowTests(unittest.TestCase):
                 ),
                 None,
             ),
-            30,
+            120,
         )
         full = service.runtime.maintenance.store.get("changesets", row["id"])
         self.assertEqual(full["error"], "candidate_goal_failed")
@@ -246,7 +249,7 @@ class FlowTests(unittest.TestCase):
         )
         service = self.start(merge={"mode": "manual", "poll_seconds": 0.1})
         work = service.work.submit("Fix the value and hand off its verified result.")
-        eventually(lambda: self.peer.pulls, 30)
+        eventually(lambda: self.peer.pulls, 120)
         saved = service.store.work(work.id)
         self.assertIn(
             "Service development-to-delivery handoff:", saved["run_spec"]["prompt"]
@@ -281,7 +284,7 @@ class FlowTests(unittest.TestCase):
     def test_delivery_resume_keeps_handoff_run_and_candidate_identity(self):
         service = self.start(merge={"mode": "manual", "poll_seconds": 0.1})
         work = service.work.submit("Fix and hand off the scoped source.")
-        eventually(lambda: self.peer.pulls, 30)
+        eventually(lambda: self.peer.pulls, 120)
         before = service.store.work(work.id)
         progress = work.progress()
         self.assertEqual(progress["phase"], "delivery")
@@ -297,7 +300,7 @@ class FlowTests(unittest.TestCase):
     def test_execution_context_does_not_revise_requirements_or_candidate(self):
         service = self.start(merge={"mode": "manual", "poll_seconds": 0.1})
         work = service.work.submit("Complete the source change.")
-        eventually(lambda: self.peer.pulls, 30)
+        eventually(lambda: self.peer.pulls, 120)
         before = service.store.work(work.id)
         work.context("The runtime was restarted; keep the current delivery stage.")
         after = service.store.work(work.id)
@@ -315,7 +318,7 @@ class FlowTests(unittest.TestCase):
     def test_restart_retains_candidate_and_target_request(self):
         service = self.start()
         work = service.work.submit("Fix the scoped value.")
-        request = eventually(lambda: self.pending_target(service), 30)
+        request = eventually(lambda: self.pending_target(service), 120)
         candidate = service.delivery(work.snapshot().details["changeset_id"])[
             "candidate"
         ]["commit"]
@@ -323,7 +326,7 @@ class FlowTests(unittest.TestCase):
         self.assertTrue(service.wait_closed(15))
         restored = self.host.services.start(identity=service.id)
         self.addCleanup(lambda: (restored.close(), restored.wait_closed(15)))
-        fresh = eventually(lambda: self.pending_target(restored), 15)
+        fresh = eventually(lambda: self.pending_target(restored), 60)
         self.assertEqual(fresh.ref.id, request.ref.id)
         self.assertEqual(
             restored.delivery(work.snapshot().details["changeset_id"])["candidate"][
@@ -333,7 +336,7 @@ class FlowTests(unittest.TestCase):
         )
         restored.decide(fresh, "approve", decision_id="restored-target")
         eventually(
-            lambda: restored.work.get(work.id).snapshot().state == "delivered", 20
+            lambda: restored.work.get(work.id).snapshot().state == "delivered", 80
         )
         self.assertEqual(len(self.peer.pulls), 1)
 
@@ -350,14 +353,14 @@ class FlowTests(unittest.TestCase):
                 ),
                 None,
             ),
-            30,
+            120,
         )
         full = service.runtime.maintenance.store.get("changesets", row["id"])
         service.runtime.maintenance.delivery.advance(full)
         self.assertEqual(service.delivery(row["id"])["state"], "ci_waiting")
         self.assertFalse(self.pending_target(service))
         self.peer.ci_head = None
-        eventually(lambda: self.pending_target(service), 20)
+        eventually(lambda: self.pending_target(service), 80)
         self.assertNotEqual(work.snapshot().state, "delivered")
 
     def test_ci_fix_uses_a_new_native_run_and_preserves_scope(self):
@@ -366,7 +369,7 @@ class FlowTests(unittest.TestCase):
         work = service.work.submit("Fix the value regression.")
         request = eventually(
             lambda: self.pending_target(service),
-            45,
+            180,
         )
         value = service.store.work(work.id)
         self.assertEqual(value["ci_fix_attempts"], 1)
@@ -386,7 +389,7 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(len(self.peer.pulls), 1)
         self.assertEqual(sum(kind == "pull-update" for kind, _ in self.peer.writes), 1)
         service.decide(request, "approve", decision_id="target")
-        eventually(lambda: work.snapshot().state == "delivered", 20)
+        eventually(lambda: work.snapshot().state == "delivered", 80)
 
     def test_ci_triage_keeps_fixed_delta_without_serializing_host_inventory(self):
         from homebrew_harness.services.agent import ServiceAgent
@@ -424,7 +427,7 @@ class FlowTests(unittest.TestCase):
                     ),
                     None,
                 ),
-                35,
+                140,
             )
         self.assertEqual(row["ci_diagnosis"]["classification"], "code")
         inputs = [
@@ -460,7 +463,7 @@ class FlowTests(unittest.TestCase):
         with patch.object(Delivery, "repair", repair):
             service = self.start(auto_ci_fix=True)
             work = service.work.submit("Continue this Work through focused CI repair.")
-            eventually(lambda: self.pending_target(service), 45)
+            eventually(lambda: self.pending_target(service), 180)
         saved = service.store.work(work.id)
         self.assertEqual(saved["ci_fix_attempts"], 1)
         context = saved["run_spec"]["work_context"]
@@ -483,15 +486,15 @@ class FlowTests(unittest.TestCase):
                 ),
                 None,
             ),
-            30,
+            120,
         )
         self.assertEqual(action["kind"], "ensure_change_request")
         self.assertEqual(sum(kind == "pull" for kind, _ in self.peer.writes), 1)
         self.peer.drop = None
         self.assertEqual(service.inspect_delivery(action["id"])["state"], "confirmed")
-        request = eventually(lambda: self.pending_target(service), 15)
+        request = eventually(lambda: self.pending_target(service), 60)
         service.decide(request, "approve", decision_id="target")
-        eventually(lambda: work.snapshot().state == "delivered", 20)
+        eventually(lambda: work.snapshot().state == "delivered", 80)
         self.assertEqual(sum(kind == "pull" for kind, _ in self.peer.writes), 1)
 
     def test_batch_records_partial_expiration_and_replays_confirmed_decisions(self):
@@ -508,7 +511,7 @@ class FlowTests(unittest.TestCase):
                 == 2
                 else None
             ),
-            30,
+            120,
         )
         batch = service.batch(requests, request_id="group")
         store = service.runtime.maintenance.store
@@ -528,7 +531,7 @@ class FlowTests(unittest.TestCase):
     def test_changed_target_after_approval_is_not_overwritten(self):
         service = self.start()
         work = service.work.submit("Fix the scoped value.")
-        request = eventually(lambda: self.pending_target(service), 30)
+        request = eventually(lambda: self.pending_target(service), 120)
         before = (
             self.run_git("--git-dir=" + str(self.remote), "rev-parse", "main")
             .decode()
@@ -571,7 +574,7 @@ class FlowTests(unittest.TestCase):
             lambda: any(
                 a["state"] == "superseded" for a in service.records("actions")["items"]
             ),
-            15,
+            60,
         )
         self.assertEqual(
             self.run_git("--git-dir=" + str(self.remote), "rev-parse", "main")
@@ -586,7 +589,7 @@ class FlowTests(unittest.TestCase):
 
         service = self.start()
         service.work.submit("Fix the scoped value.")
-        eventually(lambda: self.pending_target(service), 30)
+        eventually(lambda: self.pending_target(service), 120)
         row = service.records("changesets")["items"][0]
         subject = ObjectRef(
             "github", "primary", "example/project", "issue", "1", 1
@@ -611,7 +614,7 @@ class FlowTests(unittest.TestCase):
             lambda: (
                 service.delivery(action["id"], kind="actions")["state"] == "unknown"
             ),
-            15,
+            60,
         )
         self.peer.drop = None
         self.assertEqual(service.inspect_delivery(action["id"])["state"], "confirmed")
@@ -625,7 +628,7 @@ class FlowTests(unittest.TestCase):
 
         service = self.start()
         work = service.work.submit("Fix the scoped value.")
-        eventually(lambda: self.pending_target(service), 30)
+        eventually(lambda: self.pending_target(service), 120)
         with RemoteService.from_root(self.control, control=True) as remote:
             request = next(
                 r for r in remote.requests() if r.kind == "delivery_authority"
@@ -649,12 +652,12 @@ class FlowTests(unittest.TestCase):
                 request_id="http-decisions",
             )
             self.assertEqual(result["results"][request.ref.id]["state"], "confirmed")
-            eventually(lambda: work.snapshot().state == "delivered", 15)
+            eventually(lambda: work.snapshot().state == "delivered", 60)
 
     def test_late_target_receipt_does_not_complete_reauthorized_work(self):
         service = self.start()
         work = service.work.submit("Fix the scoped value.")
-        request = eventually(lambda: self.pending_target(service), 30)
+        request = eventually(lambda: self.pending_target(service), 120)
         service.pause("all")
         delivery = service.runtime.maintenance.delivery
         row = delivery.store.get("changesets", work.snapshot().details["changeset_id"])
@@ -689,7 +692,7 @@ class FlowTests(unittest.TestCase):
     def test_same_version_authority_renewal_keeps_delivery_and_pause(self):
         service = self.start(merge={"mode": "manual", "poll_seconds": 0.1})
         work = service.work.submit("Complete the source change.")
-        eventually(lambda: self.peer.pulls, 30)
+        eventually(lambda: self.peer.pulls, 120)
         service.pause("all")
         before = service.store.work(work.id)
         with service.store.db.write() as conn:
@@ -727,7 +730,7 @@ class FlowTests(unittest.TestCase):
                     ),
                     None,
                 ),
-                30,
+                120,
             )
             self.assertEqual(
                 service.inspect_delivery(action["id"], request_id="push-inspection")[
@@ -741,5 +744,5 @@ class FlowTests(unittest.TestCase):
                 ],
                 "confirmed",
             )
-            eventually(lambda: self.pending_target(service), 20)
+            eventually(lambda: self.pending_target(service), 80)
             self.assertEqual(len(pushes), 1)

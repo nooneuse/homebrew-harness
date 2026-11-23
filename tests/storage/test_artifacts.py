@@ -58,6 +58,18 @@ class ArtifactTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'Retained evidence changed'):
                 inspect_artifacts(self.root)
 
+    def test_archive_disappearing_after_stat_reports_retained_evidence_change(self):
+        from homebrew_harness.security.safe_files import SafeFile
+        old = self.old()
+        original = SafeFile.snapshot
+        def disappeared(target, *args, **kwargs):
+            if target.parts[-1] == Path(old).name:
+                return None, None, None
+            return original(target, *args, **kwargs)
+        with patch.object(SafeFile, 'snapshot', disappeared):
+            with self.assertRaisesRegex(ValueError, 'Retained evidence changed'):
+                inspect_artifacts(self.root)
+
     def test_preview_preserves_unregistered_and_all_user_content(self):
         old = self.old()
         user = self.root / "source.py"

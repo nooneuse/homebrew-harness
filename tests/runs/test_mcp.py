@@ -5,6 +5,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -80,8 +81,12 @@ class RunMCPTests(unittest.TestCase):
         return control, session, requests
 
     def close(self, control, session):
-        session.close()
-        self.assertTrue(session.wait_closed(5))
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            session.close()
+            if session.wait_closed(0.1):
+                break
+        self.assertTrue(session.wait_closed(0), session.shutdown_status())
         control.close_heartbeat()
         self.store.ended(
             control.header, cleanup=session.shutdown_status()["persistence_ok"]

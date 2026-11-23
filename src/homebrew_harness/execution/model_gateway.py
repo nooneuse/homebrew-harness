@@ -152,6 +152,7 @@ class RequestScope:
     task_id: str = ""
     deadline: Deadline = field(default_factory=Deadline)
     cancel_events: tuple = ()
+    observations: dict = field(default_factory=dict)
 
 
 _SCOPE = ContextVar("model_request_scope", default=RequestScope())
@@ -177,23 +178,34 @@ def normalize_usage(response):
     )
 
 
+_DEFAULT_LEDGER_LIMIT = object()
+
+
 class UsageLedger:
     """Optional bounded observations; never a prerequisite for model execution."""
 
     def __init__(
-        self, workdir=None, session_id=None, *, enabled=True, max_bytes=8 * 1024 * 1024
+        self, workdir=None, session_id=None, *, enabled=None, max_bytes=_DEFAULT_LEDGER_LIMIT,
+        runtime_limits=None
     ):
         self.workdir = Path(workdir).resolve() if workdir is not None else None
         self.session_id = session_id or uuid.uuid4().hex
         self.reference = ".harness/usage/" + self.session_id + ".jsonl"
-        self.enabled, self.max_bytes = enabled, max_bytes
-        self.records = deque(maxlen=128)
+        from homebrew_harness.runtime.limits import RuntimeLimits, current_limits
+        limits = RuntimeLimits.parse(runtime_limits if runtime_limits is not None else current_limits())
+        self.enabled = limits.usage_observations if enabled is None else enabled
+        self.max_bytes = limits.usage_ledger_bytes if max_bytes is _DEFAULT_LEDGER_LIMIT else max_bytes
+        if type(self.enabled) is not bool or self.max_bytes is not None and (type(self.max_bytes) is not int or self.max_bytes < 1):
+            raise ValueError("Invalid usage observation configuration.")
+        self.records = deque(maxlen=limits.usage_recent_records)
+        self.close_seconds = limits.usage_close_seconds
         self.lock = threading.RLock()
-        self.queue = queue.Queue(maxsize=256)
+        self.queue = queue.Queue(maxsize=limits.usage_queue_records)
         self.workers = Workers()
         self.started = False
         self.closed = False
         self.error = None
+        self.error_info = None
         self.dropped = 0
 
     def append(self, record):
@@ -256,7 +268,10 @@ class UsageLedger:
                             json.dumps(record, ensure_ascii=False, allow_nan=False)
                             + "\n"
                         ).encode()
-                        if os.fstat(fd).st_size + len(data) > self.max_bytes:
+                        observed = os.fstat(fd).st_size + len(data)
+                        if self.max_bytes is not None and observed > self.max_bytes:
+                            self.error_info = {"code": "usage_ledger_limit", "limit_bytes": self.max_bytes,
+                                               "observed_bytes": observed, "reference": self.reference}
                             raise ValueError("Observation file limit reached")
                         target.verify_binding()
                         os.fchmod(fd, 0o600)
@@ -321,7 +336,7 @@ class GatewayState:
         self.closed = False
         self.blocked = ""
         self.connection_faults = {}
-        self.finished = deque(maxlen=128)
+        self.finished = deque(maxlen=ledger.records.maxlen)
         self.sequence = 0
         self.new_attempts = 0
         self.known_tokens = self.unknown_calls = self.late_calls = 0
@@ -466,6 +481,10 @@ class GatewayState:
                 "error_info": error_info(receipt.error) if receipt.error else None,
                 "response_diagnostics": receipt.response.diagnostics if receipt.response else None,
                 "finish": receipt.response.finish if receipt.response else None,
+                "provider_id": receipt.response.provider_id if receipt.response else None,
+                "finished_at": time.time(),
+                "output_characters": len(receipt.response.text) if receipt.response else None,
+                "tool_calls": len(receipt.response.tool_calls) if receipt.response else None,
             }
             if receipt.registered:
                 self.finished.append(event)
@@ -487,9 +506,18 @@ class GatewayState:
                 )
             self.inflight.pop(receipt.id, None)
             self.sequence += 1
+            recorded = {k: v for k, v in event.items() if k not in {"connection", "response_diagnostics", "error_info"}}
+            if receipt.error:
+                recorded["error_info"] = {"type": type(receipt.error).__name__,
+                    "code": getattr(receipt.error, "code", None),
+                    "status_code": getattr(receipt.error, "status_code", None),
+                    "kind": getattr(receipt.error, "kind", None)}
+            self.record(recorded)
+            self.publish_observation()
+            if self.closed and not self.inflight:
+                self.ledger.close(0)
             receipt.done.set()
             self.condition.notify_all()
-        self.publish_observation()
 
 
 class ModelGateway:
@@ -512,7 +540,7 @@ class ModelGateway:
             else None
         )
         self._state = _state or GatewayState(
-            limits or GatewayLimits(), ledger or UsageLedger(workdir, enabled=False)
+            limits or GatewayLimits(), ledger or UsageLedger(workdir)
         )
         from homebrew_harness.execution.providers import adapter_for
 
@@ -576,8 +604,16 @@ class ModelGateway:
         deadline=None,
         cancel_event=None,
         inherit_deadline=True,
+        observations=None,
     ):
         parent = _SCOPE.get()
+        allowed = {"work_id", "run_id", "job_id", "phase", "profile", "attempt"}
+        observations = {} if observations is None else observations
+        if not isinstance(observations, dict) or set(observations) - allowed or any(
+            v is not None and type(v) not in {str, int}
+            for v in observations.values()
+        ):
+            raise ValueError("Usage observations accept only compact execution identity fields.")
         scope = RequestScope(
             self,
             role or parent.role,
@@ -591,6 +627,7 @@ class ModelGateway:
             ),
             parent.cancel_events
             + ((cancel_event,) if cancel_event is not None else ()),
+            {**parent.observations, **{k:v for k,v in observations.items() if v is not None}},
         )
         token = _SCOPE.set(scope)
         try:
@@ -731,8 +768,10 @@ class ModelGateway:
     def close(self):
         with self._state.condition:
             self._state.closed = True
+            idle = not self._state.inflight
             self._state.condition.notify_all()
-        self._state.ledger.close(0)
+        if idle:
+            self._state.ledger.close(self._state.ledger.close_seconds)
 
     def wait_idle(self, timeout=None):
         deadline = Deadline.after(timeout)
@@ -742,6 +781,8 @@ class ModelGateway:
                 if remaining == 0:
                     return False
                 self._state.condition.wait(remaining)
+        if self._state.closed:
+            return self._state.ledger.close(deadline.remaining())
         return True
 
     def restore_usage(self, usage):
@@ -931,6 +972,7 @@ class ModelGateway:
                 "observation_error": state.observation_error or state.ledger.error,
                 "details_enabled": state.ledger.enabled,
                 "details_dropped": state.ledger.dropped,
+                "observation_error_info": state.ledger.error_info,
                 "limits": {
                     "concurrency": state.limits.concurrency,
                     "request_timeout": state.limits.request_timeout,
@@ -1001,6 +1043,7 @@ class ModelGateway:
             (cancel_event,) if cancel_event is not None else ()
         )
         metadata = {
+            **scope.observations,
             "role": role or scope.role,
             "purpose": purpose,
             "context_id": scope.context_id,
@@ -1018,6 +1061,20 @@ class ModelGateway:
         from homebrew_harness.storage.durable_runtime import active_writer
 
         writer = active_writer()
+        if writer:
+            metadata["checkpoint"] = writer.key
+            control = getattr(writer, "run_control", None)
+            if control is not None:
+                header = getattr(control, "header", {})
+                if isinstance(header, dict) and header.get("id"):
+                    metadata.setdefault("run_id", header["id"])
+                spec = getattr(control, "spec", None)
+                if spec is not None:
+                    metadata.setdefault("work_id", spec.work_context.get("work_id"))
+            elif isinstance(writer.snapshot, dict):
+                managed = writer.snapshot.get("managed_run") or {}
+                if isinstance(managed, dict) and managed.get("id"):
+                    metadata.setdefault("run_id", managed["id"])
         context_key = (
             writer.key
             if writer
@@ -1067,9 +1124,12 @@ class ModelGateway:
                 if any(m.get("_protocol_state") for m in request.messages):
                     validate_replay(request, transport)
                 prepared = self._prepared[1]
+                serialized_chars = self._prepared[2]
             else:
                 prepared = transport.prepare(request)
-                self._prepared = (identity, prepared)
+                serialized_chars = len(json.dumps(prepared, ensure_ascii=False))
+                self._prepared = (identity, prepared, serialized_chars)
+        metadata["serialized_request_chars"] = serialized_chars
         metadata["connection"] = self._connection_key()
         metadata["protocol"] = self._adapter.protocol
         metadata["preparation_seconds"] = max(0, time.monotonic()-request_started)
@@ -1089,7 +1149,7 @@ class ModelGateway:
         output_contract=None,
         settings=None,
     ):
-        params, _, _, _ = self._prepare_request(
+        params, metadata, _, _ = self._prepare_request(
             "context_prepare",
             None,
             None,
@@ -1109,7 +1169,7 @@ class ModelGateway:
                 ),
             },
         )
-        return len(json.dumps(params[1], ensure_ascii=False))
+        return metadata["serialized_request_chars"]
 
     def _launch_request(self, receipt, params):
         try:
@@ -1293,6 +1353,7 @@ class ModelGateway:
                     receipt.metadata["connection"],
                 )
                 receipt.sent = True
+                receipt.metadata["sent_at"] = time.time()
                 self._state.calls += 1
                 self._state.sequence += 1
             self._state.publish_observation()
@@ -1438,7 +1499,12 @@ def model_operation(function):
             values.get("components"), "stop_event", None
         )
         with gateway.scope(
-            context_id=parent.context_id or function.__name__, cancel_event=cancel_event
+            context_id=parent.context_id or function.__name__, cancel_event=cancel_event,
+            observations=(
+                {"run_id": control.id, "work_id": control.spec.work_context.get("work_id"), "phase": "development"}
+                if (control := getattr(values.get("components"), "run_control", None)) is not None
+                else None
+            ),
         ):
             return function(*args, **kwargs)
 

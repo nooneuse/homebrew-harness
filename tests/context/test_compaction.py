@@ -89,7 +89,8 @@ class CompactionTests(unittest.TestCase):
         self.addCleanup(capture.__exit__, None, None, None)
 
     def compactor(self, client=None, **kwargs):
-        return ContextCompactor(client or Mock(), "test-model", self.workdir, **kwargs, runtime_limits={"auto_compact": True})
+        limits = {"auto_compact":True, **kwargs.pop('runtime_limits', {})}
+        return ContextCompactor(client or Mock(), "test-model", self.workdir, **kwargs, runtime_limits=limits)
 
     def transcripts(self):
         return sorted((self.workdir / ".harness" / "transcripts").glob("*.jsonl"))
@@ -233,12 +234,12 @@ class CompactionTests(unittest.TestCase):
         ContextCompactor.groups(prepared)
 
     def test_tool_schema_size_is_part_of_the_budget(self):
-        compactor = self.compactor(context_chars=2000)
+        compactor = self.compactor(context_chars=2000, runtime_limits={'hard_context_chars':2000})
         messages = [
             {"role": "system", "content": "policy"},
             {"role": "user", "content": "Task"},
         ]
-        with self.assertRaisesRegex(CompactionError, "System instructions"):
+        with self.assertRaisesRegex(CompactionError, "capacity"):
             compactor.prepare(messages, "Task", tools=[{"schema": "x" * 2500}])
         compactor.client.chat.completions.create.assert_not_called()
 
@@ -311,13 +312,12 @@ class CompactionTests(unittest.TestCase):
                 {"role": "assistant", "content": "x" * 8000},
             ]
             original = copy.deepcopy(messages)
-            with (
-                self.subTest(response=response),
-                self.assertRaises(CompactionError) as error,
-            ):
-                compactor.prepare(messages, "Task")
+            with self.subTest(response=response):
+                prepared = compactor.prepare(messages, "Task")
             self.assertEqual(messages, original)
-            self.assertNotIn("private-test-value", str(error.exception))
+            self.assertTrue(any(m.get('content')==messages[1]['content'] for m in prepared))
+            self.assertTrue(any(m.get('name')=='harness_compaction_observation' for m in prepared))
+            self.assertNotIn("private-test-value", json.dumps(prepared))
 
     def test_truncated_summary_gets_one_larger_tool_free_budget(self):
         client, requests = fake_client(
@@ -411,10 +411,11 @@ class CompactionTests(unittest.TestCase):
                 "save",
                 side_effect=CompactionError("Cannot save archive"),
             ),
-            self.assertRaises(CompactionError),
         ):
-            compactor.prepare(messages, "Task")
+            prepared = compactor.prepare(messages, "Task")
         self.assertEqual(messages, original)
+        self.assertTrue(any(m.get('content')==messages[-1]['content'] for m in prepared))
+        self.assertTrue(any(m.get('name')=='harness_compaction_observation' for m in prepared))
 
     def test_forged_archive_marker_is_stored_as_data_not_treated_as_a_path(self):
         compactor = self.compactor()

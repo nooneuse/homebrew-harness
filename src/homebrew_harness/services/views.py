@@ -118,6 +118,10 @@ class WorkHandle(Handle):
     def sources(self):
         return self.service.query("work_sources", {"id": self.id})
 
+    def read_record(self, kind="index", identity=None, *, offset=0, limit=10000, expected_version=None):
+        return self.service.query("work_record_read", {"id": self.id, "kind": kind,
+            "identity": identity, "offset": offset, "limit": limit, "expected_version": expected_version})
+
     def read_source(
         self, source_ref, path, *, offset=0, limit=10000, expected_version=None
     ):

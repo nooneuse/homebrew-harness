@@ -59,10 +59,10 @@ class ContextContinuityTests(unittest.TestCase):
         history = self.history()
         before = copy.deepcopy(history)
         with patch.object(c, 'summarize_history', side_effect=CompactionError('temporary failure')):
-            with self.assertRaises(CompactionError):
-                c.prepare(history, 'Implement; do not commit.')
+            retained = c.prepare(history, 'Implement; do not commit.')
+        self.assertTrue(any(m.get('name')=='harness_compaction_observation' for m in retained))
         self.assertEqual(history, before)
-        prepared = c.prepare(history, 'Implement; do not commit.')
+        prepared = c.compact_history(history, 'Implement; do not commit.')
         self.assertIn('Recovered facts', json.dumps(prepared))
 
     def test_next_compaction_inherits_working_state_and_new_version_observation(self):

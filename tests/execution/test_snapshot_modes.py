@@ -48,7 +48,7 @@ class SnapshotModeTests(unittest.TestCase):
             "sha256:" + "a" * 64,
             ("/bin/true",),
             ("/bin/true",),
-            uid=os.getuid(),
+            uid=os.getuid() or 1000,
             workspace_writable=True,
         )
         ContainerBackend(policy)._prepare_staging(self.root)

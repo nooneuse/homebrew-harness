@@ -293,7 +293,7 @@ class HarnessSession:
                         client,
                         gateway_limits,
                         workdir=workdir,
-                        ledger=UsageLedger(workdir, enabled=self.capabilities.details),
+                        ledger=UsageLedger(workdir, runtime_limits=self.runtime_limits),
                     ),
                 )
             )

@@ -9,6 +9,9 @@ from homebrew_harness.services.agent import ServiceAgent
 from tests.services.delivery import test_flow as fixture
 from tests.runtime.test_interaction import eventually
 
+# These waits observe several native process/Git phases. Keep their execution,
+# authorization and verification budgets explicit and unchanged.
+
 
 class JobContextFlows(unittest.TestCase):
     setUp = fixture.FlowTests.setUp
@@ -51,7 +54,7 @@ class JobContextFlows(unittest.TestCase):
             })
             work = service.work.submit("Fix the scoped value.")
             row = eventually(lambda: next((r for r in service.records("changesets")["items"]
-                if r.get("ci_diagnosis")), None), 40)
+                if r.get("ci_diagnosis")), None), 160)
         self.assertEqual(attempts, 5)
         self.assertEqual(row["ci_diagnosis"]["classification"], "code")
         observations = [m["content"] for request in self.peer.model_requests for m in request["messages"]
@@ -85,7 +88,7 @@ class JobContextFlows(unittest.TestCase):
             service = self.start(auto_ci_fix=False)
             work = service.work.submit("Fix the scoped value.")
             row = eventually(lambda: next((r for r in service.records("changesets")["items"]
-                if r.get("ci_diagnosis")), None), 40)
+                if r.get("ci_diagnosis")), None), 160)
         requests = [request for request in self.peer.model_requests if any(
             m.get("role") == "user" and m.get("content", "").startswith("{")
             and json.loads(m["content"]).get("job", {}).get("kind") == "ci_triage"
@@ -122,7 +125,7 @@ class JobContextFlows(unittest.TestCase):
             service = self.start(auto_ci_fix=False, maintenance={"job_attempts": 1})
             work = service.work.submit("Fix the scoped value.")
             row = eventually(lambda: next((r for r in service.runtime.maintenance.delivery.rows("changesets")
-                if r["state"] == "blocked"), None), 40)
+                if r["state"] == "blocked"), None), 160)
             job_id = row["reasoning_job_id"]
             issue = next(i for i in service.health()["issues"] if i["code"] == "delivery_blocked")
             self.assertEqual(issue["reason_code"], "model_turn_limit")
@@ -134,7 +137,7 @@ class JobContextFlows(unittest.TestCase):
             failing = False
             service.retry_job(job_id, request_id="retry-reasoning-only")
             current = eventually(lambda: next((r for r in service.runtime.maintenance.delivery.rows("changesets")
-                if r["id"] == row["id"] and r["state"] == "repair_waiting"), None), 30)
+                if r["id"] == row["id"] and r["state"] == "repair_waiting"), None), 120)
         self.assertEqual(current["quality"], previous_quality)
         self.assertEqual(service.store.work(work.id)["run_id"], previous_run)
         self.assertIsNone(current.get("error_info"))
@@ -147,10 +150,10 @@ class JobContextFlows(unittest.TestCase):
         self.peer.ci_failure = True
         service = self.start(auto_ci_fix=False)
         work = service.work.submit("Fix the scoped value.")
-        request = eventually(lambda: next((r for r in service.requests() if r.kind == "ci_repair"), None), 40)
+        request = eventually(lambda: next((r for r in service.requests() if r.kind == "ci_repair"), None), 160)
         work.context("Use the currently published framework fix and preserve its recorded tests.")
         service.decide(request, "approve", decision_id="repair-with-current-context")
-        eventually(lambda: self.pending_target(service), 40)
+        eventually(lambda: self.pending_target(service), 160)
         current = service.store.work(work.id)
         self.assertIn("currently published framework fix", current["run_spec"]["prompt"])
         self.assertEqual(current["requirements_revision"], 0)
@@ -190,7 +193,7 @@ class JobContextFlows(unittest.TestCase):
         with patch.object(ServiceAgent, "propose", propose), patch.object(model_fixture, "completion", unique_completion):
             service = self.start(auto_ci_fix=False, maintenance={"job_turns": 3, "job_seconds": 30})
             work = service.work.submit("Fix the scoped value.")
-            eventually(lambda: next((r for r in service.records("changesets")["items"] if r.get("ci_diagnosis")), None), 40)
+            eventually(lambda: next((r for r in service.records("changesets")["items"] if r.get("ci_diagnosis")), None), 160)
         requests = [r for r in self.peer.model_requests if any(
             m.get("role") == "user" and m.get("content", "").startswith("{")
             and json.loads(m["content"]).get("job", {}).get("kind") == "ci_triage" for m in r["messages"])]

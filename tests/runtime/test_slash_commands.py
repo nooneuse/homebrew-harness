@@ -321,6 +321,33 @@ class HostSlashTests(unittest.TestCase):
         self.assertEqual(len(server.requests),2)
         self.assertEqual(host.state.runtime.get('input_receipts',result['command_id'])['state'],'applied')
 
+    def test_commands_arriving_while_previous_owner_retires_are_supervised(self):
+        host, _ = self.host([])
+        session = host._command_session()
+        with host.lock:
+            # The previous task is settled but its owner has not run finally yet.
+            host._busy = host._drive_active = True
+            first = host.submit('/compact')
+            second = host.submit('/compact')
+            host._drive_active = False
+        eventually(lambda:host.session is None and not host._busy)
+        self.assertTrue(session.shutdown_status()['resources_closed'])
+        for command in (first, second):
+            self.assertEqual(host.state.runtime.get('input_receipts',command['command_id'])['state'],'applied')
+
+    def test_command_worker_accepted_launch_loss_still_retires_the_owned_session(self):
+        from homebrew_harness.runtime.runtime_control import WorkAccepted
+        host, _ = self.host([])
+        session = host._command_session()
+        original = host.workers.start
+        def lost(*args, **kwargs):
+            thread = original(*args, **kwargs)
+            raise WorkAccepted(thread)
+        with patch.object(host.workers, 'start', lost), self.assertRaises(WorkAccepted):
+            host.submit('/compact')
+        eventually(lambda:host.session is None and not host._busy)
+        self.assertTrue(session.shutdown_status()['resources_closed'])
+
     def test_preference_failure_restores_frontend_binding(self):
         host,server=self.host([])
         original=host.assembler.binding.identity()

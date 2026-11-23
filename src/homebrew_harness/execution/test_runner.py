@@ -28,6 +28,7 @@ from pathlib import Path
 from homebrew_harness.execution.model_gateway import (
     Deadline,
     ModelGatewayError,
+    ModelCancelled,
     current_scope,
 )
 from homebrew_harness.security.data_boundary import redact
@@ -868,15 +869,10 @@ class TestRunner:
                 ) as target:
                     cwd_fd = os.dup(target.fds[-1])
                 try:
-                    if deadline.remaining() == 0 or any(
-                        event.is_set() for event in scope.cancel_events
-                    ):
-                        raise TestRunnerError(
-                            "Test deadline or cancellation reached before starting the process."
-                        )
+                    check(deadline, scope.cancel_events)
                     with self.process_lock:
                         if self.closed.is_set():
-                            raise TestRunnerError(
+                            raise ModelCancelled(
                                 "TestRunner closed before process startup."
                             )
                         from homebrew_harness.execution.execution_backend import (
@@ -1059,6 +1055,9 @@ class TestRunner:
             )
             if receipt["error"] is None:
                 receipt.pop("error")
+            history = self._verification_history(receipt, durable_scope)
+            if history:
+                receipt["verification_history"] = history
             for kind, data in streams.items():
                 self._save(
                     receipt[kind],
@@ -1130,6 +1129,40 @@ class TestRunner:
             self._run_cancel = None
             self.active.clear()
             self.lock.release()
+
+    def _verification_history(self, receipt, durable_scope):
+        """Observe the last comparable full receipt; never choose the next test."""
+        try:
+            if durable_scope is not None and "session_id" in durable_scope:
+                from homebrew_harness.storage.durable_runtime import DurableStore
+                db = DurableStore(self.workdir).backend()
+                if not db.exists():
+                    return None
+                with db.connection() as conn:
+                    row = conn.execute(
+                        "SELECT value FROM records WHERE section='test_receipts' AND owner=? "
+                        "AND json_extract(value,'$.recipe')=? AND json_extract(value,'$.cwd')=? "
+                        "AND json_extract(value,'$.test_scope')='full' ORDER BY rowid DESC LIMIT 1",
+                        ("lead:" + durable_scope["session_id"], receipt["recipe"], receipt["cwd"]),
+                    ).fetchone()
+                previous = json.loads(row[0]) if row else None
+            else:
+                previous = next((row for row in reversed(list(self._receipts.values()))
+                    if row["recipe"] == receipt["recipe"] and row["cwd"] == receipt["cwd"]
+                    and row.get("test_scope", "full") == "full"), None)
+            if not previous:
+                return None
+            from homebrew_harness.execution.source_snapshot import content_digest
+            same = (content_digest(previous["inputs"]) == content_digest(receipt["inputs"])) if (
+                previous.get("source_stable") and receipt.get("source_stable")
+                and previous["fingerprint"] == receipt["fingerprint"]
+            ) else None
+            return {"previous_full": {"run_id": previous["run_id"], "status": previous["status"],
+                    "same_source": same, "stdout": previous["stdout"], "stderr": previous["stderr"]},
+                "instruction": "This is recorded history, not a decision to repeat or skip verification. A selected pass does not explain an unchanged source's full failure. Use the original output and source changes to choose diagnosis, stress verification, repair or another full run; explicit acceptance remains in force."}
+        except Exception as error:
+            return {"available": False, "error_type": type(error).__name__,
+                    "instruction": "Prior verification history could not be read; this observation does not change the current test result."}
 
     def verify(self, name, cwd, *, since=0, task_id=None, selection=None):
         recipe = self._recipe(name)

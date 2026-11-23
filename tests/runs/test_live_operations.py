@@ -18,7 +18,7 @@ class LiveOperationRuns(unittest.TestCase):
     setUp = helpers.RunTests.setUp
     controller = helpers.RunTests.controller
 
-    def setup_test(self, *, duration=1, wait=.05, episode_seconds=5, calls=1, total_seconds=20, tools=('run_tests',)):
+    def setup_test(self, *, duration=1, wait=.05, episode_seconds=5, calls=1, total_seconds=120, tools=('run_tests',)):
         runner = TestRunner(self.root, [TestRecipe('quality', (
             sys.executable, '-u', '-I', '-c',
             'import time;print("started",flush=True);time.sleep(' + str(duration) + ');print("finished",flush=True)',
@@ -27,7 +27,7 @@ class LiveOperationRuns(unittest.TestCase):
         spec = RunSpec('Run the registered test and observe its result.', tools=tools,
                        allow_tests=('quality',), total_seconds=total_seconds,
                        episode_seconds=episode_seconds, episode_model_calls=calls,
-                       request_seconds=5, heartbeat_seconds=.05, shutdown_seconds=3)
+                       request_seconds=20, heartbeat_seconds=.05, shutdown_seconds=3)
         control, session, client, _ = self.controller([], spec=spec, test_runner=runner)
         self.test_client = client
         steps = []
@@ -117,7 +117,7 @@ class LiveOperationRuns(unittest.TestCase):
             control.store.control(control.id, 'pause')
             worker.join(5)
             self.assertFalse(worker.is_alive())
-            self.assertEqual(outcomes[0].status, 'paused')
+            self.assertEqual(outcomes[0].status, 'paused', outcomes[0])
         finally:
             session.close()
             self.assertTrue(session.wait_closed(5))

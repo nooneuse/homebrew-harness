@@ -5,6 +5,7 @@ import json
 NAMES = frozenset(
     {
         "service_work_sources",
+        "service_read_work_record",
         "service_read_source",
         "service_compare_sources",
         "service_observe_target",
@@ -23,6 +24,12 @@ class ModelWorkTools:
         return json.dumps(
             self.service.query("work_sources", {"id": self.work_id}), ensure_ascii=False
         )
+
+    def record(self, kind="index", identity=None, offset=0, limit=10000, expected_version=None, **unused):
+        return json.dumps(self.service.query("work_record_read", {
+            "id": self.work_id, "kind": kind, "identity": identity,
+            "offset": offset, "limit": limit, "expected_version": expected_version,
+        }), ensure_ascii=False)
 
     def read(
         self, source_ref, path, offset=0, limit=10000, expected_version=None, **unused
@@ -173,6 +180,7 @@ class ModelWorkTools:
             zip(
                 (
                     "service_work_sources",
+                    "service_read_work_record",
                     "service_read_source",
                     "service_compare_sources",
                     "service_observe_target",
@@ -181,6 +189,7 @@ class ModelWorkTools:
                 ),
                 (
                     self.sources,
+                    self.record,
                     self.read,
                     self.compare,
                     self.target,
@@ -197,6 +206,14 @@ def definitions():
     string = {"type": "string", "minLength": 1}
     integer = {"type": "integer", "minimum": 0}
     return [
+        define_tool(
+            "service_read_work_record",
+            "Read this Work's original review jobs, candidates, requirements and recovery plan. Start with kind=index; pages use character offsets and exact versions. Old evidence does not verify changed code.",
+            {"kind": {"type": "string", "enum": ["index", "work", "recovery_plan", "jobs", "changesets", "requirements", "evidence"]},
+             "identity": string, "offset": integer,
+             "limit": {"type": "integer", "minimum": 1}, "expected_version": string},
+            [],
+        ),
         define_tool(
             "service_work_sources",
             "Inspect this Work source directory: current draft, owned candidates and preserved snapshots. Distinguish HEAD from published PR head.",

@@ -41,7 +41,7 @@ Use `runtime_limits` in the external interaction JSON or `RunSpec`, or pass `--r
   "turn_seconds": null,
   "model_call_warning": 20,
   "runtime_limits": {
-    "auto_compact": false,
+    "auto_compact": true,
     "file_read_chars": 24000,
     "run_retry_windows": null,
     "team_members": 8,
@@ -52,7 +52,7 @@ Use `runtime_limits` in the external interaction JSON or `RunSpec`, or pass `--r
 
 The file remains outside the workspace. Missing fields use defaults; unknown fields, invalid types, negative values and non-finite numbers are rejected. `null` is accepted only by optional budgets. There is no arbitrary upper software ceiling on counts, model output tokens, durations or resource quotas. The selected provider and operating system may impose their own real limits.
 
-`context_chars` reports working-context pressure by default. The model can use `compact`; confirmed provider overflow uses the existing recovery path. Set `auto_compact=true` to opt into proactive reduction. `hard_context_chars` selects an explicit local input boundary. Summary target, rewrite attempts, read coverage and archive windows are configurable. Failed optional reduction retains the original history and returns an observation; it does not claim compaction succeeded.
+`auto_compact=true` maintains the working context by default, using `context_chars` as a reference target. The model can also call `compact`. Failed optional reduction retains history with a diagnostic and a configurable automatic retry interval; it does not claim a summary was accepted. Explicit `auto_compact=false` keeps pressure advisory only. `hard_context_chars` separately selects a local capacity boundary. Confirmed provider overflow uses the existing recovery path. Summary targets, rewrites, read coverage and archive windows are configurable.
 
 ## Execution boundaries retained
 
@@ -176,7 +176,13 @@ The complete programmatic reference is `RuntimeLimits` in `homebrew_harness.runt
 | `benchmark_model_call_warning` | `4` |
 | `artifact_freeze_seconds` | `2` |
 | `observation_poll_seconds` | `0.05` |
-| `auto_compact` | `false` |
+| `auto_compact` | `true` |
+| `auto_compact_retry_turns` | `4` |
+| `usage_observations` | `true` |
+| `usage_ledger_bytes` | `67108864` |
+| `usage_queue_records` | `256` |
+| `usage_recent_records` | `128` |
+| `usage_close_seconds` | `1` |
 | `hard_context_chars` | `null` |
 | `run_retry_windows` | `null` |
 | `retry_window_warning` | `32` |
@@ -266,3 +272,12 @@ The complete programmatic reference is `RuntimeLimits` in `homebrew_harness.runt
 | `blocker_action_chars` | `null` |
 | `progress_item_chars` | `null` |
 | `progress_ref_chars` | `null` |
+
+
+## Maintenance defaults and explicit feature choices
+
+Automatic compaction is enabled by default. `context_chars` is its working target; optional failure retains history with a diagnostic and spaces automatic retries using `auto_compact_retry_turns`. The model can call `compact` immediately or the host can choose `auto_compact=false`. An explicit `hard_context_chars` remains a separate capacity contract. Provider-confirmed overflow uses the existing recovery path.
+
+Usage metadata recording is enabled independently of verbose output. It records model/request/provider IDs, purpose, Work/Run/job/phase, input/output/cache/reasoning tokens and completeness, without prompts, source, credentials or endpoint addresses. Explicit `usage_observations=false` disables persistence while retaining counters. Observation file, queue and recent-memory windows are configurable; observation loss is reported without stopping the model. Provider billing still requires reconciliation with actual prices.
+
+Optional modules and MCP scope, memory writes, detached lifetime, host execution mode, demonstration workflows, automatic public actions and independent incident diagnosis remain explicit choices. They affect authority, lifecycle, external effects or additional model jobs. `details=false` keeps output concise and does not disable usage collection. False lifecycle/status fields are observations, not disabled features.

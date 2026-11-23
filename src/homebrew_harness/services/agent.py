@@ -11,6 +11,7 @@ from homebrew_harness.context.skill_loader import SkillLoader
 from homebrew_harness.execution.model_connections import HostModels, read_environment
 from homebrew_harness.execution.model_gateway import (
     ModelGateway,
+    UsageLedger,
     GatewayLimits,
     Deadline,
 )
@@ -57,6 +58,7 @@ class ServiceAgent:
             self.binding.client,
             GatewayLimits(request_timeout=settings.request_seconds),
             workdir=runtime.store.root,
+            ledger=UsageLedger(runtime.store.root, runtime_limits=settings.runtime_limits),
         ).with_options(timeout=settings.request_seconds)
         self.models.track_gateway(self.gateway)
         self.base_binding = self.binding
@@ -992,13 +994,6 @@ class ServiceAgent:
                 ),
             },
         ]
-        if self.phase_feedback:
-            messages.append(
-                {
-                    "role": "user",
-                    "content": json.dumps(self.phase_feedback, ensure_ascii=False),
-                }
-            )
         saved_checkpoint = (
             self.store.job_get(job["id"])
             .get("phase_checkpoints", {})
@@ -1052,6 +1047,15 @@ class ServiceAgent:
                         }
                     )
 
+        # Restoring a checkpoint must not overwrite the current reassessment feedback.
+        if self.phase_feedback:
+            messages.append(
+                {
+                    "role": "user",
+                    "content": json.dumps(self.phase_feedback, ensure_ascii=False),
+                }
+            )
+
         def save_phase(messages, todo, intent, phase):
             checkpoints = dict(
                 self.store.job_get(job["id"]).get("phase_checkpoints", {})
@@ -1097,6 +1101,9 @@ class ServiceAgent:
             self.gateway.scope(
                 role="service",
                 context_id=job["id"],
+                observations={"job_id": job["id"], "phase": self.phase_key,
+                    "work_id": job.get("work_id") or primary.get("work_id") or (job["target"] if job["target"].startswith("work_") else None),
+                    "profile": self.binding.profile, "attempt": job["attempts"]},
                 deadline=deadline or Deadline.after(self.store.policy["job_seconds"]),
                 cancel_event=self.stop,
             ),

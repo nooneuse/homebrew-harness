@@ -559,6 +559,11 @@ class Maintenance:
         )
 
     def query(self, method, payload):
+        if method == "work_record_read":
+            from .work_records import read
+            return read(self.runtime, payload["id"], payload.get("kind", "index"),
+                        payload.get("identity"), payload.get("offset", 0),
+                        payload.get("limit", 10000), payload.get("expected_version"))
         if method in {"work_sources", "work_source_read", "work_source_compare"}:
             from .work_sources import WorkSources
 

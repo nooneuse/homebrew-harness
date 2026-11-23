@@ -173,6 +173,18 @@ class TestGrantTests(unittest.TestCase):
         self.assertEqual(self.store.get(c.id)["test_attempts"], {"check": 1})
         self.store.runtime.remove("operations", "fixture-test")
 
+    def test_parent_completion_keeps_member_authorization_wait_actionable(self):
+        c, s, client = self.setup_run()
+        _, cwd, context = self.claim(c, s, 'alpha')
+        request = c.test_authorizations.request('check', cwd, context)
+        with patch.object(s, 'run_episode', return_value='Awaiting the member authorization.'):
+            outcome = c.execute()
+        self.assertEqual(outcome.status, 'waiting', outcome)
+        self.assertEqual(outcome.reason_code, 'approval_required', outcome)
+        self.assertEqual(c.requests.get(c.id, request['id'])['state'], 'pending')
+        self.assertIn(request['id'], ' '.join(outcome.required_host_actions))
+        client.chat.completions.create.assert_not_called()
+
     def test_renewal_commit_return_loss_and_repeated_decision_do_not_grant_twice(self):
         c, s, _ = self.setup_run()
         task, cwd, ctx = self.claim(c, s, "alpha")

@@ -1,7 +1,7 @@
 """Profile-bound Service gateways and explicit, persistent fault recovery."""
 
 import threading
-from homebrew_harness.execution.model_gateway import ModelGateway, GatewayLimits
+from homebrew_harness.execution.model_gateway import ModelGateway, GatewayLimits, UsageLedger
 from .protocol import fingerprint, request_key
 
 
@@ -20,6 +20,8 @@ class ServiceModels:
                 request_timeout=self.agent.runtime.core.config.settings.request_seconds
             ),
             workdir=self.agent.runtime.store.root,
+            ledger=UsageLedger(self.agent.runtime.store.root,
+                              runtime_limits=self.agent.runtime.core.config.settings.runtime_limits),
         ).with_options(timeout=self.agent.runtime.core.config.settings.request_seconds)
         self.agent.models.track_gateway(gateway)
         self.contexts[alias] = (binding, gateway)

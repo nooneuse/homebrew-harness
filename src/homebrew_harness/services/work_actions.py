@@ -113,6 +113,9 @@ def perform(runtime, identity, action, revision, request_id):
         + json.dumps(action, ensure_ascii=False)
     )
     prompt += "\n\n" + runtime.maintenance.store.development_handoff
+    if (work.get("recovery_plan") or {}).get("text"):
+        prompt += "\n\nAccepted recovery reasoning (historical observations must be rechecked against the selected source):\n" + work["recovery_plan"]["text"]
+    prompt += "\n\nOriginal review and recovery evidence is available through get_work_progress(record_kind='index'); follow its original records before repeating a review."
     scope = work["run_spec"]
     spec = RunSpec(
         **{

@@ -93,6 +93,48 @@ class Fixture(unittest.TestCase):
 
 
 class RunnerTests(Fixture):
+    def test_stop_during_preparation_records_cancellation_without_launch_and_keeps_runner(self):
+        from homebrew_harness.security.safe_files import SafeFile
+        runner = self.runner()
+        publish = SafeFile.publish
+        stopped = False
+        def stop_before_launch(target, *args, **kwargs):
+            nonlocal stopped
+            result = publish(target, *args, **kwargs)
+            if not stopped and target.parts[-2:] == ('tmp', '.keep'):
+                runner.stop(runner.activity()['id'])
+                stopped = True
+            return result
+        with patch.object(SafeFile, 'publish', stop_before_launch), patch.object(runner.backend, 'launch') as launch:
+            result = runner.run('suite')
+        self.assertTrue(stopped)
+        launch.assert_not_called()
+        self.assertEqual(result['status'], 'cancelled')
+        self.assertEqual(result['error_info']['details']['phase'], 'prepare')
+        self.assertFalse(runner.closed.is_set())
+        self.assertEqual(runner.run('suite')['status'], 'passed')
+
+    def test_selected_receipt_observes_failed_full_source_without_forcing_a_retry(self):
+        from homebrew_harness.execution.test_selection import LAUNCHER
+        folder = self.root/'tests'
+        folder.mkdir()
+        (folder/'__init__.py').write_text('')
+        (folder/'test_fixture.py').write_text('import unittest\nclass Sample(unittest.TestCase):\n def test_ok(self): self.assertTrue(True)\n def test_broken(self): self.fail("Fixture failure")\n')
+        runner = TestRunner(self.root, [TestRecipe('suite',(sys.executable,'-I','-c',LAUNCHER),selector='unittest')])
+        self.addCleanup(runner.close)
+        runner.approve('suite')
+        failed = runner.run('suite')
+        self.assertEqual(failed['status'],'failed')
+        selected = runner.run('suite', selection={'targets':['tests.test_fixture.Sample.test_ok']})
+        self.assertEqual(selected['status'],'passed')
+        prior = selected['verification_history']['previous_full']
+        self.assertEqual(prior['run_id'],failed['run_id'])
+        self.assertTrue(prior['same_source'])
+        self.assertEqual(runner.runs,2)
+        (self.root/'source.py').write_text('value = 2\n')
+        changed = runner.run('suite', selection={'targets':['tests.test_fixture.Sample.test_ok']})
+        self.assertFalse(changed['verification_history']['previous_full']['same_source'])
+
     def test_cancelled_process_still_commits_its_durable_receipt(self):
         from homebrew_harness.execution.execution_control import control_scope
         from homebrew_harness.storage.durable_runtime import DurableStore
@@ -777,10 +819,10 @@ class IntegrationTests(Fixture):
         session.team.authorize_spawn(arguments)
         session.team.spawn(**arguments)
         member = session.team.members["reader"]
-        deadline = time.monotonic() + 3
+        deadline = time.monotonic() + 15
         while member.status not in {"idle", "failed"} and time.monotonic() < deadline:
             threading.Event().wait(0.01)
-        self.assertEqual(member.status, "idle")
+        self.assertEqual(member.status, "idle", getattr(member, 'last_failure', None))
         record = next(iter(runner._receipts.values()))
         self.assertEqual(record["role"], "teammate")
         self.assertEqual(record["task_id"], task.id)

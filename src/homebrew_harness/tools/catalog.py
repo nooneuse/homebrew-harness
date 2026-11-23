@@ -70,8 +70,10 @@ SERVICE_TOOL_DEFINITIONS = [
 TOOLS = [
     define_tool(
         "get_work_progress",
-        "Read the owning Work stage summary and referenced verification. Historical facts grant no execution authority.",
-        {},
+        "Read the owning Work summary, or set record_kind=index to navigate original reviews and recovery evidence. Follow versioned character pages for complete records. Historical facts grant no authority or acceptance for changed code.",
+        {"record_kind":{"type":"string","enum":["index","work","recovery_plan","jobs","changesets","requirements","evidence"]},
+         "identity":{"type":"string","minLength":1}, "offset":{"type":"integer","minimum":0},
+         "limit":{"type":"integer","minimum":1}, "expected_version":{"type":"string","minLength":1}},
         [],
     ),
     define_tool(

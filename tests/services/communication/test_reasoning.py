@@ -219,13 +219,17 @@ class DiscussionReasoning(unittest.TestCase):
         self.peer.proposals = [self.plan(), {'draft': {'text': 'unapproved change'}}]
         # The hostile synthetic writer never corrects its invalid proposal.
         # Bound that fixture explicitly; the default call observation is advisory.
-        service = self.start(model_profile='reply', maintenance={'job_turns': 4})
+        service = self.start(model_profile='reply', maintenance={'job_turns': 4, 'job_attempts': 1})
         service.pause('all')
         store, job = self.active(service)
         agent = service.runtime.maintenance.agent
-        with self.assertRaises(AgentError):
+        with self.assertRaises(AgentError) as raised:
             agent.run(job)
         self.assertIsNotNone(store.ms.job_get(job['id']).get('discussion_assessment'))
+        store.ms.finish(job, error=raised.exception)
+        service.retry_job(job['id'], request_id='retry-corrected-draft')
+        job = store.ms.claim_job()
+        self.assertEqual(job['retry_generation'], 1)
         self.peer.proposals = [{'communication': None}]
         result = agent.run(job)
         self.assertEqual(result['next_step'], 'wait')

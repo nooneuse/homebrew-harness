@@ -194,7 +194,7 @@ class AccountingTests(Fixture):
         self.assertEqual(path.parent.stat().st_mode & 0o777, 0o700)
         rows = [json.loads(line) for line in text.splitlines()]
         self.assertEqual(
-            [row["event"] for row in rows], ["usage_snapshot", "usage_snapshot"]
+            [row["event"] for row in rows], ["usage_snapshot", "request_finished", "usage_snapshot"]
         )
 
     def test_observation_failure_does_not_block_model_execution(self):

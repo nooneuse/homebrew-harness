@@ -116,6 +116,8 @@ def inspect_artifacts(
                             raw, identity, _ = target.snapshot(
                                 max_bytes=max_bytes - total + info.st_size
                             )
+                        if raw is None:
+                            raise ValueError("Retained evidence changed during inventory: " + path)
                         record.update(
                             kind="archive",
                             version=version(identity),
@@ -128,6 +130,8 @@ def inspect_artifacts(
                     ) and path.endswith(".json"):
                         with SafeFile(root, path) as target:
                             raw, _, _ = target.snapshot(max_bytes=max_bytes - total)
+                        if raw is None:
+                            raise ValueError("Retained evidence changed during inventory: " + path)
                         total += len(raw)
                         roots.update(references(json.loads(raw)))
                     if total > max_bytes:

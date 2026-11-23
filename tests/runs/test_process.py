@@ -249,8 +249,8 @@ class ProcessRuns(unittest.TestCase):
         self.assertEqual(result["last_outcome"]["reason_code"], "heartbeat_stale")
 
     def test_deadline_expired_before_launch_does_not_start_worker(self):
-        state = self.store.create(RunSpec("Work", total_seconds=0.1))
-        time.sleep(0.12)
+        state = self.store.create(RunSpec("Work", total_seconds=0.1), now=time.time() - 10)
+        self.assertGreater(time.time(), state['deadline_at'])
         supervisor = RunSupervisor(
             self.store,
             worker_command=(
@@ -263,7 +263,7 @@ class ProcessRuns(unittest.TestCase):
         self.addCleanup(supervisor.close)
         result = supervisor.supervise(state["id"])
         self.assertEqual(result["status"], "failed")
-        self.assertEqual(result["generation"], 0)
+        self.assertEqual(result["generation"], 0, result)
 
     def test_watchdog_total_deadline_uses_monotonic_time_with_healthy_heartbeat(self):
         from types import SimpleNamespace

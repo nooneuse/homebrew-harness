@@ -27,6 +27,7 @@ READ_ONLY_TOOLS = frozenset(
         "service_read_code",
         "get_work_progress",
         "service_work_sources",
+        "service_read_work_record",
         "service_read_source",
         "service_compare_sources",
         "service_observe_target",
