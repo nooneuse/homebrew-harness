@@ -46,3 +46,27 @@ class LegacyContracts(unittest.TestCase):
                 'verification_basis':{**self.row['verification_basis'],'contract':self.runner._fingerprint(self.recipe)}}
         result=applicable([self.row,failed],self.runner,'unit',self.root)
         self.assertFalse(result['ok']);self.assertEqual(result['reason'],'newer_failure')
+
+    def test_compatible_legacy_full_failure_needs_full_current_pass(self):
+        # A genuine test failure under the older output cap is still relevant;
+        # hitting the old output cap is not a full-suite verdict.
+        from dataclasses import replace
+        from homebrew_harness.execution.test_selection import LAUNCHER
+
+        self.recipe = replace(self.recipe, argv=(sys.executable, '-I', '-c', LAUNCHER), selector='unittest')
+        self.runner.recipes['unit'] = self.recipe
+        legacy = digest({'recipe': self.recipe.fingerprint(legacy_output=True), 'backend': 'fixed-isolation'})
+        full_failed = {**self.row, 'fingerprint': legacy, 'status': 'failed', 'exit_code': 1}
+        full_failed['verification_basis'] = basis(full_failed)
+        selector = {'targets': ['tests.one']}
+        focused = {**self.row, 'run_id': 'focused', 'fingerprint': self.runner._fingerprint(self.recipe),
+                   'executed_at': 20, 'test_scope': 'selected', 'selection': selector}
+        focused['verification_basis'] = basis(focused)
+        result = applicable([full_failed, focused], self.runner, 'unit', self.root, selection=selector)
+        self.assertEqual(result['reason'], 'unresolved_full_scope_failure')
+        self.assertEqual(result['compatibility']['rule'], 'legacy_implicit_output_limit')
+        limited = {**full_failed, 'status': 'output_limit'}
+        self.assertTrue(applicable([limited, focused], self.runner, 'unit', self.root, selection=selector)['ok'])
+        full_pass = {**focused, 'run_id': 'full-current', 'executed_at': 30, 'test_scope': 'full', 'selection': None}
+        full_pass['verification_basis'] = basis(full_pass)
+        self.assertTrue(applicable([full_failed, focused, full_pass], self.runner, 'unit', self.root, selection=selector)['ok'])

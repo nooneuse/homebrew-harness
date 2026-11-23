@@ -28,6 +28,7 @@ def validate_service(spec_file, host_file, control):
     _external(spec_file, roots)
     host_file = _external(host_file, roots)
     config = InteractionConfig.load(host_file, control)
+    spec = spec.with_host_defaults(config)
     for key in ("env_file", "models_config", "test_config", "bash_config", "mcp_config", "control_config"):
         value = getattr(config, key)
         if value is not None:
@@ -36,19 +37,7 @@ def validate_service(spec_file, host_file, control):
     environment = read_environment(config.env_file, spec.workspace, private=True)
     models = HostModels(spec.workspace, config=config.models_config, alias=config.lead_model, environment=environment)
     try:
-        aliases = {
-            spec.maintenance.get("model_profile"),
-            spec.delivery.get("review_model"),
-            spec.communication.get("model_profile"),
-            spec.communication.get("review_model"),
-            spec.communication.get("assessment_model"),
-            spec.operations.get("audit_model"),
-            spec.run_defaults.get("model_profile"),
-            *spec.run_defaults.get("fallback_models", ()),
-            *(member.get("model_profile") for member in spec.run_defaults.get("members", ())),
-        } - {None}
-        for alias in aliases:
-            models.registry.validate(alias)
+        check_model_profiles(spec, models)
     finally:
         models.close()
 
@@ -62,7 +51,12 @@ def validate_service(spec_file, host_file, control):
     names.update(spec.communication.get("required_tests", ()))
     for scope in spec.maintenance.get("scopes", {}).values():
         names.update(scope["allow_tests"])
+    capabilities = None
     try:
+        if spec.preset == "self_maintenance":
+            from .self_maintenance import preflight
+
+            capabilities = preflight(spec, config, control, test_runner=runner)
         if names - runner.recipes.keys():
             raise ValueError("A selected fixed test is not registered in the host test configuration.")
         if any("lead" not in runner.recipes[name].roles for name in names):
@@ -125,7 +119,27 @@ def validate_service(spec_file, host_file, control):
         "fixed_tests": sorted(names),
         "merge_mode": spec.delivery.get("merge", {}).get("mode"),
         "pending": pending,
+        **({"capabilities": capabilities} if capabilities is not None else {}),
     }
+
+
+def check_model_profiles(spec, models):
+    aliases = {
+        spec.maintenance.get("model_profile"),
+        spec.delivery.get("review_model"),
+        spec.communication.get("model_profile"),
+        spec.communication.get("review_model"),
+        spec.communication.get("assessment_model"),
+        spec.operations.get("audit_model"),
+        spec.run_defaults.get("model_profile"),
+        *spec.run_defaults.get("fallback_models", ()),
+        *(member.get("model_profile") for member in spec.run_defaults.get("members", ())),
+        models.alias,
+    } - {None}
+    for alias in aliases:
+        models.registry.validate(alias)
+        if spec.preset == "self_maintenance" and not models.registry.specs[alias].capabilities.tools:
+            raise ValueError(f"self_maintenance model profile {alias!r} must support tool calls.")
 
 
 def _check_connection(declaration, environment, roots, instances):

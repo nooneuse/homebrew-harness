@@ -26,11 +26,20 @@ def prepare_binding(core, spec):
     spec.validate_location(core.workdir)
     core.config.require_reconstructable()
     core.config.settings.worker_arguments(core.workdir)
+    coding_resources = None
+    if spec.preset == "self_maintenance":
+        from .self_maintenance import preflight
+
+        coding_resources = preflight(spec, core.config.settings, core.workdir, live=True)
     with Harness(workdir=spec.workspace, config=core.config) as host:
         bindings, _head, controls = host.runs.prepare(
             spec.run_spec("Validate service execution scope")
         )
     result = {"runtime": runtime_binding(), "execution": bindings, "controls": controls}
+    if coding_resources is not None:
+        if coding_resources["bash"] is not None and coding_resources["bash"] != bindings["bash"]:
+            raise ValueError("The self_maintenance Bash policy changed during admission.")
+        result["coding_resources"] = coding_resources
     if spec.profile == "repository_maintenance":
         from types import SimpleNamespace
         from .maintenance import Maintenance
@@ -222,11 +231,12 @@ class ServiceRuntime:
             self.spec.run_spec("Validate service execution scope"),
             model_bindings=self.saved_model_bindings,
         )
-        return {
-            "runtime": runtime_binding(),
-            "execution": bindings,
-            "controls": controls,
-        }
+        result = {"runtime": runtime_binding(), "execution": bindings, "controls": controls}
+        if self.spec.preset == "self_maintenance":
+            from .self_maintenance import preflight
+
+            result["coding_resources"] = preflight(self.spec, self.child.config.settings, self.store.root, return_pins=True)
+        return result
 
     def snapshot(self):
         meta = self.store.get(self.id)
@@ -558,6 +568,8 @@ class ServiceRuntime:
                             "homebrew_harness.runs.spec", fromlist=["RunSpec"]
                         ).RunSpec(**work["run_spec"]),
                         request_id=work["launch_id"],
+                        **({"_coding_resources": meta["binding"]["coding_resources"]}
+                           if self.spec.preset == "self_maintenance" else {}),
                     )
             except Exception as error:
                 # External work may occupy this workspace. Never control or cancel it.

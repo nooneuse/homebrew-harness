@@ -45,30 +45,22 @@ def collect(runtime, work):
 
 def receipts(runtime, work, *, recipe=None, basis=None, contracts=None):
     """Read owned pages, optionally retaining only relevant current evidence."""
+    from homebrew_harness.execution.verification import receipt_bucket
     from homebrew_harness.runtime.limits import current_limits
     store = runtime.maintenance.store
     allowed = set(work.get("run_history", [])) | {work.get("run_id")}
     values = {}
+
     def accept(receipt):
         if recipe is not None and receipt.get("recipe") != recipe:
             return
         if basis is None:
             values[receipt["run_id"]] = receipt
             return
-        observed = receipt.get("verification_basis") or {}
-        if any(observed.get(k) != basis[k] for k in ("version", "inputs", "backend", "role")):
+        key = receipt_bucket(receipt, basis, contracts)
+        if key is None:
             return
-        if contracts is not None and observed.get("contract") not in contracts:
-            return
-        if receipt.get("status") == "passed":
-            if observed.get("selection") != basis["selection"] or observed.get("test_scope") != basis["test_scope"]:
-                return
-            key = (observed.get("contract"), "passed")
-        elif receipt.get("status") in {"failed", "timeout", "cancelled"}:
-            key = (observed.get("contract"), "failure")
-        else:
-            return
-        if key not in values or receipt.get("executed_at", 0) > values[key].get("executed_at", 0):
+        if key not in values or receipt["executed_at"] > values[key]["executed_at"]:
             values[key] = receipt
     with store.db.connection() as conn:
         cursor = conn.execute(

@@ -161,6 +161,10 @@ class ToolPool:
                         recipes
                     )
             if name == "bash" and bash_policy is not None:
+                if bash_policy.preauthorized:
+                    function["description"] = function["description"].replace(
+                        "after terminal approval", "under its host-preauthorized container policy"
+                    )
                 function["description"] += (
                     " Execution target: a filtered isolated workspace copy, network disabled, no host-file writeback. Use file tools for persistent changes; run_tests for registered verification."
                     if bash_policy.mode == "container"

@@ -10,7 +10,8 @@ from homebrew_harness.execution.execution_leases import ExecutionLeases
 from homebrew_harness.execution.execution_control import cleanup_scope
 from homebrew_harness.execution.process_liveness import process_alive
 from homebrew_harness.security.safe_files import SafeFile
-from .spec import RunSpec, RunOutcome, TERMINAL
+from .controller import load_run_spec
+from .spec import RunOutcome, TERMINAL
 
 
 class RunSupervisor:
@@ -193,7 +194,7 @@ class RunSupervisor:
             while True:
                 self._tick(identity)
                 value = self.store.get(identity)
-                spec = RunSpec.from_dict(value["spec"])
+                spec = load_run_spec(value["spec"])
                 if self.reconcile_completed(value):
                     self.store.finalize_terminal(identity, supervisor=self)
                     return self.store.status(identity)
@@ -507,7 +508,7 @@ class RunSupervisor:
             or not value["cleanup_complete"]
         ):
             return False
-        spec = RunSpec.from_dict(value["spec"])
+        spec = load_run_spec(value["spec"])
         outcome = value.get("last_outcome") or {}
         reason = outcome.get("reason_code")
         if reason == "provider_transient":

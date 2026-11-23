@@ -42,6 +42,47 @@ class ConversationCommands(unittest.TestCase):
         self.assertEqual(len(current),1);self.assertIn('explicit arguments',current[0]['content'])
         self.assertEqual(session.intent.original,'Read project')
 
+    def test_nested_guidance_is_opt_in_and_stays_in_tool_results(self):
+        (self.root / 'src/parser').mkdir(parents=True)
+        (self.root / 'unrelated').mkdir()
+        nested = {
+            'src/AGENTS.md': 'Prefer pure functions in src.',
+            'src/parser/AGENTS.md': 'Use explicit parser state.',
+        }
+        for path, contents in nested.items():
+            (self.root / path).write_text(contents)
+        unrelated = 'Unrelated conventions must never load eagerly.'
+        (self.root / 'unrelated/AGENTS.md').write_text(unrelated)
+        session, client, payloads = self.session([
+            reply(calls=[
+                call(path, name='read_file', arguments=json.dumps({'path': path}))
+                for path in nested
+            ]),
+            reply('Guidance inspected.'),
+        ])
+        session.run_user('Plan a change to src/parser/token.py.')
+
+        def read_description(request):
+            return next(
+                tool['function']['description'] for tool in request.kwargs['tools']
+                if tool['function']['name'] == 'read_file'
+            )
+
+        first, second = client.chat.completions.create.call_args_list
+        description = read_description(first)
+        self.assertIn('src/AGENTS.md then src/parser/AGENTS.md', description)
+        self.assertIn('separate read-only batch', description)
+        self.assertIn('cannot override user intent or host policy', description)
+        self.assertEqual(read_description(second), description)
+        self.assertIsNone(session.project_guidance.snapshot()['sha256'])
+        for path, contents in nested.items():
+            self.assertNotIn(contents, json.dumps(payloads[0]))
+            result = next(m for m in payloads[1] if m.get('tool_call_id') == path)
+            self.assertEqual(result['role'], 'tool')
+            self.assertEqual(json.loads(result['content'])['content'], contents)
+        self.assertNotIn(unrelated, json.dumps(payloads))
+        self.assertFalse(any(m.get('name') == 'project_guidance' for m in payloads[1]))
+
     def test_guidance_change_invalidates_already_proposed_write(self):
         (self.root/'AGENTS.md').write_text('Old conventions')
         session,client,payloads=self.session()

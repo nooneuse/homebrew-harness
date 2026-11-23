@@ -10,7 +10,7 @@ from homebrew_harness.runs.supervisor import RunSupervisor
 from homebrew_harness.runs.detached import launch_detached, detached_status
 from homebrew_harness.runtime.runtime_control import Workers, WorkAccepted
 from homebrew_harness.runtime.output import output_scope
-from homebrew_harness.runtime.task_routing import TaskRoute
+from homebrew_harness.runtime.limits import limits_scope
 from homebrew_harness.storage.api_state import digest, stable_id
 from .base import Handle, host_operation
 from .types import (
@@ -165,12 +165,17 @@ class RunHandle(Handle):
         from homebrew_harness.runs.services import RunServices
         from homebrew_harness.execution.model_connections import read_environment
 
+        from homebrew_harness.runs.controller import load_run_spec
+
         settings = self.core.config.settings
-        services = RunServices.load(
-            self.core.run_store,
-            settings.control_config,
-            environment=read_environment(settings.env_file, self.core.workdir),
-        )
+        with limits_scope(settings.runtime_limits):
+            spec = load_run_spec(self.core.run_store.get(self.id)["spec"])
+        with limits_scope(spec.runtime_limits):
+            services = RunServices.load(
+                self.core.run_store,
+                settings.control_config,
+                environment=read_environment(settings.env_file, self.core.workdir),
+            )
         try:
             self.supervisor = RunSupervisor(
                 self.core.run_store,
@@ -344,7 +349,7 @@ class Runs:
         self.core, self.owned, self.lock = core, {}, threading.RLock()
 
     @host_operation
-    def start(self, spec, *, lifetime="attached", request_id=None):
+    def start(self, spec, *, lifetime="attached", request_id=None, _coding_resources=None):
         self.core.check_open()
         self.core.config.require_reconstructable()
         if not isinstance(spec, RunSpec):
@@ -353,13 +358,19 @@ class Runs:
             raise ValueError("Lifetime must be attached or detached.")
         request_id = request_id or "sdk_" + uuid.uuid4().hex
         key = stable_id("run", str(self.core.workdir), request_id)
-        payload = digest([spec.data(), self.core.config.identity(), lifetime])
+        request = [spec.data(), self.core.config.identity(), lifetime]
+        if _coding_resources is not None:
+            request.append(_coding_resources)
+        payload = digest(request)
         prior = self.core.store.get("api_submissions", key)
         if prior:
             if prior["payload"] != payload:
                 raise StaleReference("Submission ID has another Run/configuration.")
             return self._replay(prior["id"], lifetime)
         bindings, head, control_binding = self.prepare(spec)
+        if (_coding_resources is not None and _coding_resources.get("bash") is not None
+                and _coding_resources["bash"] != bindings["bash"]):
+            raise ValueError("The admitted container Bash policy changed before Work launch.")
 
         def accept(db, conn, value):
             previous = db._get(conn, "api_submissions", key)
@@ -374,6 +385,8 @@ class Runs:
                 expected_models=bindings["models"],
             )
             value.update(control_binding)
+            if _coding_resources is not None:
+                value["coding_resources"] = _coding_resources
             if spec.mcp:
                 value["expected_mcp"] = bindings["mcp"]
             db._put(
@@ -437,22 +450,12 @@ class Runs:
             allow_tests=spec.allow_tests,
             mcp_delegation=spec.mcp_delegation,
         )
-        with output_scope():
+        with output_scope(), limits_scope(spec.runtime_limits):
             builder = self.core.config.builder(
                 self.core.workdir, settings=settings, model_bindings=model_bindings
             )
             try:
-                builder.run_spec(
-                    TaskRoute(
-                        execution_mode="managed",
-                        capabilities=spec.enabled,
-                        mcp=spec.mcp,
-                        stages=spec.stages,
-                        members=spec.members,
-                    ),
-                    spec.prompt,
-                    goal=spec.goal,
-                )
+                builder.prepare_run(spec)
                 bindings, head, control_binding = (
                     builder.run_bindings,
                     builder.run_head,

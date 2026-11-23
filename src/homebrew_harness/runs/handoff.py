@@ -221,6 +221,8 @@ def switch_model(store, run_id, alias, revision, registry, *, reason, supervisor
                         "selected_model": alias,
                         "used_fallbacks": [*current.get("used_fallbacks", []), alias],
                         "bindings": None,
+                        **({"expected_preauthorized_bash": current["bindings"]["bash"]}
+                           if (current.get("bindings") or {}).get("bash", {}).get("mode") == "container" else {}),
                         "expected_models": registry.manifest(),
                         "expected_binding": binding.identity(),
                         "status": "queued",

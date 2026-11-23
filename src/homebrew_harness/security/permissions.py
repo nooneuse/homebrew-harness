@@ -310,11 +310,13 @@ def check_rules(tool_name: str, arguments: dict, workdir: Path) -> PermissionDec
     if tool_name == "bash":
         from homebrew_harness.execution.bash_policy import current_bash_policy
 
-        if current_bash_policy().mode == "container":
+        policy = current_bash_policy()
+        if policy.mode == "container":
             return PermissionDecision(
-                "ask",
-                "Approve this command in a filtered container workspace copy; network disabled and no host-file writeback. Policy: "
-                + current_bash_policy().fingerprint()[:12],
+                "allow" if policy.preauthorized else "ask",
+                ("Host preauthorized this container policy. " if policy.preauthorized else "Approval required. ")
+                + "Filtered container workspace copy, no network or host-file writeback. Policy: "
+                + policy.fingerprint()[:12],
             )
         return PermissionDecision(
             "ask", "Bash commands require approval because they can modify the host."
