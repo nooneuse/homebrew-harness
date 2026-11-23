@@ -201,16 +201,21 @@ def main(argv=None):
                 raw[name] = Path(raw[name])
         config = InteractionConfig(**raw)
         from .services import RunServices
+        from .controller import load_run_spec
+        from homebrew_harness.runtime.limits import limits_scope
 
-        supervisor = RunSupervisor(
-            store,
-            host_arguments=config.worker_arguments(store.root),
-            services=RunServices.load(
+        with limits_scope(config.runtime_limits):
+            spec = load_run_spec(run["spec"])
+        with limits_scope(spec.runtime_limits):
+            supervisor = RunSupervisor(
                 store,
-                config.control_config,
-                environment=read_environment(config.env_file, store.root),
-            ),
-        )
+                host_arguments=config.worker_arguments(store.root),
+                services=RunServices.load(
+                    store,
+                    config.control_config,
+                    environment=read_environment(config.env_file, store.root),
+                ),
+            )
         with (
             leases.use("detached-supervisor:" + run["id"]),
             supervisor.leases.use("managed-supervisor"),

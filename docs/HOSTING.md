@@ -66,6 +66,14 @@ Writing formats are model guidance, not an enforced template engine. Custom PR d
 
 Delivery uses registered tests. External PR review can be static; executing third-party PR tests requires the container TestRunner backend. Native service execution currently targets supported Unix hosts. Windows clients can supervise the same HTTP control API.
 
+## Self-maintenance deployment preset
+
+For a dedicated coding deployment, set `"preset": "self_maintenance"` alongside `"profile": "repository_maintenance"` in ServiceSpec. The preset requires scoped file/search/test tools and named Delivery `required_tests`, defaults `allow_tests` to those recipes, and exposes execution controls, isolated Bash and artifact inspection. It defaults to periodic integration and independent candidate review. Explicit Service values can narrow the tool list (including omitting Bash) or choose another base policy. The preset does not preauthorize GitHub publication, replies or merge, or change which categories of Work are authorized.
+
+Tests use an external container TestRunner registry. Declare `locked_globs` for required recipes. A candidate that changes or deletes protected inputs against its fixed base cannot get a new automatic validation grant. Keep places for new regression tests separate from the trusted test entry points. If Bash is exposed, the external Bash policy must declare `mode: "container"`, an immutable local image, non-root execution and `preauthorized: true`. Container executables belong outside both workspaces; the Service pins their identity and the test registry and does not carry authorization over to replacements. The admitted command runs in a filtered workspace copy without network, injected host credentials or host-file writeback; preserve edits with scoped file tools. Artifact publication remains separately authorized. Ordinary host/unconfigured Bash does not gain preauthorization.
+
+Offline `service validate` reports the effective capability summary and checks declarations without calling providers. Starting a new preset Service checks the local Linux daemon and configured images without pulling or running them. Provider credentials, GitHub rights and branch protection still require separate operational verification. Existing Services do not adopt the preset on upgrade.
+
 ## Validate and deploy
 
 The assistant prepares private configuration and runs:

@@ -44,8 +44,15 @@ class Delivery:
                     )
             finally:
                 probe.close()
+        bash_enabled = "bash" in runtime.spec.run_spec("Validate delivery").tools
+        if bash_enabled and getattr(runtime.spec, "preset", None) == "self_maintenance":
+            from homebrew_harness.execution.bash_policy import load_bash_policy
+
+            policy = (load_bash_policy(settings.bash_config, runtime.spec.workspace, mode="container")
+                      if settings.bash_config else None)
+            bash_enabled = not (policy and policy.preauthorized)
         if (
-            "bash" in runtime.spec.run_spec("Validate delivery").tools
+            bash_enabled
             or runtime.spec.run_defaults.get("mcp")
             or set(runtime.spec.run_defaults.get("enabled", ()))
             & {"background", "worktrees"}

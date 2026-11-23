@@ -178,27 +178,7 @@ class Services:
             if identity is None:
                 if not isinstance(spec, ServiceSpec):
                     raise ValueError("Expected ServiceSpec.")
-                spec = ServiceSpec(**spec.data())
-                settings = self.core.config.settings
-                inherited = {
-                    "model_profile": settings.lead_model,
-                    "context_chars": settings.context_chars,
-                    "output_tokens": settings.output_tokens,
-                    "total_seconds": settings.total_seconds,
-                    "episode_seconds": settings.turn_seconds,
-                    "request_seconds": settings.request_seconds,
-                    "episode_model_calls": settings.max_turns,
-                    "runtime_limits": settings.runtime_limits,
-                    "memory_mode": settings.memory_mode,
-                    "write_paths": settings.write_paths,
-                    "allow_tests": settings.allow_tests,
-                }
-                spec = ServiceSpec(
-                    **{
-                        **spec.data(),
-                        "run_defaults": {**inherited, **spec.run_defaults},
-                    }
-                )
+                spec = ServiceSpec(**spec.data()).with_host_defaults(self.core.config.settings)
                 binding = prepare_binding(self.core, spec)
                 meta = store.create(
                     spec,

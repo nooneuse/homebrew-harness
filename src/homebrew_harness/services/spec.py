@@ -63,6 +63,7 @@ class ServiceSpec:
     delivery: dict = field(default_factory=dict)
     operations: dict = field(default_factory=dict)
     communication: dict = field(default_factory=dict)
+    preset: str | None = None
 
     def __post_init__(self):
         from homebrew_harness.runtime.limits import limits_scope
@@ -73,6 +74,14 @@ class ServiceSpec:
     def _validate(self):
         if self.profile not in {"manual", "repository_maintenance"}:
             raise ValueError("Unsupported service profile.")
+        if self.preset is not None:
+            if self.preset != "self_maintenance":
+                raise ValueError("Unsupported service deployment preset.")
+            from .self_maintenance import defaults
+
+            run_defaults, delivery = defaults(self)
+            object.__setattr__(self, "run_defaults", run_defaults)
+            object.__setattr__(self, "delivery", delivery)
         path = Path(self.workspace).expanduser()
         if not path.is_absolute():
             raise ValueError("Service workspace must be an absolute host path.")
@@ -117,6 +126,10 @@ class ServiceSpec:
                     self.maintenance, self.run_spec("Validate maintenance scope")
                 ),
             )
+        if self.preset == "self_maintenance":
+            from .self_maintenance import check_scopes
+
+            check_scopes(self.maintenance["scopes"])
         from .delivery.spec import validate as validate_delivery
 
         object.__setattr__(self, "delivery", validate_delivery(self.delivery))
@@ -143,6 +156,29 @@ class ServiceSpec:
         if type(self.control_port) is not int or not 0 <= self.control_port <= 65535:
             raise ValueError("Invalid service control port.")
 
+    def with_host_defaults(self, settings):
+        inherited = {
+            "model_profile": settings.lead_model,
+            "context_chars": settings.context_chars,
+            "output_tokens": settings.output_tokens,
+            "total_seconds": settings.total_seconds,
+            "episode_seconds": settings.turn_seconds,
+            "request_seconds": settings.request_seconds,
+            "episode_model_calls": settings.max_turns,
+            "runtime_limits": settings.runtime_limits,
+            "memory_mode": settings.memory_mode,
+            "write_paths": settings.write_paths,
+            "allow_tests": settings.allow_tests,
+        }
+        # Runtime fields merge by name. The persisted RunSpec then owns the
+        # complete effective values, including explicit historical false values.
+        inherited.update(self.run_defaults)
+        if self.run_defaults.get("runtime_limits") is not None:
+            inherited["runtime_limits"] = {**settings.runtime_limits, **self.run_defaults["runtime_limits"]}
+        else:
+            inherited["runtime_limits"] = settings.runtime_limits
+        return ServiceSpec(**{**self.data(), "run_defaults": inherited})
+
     def run_spec(self, prompt, goal=None):
         values = dict(self.run_defaults)
         if goal is not None:
@@ -150,7 +186,10 @@ class ServiceSpec:
         return RunSpec(prompt, **values)
 
     def data(self):
-        return json.loads(json.dumps(asdict(self), allow_nan=False))
+        value = asdict(self)
+        if self.preset is None:
+            value.pop("preset")  # Keep existing specs and request identities stable.
+        return json.loads(json.dumps(value, allow_nan=False))
 
     def validate_location(self, control):
         if self.communication:

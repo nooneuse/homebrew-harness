@@ -224,7 +224,7 @@ class ContainerShellRunner(ShellRunner):
             _OUTPUT.reset(token)
 
     def _launch(self, command, workdir, env, deadline, cancel_events):
-        policy = self.bash_policy
+        policy = self.bash_policy.bind_cli(workdir)
         profile = _OUTPUT.get()
         backend = (
             BashContainerBackend(policy, command)

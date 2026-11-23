@@ -16,7 +16,7 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import replace
 
-from homebrew_harness.runtime.limits import current_limits
+from homebrew_harness.runtime.limits import current_limits, limits_scope
 from homebrew_harness.execution.execution_control import (
     cleanup_scope,
     persistence_scope,
@@ -66,6 +66,15 @@ def git_head(root):
     return result.stdout.strip()
 
 
+def load_run_spec(data):
+    """Validate the saved declaration in its own scope, not the attaching host's."""
+    limits = current_limits()
+    if isinstance(data, dict):
+        limits = data.get("runtime_limits", limits)
+    with limits_scope(limits):
+        return RunSpec.from_dict(data)
+
+
 class RunController:
     def __init__(self, store, identity, owner, generation):
         if not isinstance(store, RunStore):
@@ -76,7 +85,7 @@ class RunController:
         self.state = store.get(identity)
         if self.state["owner"] != owner or self.state["generation"] != generation:
             raise ValueError("Managed run owner changed.")
-        self.spec = RunSpec.from_dict(self.state["spec"])
+        self.spec = load_run_spec(self.state["spec"])
         self.session = None
         from homebrew_harness.security.native_review import NativeReviewGate
 
@@ -900,6 +909,18 @@ class RunController:
             "capabilities": s.capabilities.manifest(),
             "bash": s.bash_policy.identity(),
         }
+        pins = self.state.get("coding_resources")
+        if pins is not None:
+            from homebrew_harness.services.self_maintenance import verify_test_registry
+
+            if pins.get("bash") is not None and pins["bash"] != bindings["bash"]:
+                raise RunStopped("coding_resources_changed")
+            try:
+                verify_test_registry(s.tests, pins)
+            except ValueError as error:
+                raise RunStopped("coding_resources_changed") from error
+        if self.state.get("expected_preauthorized_bash") not in (None, bindings["bash"]):
+            raise RunStopped("coding_resources_changed")
         if (
             self.state.get("expected_models")
             and self.state["expected_models"] != bindings["models"]

@@ -1,6 +1,7 @@
 """Dedicated managed Session process using external host configuration."""
 
 from homebrew_harness.runtime.errors import error_info
+from homebrew_harness.runtime.limits import current_limits, limits_scope
 
 import argparse
 import json
@@ -19,6 +20,11 @@ from .store import RunStore
 
 
 def make_session(store, control, args):
+    with limits_scope(control.spec.runtime_limits):
+        return _assemble_session(store, control, args)
+
+
+def _assemble_session(store, control, args):
     from homebrew_harness.runtime.interaction_config import (
         InteractionConfig,
         InteractionAssembler,
@@ -51,7 +57,7 @@ def make_session(store, control, args):
         context_chars=spec.context_chars,
         output_tokens=spec.output_tokens,
         max_turns=spec.episode_model_calls,
-        runtime_limits=getattr(args, "runtime_limits", None) or spec.runtime_limits,
+        runtime_limits=spec.runtime_limits,
     )
     from homebrew_harness.execution.providers.backends import session_backend_bindings
 
@@ -98,8 +104,18 @@ def main(argv=None):
     add_environment_argument(parser, defaults=True)
     add_host_config_arguments(parser)
     args = parser.parse_args(argv)
-    store = RunStore(args.cwd)
-    control = RunController(store, args.run_id, args.owner, args.generation)
+    # Host arguments provide a default for old Run records without stored limits.
+    with limits_scope(getattr(args, "runtime_limits", None)):
+        store = RunStore(args.cwd)
+        try:
+            control = RunController(store, args.run_id, args.owner, args.generation)
+            with limits_scope(control.spec.runtime_limits):
+                return _execute(store, control, args)
+        finally:
+            store.close()
+
+
+def _execute(store, control, args):
     session = raw = None
     cleanup = False
     construction_cleanup = True
@@ -144,9 +160,7 @@ def main(argv=None):
             raw.close()
         control.close_heartbeat()
         store.ended(control.header, cleanup=cleanup)
-    result = exit_status(store.get(control.id))
-    store.close()
-    return result
+    return exit_status(store.get(control.id))
 
 
 if __name__ == "__main__":

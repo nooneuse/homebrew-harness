@@ -1,4 +1,4 @@
-from homebrew_harness.runtime.limits import current_limits
+from homebrew_harness.runtime.limits import current_limits, limits_scope
 """Local host commands for persistent managed runs."""
 
 import json
@@ -106,7 +106,7 @@ def register(groups):
 def execute(args, parser):
     from homebrew_harness.security.data_boundary import redact
 
-    from .spec import RunSpec
+    from .controller import load_run_spec
     from .store import RunStore
     from .supervisor import RunSupervisor
     from .worker import exit_status
@@ -131,7 +131,7 @@ def execute(args, parser):
                 raw = f.read(current_limits().source_control_bytes + 1)
             if len(raw) > current_limits().source_control_bytes:
                 raise ValueError("RunSpec exceeds its size limit.")
-            spec = RunSpec.from_dict(json.loads(raw))
+            spec = load_run_spec(json.loads(raw))
             declared = None
             if spec.mcp:
                 from homebrew_harness.execution.model_connections import (
@@ -140,10 +140,11 @@ def execute(args, parser):
                 from homebrew_harness.tools.mcp.runtime import load_specs
                 from homebrew_harness.tools.mcp.selection import declaration
 
-                environment = read_environment(args.env_file, store.root)
-                declared = declaration(
-                    load_specs(args.mcp_config), spec.mcp, environment
-                )
+                with limits_scope(spec.runtime_limits):
+                    environment = read_environment(args.env_file, store.root)
+                    declared = declaration(
+                        load_specs(args.mcp_config), spec.mcp, environment
+                    )
 
             def accept(_db, _conn, value):
                 if declared is not None:
@@ -431,6 +432,9 @@ def execute(args, parser):
         if args.approval_review is not None:
             from homebrew_harness.security.approval_review import ReviewConfig
             settings.extend(("--approval-review", json.dumps(ReviewConfig.parse(args.approval_review).data())))
+        if getattr(args, "runtime_limits", None) is not None:
+            # The CLI's explicit setting supplies the fallback for legacy records.
+            settings.extend(("--runtime-limits", json.dumps(args.runtime_limits)))
         supervisor = RunSupervisor(
             store,
             host_arguments=settings,

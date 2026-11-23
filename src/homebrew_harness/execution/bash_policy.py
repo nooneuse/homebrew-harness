@@ -9,7 +9,7 @@ import os
 import stat
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from homebrew_harness.execution.execution_control import check
@@ -42,10 +42,16 @@ class BashPolicy:
     open_files: int = 256
     outputs: tuple = ()
     export_python: str = "/usr/local/bin/python"
+    preauthorized: bool = False
+    _cli_identity: dict | None = field(default=None, init=False, repr=False, compare=False)
 
     def __post_init__(self):
         if not isinstance(self.mode, str) or self.mode not in {"host", "container"}:
             raise BashPolicyError("Bash mode must be host or container.")
+        if type(self.preauthorized) is not bool or self.preauthorized and self.mode != "container":
+            raise BashPolicyError("Bash preauthorization is an explicit Boolean for container mode only.")
+        if self.preauthorized and self.timeout is None:
+            object.__setattr__(self, "timeout", 120)
         from homebrew_harness.runtime.limits import positive
         positive(self.output_bytes, "bash.output_bytes", integer=True)
         positive(self.hard_output_bytes, "bash.hard_output_bytes", integer=True, nullable=True)
@@ -120,12 +126,33 @@ class BashPolicy:
             ):
                 raise BashPolicyError("Invalid container Bash limit: " + name)
 
+    def bind_cli(self, workspace):
+        if self.preauthorized:
+            from homebrew_harness.execution.test_runner import executable_identity
+
+            root = Path(workspace).resolve()
+            configured = Path(self.cli)
+            if configured.absolute().is_relative_to(root) or configured.resolve().is_relative_to(root):
+                raise BashPolicyError("Preauthorized container executable must remain outside the writable workspace.")
+            try:
+                identity = executable_identity(self.cli)
+            except (OSError, ValueError) as error:
+                raise BashPolicyError("The host-selected container executable is unavailable or invalid.") from error
+            if self._cli_identity is None:
+                object.__setattr__(self, "_cli_identity", identity)
+            elif self._cli_identity != identity:
+                raise BashPolicyError("The pinned container executable changed; no command was started.")
+        return self
+
     def fingerprint(self):
         values = (
             {"format": 1, "mode": "host"}
             if self.mode == "host"
             else {"format": 1, **asdict(self)}
         )
+        if not self.preauthorized:
+            values.pop("preauthorized", None)  # Keep existing approval bindings.
+            values.pop("_cli_identity", None)
         return hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()
 
     def identity(self):
@@ -141,6 +168,7 @@ class BashPolicy:
             "pids",
             "timeout",
             "output_bytes",
+            "hard_output_bytes",
             "workspace_bytes",
             "max_files",
             "max_input_bytes",
@@ -157,6 +185,7 @@ class BashPolicy:
         )
         return (
             output_access
+            and (self.preauthorized or not child.preauthorized)
             and all(getattr(child, k) == getattr(self, k) for k in fixed)
             and all(getattr(self, k) is None or getattr(child, k) is not None and getattr(child, k) <= getattr(self, k) for k in limits)
         )
@@ -215,7 +244,7 @@ def load_bash_policy(path, workdir, *, mode=None, missing_ok=False):
         ) from None
     if (
         not isinstance(values, dict)
-        or set(values) - set(BashPolicy.__dataclass_fields__)
+        or set(values) - {name for name, rule in BashPolicy.__dataclass_fields__.items() if rule.init}
         or "mode" not in values
     ):
         raise BashPolicyError(
@@ -229,7 +258,7 @@ def load_bash_policy(path, workdir, *, mode=None, missing_ok=False):
         raise BashPolicyError(
             "Container mode needs a matching container configuration."
         )
-    return BashPolicy(**values)
+    return BashPolicy(**values).bind_cli(workdir)
 
 
 _EXCLUDED = {

@@ -1,4 +1,4 @@
-from homebrew_harness.runtime.limits import current_limits
+from homebrew_harness.runtime.limits import current_limits, limits_scope
 """Small host configuration for automatic entry; no CLI Namespace in runtime."""
 
 from homebrew_harness.configuration import (
@@ -119,7 +119,7 @@ class InteractionConfig:
         # Reuse RunSpec's scope validation rather than define another path policy.
         from homebrew_harness.runs.spec import RunSpec
 
-        RunSpec("validate host scope", write_paths=self.write_paths)
+        RunSpec("validate host scope", write_paths=self.write_paths, runtime_limits={})
 
     @classmethod
     def load(cls, path, workdir, **overrides):
@@ -477,31 +477,8 @@ class InteractionAssembler:
         from homebrew_harness.runs.spec import RunSpec
 
         c = self.config
-        # Check resource bindings before accepting a business Run. Probe owns no
-        # session lease and performs no business model/tool calls.
-        with ExitStack() as resources:
-            models = self.models()
-            resources.callback(models.close)
-            binding = models.open(
-                context_chars=c.context_chars, output_tokens=c.output_tokens
-            )
-            for member in route.members:
-                models.registry.validate(member.get("model_profile")) if member.get(
-                    "model_profile"
-                ) else None
-            self.check_models(models, binding)
-            tests = load_test_runner(
-                c.test_config,
-                self.workdir,
-                missing_ok=c.test_config == InteractionConfig().test_config,
-            )
-            resources.callback(tests.close)
-            if self.test_identity(tests) != self.tests_identity:
-                raise ValueError("Test registry changed during task preparation.")
-            for name in c.allow_tests:
-                tests._recipe(name)
-            if c.bash_config:
-                load_bash_policy(c.bash_config, self.workdir)
+
+        def assemble(binding):
             spec = RunSpec(
                 prompt,
                 goal=goal or route.goal_candidate,
@@ -522,11 +499,48 @@ class InteractionAssembler:
                 request_seconds=c.request_seconds,
                 episode_model_calls=c.max_turns,
                 shutdown_seconds=c.shutdown_seconds,
+                runtime_limits=c.runtime_limits,
             )
             if c.managed_bash:
                 from dataclasses import replace
 
                 spec = replace(spec, tools=tuple(sorted(set(spec.tools) | {"bash"})))
+            return spec
+
+        return self._prepare_run(assemble)
+
+    def prepare_run(self, spec):
+        """Bind the supplied RunSpec without synthesizing a different tool pool."""
+        from homebrew_harness.runs.spec import RunSpec
+
+        self._prepare_run(lambda _binding: RunSpec.from_dict(spec.data()))
+
+    def _prepare_run(self, assemble):
+        c = self.config
+        # The probe owns no session lease and makes no business model/tool calls.
+        with limits_scope(c.runtime_limits), ExitStack() as resources:
+            models = self.models()
+            resources.callback(models.close)
+            binding = models.open(
+                context_chars=c.context_chars, output_tokens=c.output_tokens
+            )
+            self.check_models(models, binding)
+            spec = assemble(binding)
+            for member in spec.members:
+                if member.get("model_profile"):
+                    models.registry.validate(member["model_profile"])
+            tests = load_test_runner(
+                c.test_config,
+                self.workdir,
+                missing_ok=c.test_config == InteractionConfig().test_config,
+            )
+            resources.callback(tests.close)
+            if self.test_identity(tests) != self.tests_identity:
+                raise ValueError("Test registry changed during task preparation.")
+            for name in spec.allow_tests:
+                tests._recipe(name)
+            if c.bash_config:
+                load_bash_policy(c.bash_config, self.workdir)
             for definition in [
                 spec.goal,
                 *(stage["acceptance"] for stage in spec.stages),

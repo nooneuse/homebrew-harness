@@ -40,6 +40,33 @@ class ReceiptPages(unittest.TestCase):
         other={**self.work,'id':'work_'+'b'*32}
         self.assertEqual(receipts(self.runtime,other),[])
 
+    def test_filtered_pages_keep_valid_full_and_focused_evidence_separately(self):
+        selection = {'targets': ['tests.unit']}
+        requested = {'version': 1, 'inputs': 'content', 'backend': 'container', 'role': 'lead',
+                     'contract': 'current', 'selection': selection, 'test_scope': 'selected'}
+        db = self.native.runtime.backend()
+        with db.write() as conn:
+            for i, run_id, status, selector, stable in [
+                (116, 'full_failed', 'failed', None, True),
+                (117, 'focused_pass', 'passed', selection, True),
+                (118, 'later_disjoint_failure', 'failed', {'targets': ['tests.other']}, True),
+                (119, 'unstable_full_pass', 'passed', None, False),
+                (120, 'full_pass', 'passed', None, True),
+                (121, 'unstable_full_failure', 'failed', None, False),
+                (122, 'unstable_later_pass', 'passed', None, False),
+            ]:
+                observed = {**requested, 'selection': selector, 'test_scope': 'selected' if selector else 'full'}
+                db._put(conn, 'test_receipts', run_id, {
+                    'run_id': run_id, 'recipe': 'unit', 'status': status, 'executed_at': i,
+                    'exit_code': 0 if status == 'passed' else 1, 'source_stable': stable,
+                    'isolation': {'cleanup_complete': True, 'os_isolation_verified': True},
+                    'scope': {'run_id': self.work['run_id']}, 'verification_basis': observed,
+                })
+        with limits_scope({'evidence_page_rows': 3}):
+            collect(self.runtime, self.work)
+            rows = receipts(self.runtime, self.work, recipe='unit', basis=requested, contracts=['current'])
+        self.assertEqual({row['run_id'] for row in rows}, {'full_failed', 'full_pass', 'focused_pass'})
+
     def test_missing_or_foreign_page_is_not_accepted_as_complete_evidence(self):
         result=collect(self.runtime,self.work)
         record=self.maintenance.get('evidence',result['id'])

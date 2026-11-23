@@ -12,7 +12,7 @@ import homebrew_harness.configuration
 import homebrew_harness.tools.files
 from homebrew_harness.context.compaction import ArchiveStore, CompactionError
 from homebrew_harness.execution.background import ShellRunner
-from homebrew_harness.execution.bash_policy import BashPolicyError
+from homebrew_harness.execution.bash_policy import BashPolicyError, current_bash_policy
 from homebrew_harness.execution.execution_backend import BackendUnavailable
 from homebrew_harness.tools.tool_outcome import ToolExecutionError
 
@@ -27,6 +27,13 @@ def run_bash(
     artifact_profile: str | None = None,
 ) -> str:
     """Shared command execution and formatting for synchronous/background Bash."""
+    active_policy = current_bash_policy()
+    if active_policy.mode == "container":
+        from homebrew_harness.execution.bash_runner import ContainerShellRunner
+
+        if not isinstance(runner, ContainerShellRunner) or runner.bash_policy.identity() != active_policy.identity():
+            return json.dumps({"error": "The authorized container Bash runner is not bound; no command was started.",
+                               "executed": False, "reason_code": "bash_container_binding"})
     env = homebrew_harness.configuration.public_environment(os.environ)
     owned_runner = runner is None
     if runner is None:

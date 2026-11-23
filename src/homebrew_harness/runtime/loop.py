@@ -307,7 +307,10 @@ def _agent_loop(
                 )
         return True, decision
 
-    from homebrew_harness.context.project_guidance import ProjectGuidance
+    from homebrew_harness.context.project_guidance import (
+        ProjectGuidance,
+        with_directory_guidance_recipe,
+    )
     guidance = components.project_guidance or ProjectGuidance(workdir)
     def guidance_cwd():
         return team_member.cwd() if team_member and team_member.assignment is not None else team_manager.lead_cwd() if team_manager else workdir
@@ -354,7 +357,8 @@ def _agent_loop(
                 client, model, workdir, components
             )
         )
-        tools, mcp_bindings = pool.tools, pool.bindings
+        tools = with_directory_guidance_recipe(pool.tools)
+        mcp_bindings = pool.bindings
         if team_member is not None:
             team_member.before_model()
         if team_manager is not None or team_member is not None:
