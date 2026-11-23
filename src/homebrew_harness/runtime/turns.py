@@ -292,6 +292,7 @@ def run_user_turn(
     goal_controller=None,
     stop_block_cap=None,
     stop_event=None,
+    query_parts=None,
 ):
     """Recall once per actual user request; extract only after a normal final stop."""
     components = replace(components, stop_event=stop_event or components.stop_event)
@@ -306,7 +307,8 @@ def run_user_turn(
             messages, query, compactor, memory_runtime, tool_pool=prepared.pool
         )
         homebrew_harness.runtime.hooks.submit_prompt(
-            messages, query, workdir, prepared.components.hooks
+            messages, query, workdir, prepared.components.hooks, parts=query_parts,
+            media_turn=prepared.components.media_root is not None,
         )
         if prepared.components.on_user_submit is not None:
             prepared.components.on_user_submit(messages, prepared.components)
@@ -356,7 +358,10 @@ def run_scheduled_turn(
                     client,
                     model,
                     workdir,
-                    replace(components, cron_scheduler=scheduler),
+                    replace(
+                        components, cron_scheduler=scheduler,
+                        media_root=None, media_messages=None,
+                    ),
                 )
             )
         except BaseException:

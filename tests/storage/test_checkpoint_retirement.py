@@ -250,6 +250,25 @@ class RetirementCases:
         for section, row in records.items():
             self.assertEqual(self.store.get(section, section), row)
 
+    def test_retirement_protects_media_and_undo_verifies_frozen_bytes(self):
+        from homebrew_harness.media import MediaError, MediaStore
+        from tests.media.test_store import jpeg_bytes
+
+        data = jpeg_bytes()
+        descriptor = MediaStore(self.root).freeze(data)
+        ref = descriptor["media_ref"]
+        self.session(messages=[{"role": "user", "content": [{"type": "image", "media": descriptor}]}])
+        self.do_retire()
+        self.assertIn(ref, inspect_artifacts(self.root, retention_days=1, now=NOW)["references"])
+        (self.root / ref).write_bytes(b"wrong image")
+        with self.assertRaises(MediaError) as caught:
+            unretire(self.root, "old", now=NOW + 1)
+        self.assertEqual(caught.exception.media_code, "media_identity_conflict")
+        self.assertEqual(self.store.get("session_meta", "old")["lifecycle"], "retired")
+        (self.root / ref).write_bytes(data)
+        unretire(self.root, "old", now=NOW + 1)
+        self.assertEqual(self.store.get("checkpoints", "lead:old")["messages"][0]["content"][0]["media"], descriptor)
+
     def test_retired_and_purged_sessions_reject_resume_and_writes(self):
         self.session()
         self.do_retire()

@@ -3,6 +3,7 @@ from homebrew_harness.runtime.limits import current_limits
 
 from homebrew_harness.runtime.errors import boundary_error
 
+import base64
 import copy
 import json
 
@@ -13,8 +14,13 @@ from homebrew_harness.execution.model_protocol import (
     ToolInvocation,
 )
 from .common import (
+    base64_size,
+    encoded_json_size,
+    image_url_part,
+    media_protocol_error,
     messages,
     usage,
+    validate_image_size,
     validated_result,
     effective_options,
     UsageCapture,
@@ -82,6 +88,7 @@ def usage_from_chat(value):
 class ChatCompletionsAdapter:
     protocol = "chat_completions"
     revision = "chat-v1"
+    supported_input_modalities = ("text", "image")
 
     def __init__(
         self, client, *, options_json="{}", capabilities=None, connection_id=None
@@ -133,13 +140,19 @@ class ChatCompletionsAdapter:
         self.client.close()
 
     def prepare(self, request):
-        body = prepare(
+        return self._prepare(request)
+
+    def prepare_logical(self, request):
+        return self._prepare(request, logical=True)
+
+    def _prepare(self, request, *, logical=False):
+        return prepare(
             request,
             messages(request, self),
             effective_options(self, request),
             self.capabilities,
+            logical=logical,
         )
-        return body
 
     def execute(self, request, payload, timeout, check):
         capture = UsageCapture(self.protocol)
@@ -186,7 +199,127 @@ class ChatCompletionsAdapter:
                 raw.close()
 
 
-def prepare(request, rows, options, capabilities):
+def _project_media(request, payload, *, logical):
+    """Select a bounded visual working set without changing canonical history."""
+    groups, required = [], []
+    for row in payload["messages"]:
+        tool_media = row.pop("_harness_tool_media", False)
+        if row.pop("_media_turn_start", False) or (row.get("role") == "assistant" and not row.get("tool_calls")):
+            # Images from answered or abandoned turns are historical; their
+            # loss must not block a fresh turn. Steering has no start marker.
+            required = []
+        parts = row.get("content")
+        if not isinstance(parts, list):
+            continue
+        slots = []
+        for part in parts:
+            if part["type"] != "image":
+                continue
+            media = part.pop("media")
+            part.update(
+                type="text",
+                text=f"[Image not sent in this request; frozen reference: {media['media_ref']}]",
+            )
+            # Replace only this JSON part. Escaping, framing and base64 are
+            # accounted for without allocating/re-serializing a large payload
+            # once per candidate. Text and every other request field still count.
+            delta = (
+                encoded_json_size(image_url_part(media)) + base64_size(media)
+                - encoded_json_size(part)
+            )
+            slots.append((part, media, delta))
+        if slots:
+            groups.append(slots)
+            if not tool_media:
+                required = slots
+    if not groups:
+        return
+
+    from homebrew_harness.media import (
+        MediaError,
+        MediaLimits,
+        MediaStore,
+        ensure_request_body_size,
+        request_body_bounds,
+        validate_image,
+    )
+
+    limits = MediaLimits()
+    store = (
+        MediaStore(request.state_root)
+        if not logical and request.state_root is not None else None
+    )
+    wire_bytes = encoded_json_size(payload)
+
+    def include(slot):
+        part, media, _ = slot
+        if logical:
+            native = {"type": "image_url", "image_url": {"url": "media:inline"}}
+        else:
+            if store is None:
+                raise MediaError(
+                    "Image input requires its owning state root.", "media_reference_invalid"
+                )
+            try:
+                data = store.load(media["media_ref"])
+            except MediaError:
+                raise
+            except (OSError, ValueError) as exc:
+                raise MediaError(
+                    "Frozen media could not be safely read.", "media_unreadable"
+                ) from exc
+            actual = validate_image(data, limits)
+            if len(data) != media["bytes"] or any(actual[key] != media[key] for key in actual):
+                raise MediaError(
+                    "Frozen media metadata does not match the stored content.",
+                    "media_identity_conflict",
+                )
+            native = image_url_part(media, base64.b64encode(data).decode("ascii"))
+        part.clear()
+        part.update(native)
+
+    try:
+        # The newest explicit attachment batch is all-or-error. Neither older
+        # user images nor recent tool output can displace any part of it.
+        for _, media, _ in required:
+            validate_image_size(media, limits)
+        bounds = request_body_bounds(
+            ({"type": "image", "media": media} for _, media, _ in required), limits
+        )
+        count, raw_bytes = bounds["images"], bounds["image_bytes"]
+        wire_bytes += sum(delta for _, _, delta in required)
+        if count and not logical:
+            ensure_request_body_size(wire_bytes, limits)
+        for slot in required:
+            include(slot)
+        for slots in reversed(groups):
+            if slots is required:
+                continue
+            for slot in slots:
+                _, media, delta = slot
+                if (
+                    count >= limits.max_images_per_request
+                    or media["bytes"] > limits.max_image_bytes
+                    or raw_bytes + media["bytes"] > limits.max_request_image_bytes
+                    or wire_bytes + delta > limits.max_request_body_bytes
+                ):
+                    continue
+                try:
+                    include(slot)
+                except MediaError:
+                    # Unavailable history cannot wedge an unrelated request.
+                    # Its stable reference remains visible and recoverable.
+                    continue
+                count += 1
+                raw_bytes += media["bytes"]
+                wire_bytes += delta
+        if count and not logical:
+            ensure_request_body_size(wire_bytes, limits)
+    except MediaError as exc:
+        raise media_protocol_error(exc) from exc
+
+
+def prepare(request, rows, options, capabilities, *, logical=False):
     if request.tools and not capabilities.tools:
         raise ModelProtocolError(
             "This model does not support the required client tools."
@@ -232,6 +365,7 @@ def prepare(request, rows, options, capabilities):
         payload.update(extensions)
     if options.get("stream"):
         payload.update(stream=True, stream_options={"include_usage": True})
+    _project_media(request, payload, logical=logical)
     return payload
 
 
