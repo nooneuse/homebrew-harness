@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from homebrew_harness.context.todo import TODO_INPUT_SCHEMA
+from homebrew_harness.contracts import MEDIA_REF
 from homebrew_harness.execution.test_runner import TEST_TOOL_NAMES
 
 
@@ -462,6 +463,34 @@ TOOLS = [
         "Connect or refresh a host-configured MCP server by name, initialize its session and discover its tools. Use returned mcp__server__tool names on the next model turn; never supply a command, URL or credentials.",
         {"name": NONEMPTY_STRING},
         ["name"],
+    ),
+    define_tool(
+        "render_chart",
+        "Render a bar chart from integer values as a frozen PNG. Returns text and a stable "
+        "media_ref, MIME type, byte size, content hash and dimensions. Pixels are shown on "
+        "image-capable models. The text includes every label and value, including non-ASCII labels.",
+        {
+            "labels": {
+                "type": "array", "minItems": 1, "maxItems": 24,
+                "items": {**NONEMPTY_STRING, "maxLength": 60},
+            },
+            "values": {
+                "type": "array", "minItems": 1, "maxItems": 24,
+                "items": {"type": "integer", "minimum": 0, "maximum": 1000000000},
+            },
+            "title": {"type": "string", "maxLength": 80},
+            "width": {"type": "integer", "minimum": 160, "maximum": 2048},
+            "height": {"type": "integer", "minimum": 120, "maximum": 2048},
+        },
+        ["labels", "values"],
+    ),
+    define_tool(
+        "read_media",
+        "See the original frozen pixels again on an image-capable model. Supply an exact "
+        "media_ref from this session's visible or archived history. Never supply a workspace "
+        "path, external URL, or a reference from another session.",
+        {"media_ref": {"type": "string", "pattern": MEDIA_REF.pattern}},
+        ["media_ref"],
     ),
 ]
 

@@ -82,6 +82,8 @@ Set the environment variables referenced by the template, and configure tool use
 
 ## Quick start
 
+For PNG/JPEG attachments and chart output in standalone Sessions, see [Images in Sessions](docs/MULTIMODAL.md).
+
 ```sh
 # Automatic interaction
 homebrew-harness

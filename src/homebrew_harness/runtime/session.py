@@ -142,6 +142,7 @@ class HarnessSession:
         conversation_mode=None,
         fork_seed=None,
         run_control=None,
+        media_enabled=False,
     ):
         from homebrew_harness.runtime.limits import RuntimeLimits, positive, current_limits
         positive(max_turns, "max_turns", nullable=True, integer=True)
@@ -152,6 +153,7 @@ class HarnessSession:
         self.turn_warning_seconds = turn_warning_seconds
         created, bindings = [], []
         self.run_control = run_control
+        self.media_enabled = media_enabled
         from homebrew_harness.runtime.conversation_commands import (
             initial_state,
             validate_state,
@@ -825,6 +827,8 @@ class HarnessSession:
             ),
             project_guidance=self.project_guidance,
             planning=self.conversation["mode"] == "plan",
+            media_root=self.workdir if self.session_media_enabled else None,
+            media_messages=(lambda: self.messages) if self.session_media_enabled else None,
             completion_check=(
                 (
                     lambda calls, messages: __import__(
@@ -916,6 +920,16 @@ class HarnessSession:
                 raise RecoveryRequired(
                     "Session checkpoint not found; choose a saved session ID."
                 )
+            if not self.session_media_enabled:
+                from homebrew_harness.contracts import history_media
+
+                if history_media(saved["messages"]) or any(
+                    row.get("metadata", {}).get("content_parts")
+                    for row in self.runtime_store.mailbox("inspect", "user_" + sid)
+                ):
+                    raise RecoveryRequired(
+                        "This checkpoint contains accepted images. Resume it in the standalone Session terminal or Session API."
+                    )
             self.session_id, self.checkpoint_key = sid, "lead:" + sid
             operations = [
                 v
@@ -1533,6 +1547,97 @@ class HarnessSession:
             "model_usage": self.gateway.summary(),
         }
 
+    @property
+    def session_media_enabled(self):
+        return self.media_enabled and self.run_control is None and self.team is None
+
+    def media_store(self):
+        from homebrew_harness.media import MediaError, MediaStore
+
+        if not self.session_media_enabled:
+            raise MediaError(
+                "Images require a standalone Session; managed Runs, team Sessions and the task host are text-only.",
+                "media_mode_unsupported",
+            )
+        return MediaStore(self.workdir)
+
+    def media_cwd(self):
+        from homebrew_harness.media import MediaError
+
+        cwd = self.workspace.lead_cwd()
+        if cwd != self.workdir:
+            raise MediaError(
+                "Image attachments and exports are unavailable when Lead is assigned to a task worktree.",
+                "media_mode_unsupported",
+            )
+        return cwd
+
+    def prepare_user_media(self, parts, *, goal=None, accepted=False):
+        """Admit local image parts before persistence, or revalidate a durable input."""
+        from homebrew_harness.contracts import (
+            content_is_multimodal, content_text, normalize_content_parts,
+        )
+        from homebrew_harness.media import MediaError, MediaLimits, request_body_bounds
+        from homebrew_harness.runtime.session_commands import require_media_profile
+
+        store = self.media_store()
+        if goal is not None or self.goal.pending or self.conversation["mode"] == "plan":
+            raise MediaError(
+                "Planning and Goal-bound work accept text only; finish or leave that mode before submitting images.",
+                "media_mode_unsupported",
+            )
+        cwd = self.media_cwd()
+        normalized = normalize_content_parts(parts)
+        if not content_is_multimodal(normalized):
+            raise MediaError("Content parts without images must be submitted as plain text.")
+        require_media_profile(self.client)
+        if len(content_text(normalized)) > self.runtime_limits.input_text_chars:
+            raise MediaError("Image prompt text exceeds the Session input limit.")
+        limits = MediaLimits()
+        count = sum(part["type"] == "image" for part in normalized)
+        if count > limits.max_images_per_request:
+            raise MediaError(
+                "Too many images for one request.", "media_request_count_limit",
+                limit_name="images_per_request", limit_value=limits.max_images_per_request,
+                observed_value=count, unit="images",
+            )
+        frozen = []
+        for part in normalized:
+            if part["type"] == "image":
+                if accepted:
+                    supplied = part.get("media", {})
+                    descriptor = store.descriptor(supplied.get("media_ref"))
+                    if descriptor != supplied:
+                        raise MediaError("Frozen image metadata changed.", "media_identity_conflict")
+                elif "path" in part:
+                    descriptor = store.freeze_attachment(part["path"], cwd, limits)
+                else:
+                    raise MediaError(
+                        "Supply a local image path, not a frozen reference.",
+                        "media_reference_invalid",
+                    )
+                part = {"type": "image", "media": descriptor}
+            frozen.append(part)
+            if part["type"] == "image":
+                request_body_bounds(frozen, limits)
+        require_media_profile(self.client, frozen)
+        return frozen
+
+    def _parse_host_command(self, text):
+        if self.session_media_enabled:
+            return HostCommand.parse(text, allow_media=True)
+        return HostCommand.parse(text)
+
+    @staticmethod
+    def _prompt_parts(text, literal):
+        if literal or not isinstance(text, str) or "[image:" not in text:
+            return None
+        if text.lstrip().startswith("/"):
+            raise ValueError("Image attachments cannot be combined with a host command.")
+        from homebrew_harness.contracts import parse_image_markup
+
+        return parse_image_markup(text)
+
     def submit_user_input(
         self,
         text,
@@ -1546,7 +1651,10 @@ class HarnessSession:
         request_id=None,
         goal=None,
         target_input_id=None,
+        parts=None,
     ):
+        if parts is None:
+            parts = self._prompt_parts(text, literal)
         if self.run_control is not None:
             return self.inputs.submit(
                 text,
@@ -1554,6 +1662,7 @@ class HarnessSession:
                 target=target,
                 expected_turn_id=expected_turn_id,
                 input_id=input_id,
+                parts=parts,
             )
         if not self._runtime_started:
             self._ensure_runtime()
@@ -1568,6 +1677,7 @@ class HarnessSession:
             request_id=request_id,
             goal=goal,
             target_input_id=target_input_id,
+            parts=parts,
         )
         if not self._poller.started and self.inputs.active_id is None:
             self.start(include_clock=False)
@@ -1613,7 +1723,7 @@ class HarnessSession:
             return False
         if self._execution_paused and not any(
             not row.get("metadata", {}).get("literal")
-            and HostCommand.parse(row["content"]).local
+            and self._parse_host_command(row["content"]).local
             for row in self.inputs.pending()
         ):
             return False
@@ -1628,9 +1738,9 @@ class HarnessSession:
                 for r in values
                 if not r.get("metadata", {}).get("literal")
                 and (
-                    HostCommand.parse(r["content"]).allowed_during_recovery
+                    self._parse_host_command(r["content"]).allowed_during_recovery
                     if self._recovery_blocked
-                    else HostCommand.parse(r["content"]).local
+                    else self._parse_host_command(r["content"]).local
                 )
             ]
             if not controls:
@@ -1660,7 +1770,7 @@ class HarnessSession:
         command = (
             HostCommand(record["content"])
             if literal
-            else HostCommand.parse(record["content"])
+            else self._parse_host_command(record["content"])
         )
         if self._recovery_blocked and not command.allowed_during_recovery:
             self.inputs.release([record])
@@ -1676,6 +1786,10 @@ class HarnessSession:
                 record["content"],
                 literal=literal,
                 goal_spec=record.get("metadata", {}).get("sdk_goal"),
+                **(
+                    {"parts": record["metadata"]["content_parts"], "_accepted_parts": True}
+                    if "content_parts" in record.get("metadata", {}) else {}
+                ),
             )
             if self._pending_user:
                 with cleanup_scope():
@@ -1822,7 +1936,13 @@ class HarnessSession:
             self.goal.discard_prepared(prepared)
             raise
 
-    def run_user(self, query: str, *, goal_spec=None, literal=False) -> str:
+    def run_user(
+        self, query: str, *, goal_spec=None, literal=False, parts=None, _accepted_parts=False
+    ) -> str:
+        if parts is None:
+            parts = self._prompt_parts(query, literal)
+        if parts is not None:
+            literal = True
         if goal_spec is not None:
             from homebrew_harness.orchestration.hard_conditions import validate_spec
 
@@ -1832,7 +1952,7 @@ class HarnessSession:
         command = (
             HostCommand(query)
             if goal_spec is not None or literal
-            else HostCommand.parse(query)
+            else self._parse_host_command(query)
         )
         direct = self._independent_control(command)
         if direct is not None:
@@ -1870,6 +1990,11 @@ class HarnessSession:
             ),
             acquired(self._runtime_init_lock, deadline, inherit=not command.local),
         ):
+            if parts is not None:
+                return self._run_user(
+                    command, deadline, goal_spec=goal_spec, parts=parts,
+                    accepted_parts=_accepted_parts,
+                )
             return (
                 self._run_user(command, deadline)
                 if goal_spec is None
@@ -1929,7 +2054,8 @@ class HarnessSession:
             return self._run_user(command, deadline)
 
     def _run_user(
-        self, command: HostCommand, turn_deadline: Deadline, *, goal_spec=None
+        self, command: HostCommand, turn_deadline: Deadline, *, goal_spec=None,
+        parts=None, accepted_parts=False,
     ) -> str:
         if self._closed:
             raise ValueError("Harness session is closed.")
@@ -2007,6 +2133,13 @@ class HarnessSession:
                     raise RecoveryRequired(
                         "Recovery requires host inspection. Use /recovery for pending outcomes, then /recovery continue after checking them."
                     )
+                if parts is not None:
+                    from homebrew_harness.contracts import content_text
+
+                    parts = self.prepare_user_media(parts, goal=goal_spec, accepted=accepted_parts)
+                    # Task intent and memory use a text projection. Canonical
+                    # history still holds exactly the parts supplied by the user.
+                    query = content_text(parts) or "Image attachment without accompanying text."
                 if (
                     self.conversation["mode"] == "plan"
                     and command.name in {"goal", "task"}
@@ -2252,6 +2385,7 @@ class HarnessSession:
                         stop_block_cap=self.stop_block_cap,
                         stop_event=self.stop_event,
                         components=self.loop_components(),
+                        **({"query_parts": parts} if parts is not None else {}),
                     )
                 self.user_request = self.intent.original
                 if self.workspace.store:

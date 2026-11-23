@@ -23,6 +23,7 @@ from homebrew_harness.storage.checkpoint_lifecycle import session_id
 from homebrew_harness.storage.durable_runtime import DurableStore, RecoveryRequired
 from homebrew_harness.storage.retention_graph import (
     external_snapshot,
+    media_roots,
     references,
     state_roots,
 )
@@ -529,7 +530,7 @@ def retire(root, plan, *, now=None):
                     "retired_at": now,
                     "purge_after": now + GRACE_DAYS * 86400,
                     "cold_archive": archives[sid],
-                    "protected_refs": sorted(references(data)),
+                    "protected_refs": sorted({path for path in references(data) if not path.startswith(".harness/media/")} | media_roots(data)),
                     "checkpoint_keys": sorted(data["checkpoints"]),
                     "retire_seal": valid[sid]["seal"],
                     "revision": meta["revision"] + 1,
@@ -578,8 +579,12 @@ def unretire(root, sid, *, now=None):
         if now >= meta["purge_after"]:
             raise ValueError("Retirement undo window has ended.")
         data, _ = _load_archive(root, sid, meta["cold_archive"])
+        from homebrew_harness.media import MEDIA_REF, MediaStore
+
         for reference in meta["protected_refs"]:
-            if re.fullmatch(
+            if MEDIA_REF.fullmatch(reference):
+                MediaStore(root).descriptor(reference)
+            elif re.fullmatch(
                 r"\.harness/(?:[A-Za-z0-9_-]+/)?(?:tool-results|transcripts)/[0-9a-f]{32}\.(?:txt|jsonl)",
                 reference,
             ):

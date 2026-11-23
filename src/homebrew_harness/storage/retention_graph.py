@@ -20,6 +20,24 @@ def references(value):
     return set()
 
 
+def media_roots(state):
+    """Pin frozen media from host records, never from arbitrary prompt text."""
+    from homebrew_harness.contracts import TRUSTED_MEDIA_TOOL_NAMES, content_media, history_media, tool_result_media
+    from homebrew_harness.runtime.runtime_state import settled_operation
+
+    roots = set()
+    for checkpoint in state.get("checkpoints", {}).values():
+        roots.update(item["media_ref"] for item in history_media(checkpoint.get("messages", [])))
+    for record in state.get("input_submissions", {}).values():
+        if record.get("type") == "user_input" and record.get("checkpoint", "").startswith("lead:"):
+            roots.update(item["media_ref"] for item in content_media(record.get("metadata", {}).get("content_parts")))
+    for operation in state.get("operations", {}).values():
+        if (operation.get("name") in TRUSTED_MEDIA_TOOL_NAMES and settled_operation(operation)
+                and operation.get("checkpoint", "").startswith("lead:")):
+            roots.update(item["media_ref"] for item in tool_result_media(operation.get("output"), require_text=True))
+    return roots
+
+
 def state_roots(state, external=()):
     roots = references(
         {
@@ -34,6 +52,8 @@ def state_roots(state, external=()):
             }
         }
     )
+    roots = {path for path in roots if not path.startswith(".harness/media/")}
+    roots.update(media_roots(state))
     roots.update(external)
     for meta in state.get("session_meta", {}).values():
         if meta.get("lifecycle") == "retired":

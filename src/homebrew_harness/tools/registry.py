@@ -6,6 +6,7 @@ from functools import partial
 
 import homebrew_harness.tools.catalog
 import homebrew_harness.tools.files
+import homebrew_harness.tools.media
 import homebrew_harness.tools.queries
 import homebrew_harness.tools.shell
 from homebrew_harness.context.compaction import ContextCompactor
@@ -14,6 +15,7 @@ from homebrew_harness.context.todo import TodoManager
 from homebrew_harness.execution.background import BackgroundManager
 from homebrew_harness.execution.execution_leases import lease_scope
 from homebrew_harness.execution.test_runner import TEST_TOOL_NAMES, TestRunner
+from homebrew_harness.media import MediaError, require_media_root
 from homebrew_harness.orchestration.cron_scheduler import CRON_TOOL_NAMES, CronScheduler
 from homebrew_harness.orchestration.task_store import TASK_TOOL_NAMES, TaskStore
 from homebrew_harness.orchestration.teams import TEAM_TOOL_NAMES, TeamManager
@@ -222,6 +224,52 @@ def build_tool_pool(client, model, workdir, components: LoopComponents):
         )
         if worktree_manager is not None:
             handlers["create_worktree"] = worktree_manager.run_tool
+    session_media = False
+    media_root = components.media_root
+    media_messages = components.media_messages
+    if (
+        media_root is not None and media_messages is not None
+        and not subagent and team_member is None and managed is None
+        and components.service_control is None
+    ):
+        def media_workspace():
+            owner = getattr(team_manager, "session_owner", None)
+            if team_manager is not None and (
+                owner is None or getattr(owner, "_runtime_started", False)
+            ):
+                try:
+                    return team_manager.lead_cwd()
+                except (OSError, ValueError) as exc:
+                    raise MediaError(
+                        "The current workspace is not bound to the owning Session.",
+                        "media_scope_unsupported",
+                    ) from exc
+            return workdir
+
+        try:
+            root = require_media_root(media_root, workdir)
+            require_media_root(root, media_workspace())
+        except MediaError:
+            pass  # A differently bound worktree gets neither media schema nor handler.
+        else:
+            def render_chart(*, workdir, **arguments):
+                require_media_root(root, media_workspace())  # Assignment may have changed in this batch.
+                return homebrew_harness.tools.media.run_render_chart(
+                    workdir=workdir, session_root=root, **arguments
+                )
+
+            def read_media(*, workdir, **arguments):
+                from homebrew_harness.context.media_history import active_media_history
+
+                require_media_root(root, media_workspace())
+                history = active_media_history()
+                return homebrew_harness.tools.media.run_read_media(
+                    workdir=workdir, session_root=root,
+                    messages=history if history is not None else media_messages, **arguments
+                )
+
+            handlers.update(render_chart=render_chart, read_media=read_media)
+            session_media = True
     if components.artifact_store is not None:
         from homebrew_harness.storage.artifact_store import current_artifact_task
 
@@ -379,4 +427,5 @@ def build_tool_pool(client, model, workdir, components: LoopComponents):
         models=components.model_registry,
         run_tools=run_tools,
         service_tools=service_tools,
+        session_media=session_media,
     )

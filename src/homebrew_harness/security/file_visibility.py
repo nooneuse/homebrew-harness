@@ -54,7 +54,7 @@ def private_parts(parts):
         or ".git" in folded
         or any(
             folded[i : i + 2]
-            in {(".harness", "protocol-state"), (".harness", "artifact-bundles")}
+            in {(".harness", "protocol-state"), (".harness", "artifact-bundles"), (".harness", "media")}
             for i in range(len(parts) - 1)
         )
     )

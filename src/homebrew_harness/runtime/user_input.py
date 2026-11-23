@@ -101,9 +101,12 @@ class UserInputController:
         request_id=None,
         goal=None,
         target_input_id=None,
+        parts=None,
     ):
         managed = getattr(self.session, "run_control", None)
         if managed is not None:
+            if parts is not None:
+                raise ValueError("Managed Run input accepts task text only; images are not supported.")
             if target != "lead":
                 raise ValueError("Managed team supervision is not enabled.")
             receipt = managed.store.submit(
@@ -116,13 +119,23 @@ class UserInputController:
             if mode == "interrupt" and self.active_id is not None:
                 self.cancel.set()
             return {**receipt, "mode": mode, "target": target}
-        if not isinstance(text, str) or not text.strip() or len(text) > self.session.runtime_limits.input_text_chars:
+        if parts is None and (
+            not isinstance(text, str) or not text.strip()
+            or len(text) > self.session.runtime_limits.input_text_chars
+        ):
             raise ValueError(
                 "User input must be nonempty text within 64,000 characters."
             )
         if mode not in {"steer", "queued", "interrupt"}:
             raise ValueError("User input mode must be steer, queued or interrupt.")
-        command = HostCommand(text) if literal else HostCommand.parse(text)
+        if parts is not None:
+            literal = True  # Image-associated text must not become host commands.
+        if literal:
+            command = HostCommand(text)
+        elif getattr(self.session, "session_media_enabled", False):
+            command = HostCommand.parse(text, allow_media=True)
+        else:
+            command = HostCommand.parse(text)
         if command.name and mode != "queued":
             raise ValueError(
                 "Host control commands use queued input; they cannot become model steering text."
@@ -154,6 +167,19 @@ class UserInputController:
                 raise ValueError(
                     "User input queue is full; wait for accepted inputs to be consumed."
                 )
+            if parts is not None:
+                from homebrew_harness.contracts import content_text
+                from homebrew_harness.media import MediaError
+
+                if (target != "lead" or target_input_id is not None or mode == "interrupt"
+                    or (mode == "steer" and self.active_id is not None)):
+                    raise MediaError(
+                        "Images are supported on fresh Lead turns; use /queue while Lead is active.",
+                        "media_mode_unsupported",
+                    )
+                parts = self.session.prepare_user_media(parts, goal=goal)
+                text = content_text(parts)
+                mode = "queued"
             record = {
                 "id": identity,
                 "checkpoint": self.session.checkpoint_key,
@@ -178,6 +204,7 @@ class UserInputController:
                         else {}
                     ),
                     **({"target_input_id": target_input_id} if target_input_id else {}),
+                    **({"content_parts": parts} if parts is not None else {}),
                 },
             }
             accepted_turn = self.session.runtime_store.submit_input(
