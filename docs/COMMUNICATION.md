@@ -22,6 +22,7 @@ Add `communication` to a `repository_maintenance` ServiceSpec. The project must 
       "token_env": "PROJECT_COMMENT_TOKEN"
     }],
     "poll_seconds": 43200,
+    "own_pr_poll_seconds": 120,
     "auto_intents": [],
     "review_globs": ["src/**", "tests/**"],
     "required_tests": [],
@@ -35,7 +36,17 @@ Add `communication` to a `repository_maintenance` ServiceSpec. The project must 
 
 The private credential file must be owner-only and outside both the control and project directories. Write credentials are separate from the model/development environment. Each publisher is bound to its authenticated platform identity. `local` mode accepts only a synthetic loopback peer for demonstrations.
 
-`auto_intents` can preauthorize `acknowledge`, `clarify` and `followup` within configured projects. The default requires approval for every public action. Formal reviews and project direction commitments require explicit decisions. A submitted review does not merge or close a PR.
+`auto_intents` can preauthorize `acknowledge`, `clarify` and `followup` within configured projects. It also accepts `own_pr_reply` for routine comments and thread replies on this Service's confirmed PRs, under the current Work authority. This does not authorize replies on unrelated PRs or formal reviews. The default requires approval for every public action. Formal reviews and project direction commitments require explicit decisions. A submitted review does not merge or close a PR.
+
+## Following the Service's own PRs
+
+When Delivery confirms PR publication, communication starts tracking that PR immediately. Open PRs belonging to unfinished Work use the shorter of `poll_seconds` and `own_pr_poll_seconds` (120 seconds by default). Ordinary discussions keep their configured interval. Observations do not call the model unless discussion input or an explicit analysis request changes.
+
+The discussion model receives the linked Work, accepted scope, published head and repair status. It may explain existing behavior, ask a specific question, or propose `next_step: "repair"` with `repair: {"plan": "...", "sources": ["event_..."]}`. Repairs preserve the accepted requirements, Work, branch and PR; they use Delivery's existing `auto_ci_fix`, repair-attempt policy and Work authority. A real scope change still uses the requirements-acceptance process.
+
+New feedback or a changed candidate requires reassessment before a pending repair starts. Paused Work and uncertain publication effects defer repair. Once a replacement candidate is published, its receipt wakes the discussion to respond with the actual result. A proposed repair is not proof that a fix has been published.
+
+Service-executed merge admission checks for unassessed feedback, unresolved questions/findings and pending replies, and binds authorization to the handled feedback version. A PR publication or a completed development Run does not complete its Work; delivery still follows the configured merge policy and verifies the actual merged result.
 
 ## Repository context and reply preparation
 

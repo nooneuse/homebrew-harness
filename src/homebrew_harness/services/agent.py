@@ -195,6 +195,12 @@ class ServiceAgent:
             properties["identity"][
                 "description"
             ] = "Use the exact current job/topic ID or an ID returned by the frozen evidence directory. Never invent placeholders."
+            own_pr = self.job["input"].get("own_pr")
+            if own_pr:
+                properties["kind"]["enum"].extend(["changesets", "quality_output"])
+                properties["identity"]["description"] += (
+                    " For changesets use own_pr.changeset_id; for quality_output use an output ID read from that candidate's receipts."
+                )
             ids = {"", self.job["id"], self.job["target"]}
             ids.update(self.job["input"].get("events", []))
             for field in ("review_id", "work_id"):
@@ -238,7 +244,7 @@ class ServiceAgent:
                             (section, "service:" + self.store.id, self.job["target"]),
                         ).fetchall()
                     ids.update(row[0] for row in rows)
-                if len(ids) <= 32:
+                if len(ids) <= 32 and not own_pr:
                     properties["identity"]["enum"] = sorted(ids)
         return tools
 
@@ -271,6 +277,8 @@ class ServiceAgent:
             primary = contract.primary()
             if contract.kind == "recovery_plan":
                 primary = self.store.get("changesets", primary["changeset_id"])
+            elif contract.kind == "discussion":
+                primary = self.store.get("changesets", self.job["input"]["own_pr"]["changeset_id"])
             return json.dumps(
                 read_output(primary, identity, offset, limit), ensure_ascii=False
             )
@@ -923,6 +931,7 @@ class ServiceAgent:
 
             name = "assessment" if stage == "assessment" else "draft"
             instruction = COMMON + self.discussion_prompts["texts"][name]
+            instruction += contract.followup_instruction(drafting=stage == "reply")
         elif kind == "discussion":
             instruction += "\n" + self.discussion_prompts["texts"]["assessment"]
         if kind == "discussion":

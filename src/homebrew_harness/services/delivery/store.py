@@ -291,6 +291,14 @@ class DeliveryStore:
 
     def action(self, conn, row, kind, *, body=None, subject=None, draft=False, publication=None):
         self.current(row)
+        if kind == "merge_change_request" and self.ms.communication is not None:
+            from homebrew_harness.services.communication.followup import pending
+
+            if pending(self.ms.communication, row, conn):
+                row.update(state="review_waiting", error="pr_feedback_pending", next_ci=0,
+                           revision=row["revision"] + 1)
+                self.put(conn, "changesets", row)
+                return None
         if kind not in {
             "publish_branch",
             "ensure_change_request",
@@ -355,6 +363,12 @@ class DeliveryStore:
                 title="Merge reviewed work " + row["work_id"],
                 body="Verified candidate " + row["candidate"]["commit"],
             )
+            if self.ms.communication is not None:
+                from homebrew_harness.services.communication.followup import basis
+
+                feedback_basis = basis(self.ms.communication, row, conn)
+                if feedback_basis is not None:
+                    content["feedback_basis"] = feedback_basis
         if kind == "post_comment":
             text(body, maximum=16000)
             from homebrew_harness.platforms.contracts import ObjectRef
@@ -630,6 +644,13 @@ class DeliveryStore:
                 )
             if current["kind"] == "merge_change_request":
                 from .merge_flow import gate
+
+                if self.ms.communication is not None:
+                    from homebrew_harness.services.communication.followup import basis, pending
+
+                    if (pending(self.ms.communication, row, conn)
+                            or current["plan"].get("feedback_basis") != basis(self.ms.communication, row, conn)):
+                        raise StaleDelivery("PR feedback changed before merge admission.")
 
                 if current["plan"]["gate_hash"] != gate(row["ci"], self.spec)[
                     "hash"

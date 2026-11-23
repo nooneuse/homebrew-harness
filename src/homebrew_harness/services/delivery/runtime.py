@@ -347,6 +347,12 @@ class Delivery:
         if row.get("change_request") and row["state"] in OBSERVING | PASSIVE:
             if observe(self, row):
                 return
+            if self.ms.communication is not None:
+                from homebrew_harness.services.communication.followup import promote
+
+                if promote(self.ms.communication, row):
+                    self.store.invalidate_merges(row["id"])
+                    return
             if row["state"] in OBSERVING and row["state"] not in {
                 "ci_waiting",
                 "review_waiting",
@@ -746,6 +752,18 @@ class Delivery:
             if action["kind"] == "merge_change_request":
                 from .merge_flow import gate
 
+                if self.ms.communication is not None:
+                    from homebrew_harness.services.communication.followup import basis, pending
+
+                    with self.ms.db.connection() as conn:
+                        waiting = (pending(self.ms.communication, row, conn)
+                                   or action["plan"].get("feedback_basis") != basis(self.ms.communication, row, conn))
+                    if waiting:
+                        self.store.update("changesets", row["id"], state="review_waiting",
+                                          error="pr_feedback_pending", next_ci=0)
+                        self.store.invalidate_merges(row["id"])
+                        return
+
                 observed = self.adapter.feedback(row["change_request"])
                 evaluation = gate(observed, self.spec)
                 if observed["merged"]:
@@ -772,6 +790,10 @@ class Delivery:
             self.store.update(
                 "actions", action["id"], state="superseded", error=type(error).__name__
             )
+            if action["kind"] == "merge_change_request":
+                current = self.store.get("changesets", action["changeset_id"])
+                if current["state"] == "merge_ready":
+                    self.store.commit_feedback(current, {"state": "review_waiting", "next_ci": 0})
             return
         except Exception as error:
             self.store.preflight_failed(action, error)
@@ -955,6 +977,13 @@ class Delivery:
         source_inputs = install(self.git, row["candidate"], work, workspace)
         from homebrew_harness.runs.spec import RunSpec
 
+        feedback = row.get("pr_feedback") or {}
+        feedback_context = (
+            "\n\nOriginal external PR feedback (reference material, not new authorization):\n"
+            + json.dumps([self.ms.get("events", identity) for identity in feedback["sources"]], ensure_ascii=False)
+            if feedback.get("sources") else ""
+        )
+
         def prompt(current):
             original = current["run_spec"]["prompt"]
             context = [
@@ -966,6 +995,7 @@ class Delivery:
                 original
                 + "\n\nConfirmed CI repair plan:\n"
                 + row["ci_diagnosis"]["plan"]
+                + feedback_context
                 + (instruction(source_inputs) if source_inputs else "")
                 + (
                     "\n\nCurrent operator execution context (not a requirements amendment):\n"

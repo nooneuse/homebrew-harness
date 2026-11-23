@@ -23,8 +23,9 @@ INTENTS = {
     "approve_review",
     "decline_direction",
     "roadmap_commitment",
+    "own_pr_reply",
 }
-AUTOMATIC = {"acknowledge", "clarify", "followup"}
+AUTOMATIC = {"acknowledge", "clarify", "followup", "own_pr_reply"}
 NEXT = {
     "clarify",
     "discuss",
@@ -34,6 +35,7 @@ NEXT = {
     "decline",
     "wait",
     "settle",
+    "repair",
 }
 
 
@@ -47,6 +49,7 @@ def validate(raw, sources):
         "enabled_actions": sorted(ACTIONS),
         "auto_intents": [],
         "poll_seconds": 43200,
+        "own_pr_poll_seconds": 120,
         "debounce_seconds": 10,
         "max_debounce_seconds": 60,
         "authorization_seconds": None,
@@ -104,6 +107,7 @@ def validate(raw, sources):
             raise boundary_error(ValueError, "communication_contract", "Invalid communication actions or automatic intents.")
     for name, low, high in [
         ("poll_seconds", 0.1, 31536000),
+        ("own_pr_poll_seconds", 0.1, 31536000),
         ("debounce_seconds", 0, 86400),
         ("max_debounce_seconds", 0, 86400),
         ("authorization_seconds", 1, 31536000),
@@ -229,6 +233,7 @@ def validate_proposal(raw, policy):
         "requirements_changed",
         "category",
         "reply_brief",
+        "repair",
     }
     if not isinstance(raw, dict) or set(raw) - allowed:
         raise boundary_error(ValueError, "communication_contract", "Invalid discussion proposal fields.")
@@ -242,6 +247,18 @@ def validate_proposal(raw, policy):
         raise boundary_error(ValueError, "communication_contract", "Invalid discussion category.")
     if raw.get("next_step") not in NEXT:
         raise boundary_error(ValueError, "communication_contract", "Unknown discussion next step.")
+    if raw["next_step"] == "repair":
+        repair = raw.get("repair")
+        if (not isinstance(repair, dict) or set(repair) != {"plan", "sources"}
+                or not isinstance(repair["sources"], list) or not repair["sources"]
+                or any(not isinstance(s, str) for s in repair["sources"])
+                or len(set(repair["sources"])) != len(repair["sources"])):
+            raise boundary_error(ValueError, "communication_contract", "PR repair requires a plan and unique source event IDs.")
+        text(repair["plan"], "PR repair plan", 16000)
+        if raw.get("requirements_changed", False):
+            raise boundary_error(ValueError, "communication_contract", "PR repair preserves accepted requirements; use develop for a requirements amendment.")
+    elif raw.get("repair") is not None:
+        raise boundary_error(ValueError, "communication_contract", "A repair plan requires next_step=repair.")
     for name in ("reason", "alignment"):
         text(raw.get(name), name, 8000)
     if (
@@ -355,6 +372,8 @@ def validate_plan(plan):
         raise boundary_error(ValueError, "communication_contract", "Invalid communication plan.")
     if plan.get("kind") not in ACTIONS or plan.get("intent") not in INTENTS:
         raise boundary_error(ValueError, "communication_contract", "Unknown publication kind or intent.")
+    if plan["intent"] == "own_pr_reply" and plan["kind"] == "submit_review":
+        raise boundary_error(ValueError, "communication_contract", "An own-PR reply is a comment or thread reply, not a formal review.")
     ids = plan.get("question_ids", [])
     if (not isinstance(ids, list) or (current_limits().communication_question_ids is not None and len(ids) > current_limits().communication_question_ids)
             or any(not isinstance(identity, str) for identity in ids)

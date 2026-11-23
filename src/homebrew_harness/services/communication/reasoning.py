@@ -54,7 +54,8 @@ def public(plan):
                 "reply_brief": copy.deepcopy(value["reply_brief"]),
                 "public_questions": copy.deepcopy(open_questions(value, "requester"))}
     return {"next_step": value["next_step"], "facts": value.get("facts", []),
-            "draft": value.get("draft"), "public_questions": open_questions(value, "requester")}
+            "draft": value.get("draft"), "public_questions": open_questions(value, "requester"),
+            **({"repair_plan": value["repair"]["plan"]} if value.get("repair") else {})}
 
 
 def work_status(store, job):
@@ -135,6 +136,7 @@ def run(agent, job, project, deadline):
             if same:
                 result = copy.deepcopy(previous)
                 result.pop("communication", None)
+                result.pop("repair", None)
                 result.update(next_step="operator" if open_questions(result, "maintainer") else "wait",
                               reason="Confirmation received; waiting for substantive input or maintainer decision.",
                               progress=True, requirements_changed=False)

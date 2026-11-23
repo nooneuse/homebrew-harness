@@ -8,7 +8,17 @@
 
 在 repository_maintenance 的 ServiceSpec 中增加 communication。项目需已有 repository source，完整配置见[英文文档](COMMUNICATION.md#host-configuration)。projects 使用 provider/instance/project 和宿主环境变量引用；凭据与真实接入地址保存在两个工作区之外。remote 模式要求 owner-only 的独立 credentials_file，写凭据不进入模型或开发环境；local 只接受 synthetic 的本地协议服务。
 
-默认每半天发现和处理一批新材料，auto_intents 为空，公开发言需要批准。可明确预授权配置项目内的 acknowledge/clarify/followup。正式 review 和项目路线承诺仍需操作者决定，提交 review 不自动合并或关闭 PR。
+普通讨论默认每半天轮询一次，auto_intents 为空，公开发言需要批准。可明确预授权配置项目内的 acknowledge/clarify/followup。own_pr_reply 允许在当前 Work 授权下，回应本 Service 已确认发布的 PR，支持普通评论和线程回复，不包括其他 PR 或正式 review。正式 review 和项目路线承诺仍需操作者决定，提交 review 不自动合并或关闭 PR。
+
+## 跟进自身 PR
+
+Delivery 确认 PR 发布后立即建立跟踪。尚未完成 Work 的开放 PR 使用 poll_seconds 与 own_pr_poll_seconds 中较短的间隔，后者默认 120 秒；普通讨论保留原轮询周期。没有新的讨论输入或明确研判请求时，观察不会调用模型。
+
+讨论模型可读取关联 Work、已接受范围、已发布 head 和修复状态，选择解释、具体澄清或提出 next_step="repair"，附带 repair={"plan":"修复计划","sources":["event_..."]}。修复保留需求、Work、分支和原 PR，沿用 Delivery 的 auto_ci_fix、修复次数策略及 Work 授权。真实的需求范围变化继续走需求接受流程。
+
+尚未启动的修复遇到新反馈或候选变化时需要重新研判；Work 暂停或发布效果不确定时延后执行。新候选发布回执会唤醒讨论，让模型根据实际结果回应，不能把修复提案当作已发布事实。
+
+Service 执行合并前检查未研判反馈、未解决问题／发现和待发送回复，并将合并授权绑定到已处理的反馈版本。开 PR 或开发 Run 结束都不表示 Work 完成；仍按配置的合并策略确认实际合入结果。
 
 ## 多轮讨论
 
