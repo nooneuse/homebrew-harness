@@ -321,6 +321,9 @@ class Peer:
                             "title": "Restore the documented value",
                             "body": "Restore the value and preserve the fixed unit-test contract.",
                         })
+                    elif kind == "integration_assessment":
+                        proposal = getattr(outer, "integration_assessment", lambda evidence: {
+                            "action": "integrate", "reason": "Integrate the recorded fixed target."})(data["input"])
                     elif kind == "ci_triage":
                         proposal = getattr(outer, "ci_value", {"next_action": "repair",
                             "classification": "code",

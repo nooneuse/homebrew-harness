@@ -139,17 +139,63 @@ def ci_triage(store, job, raw, conn=None):
         raise boundary_error(ValueError, "service_result_invalid", "Invalid CI diagnosis.")
     text(raw["reason"], maximum=8000)
     text(raw["plan"], maximum=16000)
-    if raw.get("next_action") not in {"repair", "recheck", "reobserve", "wait", "defer", "stop", "human_required", "reconsider_review", "plan_validation", "proceed", "retry_prepare"}:
+    if raw.get("next_action") not in {"repair", "recheck", "reobserve", "wait", "defer", "stop", "human_required", "reconsider_review", "plan_validation", "proceed", "retry_prepare", "assess_integration"}:
         raise boundary_error(ValueError, "service_result_invalid", "Unknown CI next_action.")
+    if raw["next_action"] == "assess_integration":
+        from .delivery.periodic import ci_integration_eligible
+
+        row = store.get("changesets", job["target"], conn)
+        if raw["classification"] != "baseline" or not ci_integration_eligible(store.delivery.spec, row):
+            raise boundary_error(ValueError, "service_result_invalid", "Early integration needs a baseline CI diagnosis on a published periodic PR.")
     if "wait_seconds" in raw:
         from homebrew_harness.runtime.limits import positive
         positive(raw["wait_seconds"], "CI wait_seconds")
+    if ("source_ref" in raw or "integration" in raw) and store.delivery is not None and store.delivery.spec.get("base_update") == "periodic":
+        row = store.get("changesets", job["target"], conn)
+        if ((row.get("integration_schedule") or {}).get("state") == "integrating"
+                and (row.get("ci") or {}).get("kind") == "candidate_merge_conflict"):
+            raise boundary_error(ValueError, "service_result_invalid", "Resolve this conflict on the selected candidate and target; do not select a new source.")
     if 'source_ref' in raw:
         if not isinstance(raw['source_ref'],str):raise ValueError('source_ref must be text.')
         from .work_actions import validate_action
         choice={'mode':'fork','source_ref':raw['source_ref'],'reason':raw['plan']}
         if 'integration' in raw:choice['integration']=raw['integration']
         validate_action(choice)
+    return raw
+
+
+def integration_assessment(store, job, raw, conn=None):
+    if (
+        not isinstance(raw, dict)
+        or not {"action", "reason"} <= raw.keys()
+        or raw.keys() - {"action", "reason", "defer_seconds"}
+        or raw["action"] not in ("integrate", "defer", "blocked")
+    ):
+        raise boundary_error(
+            ValueError, "service_result_invalid", "Invalid integration assessment."
+        )
+    text(raw["reason"], "reason", 8000)
+    if raw["action"] == "defer":
+        if job["input"].get("overdue"):
+            raise boundary_error(
+                ValueError, "service_result_invalid",
+                "Integration assessment is overdue; choose integrate or blocked.",
+            )
+        if "defer_seconds" in raw:
+            from homebrew_harness.runtime.limits import positive
+
+            try:
+                positive(raw["defer_seconds"], "defer_seconds")
+            except (ValueError, OverflowError) as error:
+                raise boundary_error(
+                    ValueError, "service_result_invalid",
+                    "defer_seconds must be a finite positive number.",
+                ) from error
+    elif "defer_seconds" in raw:
+        raise boundary_error(
+            ValueError, "service_result_invalid",
+            "Only a defer action can include defer_seconds.",
+        )
     return raw
 
 
@@ -262,6 +308,12 @@ def apply_discussion(store, conn, job, result):
 
 def apply_delivery(store, conn, job, result):
     return store.delivery.store.finish_model(conn, job, result)
+
+
+def apply_integration_assessment(store, conn, job, result):
+    from .delivery.periodic import finish
+
+    return finish(store, conn, job, result)
 
 
 def apply_audit(store, conn, job, result):

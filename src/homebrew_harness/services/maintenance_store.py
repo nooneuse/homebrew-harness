@@ -337,6 +337,11 @@ class MaintenanceStore:
             )
 
     def fail_target(self, conn, job):
+        if job["kind"] == "integration_assessment":
+            from .delivery.periodic import fail
+
+            fail(self, conn, job)
+            return
         if job["kind"] == "discussion" and self.communication is not None:
             row = self.communication.get("discussions", job["target"], conn)
             row.update(
@@ -438,6 +443,13 @@ class MaintenanceStore:
                     and job.get("generation") == self.header["generation"]
                 ):
                     continue
+                if job["kind"] == "integration_assessment":
+                    from .delivery.periodic import job_current
+
+                    if not job_current(self, conn, job):
+                        job.update(state="stale")
+                        self.db._put(conn, "service_jobs_model", job["id"], job)
+                        continue
                 from homebrew_harness.runtime.limits import reached
                 if reached(job.get("attempt_limit", self.policy["job_attempts"]), job["attempts"]):
                     job.update(state="failed", error="attempts_exhausted")

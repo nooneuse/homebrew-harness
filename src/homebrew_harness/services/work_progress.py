@@ -58,7 +58,7 @@ def view(runtime, work):
         "changeset_id": work.get("changeset_id"),
         "delivery": ({k: candidate.get(k) for k in
                       ("state", "error", "error_detail", "error_info", "reasoning_job_id", "test_failure", "ci_diagnosis",
-                       "denied_action_id", "denied_request_id", "publication_feedback")}
+                       "denied_action_id", "denied_request_id", "publication_feedback", "integration_schedule")}
                      if valid_candidate else None),
     }
 

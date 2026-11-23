@@ -36,9 +36,35 @@ def branch(value, *, prefix=False):
 
 
 def validate_base_update(mode):
-    if not isinstance(mode, str) or mode not in {"manual", "automatic"}:
-        raise ValueError("Base updates must be manual or automatic.")
+    if not isinstance(mode, str) or mode not in {"manual", "automatic", "periodic"}:
+        raise ValueError("Base updates must be manual, automatic or periodic.")
     return {"base_update": mode}
+
+
+PERIODIC_DEFAULTS = {
+    "assessment_seconds": 6 * 3600,
+    "min_integration_seconds": 6 * 3600,
+    "max_deferral_seconds": 24 * 3600,
+}
+
+
+def periodic_settings(spec):
+    return {**PERIODIC_DEFAULTS, **spec.get("periodic_integration", {})}
+
+
+def validate_periodic(raw):
+    from homebrew_harness.runtime.limits import positive
+
+    if not isinstance(raw, dict) or raw.keys() - PERIODIC_DEFAULTS.keys():
+        raise ValueError("Invalid periodic integration settings.")
+    values = periodic_settings({"periodic_integration": raw})
+    for key, value in values.items():
+        positive(value, key, zero=key == "min_integration_seconds")
+        if value > 30 * 86400:
+            raise ValueError("Periodic integration windows cannot exceed 30 days.")
+    if values["max_deferral_seconds"] < max(values["assessment_seconds"], values["min_integration_seconds"]):
+        raise ValueError("Maximum integration deferral must cover the assessment and minimum integration intervals.")
+    return values
 
 
 def validate_ci_limits(limit, warning):
@@ -90,10 +116,13 @@ def validate(raw):
         "api_token_env",
         "author_name_env",
         "author_email_env",
+        "periodic_integration",
     }
     if not isinstance(raw, dict) or set(raw) - fields:
         raise ValueError("Invalid delivery declaration fields.")
     value = {**defaults, **raw}
+    if "periodic_integration" in value:
+        value["periodic_integration"] = validate_periodic(value["periodic_integration"])
     merge = value["merge"]
     if not isinstance(merge, dict) or set(merge) - {"mode", "method", "poll_seconds"}:
         raise ValueError("Invalid merge policy.")

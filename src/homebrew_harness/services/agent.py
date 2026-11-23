@@ -733,6 +733,8 @@ class ServiceAgent:
         if not self.job:
             return None
         kind = self.job["kind"]
+        if kind == "integration_assessment":
+            return None  # Assess only the admitted, frozen pair of Git versions.
         if kind in {"triage", "recovery_plan"}:
             return self.job["target"]
         if kind in {"review", "ci_triage", "publication", "validation_plan"}:

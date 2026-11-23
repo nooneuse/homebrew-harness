@@ -239,6 +239,7 @@ class JobContracts(unittest.TestCase):
                 "reason": "Missing facts.",
                 "plan": "Read logs.",
             },
+            "integration_assessment": {"action": "integrate", "reason": "The fixed target is needed."},
             "audit": {"text": "Reviewed fixed code.", "findings": []},
             "conversation": {"text": "Discuss the plan."},
             "recovery_plan": {

@@ -258,9 +258,12 @@ def commands(parser, *, attach=True):
     if attach:
         delivery.add_argument("service_id")
     delivery_ops = delivery.add_subparsers(dest="delivery_command", required=True)
-    base_updates = delivery_ops.add_parser("base-updates", help="Choose explicit or automatic target integration.")
-    base_updates.add_argument("mode", choices=("manual", "automatic"))
+    base_updates = delivery_ops.add_parser("base-updates", help="Choose manual, automatic or periodic target integration.")
+    base_updates.add_argument("mode", choices=("manual", "automatic", "periodic"))
     base_updates.add_argument("--request-id")
+    assess = delivery_ops.add_parser("assess-integration", help="Request an early periodic integration assessment.")
+    assess.add_argument("identity")
+    assess.add_argument("--request-id")
     limits = delivery_ops.add_parser("ci-limits")
     limits.add_argument("--limit", type=json.loads, default=None, help="null for advisory counts; an integer for a hard budget")
     limits.add_argument("--warning", type=json.loads, default=2, help="Progress threshold, or null to disable")
@@ -475,6 +478,8 @@ def operate(service, args):
         op = args.delivery_command
         if op == "base-updates":
             return service.configure_base_updates(args.mode, request_id=args.request_id)
+        if op == "assess-integration":
+            return service.assess_integration(args.identity, request_id=args.request_id)
         if op == "ci-limits":
             return service.configure_ci_limits(ci_fix_limit=args.limit,
                 ci_fix_warning=args.warning, request_id=args.request_id)
