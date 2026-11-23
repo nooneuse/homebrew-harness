@@ -250,11 +250,34 @@ class JobContract:
             value.pop("instructions", None)
         return value
 
+    def followup_instruction(self, *, drafting=False):
+        if self.kind != "discussion" or not self.job["input"].get("own_pr"):
+            return ""
+        if drafting:
+            return (
+                " This reply concerns our own published PR. Follow the Lead assessment without changing its plan. "
+                "Use own_pr_reply for a routine comment or thread reply. Describe planned repairs as pending; "
+                "describe published changes only from the supplied head and receipt. Do not approve your own PR."
+            )
+        return (
+                " This discussion concerns our own published PR. own_pr contains its accepted Work, exact head and current repair. "
+                "Respond to feedback on this same Work; a posted PR is not delivery completion. "
+                "For a repair within accepted requirements, choose next_step=repair with repair={plan,sources:[event IDs]}, "
+                "requirements_changed=false and no new draft. This preserves the Work, scope, branch and PR and uses the existing repair approval policy. "
+                "Use develop only for an actual requirements amendment, and wait while a repair is admitted. "
+                "Read the original feedback, relevant current code and the linked changeset before deciding to repair or explain. "
+                "Keep unresolved feedback in findings or questions with its actual status; outdated lines do not prove resolution. "
+                "A published repair wakes this discussion for an evidence-based reply; never claim a proposed repair is already published. "
+                "Use intent=own_pr_reply for a routine comment or thread reply to this PR; it cannot approve your own PR or waive platform checks. "
+                "Unchanged status, your own publication and acknowledgements need no public response."
+        )
+
     def instruction(self, loader):
         skills = [loader.skills[n] for n in self.handler.skills if n in loader.skills]
         return (
             COMMON
             + self.handler.instruction
+            + self.followup_instruction()
             + (" The operator explicitly requested applying your scoped recovery choice. Return optional action={mode:resume/fork/adopt_candidate,source_ref,reason,start:Boolean,integration:{method:merge/rebase,target_ref}}. Inspect Work sources and observe a fixed target before selecting references; do not guess IDs. The proposal completes this reasoning phase; native controls apply it afterward under current authority."
                if self.kind=='recovery_plan' and self.job['input'].get('execute_requested') else "")
             + (
@@ -317,6 +340,14 @@ class JobContract:
                 return
             raise ValueError("Evidence is outside this frozen report window.")
         if self.kind == "discussion":
+            owned = self.job["input"].get("own_pr") or {}
+            if kind == "changesets" and identity == owned.get("changeset_id"):
+                return
+            if kind == "quality_output" and owned.get("changeset_id"):
+                from .delivery.quality import output_reference
+
+                output_reference(self.store.get("changesets", owned["changeset_id"]), identity)
+                return
             if (
                 kind in {"discussions", "discussion_events"}
                 and identity == self.job["target"]

@@ -111,6 +111,7 @@ class CommunicationStore:
                 "review": row.get("review_id"),
                 "policy": self.policy,
                 "maintenance": self.ms.policy,
+                **({"delivery": row["delivery_publication"]} if row.get("delivery_publication") else {}),
             }
         )
 
@@ -312,10 +313,28 @@ class CommunicationStore:
             "discussion", self.id, ObjectRef(**subject).key()
         )
         row = self.db._get(conn, "service_discussions", did)
-        if row and action["kind"] == "ensure_change_request":
+        if action["kind"] == "ensure_change_request" and action.get("state") == "confirmed":
+            if row is None:
+                row = self.new_discussion(subject, "delivery", action["work_id"])
             row["work_id"] = action["work_id"]
             self.put(conn, "discussions", row)
+            from .followup import publication
+
+            publication(self, conn, row, action)
         self.resolve_echoes(conn, action)
+
+    def new_discussion(self, subject, source, work_id=None):
+        return {
+            "id": "discussion_" + request_key("discussion", self.id, ObjectRef(**subject).key()),
+            "subject": subject, "work_id": work_id, "source": source,
+            "state": "ready_to_assess", "revision": 0, "seq": 0,
+            "processed_seq": 0, "input_revision": 0, "assessed_input_revision": 0,
+            "analysis_epoch": 0, "draft_revision": 0, "review_id": None,
+            "observed_basis": None, "next_poll": 0,
+            "projection": {"facts": [], "questions": [], "findings": [], "draft": None},
+            "no_progress": 0, "created_at": time.time(), "dirty_since": time.time(),
+            "ready_after": time.time() + self.policy["debounce_seconds"],
+        }
 
     def resolve_echoes(self, conn, action):
         # A pre-receipt observation is provisional; another remote object with
@@ -381,33 +400,9 @@ class CommunicationStore:
                 )
                 row = self.db._get(conn, "service_discussions", did)
                 if row is None:
-                    row = {
-                        "id": did,
-                        "subject": item.subject.data(),
-                        "work_id": self.delivery_work(conn, item.subject.data()),
-                        "source": name,
-                        "state": "ready_to_assess",
-                        "revision": 0,
-                        "seq": 0,
-                        "processed_seq": 0,
-                        "input_revision": 0,
-                        "assessed_input_revision": 0,
-                        "analysis_epoch": 0,
-                        "draft_revision": 0,
-                        "review_id": None,
-                        "observed_basis": None,
-                        "next_poll": 0,
-                        "projection": {
-                            "facts": [],
-                            "questions": [],
-                            "findings": [],
-                            "draft": None,
-                        },
-                        "no_progress": 0,
-                        "created_at": time.time(),
-                        "dirty_since": time.time(),
-                        "ready_after": time.time() + self.policy["debounce_seconds"],
-                    }
+                    row = self.new_discussion(
+                        item.subject.data(), name, self.delivery_work(conn, item.subject.data())
+                    )
                 if item.object == item.subject:
                     metadata = item.content.get("metadata") or {}
                     field = (
@@ -586,6 +581,11 @@ class CommunicationStore:
                 "assessment_job_id": row.get("assessment_job_id"),
                 "no_progress": row["no_progress"],
             }
+            from .followup import context
+
+            own_pr = context(self, row, conn)
+            if own_pr:
+                payload["own_pr"] = own_pr
             key = row["id"] + ":" + basis + ":" + str(through)
             job = self.ms.job(
                 conn, "discussion", row["id"], row["revision"], payload, key
@@ -616,6 +616,9 @@ class CommunicationStore:
             raise boundary_error(ValueError, "communication_contract",
                 "Code findings require a fixed review snapshot; use facts for issue observations."
             )
+        from .followup import validate_repair
+
+        validate_repair(self, job, result, conn)
 
     def finish(self, conn, job, result):
         result = validate_proposal(result, self.ms.policy)
@@ -696,6 +699,7 @@ class CommunicationStore:
             "defer": "settled",
             "decline": "waiting_operator",
             "settle": "settled",
+            "repair": "waiting_work",
         }[step]
         self.put(conn, "discussions", row)
         if not fresh:
@@ -703,7 +707,15 @@ class CommunicationStore:
             row["ready_after"] = 0
             self.put(conn, "discussions", row)
             return "completed"
-        if step == "develop":
+        if step != "repair" and (row.get("repair") or {}).get("state") in {"pending", "needs_reassessment"}:
+            row["repair"].update(state="superseded", superseded_by=rid)
+            self.put(conn, "discussions", row)
+        if step == "repair":
+            from .followup import record
+
+            record(self, row, job, result, rid)
+            self.put(conn, "discussions", row)
+        elif step == "develop":
             self.requirements_request(conn, row, result)
         elif row["state"] == "waiting_operator" or open_questions(result, "maintainer"):
             self.information_request(conn, row)
@@ -888,6 +900,15 @@ class CommunicationStore:
     def plan(self, conn, row, proposal):
         validate_plan(proposal)
         validate_public_questions(proposal, row["projection"])
+        if proposal["intent"] == "own_pr_reply":
+            from .followup import context
+
+            owned = context(self, row, conn)
+            if owned is None:
+                raise ValueError("own_pr_reply applies only to this Service's confirmed PR and Work.")
+            observed = row.get("observed_basis") or {}
+            if observed.get("state") != "open" or observed.get("head") != owned["head"]:
+                raise ValueError("Reobserve the current open PR before proposing an own-PR reply.")
         if proposal["kind"] not in self.policy["enabled_actions"]:
             raise boundary_error(ValueError, "communication_contract", "Communication operation is disabled by host policy.")
         if row["state"] in {"paused", "blocked"}:
@@ -917,6 +938,10 @@ class CommunicationStore:
             proposal["intent"] in self.policy["auto_intents"]
             and proposal["kind"] != "submit_review"
         )
+        if auto and proposal["intent"] == "own_pr_reply":
+            work = self.db._get(conn, "service_work", row["work_id"])
+            auto = (not work.get("pause_requested") and not work.get("cancel_requested")
+                    and self.ms.valid_authority(work))
         value = {
             "id": identity,
             "discussion_id": row["id"],
@@ -1093,6 +1118,26 @@ class CommunicationStore:
     def recover(self):
         with self.db.write() as conn:
             self.runtime.store.guard(conn, self.runtime.header)
+            # Seed unfinished owned PRs even if publication preceded communication
+            # discovery. Only the latest receipt for a subject may refresh its basis.
+            seen = set()
+            for (raw,) in conn.execute(
+                "SELECT value FROM records WHERE section='service_actions' AND owner=? "
+                "AND json_extract(value,'$.kind')='ensure_change_request' "
+                "AND json_extract(value,'$.state')='confirmed' ORDER BY rowid DESC",
+                ("service:" + self.id,),
+            ).fetchall():
+                action = json.loads(raw)
+                subject = (action.get("result") or {}).get("subject")
+                if not subject:
+                    continue
+                key = ObjectRef(**subject).key()
+                if key in seen:
+                    continue
+                seen.add(key)
+                work = self.db._get(conn, "service_work", action["work_id"])
+                if work and work["state"] not in {"delivered", "cancelled", "rejected"}:
+                    self.link_delivery(conn, action)
             for _, raw in conn.execute(
                 "SELECT key,value FROM records WHERE section='service_communication_actions' AND owner=? AND json_extract(value,'$.state')='started'",
                 ("service:" + self.id,),

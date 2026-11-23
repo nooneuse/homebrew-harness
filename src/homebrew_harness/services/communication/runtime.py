@@ -207,8 +207,13 @@ class CommunicationRuntime:
         with self.ms.db.write() as conn:
             self.runtime.store.guard(conn, self.runtime.header)
             current = self.store.get("discussions", row["id"], conn)
+            work = self.ms.db._get(conn, "service_work", current.get("work_id") or "")
+            owned = (work and work["state"] not in {"delivered", "cancelled", "rejected"}
+                     and self.store.delivery_work(conn, current["subject"]) == work["id"]
+                     and (current.get("observed_basis") or {}).get("state") == "open")
+            interval = min(self.policy["poll_seconds"], self.policy["own_pr_poll_seconds"]) if owned else self.policy["poll_seconds"]
             current.update(
-                next_poll=time.time() + self.policy["poll_seconds"],
+                next_poll=time.time() + interval,
                 error=None,
                 poll_attempts=0,
             )
