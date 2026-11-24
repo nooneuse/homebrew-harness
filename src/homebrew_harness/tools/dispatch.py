@@ -546,7 +546,12 @@ def _execute_tool(
                 check_inputs=False,
             )
         policy = (
-            test_runner.permission(arguments["name"], workdir, test_call_context)
+            test_runner.permission(
+                arguments["name"],
+                workdir,
+                test_call_context,
+                selection=arguments.get("selection"),
+            )
             if event.name == "run_tests" and test_runner
             else None
         )
