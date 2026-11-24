@@ -52,6 +52,45 @@ def digest(value):
     return hashlib.sha256(encoded(value).encode()).hexdigest()
 
 
+_APPROVAL_SCOPE_TARGETS = 5
+_APPROVAL_SCOPE_TEXT_CHARS = 160
+
+
+def _bounded_scope_text(value):
+    text = value if isinstance(value, str) else str(value)
+    if len(text) > _APPROVAL_SCOPE_TEXT_CHARS:
+        return text[:_APPROVAL_SCOPE_TEXT_CHARS] + "..."
+    return text
+
+
+def _approval_scope(selection):
+    """Render a bounded, public test-scope summary for the approval reason.
+
+    Only selection text already present in the exact request arguments is
+    echoed (bounded); launcher argv, environment values and container policy
+    are never included. Invalid selections are described, not validated here;
+    the runner still rejects them at execution time.
+    """
+    if selection is None:
+        return "full registered suite"
+    if not isinstance(selection, dict):
+        return "selected scope; unrecognized selection will be rejected by the runner"
+    targets = selection.get("targets")
+    if not isinstance(targets, list) or not targets:
+        return "selected scope; missing targets will be rejected by the runner"
+    shown = ", ".join(
+        _bounded_scope_text(target)
+        for target in targets[:_APPROVAL_SCOPE_TARGETS]
+    )
+    scope = f"selected scope: {len(targets)} target(s): {shown}"
+    if len(targets) > _APPROVAL_SCOPE_TARGETS:
+        scope += f", and {len(targets) - _APPROVAL_SCOPE_TARGETS} more"
+    filter_text = selection.get("filter")
+    if isinstance(filter_text, str) and filter_text:
+        scope += f"; filter: {_bounded_scope_text(filter_text)}"
+    return scope
+
+
 def executable_identity(path):
     configured = Path(path)
     if not configured.is_absolute():
@@ -681,7 +720,16 @@ class TestRunner:
         )
         return {"fingerprint": self._fingerprint(recipe), "locked": locked}
 
-    def permission(self, name, cwd, context):
+    def permission(self, name, cwd, context, selection=None):
+        """Decide test permission with a bounded, operator-readable ask summary.
+
+        The ask reason is a public summary boundary: it identifies the recipe,
+        the full or selected scope, the execution backend and the stable
+        definition reference. It never embeds the fixed launcher argv/source,
+        container commands or environment values; those remain bound to the
+        exact request through ``approval_identity`` and the unchanged request
+        context/consume checks in ``runs/requests.py``.
+        """
         recipe = self._recipe(name)
         cwd = self._cwd(cwd, recipe)
         if context.role not in recipe.roles:
@@ -692,25 +740,17 @@ class TestRunner:
             allowed = self._grant(recipe, cwd, context) is not None
         finally:
             self.lock.release()
-        review = {
-            "name": name,
-            "argv": list(recipe.argv),
-            "cwd": str(cwd),
-            "role": context.role,
-            "task_id": context.task_id,
-            "timeout": recipe.timeout,
-            "output_bytes": recipe.output_bytes,
-            "cpu_seconds": recipe.cpu_seconds,
-            "locked_inputs": list(recipe.locked_globs),
-            "definition_id": digest(self.approval_identity(name, cwd)),
-        }
-        review["execution_backend"] = self.backend.name
-        if self.backend.name == "container":
-            review["container_policy"] = self.backend.policy.__dict__
+        if allowed:
+            return "allow", "Host test authorization matches."
+        definition_id = digest(self.approval_identity(name, cwd))
         return (
-            ("allow", "Host test authorization matches.")
-            if allowed
-            else ("ask", "Approve this fixed test invocation: " + encoded(review))
+            "ask",
+            f"Approve registered test recipe '{name}' ({_approval_scope(selection)}) "
+            f"on the '{self.backend.name}' execution backend. "
+            f"Definition reference: {definition_id}. "
+            "The fixed host launcher and execution policy are bound to this "
+            "definition and to the exact request arguments; raw commands and "
+            "environment values are not shown in this summary.",
         )
 
     def authorization_available(self, name, cwd, task_id=None):
