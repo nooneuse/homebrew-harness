@@ -290,6 +290,8 @@ def bash_snapshot(root, policy, deadline=None, cancel_events=()):
     records = {}
     size = 0
     omitted = 0
+    # Counts by category only; omitted paths and contents are never disclosed.
+    reasons = {"path": 0, "content": 0}
 
     def excluded(parts):
         return sensitive_path(parts) or any(
@@ -307,6 +309,7 @@ def bash_snapshot(root, policy, deadline=None, cancel_events=()):
             path = Path(parent) / name
             if excluded((*relative.parts, name)) or path.is_symlink():
                 omitted += 1
+                reasons["path"] += 1
             else:
                 keep.append(name)
         dirs[:] = keep
@@ -317,6 +320,7 @@ def bash_snapshot(root, policy, deadline=None, cancel_events=()):
             info = path.lstat()
             if excluded(parts) or not stat.S_ISREG(info.st_mode):
                 omitted += 1
+                reasons["path"] += 1
                 continue
             with SafeFile(root, str(relative / name)) as target:
                 raw, version, mode = target.snapshot(
@@ -333,6 +337,7 @@ def bash_snapshot(root, policy, deadline=None, cancel_events=()):
                 or path.suffix.lower() == ".pem"
             ):
                 omitted += 1
+                reasons["content"] += 1
                 continue
             size += len(raw)
             if len(records) >= policy.max_files or size > policy.max_input_bytes:
@@ -348,5 +353,6 @@ def bash_snapshot(root, policy, deadline=None, cancel_events=()):
     return records, {
         "included_files": len(records),
         "omitted_entries": omitted,
+        "omission_reasons": reasons,
         "input_bytes": size,
     }
