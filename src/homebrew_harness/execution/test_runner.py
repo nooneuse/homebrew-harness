@@ -114,6 +114,8 @@ class TestRecipe:
     approval_seconds: float | None = None
     allow_worktrees: bool = True
     snapshot_limits: dict = field(default_factory=dict)
+    default_targets: tuple[str, ...] | None = None
+    min_tests: int | None = None
     _identity: dict = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
@@ -172,9 +174,16 @@ class TestRecipe:
         ):
             raise TestRunnerError("CPU seconds must be a positive integer or None.")
         if self.selector is not None:
-            from .test_selection import LAUNCHER
+            from .test_selection import EXTENDED_LAUNCHER, LAUNCHER
 
-            if self.argv[1:] != ("-I", "-c", LAUNCHER):
+            # Opt-in settings select the extended launcher; legacy recipes keep
+            # the exact original builtin argv binding with no fallback.
+            expected = (
+                EXTENDED_LAUNCHER
+                if self.default_targets is not None or self.min_tests is not None
+                else LAUNCHER
+            )
+            if self.argv[1:] != ("-I", "-c", expected):
                 raise TestRunnerError(
                     "Selection requires the fixed builtin test launcher."
                 )
@@ -187,6 +196,38 @@ class TestRecipe:
             for root in self.test_roots
         ):
             raise TestRunnerError("Test roots must be relative directories.")
+        if self.default_targets is not None:
+            if self.selector != "unittest":
+                raise TestRunnerError(
+                    "Default test targets require the builtin unittest launcher."
+                )
+            if isinstance(self.default_targets, (str, bytes, dict)) or not isinstance(
+                self.default_targets, (list, tuple)
+            ):
+                raise TestRunnerError(
+                    "default_targets must be a nonempty list of dotted unittest targets."
+                )
+            from .test_selection import validate_selection
+
+            try:
+                validated = validate_selection(
+                    {"targets": list(self.default_targets)},
+                    "unittest",
+                    self.test_roots,
+                )
+            except (TypeError, ValueError) as error:
+                raise TestRunnerError(
+                    "default_targets must be nonempty dotted unittest targets under the declared test roots."
+                ) from error
+            object.__setattr__(self, "default_targets", tuple(validated["targets"]))
+        if self.min_tests is not None and (
+            type(self.min_tests) is not int or self.min_tests < 1
+        ):
+            raise TestRunnerError("min_tests must be a positive integer or None.")
+        if self.min_tests is not None and self.selector != "unittest":
+            raise TestRunnerError(
+                "min_tests requires the builtin unittest launcher."
+            )
         for key in ("timeout", "approval_seconds"):
             value = getattr(self, key)
             if value is None:
@@ -266,6 +307,11 @@ class TestRecipe:
             }
         if not legacy_output:
             data["hard_output"] = self.hard_output_bytes
+        # Legacy recipes without the new settings keep their exact fingerprint.
+        if self.default_targets is not None:
+            data["default_targets"] = self.default_targets
+        if self.min_tests is not None:
+            data["min_tests"] = self.min_tests
         return digest(data)
 
 
@@ -319,6 +365,7 @@ os.execve(spec["argv"][0], spec["argv"], spec["env"])
 
 
 from .test_selection import (
+    EXTENDED_LAUNCHER as _UNITTEST_EXTENDED,
     LAUNCHER as _UNITTEST,
     validate_selection,
     selection_environment,
@@ -719,6 +766,12 @@ class TestRunner:
                 "test_roots": list(recipe.test_roots),
                 "input_globs": list(recipe.input_globs),
                 "locked_globs": list(recipe.locked_globs),
+                **(
+                    {"default_targets": list(recipe.default_targets)}
+                    if recipe.default_targets is not None
+                    else {}
+                ),
+                **({"min_tests": recipe.min_tests} if recipe.min_tests is not None else {}),
             }
             for recipe in self.recipes.values()
         ]
@@ -755,6 +808,10 @@ class TestRunner:
         from .test_selection import validate_target_paths
 
         validate_target_paths(cwd, recipe.selector, selection)
+        if selection is None and recipe.default_targets is not None:
+            validate_target_paths(
+                cwd, recipe.selector, {"targets": list(recipe.default_targets)}
+            )
         scope = current_scope()
         context = (
             context or _CONTEXT.get() or TestContext(scope.role, scope.task_id or None)
@@ -851,7 +908,13 @@ class TestRunner:
                 "PYTHONDONTWRITEBYTECODE": "1",
                 "PYTHONNOUSERSITE": "1",
                 **dict(recipe.env),
-                **selection_environment(recipe.selector, recipe.test_roots, selection),
+                **selection_environment(
+                    recipe.selector,
+                    recipe.test_roots,
+                    selection,
+                    default_targets=recipe.default_targets,
+                    min_tests=recipe.min_tests,
+                ),
                 "HOME": str(self.workdir / prefix / "home"),
                 "TMPDIR": str(self.workdir / prefix / "tmp"),
             }
@@ -1011,6 +1074,16 @@ class TestRunner:
                 "status": status,
                 "selection": selection,
                 "test_scope": "selected" if selection is not None else "full",
+                **(
+                    {"default_targets": list(recipe.default_targets)}
+                    if selection is None and recipe.default_targets is not None
+                    else {}
+                ),
+                **(
+                    {"min_tests": recipe.min_tests}
+                    if selection is None and recipe.min_tests is not None
+                    else {}
+                ),
                 "exit_code": process.returncode if process is not None else None,
                 "started": started,
                 "completed": time.monotonic(),
@@ -1377,7 +1450,18 @@ def load_test_runner(path, workdir, *, missing_ok=False):
             if builtin is not None:
                 if builtin not in {"unittest", "pytest"} or "argv" in values:
                     raise ValueError()
-                values["argv"] = [sys.executable, "-I", "-c", _UNITTEST]
+                # Only opt-in fields select the extended launcher; no-option
+                # builtin recipes keep the exact legacy argv and identity.
+                extended = builtin == "unittest" and (
+                    values.get("default_targets") is not None
+                    or values.get("min_tests") is not None
+                )
+                values["argv"] = [
+                    sys.executable,
+                    "-I",
+                    "-c",
+                    _UNITTEST_EXTENDED if extended else _UNITTEST,
+                ]
                 values["selector"] = builtin
                 values.setdefault(
                     "locked_globs",

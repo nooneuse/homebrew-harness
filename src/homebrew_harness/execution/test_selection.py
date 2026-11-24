@@ -71,8 +71,60 @@ sys.exit(0 if result.wasSuccessful() else 1)
 '''
 
 
-def selection_environment(framework, roots, selection):
-    return {'HARNESS_TEST_SELECTION': json.dumps({'framework': framework, 'roots': roots, 'selection': selection})} if framework else {}
+# Opt-in extension of the builtin unittest launcher, selected only when the
+# host configures default_targets or min_tests. LAUNCHER above keeps its exact
+# bytes and behavior so installed container registries and legacy evidence
+# fingerprints remain valid; there is no fallback between the two commands.
+EXTENDED_LAUNCHER = r'''import json, os, sys, unittest
+from pathlib import Path
+project = Path.cwd()
+sys.path.insert(0, str(project))
+if (project / 'src').is_dir():
+    sys.path.insert(0, str(project / 'src'))
+request = json.loads(os.environ['HARNESS_TEST_SELECTION'])
+selection = request['selection']
+roots = request['roots']
+if request['framework'] == 'pytest':
+    import pytest
+    targets = selection['targets'] if selection else roots
+    args = list(targets)
+    if selection and selection.get('filter'):
+        args += ['-k', selection['filter']]
+    sys.exit(pytest.main(args))
+loader = unittest.TestLoader()
+if selection:
+    suite = loader.loadTestsFromNames(selection['targets'])
+elif request.get('default_targets'):
+    suite = loader.loadTestsFromNames(request['default_targets'])
+else:
+    suite = unittest.TestSuite()
+    for root in roots:
+        top = str(project) if (project / root / '__init__.py').is_file() else None
+        suite.addTests(loader.discover(root, top_level_dir=top))
+result = unittest.TextTestRunner(verbosity=1).run(suite)
+if result.testsRun == 0:
+    print('No tests were collected.', file=sys.stderr)
+    sys.exit(3)
+minimum = request.get('min_tests')
+if not selection and minimum is not None and result.testsRun < minimum:
+    print('Full verification ran %d tests; the host minimum is %d.' % (result.testsRun, minimum), file=sys.stderr)
+    sys.exit(4)
+sys.exit(0 if result.wasSuccessful() else 1)
+'''
+
+
+def selection_environment(framework, roots, selection, *, default_targets=None, min_tests=None):
+    if not framework:
+        return {}
+    request = {'framework': framework, 'roots': roots, 'selection': selection}
+    # Host defaults and the full-run minimum apply only without an explicit
+    # selection; legacy payloads stay byte-identical when they are unset.
+    if selection is None:
+        if default_targets:
+            request['default_targets'] = list(default_targets)
+        if min_tests is not None:
+            request['min_tests'] = min_tests
+    return {'HARNESS_TEST_SELECTION': json.dumps(request)}
 
 
 def validate_target_paths(root, framework, selection):

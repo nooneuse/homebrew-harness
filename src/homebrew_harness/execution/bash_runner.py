@@ -169,6 +169,13 @@ class ContainerShellRunner(ShellRunner):
             "mode": "container",
             "workspace": "isolated_copy",
             "writeback": False,
+            "notice": (
+                "This command ran in a filtered isolated workspace copy without "
+                "host state or writeback; omitted paths and contents are never "
+                "disclosed. Test attempts here cannot see host fixtures or "
+                "produce accepted evidence: use the run_tests tool with a "
+                "registered recipe instead."
+            ),
             "policy_fingerprint": self.bash_policy.fingerprint(),
             "inputs": dict(backend.inputs),
             "isolation": isolation or backend.status(),

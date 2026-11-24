@@ -77,6 +77,8 @@ A registered test recipe can provide a selector adapter. The host retains its la
 
 Omit `selection` for the full recipe. The unittest adapter accepts module, class, and method names. The pytest adapter accepts files or node IDs and an optional `filter`; pytest must be installed in the registered execution environment. A recipe with no selector adapter rejects selections rather than ignoring them.
 
+A builtin unittest recipe may also declare host-owned `default_targets` (a nonempty list of dotted unittest targets under the declared `test_roots`) and `min_tests` (a positive integer). Without an explicit selection the run executes only the configured defaults, or legacy discovery when they are unset, and `min_tests` applies to that full run; zero collected tests never pass. An explicit selection replaces the defaults entirely, reports `test_scope: "selected"`, and does not apply the full minimum. These opt-in fields select a separate extended builtin launcher and are bound into the recipe and launcher fingerprints, so cached evidence cannot cross configurations. Recipes without the fields keep the exact legacy launcher bytes, behavior, and evidence hashes; container registries must pin the matching launcher exactly, with no fallback between commands.
+
 For an external registry:
 
 ```json
@@ -97,7 +99,7 @@ For an external registry:
 
 The default cumulative test time, per-test wallclock time, and per-process CPU-seconds ceiling are unset. Test wallclock usage is still recorded. Explicit finite limits, execution counts, parent deadlines, and container CPU allocation, memory, and PID limits remain effective. Existing managed Runs retain their captured policy until an authorized new execution is created.
 
-Receipts record the selection and `test_scope` (`full` or `selected`) as well as the source snapshot, exit code, and cleanup. A selected pass does not satisfy a full-suite `tests_passed` condition or a Service full-quality gate. Zero collected tests, cancellation, timeout, or changed source do not count as passing.
+Receipts record the selection and `test_scope` (`full` or `selected`) as well as the source snapshot, exit code, and cleanup. A full run with the opt-in fields also records the configured `default_targets` and `min_tests`. A selected pass does not satisfy a full-suite `tests_passed` condition or a Service full-quality gate. Zero collected tests, cancellation, timeout, or changed source do not count as passing.
 
 A host-defined `tests_passed` predicate may explicitly include the same `selection` object to require selected verification. Without it, verification requires the full recipe. A later selected failure invalidates an older full pass.
 

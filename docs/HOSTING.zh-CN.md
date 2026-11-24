@@ -70,7 +70,7 @@ Git author／committer 使用 delivery.author_name_env／author_email_env；push
 
 专用编码部署可在 ServiceSpec 中为 `"profile": "repository_maintenance"` 添加 `"preset": "self_maintenance"`。它要求有范围的文件、搜索、测试工具和非空的 Delivery `required_tests`，开发 Run 默认预授权这些测试，并提供执行状态、隔离 Bash 和产物读取。集成默认使用定期评估，候选默认接受独立审查；可显式缩小工具范围（包括去掉 Bash）或选择其他基线策略。预设不授予 GitHub 发布、回复或合并权限，也不替代 Work 授权。
 
-测试使用外部容器 TestRunner 登记表。必跑 recipe 要用 `locked_globs` 声明信任的测试定义；候选修改或删除了相对于固定基线的受保护文件时，不会自动发放新验证授权。把允许新增的回归测试与可信执行入口分开设置。若启用 Bash，外部策略须声明 `mode: "container"`、本机不可变镜像、非 root 执行和 `preauthorized: true`，才能免逐条审批。容器执行器必须在两个工作区之外；新 Service 固定其身份和测试登记表指纹，变更后不会继续使用旧授权。命令只在过滤后的工作区副本运行，无网络、宿主注入的凭据或宿主回写；源码修改仍用有范围的文件工具。产物发布独立授权，宿主 Bash 不会自动获准。
+测试使用外部容器 TestRunner 登记表。必跑 recipe 要用 `locked_globs` 声明信任的测试定义；候选修改或删除了相对于固定基线的受保护文件时，不会自动发放新验证授权。把允许新增的回归测试与可信执行入口分开设置。若启用 Bash，外部策略须声明 `mode: "container"`、本机不可变镜像、非 root 执行和 `preauthorized: true`，才能免逐条审批。容器执行器必须在两个工作区之外；新 Service 固定其身份和测试登记表指纹，变更后不会继续使用旧授权。命令只在过滤后的工作区副本运行，无网络、宿主注入的凭据或宿主回写；源码修改仍用有范围的文件工具。副本统计在 `omitted_entries` 之外按类别给出 `omission_reasons` 计数（路径过滤与内容过滤），不披露被排除的路径或内容；副本内的测试尝试会被提示改用 `run_tests`。产物发布独立授权，宿主 Bash 不会自动获准。
 
 离线 `service validate` 检查声明并展示有效能力，不调用供应商。新建该预设 Service 时会在本机检查 Linux 容器守护进程和镜像，不拉取或运行镜像。模型额度、GitHub 权限和分支规则仍需另行验收。已有 Service 升级不会自动选择该预设。
 
