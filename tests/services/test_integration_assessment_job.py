@@ -1,12 +1,49 @@
 """Frozen periodic integration input and generic service job routing."""
 
 import json
+import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import patch
 
+from homebrew_harness import ServiceSpec
 from homebrew_harness.services.delivery import periodic
 from homebrew_harness.services.job_contracts import JobContract
 from tests.services import p2_fixture, test_maintenance as fixture
+
+
+class IntegrationAssessmentInstructions(unittest.TestCase):
+    def test_instruction_key_is_valid_and_scoped_to_its_own_job(self):
+        configured = {
+            "common": "Shared guidance.",
+            "integration_assessment": "Assess integration evidence.",
+            "triage": "Triage guidance.",
+        }
+        with tempfile.TemporaryDirectory() as root:
+            policy = ServiceSpec(
+                root, profile="repository_maintenance",
+                maintenance={"instructions": configured},
+            ).maintenance
+            with self.assertRaisesRegex(ValueError, "known service task names"):
+                ServiceSpec(
+                    root, profile="repository_maintenance",
+                    maintenance={"instructions": {"not_a_task": "Unknown guidance."}},
+                )
+        store = SimpleNamespace(policy=policy)
+        view = JobContract(store, {"kind": "integration_assessment"}).policy()
+        self.assertEqual(view["instructions"], {
+            "common": configured["common"],
+            "integration_assessment": configured["integration_assessment"],
+        })
+        view["instructions"]["integration_assessment"] = "changed returned view"
+        self.assertEqual(
+            policy["instructions"]["integration_assessment"],
+            configured["integration_assessment"],
+        )
+        triage = JobContract(store, {"kind": "triage"}).policy()
+        self.assertEqual(triage["instructions"], {
+            "common": configured["common"], "triage": configured["triage"],
+        })
 
 
 class IntegrationAssessmentValidation(unittest.TestCase):

@@ -17,6 +17,7 @@ DISPOSITIONS = {"accept", "needs_info", "defer", "reject", "merge", "decide"}
 INSTRUCTION_TARGETS = frozenset({
     "common", "development", "triage", "discussion", "review", "ci_triage", "validation_plan", "publication",
     "audit", "conversation", "report", "incident", "upgrade_assessment", "recovery_plan",
+    "integration_assessment",
 })
 
 
