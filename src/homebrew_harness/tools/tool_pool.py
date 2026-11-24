@@ -5,7 +5,6 @@ import copy
 import json
 from contextlib import contextmanager
 from contextvars import ContextVar
-from homebrew_harness.contracts import TRUSTED_MEDIA_TOOL_NAMES
 from homebrew_harness.runtime.execution_options import CONTROL_TOOLS
 from dataclasses import dataclass
 
@@ -81,7 +80,6 @@ class ToolPool:
         models=None,
         run_tools=frozenset(),
         service_tools=frozenset(),
-        session_media=False,
     ):
         access = intersect_access(allowlist)
         catalog = workflow.registry.catalog() if workflow is not None else []
@@ -101,14 +99,13 @@ class ToolPool:
                 or service_tools - SERVICE_TOOLS
             ):
                 raise ValueError("Invalid service tool scope.")
-        available = capabilities.tools() | run_tools | service_tools
-        if session_media:
-            available |= TRUSTED_MEDIA_TOOL_NAMES
         for definition in definitions:
-            name = definition["function"]["name"]
-            if name in {"invoke_tool", "invoke_mcp_tool"}:
+            if definition["function"]["name"] in {"invoke_tool", "invoke_mcp_tool"}:
                 continue  # Wrappers are derived once from the final visible targets.
-            if name not in available or (name in TRUSTED_MEDIA_TOOL_NAMES and not session_media):
+            if (
+                definition["function"]["name"]
+                not in capabilities.tools() | run_tools | service_tools
+            ):
                 continue
             tool = copy.deepcopy(definition)
             function = tool["function"]
@@ -201,8 +198,6 @@ class ToolPool:
             )
             for tool in external:
                 name = tool["function"]["name"]
-                if name in TRUSTED_MEDIA_TOOL_NAMES:
-                    continue  # Reserve media provenance for the local built-in endpoints.
                 if (access is None or name in access) and (
                     not hasattr(mcp, "visible")
                     or mcp.visible(candidates[name], mcp_role)

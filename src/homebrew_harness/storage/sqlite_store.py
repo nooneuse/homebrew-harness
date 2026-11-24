@@ -579,12 +579,13 @@ class SQLiteDatabase:
             )
 
     def mailbox(self, action, name, *, owner=None, records=()):
-        if action == "inspect":
+        if action in {"inspect", "inspect_unsettled"}:
             if not self.exists():
                 return []
+            predicate = "state IN ('pending', 'inflight')" if action == "inspect_unsettled" else "state='pending'"
             with self.connection() as conn:
                 rows = conn.execute(
-                    "SELECT record FROM inbox WHERE recipient=? AND state='pending' ORDER BY rowid LIMIT 65",
+                    f"SELECT record FROM inbox WHERE recipient=? AND {predicate} ORDER BY rowid LIMIT 65",
                     (name,),
                 ).fetchall()
                 return [json.loads(row[0]) for row in rows]
@@ -694,7 +695,6 @@ class SQLiteDatabase:
                         "sdk_goal",
                         "target_input_id",
                         "sdk_turn",
-                        "content_parts",
                     )
                 ):
                     raise ValueError(

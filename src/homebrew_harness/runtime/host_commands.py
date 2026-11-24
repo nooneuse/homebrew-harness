@@ -26,21 +26,21 @@ class HostCommand:
     @property
     def extended(self):
         return self.name in {"model", "reasoning", "compact", "new", "diff", "review", "skills", "help",
-            "memory", "worktree", "pwd", "ps", "hooks", "agents", "resume", "stop", "quit", "plan", "fork", "init", "media"}
+            "memory", "worktree", "pwd", "ps", "hooks", "agents", "resume", "stop", "quit", "plan", "fork", "init"}
 
     @property
     def allowed_during_recovery(self):
         return (
             self.name in {"usage", "storage", "recovery", "mcp", "inputs", "help", "diff", "pwd", "ps", "hooks", "agents", "resume", "stop", "quit"}
             or self.name in {"model", "reasoning", "skills"} and self.mode == "read"
-            or self.name in {"memory", "worktree", "media"} and self.mode == "read"
+            or self.name in {"memory", "worktree"} and self.mode == "read"
             or self.name in {"plan", "init"} and self.mode == "read"
             or self.name == "goal"
             and self.local
         )
 
     @classmethod
-    def parse(cls, query, *, allow_media=False):
+    def parse(cls, query):
         if not isinstance(query, str):
             raise ValueError("User query must be text.")
         matched = re.fullmatch(r"/([a-z]+)(?:\s+(.*))?", query.lstrip(), re.DOTALL)
@@ -55,7 +55,7 @@ class HostCommand:
             "task",
             "mcp",
             "model", "reasoning", "compact", "new", "diff", "review", "skills", "help",
-            "worktree", "pwd", "ps", "stop", "hooks", "agents", "resume", "quit", "exit", "plan", "fork", "init", "media",
+            "worktree", "pwd", "ps", "stop", "hooks", "agents", "resume", "quit", "exit", "plan", "fork", "init",
         }:
             if query.lstrip().startswith("/"):
                 raise ValueError("Unknown host command; use /help.")
@@ -64,19 +64,6 @@ class HostCommand:
         if name == "exit":
             name = "quit"
         argument = raw.strip()
-        if name == "media":
-            if not allow_media:
-                raise ValueError("/media requires the standalone Session terminal or Session API.")
-            parts = shlex.split(argument)
-            if not parts or parts == ["list"]:
-                return cls(query, name, "list", mode="read")
-            if len(parts) == 2 and parts[0] == "show":
-                return cls(query, name, "show", parts[1], mode="read")
-            if len(parts) == 3 and parts[0] == "export":
-                return cls(query, name, "export", mode="manage", values=tuple(parts[1:]))
-            raise ValueError("Use /media [list], /media show REF or /media export REF PATH.")
-        if allow_media and "[image:" in argument:
-            raise ValueError("Image attachments cannot be combined with a host command.")
         if name == "fork":
             return cls(query, name, "create", raw, mode="lifecycle")
         if name in {"plan", "init"}:

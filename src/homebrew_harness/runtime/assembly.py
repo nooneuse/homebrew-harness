@@ -77,10 +77,7 @@ class _PreparedLoop:
                 if controller and controller.active_id is None
                 else nullcontext()
             )
-            from homebrew_harness.context.media_history import media_history_scope
-
-            media = media_history_scope(messages) if self.components.media_root is not None else nullcontext()
-            with context, media, limits_scope(self.components.runtime_limits):
+            with context, limits_scope(self.components.runtime_limits):
                 return homebrew_harness.runtime.loop._agent_loop(
                     self.client,
                     self.model,

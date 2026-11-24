@@ -79,8 +79,6 @@ homebrew-harness session --models-config ~/.config/homebrew-harness/models.json
 
 ## 快速开始
 
-独立 Session 的 PNG/JPEG 附件与图表产物见[图片支持](docs/MULTIMODAL.zh-CN.md)。
-
 在默认交互中提出“帮我托管这个项目”，可使用随包安装的 host-project Skill，收集部署信息、准备私有配置并学习监督仓库维护 Service。详见[托管仓库](docs/HOSTING.zh-CN.md)。
 
 ```sh

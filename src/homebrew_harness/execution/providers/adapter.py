@@ -90,19 +90,7 @@ class ProtocolAdapter:
             raise ValueError("SDK retries are controlled by the ModelGateway.")
         return self
 
-    @property
-    def supported_input_modalities(self):
-        # Native image carriers are enabled only on the documented Chat path.
-        return ("text", "image") if self.protocol == "chat_completions" else ("text",)
-
     def prepare(self, request):
-        return self._prepare(request)
-
-    def prepare_logical(self, request):
-        """Project context without loading/encoding media or enforcing wire size."""
-        return self._prepare(request, logical=True)
-
-    def _prepare(self, request, *, logical=False):
         if request.tools and not self.capabilities.tools:
             raise ModelProtocolError("This profile does not support client tools.")
         if (
@@ -115,8 +103,7 @@ class ProtocolAdapter:
             )
         options = effective_options(self, request)
         body = CODECS[self.protocol].prepare(
-            request, messages(request, self), options, self.capabilities,
-            **({"logical": logical} if self.protocol == "chat_completions" else {}),
+            request, messages(request, self), options, self.capabilities
         )
         if (
             self.protocol != "dashscope_generation"

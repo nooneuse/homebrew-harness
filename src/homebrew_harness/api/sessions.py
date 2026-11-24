@@ -185,8 +185,7 @@ class SessionHandle(Handle):
         )
 
     @host_operation
-    def submit(self, text, *, request_id=None, goal=None, parts=None):
-        """Queue text, or ordered text and local PNG/JPEG attachment parts."""
+    def submit(self, text, *, request_id=None, goal=None):
         self.core.check_open()
         if goal is not None:
             from homebrew_harness.orchestration.hard_conditions import validate_spec
@@ -203,15 +202,14 @@ class SessionHandle(Handle):
                 sdk_turn=True,
                 request_id=request_id,
                 goal=goal,
-                parts=parts,
             )
         self.core.changed.set()
         return TurnHandle(
             self.core, ExecutionRef("turn", identity, self.id), owned=True
         )
 
-    def execute(self, text, *, timeout=None, request_id=None, goal=None, parts=None):
-        return self.submit(text, request_id=request_id, goal=goal, parts=parts).wait(timeout)
+    def execute(self, text, *, timeout=None, request_id=None, goal=None):
+        return self.submit(text, request_id=request_id, goal=goal).wait(timeout)
 
     @property
     def executions(self):
@@ -241,28 +239,6 @@ class SessionHandle(Handle):
 
     def recovery_status(self):
         return self.runtime.recovery_status()
-
-    @host_operation
-    def media(self):
-        """List typed media references retained in this Session's history."""
-        from homebrew_harness.runtime.session_commands import run_media
-
-        return run_media(self.runtime, "list")
-
-    @host_operation
-    def media_metadata(self, reference):
-        """Describe one retained, Session-owned image."""
-        from homebrew_harness.runtime.session_commands import run_media
-
-        return run_media(self.runtime, "show", reference)
-
-    @host_operation
-    def export_media(self, reference, destination):
-        """Export a retained image to a new, authorized path."""
-        from homebrew_harness.runtime.session_commands import run_media
-
-        with output_scope():
-            return run_media(self.runtime, "export", reference, destination)
 
     @host_operation
     def continue_recovery(self):
@@ -396,7 +372,6 @@ class Sessions:
                 )
             finally:
                 builder.close()
-            runtime.media_enabled = True
             handle = SessionHandle(self.core, runtime, options)
             provisional = handle.id
             self.live[provisional] = handle

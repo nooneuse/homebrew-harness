@@ -111,25 +111,6 @@ class ModelCapabilities:
     tools: bool = True
     json_schema: bool = True
     thinking: bool = True
-    input_modalities: tuple[str, ...] = ("text",)
-    output_modalities: tuple[str, ...] = ("text",)
-
-    def __post_init__(self):
-        for name in ("input_modalities", "output_modalities"):
-            values = getattr(self, name)
-            if (
-                not isinstance(values, (list, tuple))
-                or "text" not in values
-                or any(value not in ("text", "image") for value in values)
-            ):
-                raise ValueError("Model modalities must include text and may include image.")
-            object.__setattr__(self, name, tuple(values))
-
-    def supports_input(self, modality):
-        return modality in self.input_modalities
-
-    def supports_output(self, modality):
-        return modality in self.output_modalities
 
 
 @dataclass(frozen=True)
