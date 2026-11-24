@@ -588,16 +588,6 @@ class ModelGateway:
             raw, _state=self._state, _timeout=options.get("timeout", self._timeout)
         )
 
-    def require_image_input(self):
-        from homebrew_harness.execution.providers.common import require_image_input
-
-        require_image_input(self._adapter)
-
-    def validate_user_media(self, parts):
-        from homebrew_harness.execution.providers.common import validate_user_media
-
-        validate_user_media(parts, self._adapter)
-
     def _transport(self):
         with self._transport_lock:
             if self._transport_client is None:
@@ -996,7 +986,7 @@ class ModelGateway:
                 else time.time() + state.deadline.remaining(),
             }
 
-    def _prepare_request(self, purpose, role, task_id, deadline, cancel_event, kwargs, *, sizing=False):
+    def _prepare_request(self, purpose, role, task_id, deadline, cancel_event, kwargs):
         request_started = time.monotonic()
         if set(kwargs) - {
             "model",
@@ -1110,44 +1100,35 @@ class ModelGateway:
             if writer
             else params.pop("protocol_root", self._state.ledger.workdir),
         )
-        from homebrew_harness.execution.providers.common import may_have_media
-
         transport = self._transport()
-        if may_have_media(request.messages):
-            # Logical sizing must not fail on the independent encoded-body
-            # ceiling or load frozen pixels. Never cache a materialized image
-            # across calls: its private artifact must still pass validation.
-            prepared = (transport.prepare_logical if sizing else transport.prepare)(request)
-            serialized_chars = len(json.dumps(prepared, ensure_ascii=False))
-        else:
-            identity = json.dumps(
-                {
-                    "model": request.model,
-                    "messages": request.messages,
-                    "tools": request.tools,
-                    "output": request.max_output_tokens,
-                    "contract": request.output_contract,
-                    "options": request.options,
-                    "owner": request.context_key,
-                    "root": str(request.state_root),
-                },
-                sort_keys=True,
-                ensure_ascii=False,
-            )
-            with self._prepared_lock:
-                if self._prepared is not None and self._prepared[0] == identity:
-                    from homebrew_harness.execution.providers.common import (
-                        messages as validate_replay,
-                    )
+        identity = json.dumps(
+            {
+                "model": request.model,
+                "messages": request.messages,
+                "tools": request.tools,
+                "output": request.max_output_tokens,
+                "contract": request.output_contract,
+                "options": request.options,
+                "owner": request.context_key,
+                "root": str(request.state_root),
+            },
+            sort_keys=True,
+            ensure_ascii=False,
+        )
+        with self._prepared_lock:
+            if self._prepared is not None and self._prepared[0] == identity:
+                from homebrew_harness.execution.providers.common import (
+                    messages as validate_replay,
+                )
 
-                    if any(m.get("_protocol_state") for m in request.messages):
-                        validate_replay(request, transport)
-                    prepared = self._prepared[1]
-                    serialized_chars = self._prepared[2]
-                else:
-                    prepared = transport.prepare(request)
-                    serialized_chars = len(json.dumps(prepared, ensure_ascii=False))
-                    self._prepared = (identity, prepared, serialized_chars)
+                if any(m.get("_protocol_state") for m in request.messages):
+                    validate_replay(request, transport)
+                prepared = self._prepared[1]
+                serialized_chars = self._prepared[2]
+            else:
+                prepared = transport.prepare(request)
+                serialized_chars = len(json.dumps(prepared, ensure_ascii=False))
+                self._prepared = (identity, prepared, serialized_chars)
         metadata["serialized_request_chars"] = serialized_chars
         metadata["connection"] = self._connection_key()
         metadata["protocol"] = self._adapter.protocol
@@ -1168,7 +1149,7 @@ class ModelGateway:
         output_contract=None,
         settings=None,
     ):
-        _, metadata, _, _ = self._prepare_request(
+        params, metadata, _, _ = self._prepare_request(
             "context_prepare",
             None,
             None,
@@ -1187,7 +1168,6 @@ class ModelGateway:
                     else {}
                 ),
             },
-            sizing=True,
         )
         return metadata["serialized_request_chars"]
 

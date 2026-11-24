@@ -314,9 +314,7 @@ class ContextCompactor:
             return messages
         for index, message in enumerate(messages):
             if (message.get("role") == "user" and not message.get("name")
-                    and message.get("content") == self.intent.original
-                    and not message.get("content_parts")
-                    and isinstance(message.get("content"), str)):
+                    and message.get("content") == self.intent.original):
                 result = list(messages)
                 result[index] = {**message, "content": "[Current task retained verbatim in task_intent.]"}
                 return result
@@ -352,24 +350,6 @@ class ContextCompactor:
         return groups
 
     @staticmethod
-    def pending_media_message(messages):
-        """An unanswered attachment turn must survive pressure recovery intact."""
-        from homebrew_harness.contracts import content_is_multimodal
-
-        # An assistant tool batch is not a final reply. It can precede reactive
-        # compaction while the model still needs to see the same uploaded images.
-        for message in reversed(messages):
-            if message.get("role") == "assistant" and not message.get("tool_calls"):
-                break
-            if message.get("role") == "user" and not message.get("name"):
-                parts = message.get("content_parts") or message.get("content")
-                if isinstance(parts, list) and content_is_multimodal(parts):
-                    return message
-                if message.get("_media_turn_start") is True:
-                    break
-        return None
-
-    @staticmethod
     def unseen_results(messages: list[dict]) -> list[dict]:
         last_assistant = next(
             (
@@ -402,20 +382,7 @@ class ContextCompactor:
         self._references[preview] = reference
         return preview
 
-    @staticmethod
-    def media_results(messages):
-        from homebrew_harness.contracts import ToolMediaCalls
-
-        calls = ToolMediaCalls()
-        retained = set()
-        for message in messages:
-            calls.observe(message)
-            if calls.result_media(message):
-                retained.add(id(message))
-        return retained
-
     def tool_result_budget(self, messages: list[dict]) -> list[dict]:
-        retained = self.media_results(messages)
         results = self.unseen_results(messages)
         for result in sorted(
             results, key=lambda result: len(result.get("content", "")), reverse=True
@@ -426,7 +393,7 @@ class ContextCompactor:
             ):
                 break
             output = result.get("content", "")
-            if id(result) not in retained and len(output) > self.LARGE_RESULT_CHAR_LIMIT:
+            if len(output) > self.LARGE_RESULT_CHAR_LIMIT:
                 result["content"] = self.persisted_preview(output)
         return messages
 
@@ -440,7 +407,6 @@ class ContextCompactor:
         *,
         host_status: str = "",
         retained_request: bool = False,
-        media=(),
     ) -> dict:
         status = f"Host status: {host_status}\n" if host_status else ""
         request = (
@@ -451,20 +417,11 @@ class ContextCompactor:
         return {
             "role": "user",
             "name": "harness_compaction",
-            **({"retained_media": list(media)} if media else {}),
             "content": (
                 f"[{label}]\n{status}{request}\n"
                 f"Current plan (state, not proof of completion):\n{plan or '(no plan)'}\n\n"
                 f"Conversation working state (model-written reference only):\n{json.dumps(summary, ensure_ascii=False)}\n\n"
-                + (
-                    f"Archived images ({len(media)}): "
-                    + ", ".join(item["media_ref"] for item in media[-8:])
-                    + ". Use read_media with an exact reference to see its pixels again. "
-                    + ("For earlier references, read the retained transcript or use the Session media listing. " if len(media) > 8 else "")
-                    + "\n\n"
-                    if media else ""
-                )
-                + "Use confirmed facts and decisions to continue pending work. Hypotheses are not tool failures. "
+                "Use confirmed facts and decisions to continue pending work. Hypotheses are not tool failures. "
                 "File observations describe their recorded versions, not current source after later edits; "
                 "compare relevant newer evidence when deciding what needs rechecking.\n\n"
                 f"Full transcript: {transcript}"
@@ -565,16 +522,14 @@ class ContextCompactor:
             remaining -= len(groups[tail])
         before = [m for group in groups[:head] for m in group]
         unseen = {id(m) for m in self.unseen_results(messages)}
-        pending_media = self.pending_media_message(messages)
         required_start = next(
             (
                 i
                 for i, group in enumerate(groups)
-                if any(id(m) in unseen or m is pending_media for m in group)
+                if any(id(m) in unseen for m in group)
             ),
             len(groups),
         )
-        tail = min(tail, required_start)
         base = ".harness/" + (
             self.store.namespace + "/" if self.store.namespace else ""
         )
@@ -628,7 +583,6 @@ class ContextCompactor:
     def micro_compact(
         self, messages: list[dict], target_chars: int, tools=None
     ) -> list[dict]:
-        retained = self.media_results(messages)
         unseen = {id(message) for message in self.unseen_results(messages)}
         consumed = [
             message
@@ -636,8 +590,6 @@ class ContextCompactor:
             if message.get("role") == "tool" and id(message) not in unseen
         ]
         for result in consumed[: -self.KEEP_RECENT_RESULTS]:
-            if id(result) in retained:
-                continue
             if self.estimate_chars(messages, tools) <= target_chars:
                 break
             output = result.get("content", "")
@@ -656,8 +608,7 @@ class ContextCompactor:
     def fit_tool_results(
         self, messages: list[dict], target_chars: int, tools=None
     ) -> list[dict]:
-        retained = self.media_results(messages)
-        results = [message for message in messages if message.get("role") == "tool" and id(message) not in retained]
+        results = [message for message in messages if message.get("role") == "tool"]
         for result in sorted(
             results, key=lambda item: len(item.get("content", "")), reverse=True
         ):
@@ -946,18 +897,14 @@ class ContextCompactor:
         ]
         recent, count = [], 0
         unseen = {id(m) for m in self.unseen_results(messages)}
-        pending_media = self.pending_media_message(messages)
         while conversation and (
             any(id(m) in unseen for m in conversation[-1])
-            or pending_media is not None
             or len(conversation) > 1
             and count < keep_recent
         ):
             group = conversation.pop()
             recent.insert(0, group)
             count += len(group)
-            if any(m is pending_media for m in group):
-                pending_media = None
         old_history = [m for g in conversation for m in g]
         if not old_history:
             self.check_compacted_size(messages, tools)
@@ -986,7 +933,7 @@ class ContextCompactor:
     COMPACTION_STATUS = "Context compaction completed successfully; the semantic working record is installed and the transcript saved. Its observations describe state before this compaction. Continue remaining work; this compaction is no longer pending."
 
     def summary_capacity(
-        self, retained, active_request, plan, label, transcript, operation_index, tools, *, media=()
+        self, retained, active_request, plan, label, transcript, operation_index, tools
     ):
         """A generation preference, never an independent summary rejection gate."""
         suffix = (
@@ -1002,7 +949,6 @@ class ContextCompactor:
             transcript,
             host_status=self.COMPACTION_STATUS,
             retained_request=self.request_is_retained(active_request),
-            media=media,
         )
         return max(
             self.MIN_SUMMARY_CHARS,
@@ -1108,11 +1054,8 @@ class ContextCompactor:
             if operation_index
             else ""
         )
-        from homebrew_harness.contracts import history_media
-
         prefix, recent = [dict(m) for m in prefix], [dict(m) for m in recent]
         recovery = {"rewrites": 0, "attempts": 0}
-        archived_media = history_media(old_history)
         nominal = self.summary_capacity(
             [*prefix, *recent],
             active_request,
@@ -1121,7 +1064,6 @@ class ContextCompactor:
             transcript,
             operation_index,
             tools,
-            media=archived_media,
         )
 
         def assemble(summary):
@@ -1133,7 +1075,6 @@ class ContextCompactor:
                 transcript,
                 host_status=self.COMPACTION_STATUS,
                 retained_request=self.request_is_retained(active_request),
-                media=archived_media,
             )
             return [*prefix, marker, *recent]
 
@@ -1164,10 +1105,7 @@ class ContextCompactor:
                 groups = self.groups(recent)
                 unseen = {id(m) for m in self.unseen_results(recent)}
                 moved = []
-                active_images = self.pending_media_message(recent)
                 while groups and not any(id(m) in unseen for m in groups[0]):
-                    if any(m is active_images for m in groups[0]):
-                        break
                     if groups[0][0].get("role") in {"system", "developer"}:
                         prefix.extend(groups.pop(0))
                     else:
@@ -1178,7 +1116,6 @@ class ContextCompactor:
                     ):
                         break
                 if moved:
-                    archived_media = history_media([*old_history, *moved])
                     recovery["rewrites"] += 1
                     additions = [
                         {

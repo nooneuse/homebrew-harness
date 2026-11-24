@@ -45,8 +45,6 @@ class LoopComponents:
     project_guidance: object = None
     plan_observer: object = None
     planning: bool = False
-    media_root: object = None
-    media_messages: object = None
 
     completion_check: object = None
     model_attempt_hook: object = None

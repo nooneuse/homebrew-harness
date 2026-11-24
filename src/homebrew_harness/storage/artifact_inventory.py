@@ -9,7 +9,6 @@ import stat
 import time
 from pathlib import Path
 
-from homebrew_harness.contracts import MEDIA_REF
 from homebrew_harness.security.safe_files import SafeFile, canonical_root
 from homebrew_harness.storage.durable_runtime import DurableStore
 from homebrew_harness.storage.retention_graph import (
@@ -19,10 +18,7 @@ from homebrew_harness.storage.retention_graph import (
 )
 
 _ARCHIVE = re.compile(
-    r"\.harness/(?:"
-    r"(?:[A-Za-z0-9_-]{1,80}/)?(?:tool-results|transcripts)/[0-9a-f]{32}\.(?:txt|jsonl)"
-    r"|media/[0-9a-f]{64}\.(?:png|jpg)"
-    r")\Z"
+    r"\.harness/(?:[A-Za-z0-9_-]{1,80}/)?(tool-results|transcripts)/[0-9a-f]{32}\.(?:txt|jsonl)\Z"
 )
 
 
@@ -114,10 +110,7 @@ def inspect_artifacts(
                         "kind": "runtime_metadata",
                         "reason": "outside_first_gc_scope",
                     }
-                    if MEDIA_REF.fullmatch(path):
-                        # Resolve all roots before spending the media scan budget.
-                        record["kind"] = "frozen_media"
-                    elif archive_path(path):
+                    if archive_path(path):
                         total += info.st_size
                         with SafeFile(root, path) as target:
                             raw, identity, _ = target.snapshot(
@@ -148,33 +141,6 @@ def inspect_artifacts(
                     files.append(record)
                 anchor.verify_binding()
     roots = artifact_closure(state, roots)
-    # Use an independent bounded, deterministic media batch. An accumulation
-    # of expired images must not prevent previews or revalidation on apply.
-    media_remaining = max_bytes
-    for record in sorted(files, key=lambda value: value["path"]):
-        if record["kind"] != "frozen_media":
-            continue
-        path = record["path"]
-        registered = registry.get(path)
-        size = record["bytes"]
-        if path in roots:
-            record["reason"] = "referenced_by_retained_state"
-        elif not isinstance(registered, dict) or registered.get("format") != 1:
-            record["reason"] = "unregistered_archive"
-        elif registered.get("bytes") != size:
-            record["reason"] = "changed_since_registration"
-        elif (not isinstance(registered.get("created_at"), (int, float))
-                or clock - registered["created_at"] < retention_days * 86400):
-            record["reason"] = "retention_window"
-        elif size > media_remaining:
-            record["reason"] = "media_scan_batch_deferred"
-        else:
-            with SafeFile(root, path) as target:
-                raw, identity, _ = target.snapshot(max_bytes=size)
-            if raw is None or len(raw) != size:
-                raise ValueError("Retained evidence changed during inventory: " + path)
-            media_remaining -= size
-            record.update(kind="archive", version=version(identity), sha256=hashlib.sha256(raw).hexdigest())
     candidates = []
     for record in files:
         if record["kind"] != "archive":

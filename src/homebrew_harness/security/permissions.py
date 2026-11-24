@@ -17,7 +17,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
-from homebrew_harness.contracts import MEDIA_REF, TRUSTED_MEDIA_TOOL_NAMES
 from homebrew_harness.execution.execution_control import (
     check as execution_check,
 )
@@ -283,13 +282,6 @@ def check_rules(tool_name: str, arguments: dict, workdir: Path) -> PermissionDec
         return PermissionDecision(
             "allow", "Plan updates affect only the current session."
         )
-    if tool_name in TRUSTED_MEDIA_TOOL_NAMES:
-        if tool_name == "read_media":
-            ref = arguments.get("media_ref")
-            if not isinstance(ref, str) or MEDIA_REF.fullmatch(ref) is None:
-                return PermissionDecision("deny", "Supply an exact frozen media_ref.", "media_reference_invalid")
-            return PermissionDecision("allow", "Read only references owned by the bound Session history.")
-        return PermissionDecision("allow", "Render only into the bound Session's private media store.")
     if tool_name == "check_background":
         return PermissionDecision(
             "allow",
@@ -553,8 +545,6 @@ def check_permission(
     from homebrew_harness.runs.controller import current_run
 
     managed = current_run()
-    if managed is not None and tool_name in TRUSTED_MEDIA_TOOL_NAMES:
-        return PermissionDecision("deny", "Media tools are only available to the owning root Session.", "media_scope_unsupported")
     if (
         managed is not None
         and tool_name in {"write_file", "edit_file", "delete_file"}

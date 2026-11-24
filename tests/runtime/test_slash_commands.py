@@ -126,6 +126,60 @@ class SlashTests(unittest.TestCase):
         self.assertEqual(restored.model, 'other')
         self.assertEqual(restored.model_selection['reasoning'], 'high')
 
+    def test_resume_leaves_legacy_image_checkpoint_and_blob_untouched(self):
+        from homebrew_harness.storage.durable_runtime import DurableStore, RecoveryRequired
+
+        session, client, _ = self.session()
+        sid, key = session.session_id, session.checkpoint_key
+        session.close()
+        self.assertTrue(session.wait_closed(5))
+        store = DurableStore(self.root)
+        reference = ".harness/media/" + "a" * 64 + ".png"
+        blob = self.root / reference
+        blob.parent.mkdir(parents=True)
+        blob.write_bytes(b"legacy frozen bytes")
+        saved = store.get("checkpoints", key)
+        saved["messages"].append({
+            "role": "user", "content": [{"type": "image", "media": {"media_ref": reference}}],
+        })
+        store.put("checkpoints", key, saved)
+        previous = store.get("checkpoints", key)
+        restored = HarnessSession(client, "fixture", self.root, resume_session=sid)
+        self.addCleanup(lambda: (restored.close(), restored.wait_closed(5)))
+        with self.assertRaisesRegex(RecoveryRequired, "contains saved media"):
+            restored._ensure_runtime()
+        client.chat.completions.create.assert_not_called()
+        self.assertEqual(store.get("checkpoints", key), previous)
+        self.assertEqual(blob.read_bytes(), b"legacy frozen bytes")
+
+    def test_resume_does_not_consume_claimed_legacy_image_input(self):
+        from homebrew_harness.storage.durable_runtime import DurableStore, RecoveryRequired
+
+        session, client, _ = self.session()
+        sid, key, recipient = session.session_id, session.checkpoint_key, session.inputs.recipient
+        session.close()
+        self.assertTrue(session.wait_closed(5))
+        store = DurableStore(self.root)
+        record = {
+            "id": "legacy-turn", "checkpoint": key, "to": recipient,
+            "from": "user", "type": "user_input", "content": "Inspect this image",
+            "ts": time.time(), "metadata": {
+                "origin": "host_user", "mode": "queued", "target": "lead",
+                "content_parts": [{"type": "image", "media": {"media_ref": ".harness/media/" + "b" * 64 + ".png"}}],
+            },
+        }
+        store.submit_input(record)
+        self.assertEqual(len(store.mailbox("claim", recipient, owner="previous-owner")), 1)
+        self.assertEqual(store.mailbox("inspect", recipient), [])
+        before = store.mailbox("inspect_unsettled", recipient)
+        restored = HarnessSession(client, "fixture", self.root, resume_session=sid)
+        self.addCleanup(lambda: (restored.close(), restored.wait_closed(5)))
+        with self.assertRaisesRegex(RecoveryRequired, "contains saved media"):
+            restored._ensure_runtime()
+        client.chat.completions.create.assert_not_called()
+        self.assertEqual(store.mailbox("inspect", recipient), [])
+        self.assertEqual(store.mailbox("inspect_unsettled", recipient), before)
+
     def test_failed_model_checkpoint_keeps_old_binding(self):
         session, _, _ = self.session()
         binding, messages = session.lead_binding, copy.deepcopy(session.messages)

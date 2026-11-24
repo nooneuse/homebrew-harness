@@ -94,39 +94,6 @@ class ModelRegistryTests(unittest.TestCase):
         self.assertNotEqual(lead.fingerprint, coder.fingerprint)
         registry.close()
 
-    def test_external_profile_modalities_are_validated_and_used_by_the_adapter(self):
-        profile = self.config["profiles"]["coder"]
-        profile["capabilities"] = {"tools": False, "input_modalities": ["text", "image"]}
-        registry = self.load()
-        self.addCleanup(registry.close)
-        registry.client_factory = Mock(return_value=SimpleNamespace(close=Mock()))
-        capabilities = registry.select("coder").client.capabilities
-        self.assertFalse(capabilities.tools)
-        self.assertTrue(capabilities.supports_input("image"))
-        self.assertFalse(capabilities.supports_output("image"))
-        self.assertNotEqual(registry.specs["coder"].identity(), spec().identity())
-        for invalid in ("text", ["image"], ["text", "video"], ["text", {}], []):
-            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
-                profile["capabilities"]["input_modalities"] = invalid
-                self.load()
-
-    def test_text_profile_default_capability_identity_remains_compatible(self):
-        from homebrew_harness.execution.model_registry import _hash
-
-        value = spec()
-        self.assertEqual(value.identity(), _hash({
-            "name": value.name,
-            "model": value.model,
-            "endpoint": _hash(value.base_url),
-            "context_chars": None,
-            "max_output_tokens": None,
-            "protocol": "chat_completions",
-            "transport": "auto",
-            "options": "{}",
-            "api_version": "2023-06-01",
-            "capabilities": {"tools": True, "json_schema": True, "thinking": True},
-        }))
-
     def test_unknown_alias_never_creates_a_client(self):
         factory = Mock()
         registry = ModelRegistry([spec()], client_factory=factory)

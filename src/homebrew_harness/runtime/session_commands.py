@@ -34,7 +34,6 @@ HELP = """/model [ALIAS or same-connection MODEL]  Show or choose the Lead model
 /usage  Inspect model usage; /storage  Inspect storage
 /tests [approve|revoke NAME]  Manage fixed test grants
 /mcp [close CONNECTION_ID]  Inspect MCP connections
-Standalone Session: [image:PATH] attaches PNG/JPEG; /media [list|show REF|export REF PATH]
 /queue TEXT; /steer TEXT; /interrupt TEXT; /steer-to MEMBER TEXT
 /approve ID [REVISION] yes/no  Decide an exact request
 Default entry also supports /status, /pause, /cancel, /upgrade, /detach
@@ -54,26 +53,7 @@ def busy(session):
         or set(session.pending_work()) - {"goal", "user_inputs", "user_input"})
 
 
-def require_media_profile(client, parts=None):
-    from homebrew_harness.execution.model_protocol import ModelProtocolError
-    from homebrew_harness.media import MediaError
-
-    try:
-        if parts is None:
-            client.require_image_input()
-        else:
-            client.validate_user_media(parts)
-    except ModelProtocolError as error:
-        raise MediaError(str(error), getattr(error, "code", None) or "media_profile_unsupported") from error
-
-
 def select(session, choice, *, restore=False):
-    # Prevent a new image submission from racing the model admission check.
-    with session.inputs.lock:
-        return _select(session, choice, restore=restore)
-
-
-def _select(session, choice, *, restore=False):
     choice = validate_choice(choice)
     if not restore and session.run_control is not None:
         raise ValueError("This Run has a fixed model binding; use its declared model handoff.")
@@ -84,14 +64,6 @@ def _select(session, choice, *, restore=False):
     client = session.gateway.bind(binding.client)
     if binding.identity() == session.lead_binding.identity():
         return model_status(session.models, session.lead_binding)
-    from homebrew_harness.contracts import history_media
-
-    if not restore and (
-        history_media(session.messages)
-        or any(r["metadata"].get("content_parts") for r in session.inputs.pending())
-    ):
-        # Do not strand accepted images on a model or transport that cannot carry them.
-        require_media_profile(client)
     proposed = visible_history(session.messages)
     compactor = copy.copy(session.compactor)
     compactor.client, compactor.model, compactor.context_chars = client, binding.model, binding.context_chars
@@ -167,44 +139,7 @@ def save_history(session, before):
         raise
 
 
-def run_media(session, action, reference=None, destination=None):
-    """Inspect or export only typed references held by this Session's history."""
-    from homebrew_harness.contracts import history_media
-    from homebrew_harness.media import MEDIA_REF, MediaError
-
-    store = session.media_store()
-    entries = history_media(list(session.messages))
-    if action == "list":
-        result = []
-        for media in entries:
-            entry = dict(media)
-            try:
-                entry.update(store.describe(media["media_ref"]))
-                entry["status"] = "available"
-            except MediaError as error:
-                entry["status"] = error.media_code
-            result.append(entry)
-        return result
-    if not isinstance(reference, str) or MEDIA_REF.fullmatch(reference) is None:
-        raise MediaError("Not a frozen media reference.", "media_reference_invalid")
-    if not any(entry["media_ref"] == reference for entry in entries):
-        raise MediaError("Media is not referenced by this Session.", "media_reference_unowned")
-    if action == "show":
-        return store.describe(reference)
-    if action == "export":
-        return store.export(reference, destination, session.media_cwd())
-    raise ValueError("Unsupported Session media operation.")
-
-
 def run(session, command):
-    if command.name == "media":
-        if command.action == "export":
-            result = run_media(session, "export", *command.values)
-        else:
-            result = run_media(session, command.action, command.argument)
-            if command.action == "list":
-                result = {"media": result}
-        return json.dumps(result, ensure_ascii=False, indent=2)
     if command.name == "help":
         return HELP
     if command.name in {"model", "reasoning"}:

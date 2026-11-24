@@ -254,7 +254,6 @@ def _execute_session(args, parser):
                     approval_review=getattr(args, "approval_review", None),
                     conversation_mode=getattr(args, "conversation_mode", None),
                     fork_seed=getattr(args, "fork_seed", None),
-                    media_enabled=True,
                 ) as session:
                     if prompt is not None:
                         print(
@@ -302,7 +301,7 @@ def _execute_session(args, parser):
                                     continue
                                 try:
                                     from homebrew_harness.runtime.host_commands import HostCommand
-                                    command = HostCommand.parse(query, allow_media=True) if not query.startswith(("/approve ", "/queue ", "/steer ", "/interrupt ", "/steer-to ")) else None
+                                    command = HostCommand.parse(query) if not query.startswith(("/approve ", "/queue ", "/steer ", "/interrupt ", "/steer-to ")) else None
                                     if command and command.name == "fork":
                                         from homebrew_harness.runtime.conversation_commands import fork_check
                                         if not session.wait_user_boundary():

@@ -150,151 +150,9 @@ def effective_options(adapter, request):
     return options
 
 
-def _adapter_supports_images(adapter):
-    return "image" in getattr(adapter, "supported_input_modalities", ("text",))
-
-
-def require_image_input(adapter, *, model=None):
-    """Reject explicit images before reading files or submitting a request."""
-    label = f"Model '{model}'" if model else "This model profile"
-    if not adapter.capabilities.supports_input("image"):
-        raise ModelProtocolError(
-            f"{label} does not declare image input support. Select an image-capable "
-            "profile; explicit images are never silently dropped."
-        )
-    if not _adapter_supports_images(adapter):
-        raise ModelProtocolError(
-            f"Protocol adapter '{adapter.protocol}' cannot carry native image content. "
-            "Use the documented image-capable adapter (chat_completions)."
-        )
-
-
-def media_protocol_error(error):
-    from homebrew_harness.runtime.errors import annotate_error
-
-    return annotate_error(
-        ModelProtocolError(str(error)),
-        code=getattr(error, "code", None),
-        **(getattr(error, "details", None) or {}),
-    )
-
-
-def image_url_part(media, base64_text=""):
-    return {
-        "type": "image_url",
-        "image_url": {"url": f"data:{media['media_type']};base64,{base64_text}"},
-    }
-
-
-def encoded_json_size(value):
-    # Conservative for the supported HTTP/SDK serializers: count ASCII escapes
-    # and whitespace as well as all tools, options and message framing.
-    return len(json.dumps(value, ensure_ascii=True, allow_nan=False))
-
-
-def base64_size(media):
-    return 4 * ((media["bytes"] + 2) // 3)
-
-
-def _content_parts(content):
-    from homebrew_harness.contracts import normalize_content_parts
-
-    try:
-        parts = normalize_content_parts(content)
-    except ValueError as exc:
-        raise ModelProtocolError(str(exc)) from exc
-    if any(part["type"] == "image" and "media" not in part for part in parts):
-        raise ModelProtocolError("Image content must be frozen before model submission.")
-    return parts
-
-
-def validate_image_size(media, limits):
-    from homebrew_harness.media import MediaError
-
-    size = media["bytes"]
-    if size > limits.max_image_bytes:
-        raise MediaError(
-            f"Image is {size} bytes, above the per-image limit of {limits.max_image_bytes} bytes.",
-            "media_bytes_limit",
-            limit_name="image_bytes",
-            limit_value=limits.max_image_bytes,
-            observed_value=size,
-            unit="bytes",
-        )
-
-
-def validate_user_media(parts, adapter, *, limits=None):
-    """Validate the frozen batch being admitted, independently of history."""
-    from homebrew_harness.media import (
-        MediaError,
-        MediaLimits,
-        ensure_request_body_size,
-        request_body_bounds,
-    )
-
-    normalized = _content_parts(parts)
-    images = [part["media"] for part in normalized if part["type"] == "image"]
-    if not images:
-        return
-    require_image_input(adapter)
-    limits = limits or MediaLimits()
-    try:
-        for media in images:
-            validate_image_size(media, limits)
-        request_body_bounds(normalized, limits)
-        # Admission has no history/tool/options payload. The complete encoded
-        # request has its own check after provider projection.
-        row = {"role": "user", "content": [
-            image_url_part(part["media"]) if part["type"] == "image" else part
-            for part in normalized
-        ]}
-        ensure_request_body_size(
-            encoded_json_size({"messages": [row]}) + sum(map(base64_size, images)), limits
-        )
-    except MediaError as exc:
-        raise media_protocol_error(exc) from exc
-
-
-def may_have_media(rows):
-    """Conservative cache/sizing gate only; does not authorize media."""
-    for row in rows:
-        content = row.get("content")
-        if row.get("content_parts") is not None or isinstance(content, (list, tuple)):
-            return True
-        if row.get("role") == "tool" and (
-            isinstance(content, dict) and "media" in content
-            or isinstance(content, str) and '"media"' in content
-        ):
-            return True
-    return False
-
-
 def messages(request, adapter):
     result = []
     binding = binding_key(adapter, request.model)
-    carry_tool_media = _adapter_supports_images(adapter) and adapter.capabilities.supports_input("image")
-    if carry_tool_media:
-        from homebrew_harness.contracts import ToolMediaCalls
-
-        calls = ToolMediaCalls()
-    pending_tool_media = {}
-
-    def flush_tool_media():
-        if not pending_tool_media:
-            return
-        # Preserve the canonical tool result and its call identity. A native
-        # visual follow-up comes only after the entire contiguous tool batch.
-        result.append({
-            "role": "user",
-            "name": "tool_media",
-            "_harness_tool_media": True,
-            "content": [
-                {"type": "text", "text": "Image output from the tool results above."},
-                *({"type": "image", "media": media} for media in pending_tool_media.values()),
-            ],
-        })
-        pending_tool_media.clear()
-
     for message in request.messages:
         row = copy.deepcopy(
             {
@@ -311,23 +169,6 @@ def messages(request, adapter):
                 }
             }
         )
-        if carry_tool_media and row.get("role") == "user" and message.get("_media_turn_start") is True:
-            row["_media_turn_start"] = True  # Consumed by the Chat projector, not sent.
-        content = row.get("content")
-        parts = message.get("content_parts")
-        if parts is not None or isinstance(content, (list, tuple)):
-            normalized = _content_parts(parts if parts is not None else content)
-            if parts is not None and isinstance(content, (list, tuple)) and normalized != _content_parts(content):
-                raise ModelProtocolError("Conflicting ordered content representations.")
-            if any(part["type"] == "image" for part in normalized):
-                if row.get("role") != "user":
-                    raise ModelProtocolError("Explicit image attachments require a user message.")
-                require_image_input(adapter, model=request.model)
-                row["content"] = normalized
-            elif parts is None or not isinstance(content, str):
-                row["content"] = "\n".join(part["text"] for part in normalized)
-        if row.get("role") == "tool" and isinstance(content, dict):
-            row["content"] = json.dumps(content, ensure_ascii=False)
         state = row.pop("_protocol_state", None)
         if state:
             if request.state_root is None:
@@ -337,16 +178,8 @@ def messages(request, adapter):
             row["_replay"] = load_replay(
                 request.state_root, request.context_key, binding, state
             )
-        if row.get("role") != "tool":
-            flush_tool_media()
-            if carry_tool_media:
-                calls.observe(message)
-        elif carry_tool_media:
-            for media in calls.result_media(message):
-                pending_tool_media.setdefault(media["media_ref"], media)
         # Names are local provenance, not permission-bearing native roles.
         result.append(row)
-    flush_tool_media()
     return result
 
 

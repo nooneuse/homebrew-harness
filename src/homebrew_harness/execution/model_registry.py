@@ -114,12 +114,7 @@ class ModelSpec:
                 "transport": self.transport,
                 "options": self.options_json,
                 "api_version": self.api_version,
-                # Keep prior binding identities for unchanged text-only profiles.
-                "capabilities": {
-                    key: value
-                    for key, value in vars(self.capabilities).items()
-                    if key not in {"input_modalities", "output_modalities"} or value != ("text",)
-                },
+                "capabilities": self.capabilities.__dict__,
             }
         )
 
@@ -489,11 +484,10 @@ def load_model_registry(path, workdir, *, client_factory=None, environment=None)
             ]
             options = {**options, **value.get("options", {})}
             caps = value.get("capabilities", {})
-            flags = {"tools", "json_schema", "thinking"}
             if (
                 not isinstance(caps, dict)
-                or set(caps) - flags - {"input_modalities", "output_modalities"}
-                or any(type(caps[k]) is not bool for k in flags & caps.keys())
+                or set(caps) - {"tools", "json_schema", "thinking"}
+                or any(type(v) is not bool for v in caps.values())
             ):
                 raise boundary_error(ValueError, "model_configuration", "Invalid model capabilities.")
             specs.append(

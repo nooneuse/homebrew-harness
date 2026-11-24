@@ -220,11 +220,8 @@ def create_hooks() -> HookRegistry:
 
 
 def submit_prompt(
-    messages: list[dict], query: str, workdir: Path, hooks: HookRegistry, *, parts=None, media_turn=False
+    messages: list[dict], query: str, workdir: Path, hooks: HookRegistry
 ) -> None:
     """Only real user input emits UserPromptSubmit, not tool results or continuations."""
     hooks.trigger_hooks("UserPromptSubmit", query, workdir)
-    message = {"role": "user", "content": query if parts is None else parts}
-    if media_turn:
-        message["_media_turn_start"] = True
-    messages.append(message)
+    messages.append({"role": "user", "content": query})

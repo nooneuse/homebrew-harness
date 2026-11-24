@@ -181,6 +181,27 @@ class FileVisibilityTests(unittest.TestCase):
             with self.subTest(pattern=pattern), self.assertRaises(ValueError):
                 search_text("marker", workdir=self.root, pattern=pattern)
 
+    def test_legacy_media_blobs_remain_private_after_rollback(self):
+        from homebrew_harness.storage.artifact_inventory import inspect_artifacts, register_artifact
+
+        reference = ".harness/media/" + "a" * 64 + ".png"
+        path = self.root / reference
+        path.parent.mkdir(parents=True)
+        contents = b"private-legacy-image-marker"
+        path.write_bytes(contents)
+        register_artifact(self.root, reference, contents, "media")
+
+        with self.assertRaises(ValueError):
+            run_read(reference, self.root)
+        with self.assertRaises(ValueError):
+            run_glob(".harness/media/**", self.root)
+        with self.assertRaises(ValueError):
+            search_text("private-legacy-image-marker", workdir=self.root, pattern=".harness/media/**")
+        self.assertNotIn(reference, json.loads(run_glob(".harness/**", self.root))["paths"])
+        preview = inspect_artifacts(self.root, retention_days=1, now=10**10)
+        self.assertNotIn(reference, {item["path"] for item in preview["candidates"]})
+        self.assertEqual(path.read_bytes(), contents)
+
     def test_git_queries_exclude_private_changes_and_rename_origins(self):
         def git(*args):
             return subprocess.run(

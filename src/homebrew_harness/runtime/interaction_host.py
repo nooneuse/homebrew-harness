@@ -120,8 +120,6 @@ class InteractionHost:
             raise ValueError(
                 "Input must be nonempty, nonprivate text within 64,000 characters."
             )
-        if not literal and "[image:" in text:
-            raise ValueError("Image attachments require the standalone Session terminal or Session API.")
         if mode not in {"auto", "steer", "queue", "interrupt"}:
             raise ValueError("Unknown interaction input mode.")
         with self.lock:
