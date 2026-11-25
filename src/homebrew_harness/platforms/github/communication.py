@@ -219,6 +219,8 @@ class GithubCommunication:
                     row.get("base", {}).get("repo", {}).get("full_name")
                 ),
             )
+            if row.get("merged") is True:
+                result.update(merged=True, result_commit=oid(row.get("merge_commit_sha")))
             result.pop("version", None)
         return result
 
@@ -336,12 +338,15 @@ class GithubCommunication:
         }
 
     @serialized
-    def snapshot(self, subject, policy):
+    def snapshot(self, subject, policy, *, expected_closed_basis=None):
         ref = self.target(subject)
         if ref.kind != "change_request":
             raise ValueError("Snapshot requires a PR.")
         before = self.current_basis(subject)
-        if before["state"] != "open":
+        if expected_closed_basis is not None:
+            if before != expected_closed_basis or before["state"] != "closed":
+                raise ValueError("Closed PR code evidence must match the explicitly requested version.")
+        elif before["state"] != "open":
             raise ValueError("PR is not open.")
         prefix = "repos/" + before["head_project"]
         commit = self.request("GET", prefix + "/git/commits/" + before["head"])

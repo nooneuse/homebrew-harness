@@ -17,6 +17,8 @@ def overview_signature(project):
 
 
 def versions(root, paths):
+    if root is None:
+        return {path: None for path in paths}
     values = {}
     for path in paths:
         try:

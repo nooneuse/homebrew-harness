@@ -18,7 +18,9 @@ def assessment(store, job, raw, *, require_recipient=True):
         raise ValueError("Lead assessment cannot propose publication; reply_required must be Boolean.")
     value.pop("communication", None)
     for field in ("facts", "questions", "findings", "draft"):
-        value.setdefault(field, copy.deepcopy(job["input"]["projection"].get(field, [])))
+        historical_only = (field == "findings" and not job["input"].get("review_id")
+                           and job["input"].get("subject", {}).get("kind") == "change_request")
+        value.setdefault(field, [] if historical_only else copy.deepcopy(job["input"]["projection"].get(field, [])))
     if not require_recipient:
         for q in value.get("questions", []):
             q.setdefault("recipient", "requester")
@@ -61,9 +63,23 @@ def public(plan):
 def work_status(store, job):
     identity = job["input"].get("work_id")
     work = store.store.work(identity, store.id) if identity else None
-    return {"work_exists": work is not None, "state": work["state"] if work else None,
-            "development_authorized": bool(work and store.valid_authority(work)),
-            "execution_created": bool(work and work.get("run_id"))}
+    value = {"work_exists": work is not None, "state": work["state"] if work else None,
+             "development_authorized": bool(work and work["state"] != "delivered" and store.valid_authority(work)),
+             "execution_created": bool(work and work.get("run_id"))}
+    if work and work.get("changeset_id"):
+        from homebrew_harness.services.delivery.store import observed_merge
+
+        row = store.db.get("service_changesets", work["changeset_id"])
+        subject = job["input"].get("subject") or {}
+        if (row and row["work_id"] == work["id"]
+                and row["requirements_revision"] == work["requirements_revision"]
+                and (subject.get("kind") != "change_request" or row.get("change_request") == subject)
+                and (merge := observed_merge(row))):
+            integration = row.get("integration") or {}
+            value["merge"] = {"subject": merge["subject"], "head": merge["head"],
+                              "result_commit": merge["result_commit"], "platform_merged": True,
+                              "verified": row["state"] == "delivered" and integration.get("commit") == merge["result_commit"]}
+    return value
 
 
 def signature(job, project, binding):
@@ -113,7 +129,7 @@ def run(agent, job, project, deadline):
     sig = signature(job, project, lead[0])
     current = store.job_get(job["id"])
     saved = current.get("discussion_assessment")
-    root = agent.code_root()
+    root = agent.code_root() if project is not None else None
     if valid(saved, project, lead[0], root) and saved["signature"] == sig:
         plan = saved["plan"]
     else:

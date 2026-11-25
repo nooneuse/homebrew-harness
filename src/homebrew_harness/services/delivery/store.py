@@ -2,10 +2,25 @@
 from homebrew_harness.runtime.limits import expiry, expired
 
 from homebrew_harness.runtime.errors import boundary_error
+import json
 import time
 from homebrew_harness.services.protocol import request_key, fingerprint
 from homebrew_harness.services.maintenance_spec import text
 from .git import StaleDelivery
+
+
+PR_MUTATIONS = {"publish_branch", "ensure_change_request", "merge_change_request"}
+
+
+def observed_merge(row):
+    """Return a recorded platform result, not a closed or pending PR."""
+    subject = row.get("change_request")
+    for key in ("merge", "foreign_merge"):
+        receipt = row.get(key) or {}
+        if (subject and receipt.get("subject") == subject
+                and receipt.get("state") == "merged" and receipt.get("result_commit")):
+            return receipt
+    return None
 
 
 def scoped_repair(row):
@@ -43,7 +58,10 @@ class DeliveryStore:
             self.runtime.store.guard(conn, self.runtime.header)
             value = self.get(kind, identity, conn)
             value.update(changes, revision=value["revision"] + 1)
-            return self.put(conn, kind, value)
+            result = self.put(conn, kind, value)
+            if kind == "changesets" and changes.get("foreign_merge") and observed_merge(value):
+                self.retire_publication(conn, work_id=value["work_id"])
+            return result
 
     def commit_feedback(self, row, changes, *, diagnose=False, merge=False):
         """Commit one queried version, never overwrite newer preparation or merge facts."""
@@ -291,8 +309,83 @@ class DeliveryStore:
             }
         )
 
+    def merged_pr(self, conn, row):
+        """Check the explicitly bound PR, including a same-branch predecessor."""
+        ref = row.get("change_request")
+        work_id, branch = row["work_id"], row.get("branch")
+        seen = set()
+        while row and row["id"] not in seen:
+            seen.add(row["id"])
+            subject = row.get("change_request")
+            if (row["work_id"] != work_id or row.get("branch") != branch
+                    or (subject and ref and subject != ref)):
+                break
+            ref = ref or subject
+            if merged := observed_merge(row):
+                return merged
+            previous = row.get("previous")
+            row = self.db._get(conn, "service_changesets", previous) if branch and previous else None
+        if ref and branch:
+            # A newer candidate may have recorded the merge while an older
+            # action for this same PR still exists in the queue.
+            for (raw,) in conn.execute(
+                "SELECT value FROM records WHERE section='service_changesets' AND owner=? "
+                "AND json_extract(value,'$.work_id')=? AND json_extract(value,'$.branch')=? "
+                "AND json_extract(value,'$.change_request.id')=? "
+                "AND (json_extract(value,'$.merge.state')='merged' OR json_extract(value,'$.foreign_merge.state')='merged')",
+                ("service:" + self.id, work_id, branch, ref["id"]),
+            ):
+                receipt = observed_merge(json.loads(raw))
+                if receipt and receipt["subject"] == ref:
+                    return receipt
+        return None
+
+    def require_unmerged(self, conn, row, kind):
+        if kind in PR_MUTATIONS and self.merged_pr(conn, row):
+            raise boundary_error(
+                ValueError, "pr_already_merged",
+                "This PR is already merged; the delivery action is no longer applicable.",
+            )
+
+    def retire_action(self, conn, action, merge):
+        evidence = {"subject": merge["subject"], "result_commit": merge["result_commit"]}
+        if action["state"] in {"queued", "awaiting_approval"}:
+            action.update(state="superseded", revision=action["revision"] + 1,
+                          superseded_reason="pr_already_merged", superseded_by=evidence)
+            self.put(conn, "actions", action)
+        elif action["state"] not in {"failed", "denied"}:
+            return  # A started or uncertain attempt still needs reconciliation.
+        identity = "request_" + request_key("delivery-request", self.id, action["id"])
+        request = self.db._get(conn, "service_decisions", identity)
+        if request and request["state"] == "pending":
+            request.update(state="superseded", revision=request["revision"] + 1,
+                           unavailable_reason="pr_already_merged", superseded_by=evidence)
+            self.put(conn, "decisions", request)
+
+    def retire_publication(self, conn, *, work_id=None):
+        """Also repair saved unstarted plans from before terminal settlement existed."""
+        actions = conn.execute(
+            "SELECT value FROM records WHERE section='service_actions' AND owner=? "
+            "AND json_extract(value,'$.kind') IN ('publish_branch','ensure_change_request','merge_change_request') "
+            "AND json_extract(value,'$.state') IN ('queued','awaiting_approval','failed','denied') "
+            + ("AND json_extract(value,'$.work_id')=?" if work_id else ""),
+            ("service:" + self.id, *([work_id] if work_id else [])),
+        ).fetchall()
+        for (raw,) in actions:
+            action = json.loads(raw)
+            row = self.db._get(conn, "service_changesets", action["changeset_id"])
+            if row and (merged := self.merged_pr(conn, row)):
+                self.retire_action(conn, action, merged)
+
+    def recover_terminal(self):
+        with self.db.write() as conn:
+            self.runtime.store.guard(conn, self.runtime.header)
+            self.retire_publication(conn)
+
     def action(self, conn, row, kind, *, body=None, subject=None, draft=False, publication=None):
-        self.current(row)
+        saved = self.db._get(conn, "service_changesets", row["id"])
+        self.require_unmerged(conn, saved or row, kind)
+        self.current(row, conn)
         if kind == "merge_change_request" and self.ms.communication is not None:
             from homebrew_harness.services.communication.followup import pending
 
@@ -455,6 +548,7 @@ class DeliveryStore:
         return value
 
     def request(self, conn, row, action, *, renew=False):
+        self.require_unmerged(conn, row, action["kind"])
         if action["state"] not in {"awaiting_approval", "denied", "queued", "failed"}:
             raise boundary_error(
                 ValueError,
@@ -550,7 +644,8 @@ class DeliveryStore:
             )
         action = self.get("actions", request["action_id"], conn)
         row = self.get("changesets", action["changeset_id"], conn)
-        self.current(row)
+        self.require_unmerged(conn, row, action["kind"])
+        self.current(row, conn)
         if action["kind"] == "merge_change_request" and row["state"] != "merge_ready":
             raise boundary_error(
                 ValueError, "delivery_contract", "PR is no longer merge-ready."
@@ -608,15 +703,16 @@ class DeliveryStore:
     def start_action(self, action):
         with self.db.write() as conn:
             meta = self.runtime.store.guard(conn, self.runtime.header)
+            current = self.get("actions", action["id"], conn)
+            row = self.get("changesets", current["changeset_id"], conn)
+            self.require_unmerged(conn, row, current["kind"])
             if meta["state"] != "running":
                 raise boundary_error(
                     ValueError,
                     "delivery_contract",
                     "Service is not executing delivery.",
                 )
-            current = self.get("actions", action["id"], conn)
-            row = self.get("changesets", current["changeset_id"], conn)
-            self.current(row)
+            self.current(row, conn)
             if (
                 current["state"] != "queued"
                 or current["authorization"] is None
@@ -702,6 +798,9 @@ class DeliveryStore:
             if current["state"] != "queued" or not expired(current["expires_at"], time.time()):
                 return
             row = self.get("changesets", action["changeset_id"], conn)
+            if current["kind"] in PR_MUTATIONS and (merged := self.merged_pr(conn, row)):
+                self.retire_action(conn, current, merged)
+                return
             current.update(
                 state="awaiting_approval",
                 authorization=None,
@@ -725,6 +824,10 @@ class DeliveryStore:
             current = finish_attempt(current, action, state, result, error)
             self.put(conn, "actions", current)
             row = self.get("changesets", action["changeset_id"], conn)
+            if action["kind"] in PR_MUTATIONS and self.merged_pr(conn, row):
+                # Keep the actual effect receipt without reopening a completed PR.
+                self.ms.changed(conn, row["work_id"])
+                return current
             if (
                 action["kind"] == "merge_change_request"
                 and result
@@ -751,6 +854,8 @@ class DeliveryStore:
                 elif action["kind"] == "merge_change_request":
                     row.update(merge=result, state="merged_verifying", next_merge=0)
                 self.put(conn, "changesets", row)
+                if observed_merge(row):
+                    self.retire_publication(conn, work_id=row["work_id"])
                 if self.ms.communication is not None:
                     self.ms.communication.link_delivery(conn, current)
             self.ms.changed(conn, row["work_id"])
@@ -763,7 +868,7 @@ class DeliveryStore:
             return "stale"
         if job["kind"] == "validation_plan":
             row.update(validation_plan=result, state="validating", error=None)
-            if result.get('draft'):
+            if result.get('draft') and not self.merged_pr(conn, row):
                 self.action(conn,row,'publish_branch',draft=True)
                 self.action(conn,row,'ensure_change_request',draft=True,publication=result['draft'])
         elif job["kind"] == "publication":
@@ -795,6 +900,8 @@ class DeliveryStore:
                     revision=work["revision"] + 1,
                 )
                 self.db._put(conn, "service_work", work["id"], work)
+                if self.ms.communication is not None:
+                    self.ms.communication.retire_requirements(conn, work)
             else:
                 row.update(state="review_branch_ready")
                 row["frozen"] = self.freeze(row)
@@ -897,6 +1004,8 @@ class DeliveryStore:
                 and row.get("review") is None
             )
             if row.get("merge", {}).get("result_commit") == observed["result_commit"]:
+                if observed_merge(row):
+                    self.retire_publication(conn, work_id=row["work_id"])
                 if (
                     row["state"] in {"review_branch_ready", "quality_failed"}
                     and not pending_quality
@@ -940,6 +1049,8 @@ class DeliveryStore:
             if not pending_quality:
                 row.update(state="merged_verifying", revision=row["revision"] + 1)
             self.put(conn, "changesets", row)
+            if observed_merge(row):
+                self.retire_publication(conn, work_id=row["work_id"])
             self.ms.changed(conn, row["work_id"])
             return row
 
@@ -1047,8 +1158,11 @@ class DeliveryStore:
                     workspace_sync={"state": "pending", "changeset_id": row["id"]},
                 )
                 self.db._put(conn, "service_work", work["id"], work)
+                if self.ms.communication is not None:
+                    self.ms.communication.retire_requirements(conn, work)
             else:
                 row["requirements_superseded"] = True
             self.put(conn, "changesets", row)
+            self.retire_publication(conn, work_id=row["work_id"])
             self.ms.changed(conn, row["work_id"])
             return row

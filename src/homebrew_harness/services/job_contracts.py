@@ -162,10 +162,31 @@ class JobContract:
         self.job, self.kind = job, job["kind"]
         self.store, self.handler = store, HANDLERS[self.kind]
 
+    @property
+    def code_available(self):
+        return self.handler.code and not (
+            self.kind == "discussion"
+            and self.job["input"].get("subject", {}).get("kind") == "change_request"
+            and not self.job["input"].get("review_id")
+        )
+
+    def discussion_evidence_instruction(self):
+        if self.kind != "discussion" or self.code_available:
+            return ""
+        return (
+            " No fixed code snapshot is available for this PR version. Use the observed PR state, "
+            "linked Work and delivery evidence, and discussion history. Decide whether a reply "
+            "is useful; a state change alone does not require one. If the question needs code, "
+            "identify the missing fixed version and ask the operator for that evidence. Do not "
+            "infer code findings or whether optional feedback was implemented from merge status. "
+            "Future changes to a delivered Work must be considered separately."
+        )
+
     def primary(self):
         if self.kind == "discussion":
             value = {k: v for k, v in self.job["input"].items() if k != "projection"}
-            return {**value, "projection_available": True}
+            return {**value, "projection_available": True,
+                    "code_evidence_available": self.code_available}
         if self.kind == "integration_assessment":
             return copy.deepcopy(self.job["input"])
         return self.store.get(self.handler.section, self.job["target"])
@@ -271,6 +292,13 @@ class JobContract:
     def followup_instruction(self, *, drafting=False):
         if self.kind != "discussion" or not self.job["input"].get("own_pr"):
             return ""
+        if ((self.job["input"].get("observed_pr") or {}).get("state") == "closed"
+                or self.job["input"]["own_pr"].get("delivery_state") == "delivered"):
+            return (
+                " This discussion concerns our own PR that is no longer open for changes. "
+                "Decide whether an ordinary follow-up comment would help. Treat unresolved feedback as "
+                "possible subsequent work, not a repair to the closed PR. Do not submit a code review."
+            )
         if drafting:
             return (
                 " This reply concerns our own published PR. Follow the Lead assessment without changing its plan. "
@@ -307,8 +335,8 @@ class JobContract:
                if self.kind=='recovery_plan' and self.job['input'].get('execute_requested') else "")
             + (
                 " Use glob/search_text and service_read_code for permitted repository context; paths are relative to this job code root."
-                if self.handler.code
-                else ""
+                if self.code_available
+                else self.discussion_evidence_instruction()
             )
             + "\nSkills:\n"
             + "\n".join(s.name + ": " + s.description for s in skills)
@@ -316,7 +344,7 @@ class JobContract:
 
     def authorize(self, kind, identity):
         if kind == "project_context":
-            if self.handler.code and identity in {"", self.job["id"]}:
+            if self.code_available and identity in {"", self.job["id"]}:
                 return
             raise ValueError("Project context belongs only to this code-reading job.")
         if kind == "policy":
