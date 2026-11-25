@@ -195,6 +195,8 @@ class ServiceAgent:
             properties["identity"][
                 "description"
             ] = "Use the exact current job/topic ID or an ID returned by the frozen evidence directory. Never invent placeholders."
+            if not JobContract(self.store, self.job).code_available:
+                properties["kind"]["enum"].remove("project_context")
             own_pr = self.job["input"].get("own_pr")
             if own_pr:
                 properties["kind"]["enum"].extend(["changesets", "quality_output"])
@@ -785,11 +787,8 @@ class ServiceAgent:
         self.phase_warning_at = {}
         deadline = Deadline.after(self.store.policy["job_seconds"])
         with control_scope(deadline=deadline, cancel_events=(self.stop,)):
-            context = (
-                build(self.code_root(), self.runtime.spec.communication or {})
-                if JobContract(self.store, job).handler.code
-                else None
-            )
+            root = self.code_root() if JobContract(self.store, job).code_available else None
+            context = build(root, self.runtime.spec.communication or {}) if root is not None else None
             preparation = {"project_context": context}
             if job["kind"] == "discussion":
                 from .communication.prompts import load
@@ -838,7 +837,7 @@ class ServiceAgent:
                 if assessment and (
                     assessment["signature"]["project"] != overview_signature(after)
                     or assessment.get("evidence", {})
-                    != versions(self.code_root(), assessment.get("evidence", {}))
+                    != versions(root, assessment.get("evidence", {}))
                 ):
                     stale.append("assessment")
                 if not stale:
@@ -934,9 +933,13 @@ class ServiceAgent:
             name = "assessment" if stage == "assessment" else "draft"
             instruction = COMMON + self.discussion_prompts["texts"][name]
             instruction += contract.followup_instruction(drafting=stage == "reply")
+            instruction += contract.discussion_evidence_instruction()
         elif kind == "discussion":
             instruction += "\n" + self.discussion_prompts["texts"]["assessment"]
         if kind == "discussion":
+            if self.phase_work_status.get("state") == "delivered":
+                instruction += (" The original Work is delivered. Old approvals cannot reopen it. "
+                                "You may propose a useful response or ask the operator to consider separate follow-up work.")
             budget, sources = 6000, []
             for identity in reversed(job["input"].get("events", [])):
                 if budget == 0:
@@ -951,6 +954,9 @@ class ServiceAgent:
                         "text": text,
                         "body_length": len(body),
                         "truncated": len(text) < len(body),
+                        "state": event["content"].get("state"),
+                        **({"pr_observation": observation} if (observation :=
+                            (event["content"].get("metadata") or {}).get("review_basis")) else {}),
                     }
                 )
                 budget -= len(text)
@@ -1098,7 +1104,7 @@ class ServiceAgent:
             )
             | (
                 {"service_read_code", "glob", "search_text"}
-                if contract.handler.code and stage != "reply"
+                if contract.code_available and stage != "reply"
                 else set()
             )
             | frozenset(self.work_tools()),

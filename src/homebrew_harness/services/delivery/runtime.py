@@ -201,6 +201,7 @@ class Delivery:
         self.started = True
         try:
             self.runtime.store.runtime_failure(self.runtime.header, "delivery")
+            self.store.recover_terminal()
             while not self.stop.wait(0.1):
                 from homebrew_harness.runtime.runtime_control import ClosePending
 
@@ -637,8 +638,11 @@ class Delivery:
         if row["state"] == "review_branch_ready":
             self.git.verify(row["candidate"])
             with self.ms.db.write() as conn:
-                self.store.action(conn, row, "publish_branch")
-                self.store.action(conn, row, "ensure_change_request")
+                current = self.store.get("changesets", row["id"], conn)
+                if current["revision"] != row["revision"] or self.store.merged_pr(conn, current):
+                    return
+                self.store.action(conn, current, "publish_branch")
+                self.store.action(conn, current, "ensure_change_request")
             return
         if (
             row["state"] in {"ci_waiting", "review_waiting"}
@@ -764,6 +768,7 @@ class Delivery:
 
     def execute(self, action):
         from .spec import ACTIONS
+        from .store import PR_MUTATIONS
 
         if action["kind"] not in ACTIONS:
             self.store.update(
@@ -774,6 +779,16 @@ class Delivery:
             )
             return
         try:
+            if action["kind"] in PR_MUTATIONS:
+                with self.ms.db.write() as conn:
+                    self.runtime.store.guard(conn, self.runtime.header)
+                    current = self.store.get("actions", action["id"], conn)
+                    row = self.store.get("changesets", current["changeset_id"], conn)
+                    if current["state"] != "queued":
+                        return
+                    if merged := self.store.merged_pr(conn, row):
+                        self.store.retire_action(conn, current, merged)
+                        return
             row = self.store.get("changesets", action["changeset_id"])
             self.store.current(row)
             self.git.verify(row["candidate"])

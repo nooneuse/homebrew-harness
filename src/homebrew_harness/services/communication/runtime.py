@@ -149,8 +149,8 @@ class CommunicationRuntime:
                         if (
                             current["subject"]["kind"] == "change_request"
                             and not current.get("review_id")
-                            and current.get("observed_basis", {}).get("state") == "open"
                             and current["state"] not in {"paused", "blocked"}
+                            and self.should_prepare_review(current)
                         ):
                             self.prepare_review(current)
                         current = self.store.get("discussions", row["id"])
@@ -219,6 +219,19 @@ class CommunicationRuntime:
             )
             self.store.put(conn, "discussions", current)
 
+    def should_prepare_review(self, row):
+        state = (row.get("observed_basis") or {}).get("state")
+        if state == "open":
+            return True
+        # Closed PRs do not need code just to discuss an event. An explicit
+        # request may prepare the observed version for a substantive question.
+        identity = row.get("review_operation")
+        if state != "closed" or not identity:
+            return False
+        operation = self.ms.db.get("service_review_operations", identity) or {}
+        return (operation.get("explicit") and operation.get("state") in {"queued", "running"}
+                and operation.get("basis") == row.get("observed_basis"))
+
     def request_review(self, identity, revision, request_id):
         def apply(conn):
             row = self.store.get("discussions", identity, conn)
@@ -235,6 +248,7 @@ class CommunicationRuntime:
                 "id": operation,
                 "discussion_id": identity,
                 "state": "queued",
+                "explicit": True,
                 "basis": row.get("observed_basis"),
                 "epoch": row["analysis_epoch"],
                 "created_at": time.time(),
@@ -298,9 +312,10 @@ class CommunicationRuntime:
                 self.store.put(conn, "discussions", current)
                 self.store.put(conn, "review_operations", record)
             try:
-                captured = self.adapter(row["subject"]).snapshot(
-                    row["subject"], self.policy
-                )
+                options = {}
+                if record.get("explicit") and (record.get("basis") or {}).get("state") == "closed":
+                    options["expected_closed_basis"] = record["basis"]
+                captured = self.adapter(row["subject"]).snapshot(row["subject"], self.policy, **options)
                 snapshot = materialize(
                     self.runtime.store.root, row["subject"], captured, self.policy
                 )

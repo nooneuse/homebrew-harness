@@ -576,11 +576,16 @@ class CommunicationStore:
                 "projection": copy.deepcopy(row["projection"]),
                 "events": [e["id"] for e in history],
                 "review_id": row["review_id"],
+                "observed_pr": copy.deepcopy(row.get("observed_basis")),
                 "work_id": row["work_id"],
                 "operator_note": row.get("operator_note"),
                 "assessment_job_id": row.get("assessment_job_id"),
                 "no_progress": row["no_progress"],
             }
+            if row["subject"]["kind"] == "change_request" and not row["review_id"]:
+                # Historical findings still belong to their recorded rounds and
+                # snapshots. This round cannot reassert them on another version.
+                payload["projection"]["findings"] = []
             from .followup import context
 
             own_pr = context(self, row, conn)
@@ -612,6 +617,9 @@ class CommunicationStore:
                         raise boundary_error(ValueError, "communication_contract",
                             "Discussion candidate cites an unknown source."
                         )
+        if ((job["input"].get("observed_pr") or {}).get("state") == "closed"
+                and (result.get("communication") or {}).get("kind") == "submit_review"):
+            raise boundary_error(ValueError, "communication_contract", "A closed PR permits discussion, not a new code review.")
         if result.get("findings") and not job["input"].get("review_id"):
             raise boundary_error(ValueError, "communication_contract",
                 "Code findings require a fixed review snapshot; use facts for issue observations."
@@ -673,8 +681,9 @@ class CommunicationStore:
         if job["input"].get("review_id"):
             for finding in projection["findings"]:
                 finding["review_id"] = job["input"]["review_id"]
-        elif projection["findings"]:
-            raise boundary_error(ValueError, "communication_contract", "Code findings require a fixed review snapshot.")
+        elif row["subject"]["kind"] == "change_request":
+            # No new findings have passed validate_evidence in this mode.
+            projection["findings"] = copy.deepcopy(row["projection"].get("findings", []))
         row.update(
             projection=projection,
             assessed_input_revision=job["input"]["input_revision"],
@@ -758,10 +767,32 @@ class CommunicationStore:
             },
         )
 
+    def amendment_closed(self, conn, work):
+        if not work:
+            return None
+        if work["state"] == "delivered":
+            return "work_already_delivered"
+        if work.get("changeset_id"):
+            from homebrew_harness.services.delivery.store import observed_merge
+
+            candidate = self.db._get(conn, "service_changesets", work["changeset_id"])
+            if (candidate and candidate["work_id"] == work["id"]
+                    and candidate["requirements_revision"] == work["requirements_revision"]
+                    and observed_merge(candidate)):
+                return "pr_already_merged"
+        return None
+
     def accept_requirements(
         self, conn, row, draft, category, *, automatic=False, origin="operator"
     ):
-        work = self.ms.store.work(row["work_id"], self.id) if row["work_id"] else None
+        work = self.ms.get("work", row["work_id"], conn) if row["work_id"] else None
+        if unavailable := self.amendment_closed(conn, work):
+            message = (
+                "The Work has already been delivered. Consider the feedback separately; this approval cannot reopen it."
+                if unavailable == "work_already_delivered"
+                else "The linked PR is already merged. This request cannot revise the Work while delivery is being verified."
+            )
+            raise boundary_error(ValueError, unavailable, message)
         if work and work.get("run_id"):
             from homebrew_harness.storage.durable_runtime import DurableStore
 
@@ -828,10 +859,37 @@ class CommunicationStore:
         row["state"] = "settled"
         return work
 
+    def retire_requirements(self, conn, work):
+        """A completed Work has no outstanding approval to amend that Work."""
+        if work["state"] != "delivered":
+            return
+        for (raw,) in conn.execute(
+            "SELECT value FROM records WHERE section='service_decisions' AND owner=? "
+            "AND json_extract(value,'$.work_id')=? AND json_extract(value,'$.kind')='discussion_requirements' "
+            "AND json_extract(value,'$.state')='pending'",
+            ("service:" + self.id, work["id"]),
+        ).fetchall():
+            decision = json.loads(raw)
+            decision.update(state="stale", revision=decision["revision"] + 1,
+                            unavailable_reason="work_already_delivered")
+            self.ms.put(conn, "decisions", decision)
+            discussion = self.get("discussions", decision["discussion_id"], conn)
+            if (discussion.get("work_id") == work["id"] and discussion["state"] == "ready_for_decision"
+                    and decision["basis"] == self.basis(discussion)):
+                request_analysis(discussion)
+                self.put(conn, "discussions", discussion)
+
     def requirements_request(self, conn, row, result):
         draft = row["projection"].get("draft")
         if not draft or not draft.get("scope"):
             raise boundary_error(ValueError, "communication_contract", "Development proposals require scope and acceptance.")
+        work = self.db._get(conn, "service_work", row["work_id"]) if row.get("work_id") else None
+        if self.amendment_closed(conn, work):
+            # Save the model's follow-up suggestion in the discussion round, not
+            # as a new approval to mutate the delivered Work.
+            row["state"] = "waiting_participant"
+            self.put(conn, "discussions", row)
+            return None
         category = result.get("category", "feature")
         if category in self.ms.policy["auto_categories"] and row["work_id"] is None:
             self.accept_requirements(conn, row, draft, category, automatic=True)
@@ -865,6 +923,8 @@ class CommunicationStore:
             row["subject"]["kind"] == "change_request"
             and plan["kind"] == "submit_review"
         ):
+            if (row.get("observed_basis") or {}).get("state") == "closed":
+                raise boundary_error(ValueError, "communication_contract", "A closed PR permits discussion, not a new code review.")
             if not row.get("review_id"):
                 raise boundary_error(ValueError, "communication_contract", "A review must have a fixed code snapshot.")
             snapshot = self.get("review_snapshots", row["review_id"], conn)
@@ -1118,6 +1178,15 @@ class CommunicationStore:
     def recover(self):
         with self.db.write() as conn:
             self.runtime.store.guard(conn, self.runtime.header)
+            for (work_id,) in conn.execute(
+                "SELECT DISTINCT json_extract(value,'$.work_id') FROM records "
+                "WHERE section='service_decisions' AND owner=? AND json_extract(value,'$.kind')='discussion_requirements' "
+                "AND json_extract(value,'$.state')='pending'",
+                ("service:" + self.id,),
+            ).fetchall():
+                work = self.db._get(conn, "service_work", work_id) if work_id else None
+                if work:
+                    self.retire_requirements(conn, work)
             # Seed unfinished owned PRs even if publication preceded communication
             # discovery. Only the latest receipt for a subject may refresh its basis.
             seen = set()
