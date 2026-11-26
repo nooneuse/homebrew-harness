@@ -165,6 +165,174 @@ class SetupValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "same declared platform instance"):
             self.validate()
 
+    def test_source_can_reuse_publisher_credentials_file_without_model_env_token(self):
+        self.environment.write_text(
+            "OPENAI_API_KEY=model-fixture\nOPENAI_MODEL=fixture\nOPENAI_BASE_URL="
+            + self.model_endpoint
+            + "\n"
+        )
+        self.spec["sources"] = [
+            {
+                **self.source,
+                "credentials_file": str(self.publisher),
+                "token_env": "PROJECT_PUBLISH_TOKEN",
+            }
+        ]
+        result = self.validate()
+        self.assertEqual(result["state"], "validated")
+        for value in ("model-fixture", "publish-fixture", self.endpoint, self.model_endpoint):
+            self.assertNotIn(value, json.dumps(result))
+
+    def test_source_credentials_file_boundaries_and_multi_source_instance_matching(self):
+        # Source credentials file must be outside control/workspace and owner-only.
+        local = self.workspace / "source.env"
+        local.write_bytes(self.publisher.read_bytes())
+        local.chmod(0o600)
+        self.spec["sources"] = [
+            {**self.source, "credentials_file": str(local), "token_env": "PROJECT_PUBLISH_TOKEN"}
+        ]
+        with self.assertRaisesRegex(ValueError, "outside|external"):
+            self.validate()
+
+        second_creds = self.private / "read-other.env"
+        second_creds.write_text(
+            "ALT_ENDPOINT=" + self.endpoint + "\nALT_TOKEN=read-second\n"
+        )
+        second_creds.chmod(0o600)
+        self.spec["sources"] = [
+            self.source,
+            {
+                "name": "project-secondary",
+                "provider": "github",
+                "instance": "primary",
+                "project": "example/project-two",
+                "credentials_file": str(second_creds),
+                "api_url_env": "ALT_ENDPOINT",
+                "token_env": "ALT_TOKEN",
+            },
+        ]
+        self.assertEqual(self.validate()["state"], "validated")
+
+        # Same instance resolving to a different endpoint in another credentials_file is rejected.
+        second_creds.write_text(
+            "ALT_ENDPOINT=https://other.invalid\nALT_TOKEN=read-second\n"
+        )
+        with self.assertRaisesRegex(ValueError, "same declared platform instance"):
+            self.validate()
+
+        # Two sources sharing one credentials_file with distinct var names pointing to the same endpoint succeed.
+        shared_creds = self.private / "shared.env"
+        shared_creds.write_text(
+            "API_A=" + self.endpoint + "\nAPI_B=" + self.endpoint + "\nTOKEN_SHARED=read-shared\n"
+        )
+        shared_creds.chmod(0o600)
+        self.spec["sources"] = [
+            {
+                "name": "project-a",
+                "provider": "github",
+                "instance": "primary",
+                "project": "example/project",
+                "credentials_file": str(shared_creds),
+                "api_url_env": "API_A",
+                "token_env": "TOKEN_SHARED",
+            },
+            {
+                "name": "project-b",
+                "provider": "github",
+                "instance": "primary",
+                "project": "example/project-two",
+                "credentials_file": str(shared_creds),
+                "api_url_env": "API_B",
+                "token_env": "TOKEN_SHARED",
+            },
+        ]
+        self.assertEqual(self.validate()["state"], "validated")
+        shared_creds.write_text(
+            "API_A=" + self.endpoint + "\nAPI_B=https://other.invalid\nTOKEN_SHARED=read-shared\n"
+        )
+        with self.assertRaisesRegex(ValueError, "same declared platform instance"):
+            self.validate()
+
+    def test_startup_admission_rejects_source_and_publisher_instance_mismatch(self):
+        from homebrew_harness import Harness, HostConfig
+        from homebrew_harness.services.runtime import prepare_binding
+        from homebrew_harness.services.spec import ServiceSpec
+
+        raw = self.publisher.read_text().replace(self.endpoint, "https://" + "other.invalid")
+        self.publisher.write_text(raw)
+        communication = self.spec.pop("communication")
+
+        # Delivery-only mismatch at startup admission (not just offline validate).
+        self.spec["delivery"]["required_tests"] = []
+        self.save()
+        settings = HostConfig.from_file(self.host_file, workdir=self.control)
+        spec = ServiceSpec.load(self.spec_file, self.control).with_host_defaults(settings.settings)
+        with Harness(workdir=self.control, config=settings) as core:
+            with self.assertRaisesRegex(ValueError, "same declared platform instance"):
+                prepare_binding(core, spec)
+
+        # Communication-only mismatch at startup admission as well.
+        self.spec.pop("delivery")
+        self.spec["communication"] = communication
+        self.save()
+        spec = ServiceSpec.load(self.spec_file, self.control).with_host_defaults(settings.settings)
+        with Harness(workdir=self.control, config=settings) as core:
+            with self.assertRaisesRegex(ValueError, "same declared platform instance"):
+                prepare_binding(core, spec)
+
+    def test_credentials_file_size_limit_matches_across_validate_and_startup(self):
+        from homebrew_harness import Harness, HostConfig
+        from homebrew_harness.services.runtime import ServiceRuntime, prepare_binding
+        from homebrew_harness.services.spec import ServiceSpec
+        from homebrew_harness.services.store import ServiceStore
+
+        self.spec.pop("delivery")
+        self.spec.pop("communication")
+        source_creds = self.private / "sized-source.env"
+        self.spec["sources"] = [
+            {
+                **self.source,
+                "credentials_file": str(source_creds),
+            }
+        ]
+
+        # Lowered limit (4 KiB): ~5 KiB credentials file rejected by both validate and startup.
+        source_creds.write_text(
+            "PROJECT_API_ENDPOINT=" + self.endpoint + "\nPROJECT_READ_TOKEN=read-sized\n"
+            + "# " + ("x" * 5000) + "\n"
+        )
+        source_creds.chmod(0o600)
+        self.host["runtime_limits"] = {"config_file_bytes": 4096}
+        with self.assertRaisesRegex(ValueError, "size limit"):
+            self.validate()
+        settings = HostConfig.from_file(self.host_file, workdir=self.control)
+        spec = ServiceSpec.load(self.spec_file, self.control).with_host_defaults(settings.settings)
+        with Harness(workdir=self.control, config=settings) as core:
+            with self.assertRaisesRegex(ValueError, "size limit"):
+                prepare_binding(core, spec)
+
+        # Raised limit (128 KiB): ~70 KiB credentials file accepted by validate, prepare_binding,
+        # and detached-style direct ServiceRuntime construction (outside core.operation()).
+        source_creds.write_text(
+            "PROJECT_API_ENDPOINT=" + self.endpoint + "\nPROJECT_READ_TOKEN=read-sized\n"
+            + "# " + ("x" * 70000) + "\n"
+        )
+        source_creds.chmod(0o600)
+        self.host["runtime_limits"] = {"config_file_bytes": 131072}
+        self.assertEqual(self.validate()["state"], "validated")
+        settings = HostConfig.from_file(self.host_file, workdir=self.control)
+        spec = ServiceSpec.load(self.spec_file, self.control).with_host_defaults(settings.settings)
+        with Harness(workdir=self.control, config=settings) as core:
+            binding = prepare_binding(core, spec)
+            store = ServiceStore(self.control)
+            meta = store.create(spec, settings.settings.identity(), binding, "sized-service")
+            runtime = ServiceRuntime(core, store, meta["id"])
+            try:
+                self.assertIn("project", runtime.maintenance.sources)
+            finally:
+                runtime.close()
+                runtime.wait_closed(5)
+
     def test_remote_pr_execution_requires_container(self):
         self.spec["communication"]["required_tests"] = ["unit-tests"]
         with self.assertRaisesRegex(ValueError, "container backend"):

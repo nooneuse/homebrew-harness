@@ -32,17 +32,21 @@ class GithubDelivery:
             "draft_requests": True,
         }
 
-    def __init__(self, spec, values):
+    def __init__(self, spec, values, *, roots=()):
         self.spec, self.values = spec, values
         self.lock = ControlledRLock()
         verify = True
+        cert_hash = None
+        if spec.get("ca_file_env") and not values.get("ca_file"):
+            raise ValueError("Platform CA configuration is missing.")
         if values.get("ca_file"):
-            import ssl
+            from homebrew_harness.platforms.registry import load_ca_bundle
 
-            verify = ssl.create_default_context(cafile=values["ca_file"])
+            verify, cert_hash = load_ca_bundle(values["ca_file"], roots=roots)
         self.transport = JsonTransport(
             values["api_url"], values["api_token"], verify=verify
         )
+        self.transport.certificate_hash = cert_hash
         self.prefix = "repos/" + spec["project"]
 
     @serialized

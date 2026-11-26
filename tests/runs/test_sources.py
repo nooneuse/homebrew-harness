@@ -221,3 +221,208 @@ class SourceTests(support.ManagedRunFixture):
         self.assertTrue(all(e["state"] == "queued" for e in events))
         self.assertEqual(next(e for e in events if e["kind"] == "review")["body"], "")
         self.assertTrue(all(e["subject"]["kind"] == "change_request" for e in events))
+
+    def test_change_request_supports_optional_dedicated_credentials_file(self):
+        import tempfile
+        from pathlib import Path
+
+        (self.root / "input.txt").write_text("fixture")
+        for command in (
+            ("init", "-q"),
+            ("add", "input.txt"),
+            ("commit", "-qm", "fixture"),
+        ):
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=fixture",
+                    "-c",
+                    "user.email=fixture@invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    *command,
+                ],
+                cwd=self.root,
+                check=True,
+                capture_output=True,
+            )
+        head = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=self.root, text=True
+        ).strip()
+        server = RunServiceFixture(head)
+        self.addCleanup(server.close)
+        external = tempfile.TemporaryDirectory()
+        self.addCleanup(external.cleanup)
+        ext_root = Path(external.name).resolve()
+        creds = ext_root / "run-source.env"
+        creds.write_text(
+            "RUN_GH_API=" + server.url + "\nRUN_GH_TOKEN=dedicated-run-credential\n"
+        )
+        creds.chmod(0o600)
+        config = {
+            "version": 1,
+            "change_request": {
+                "provider": "github",
+                "instance": "primary",
+                "project": "fixture/project",
+                "number": 1,
+                "actor_ids": [7],
+                "app_ids": [11],
+                "credentials_file": str(creds),
+                "api_url_env": "RUN_GH_API",
+                "token_env": "RUN_GH_TOKEN",
+                "poll_seconds": 0.1,
+            },
+        }
+        with patch.dict(os.environ, {}, clear=True):
+            services = RunServices(self.store, config, environment={})
+            self.addCleanup(services.close)
+            run = self.store.create(RunSpec("Handle PR feedback via credentials file"))
+            services.bind(run["id"])
+            server.comments = [self.comment(31)]
+            services.tick(run["id"])
+            self.assertEqual(len(self.store.runtime.items("run_events")), 1)
+
+        # Strict isolation: does not fall back to environment when token is missing in file.
+        creds.write_text("RUN_GH_API=" + server.url + "\n")
+        with self.assertRaisesRegex(ValueError, "missing"):
+            RunServices(
+                self.store,
+                config,
+                environment={"RUN_GH_API": server.url, "RUN_GH_TOKEN": "host-token"},
+            )
+
+        # Rejects non-owner-only permissions, workspace file, and symlinks.
+        creds.write_text(
+            "RUN_GH_API=" + server.url + "\nRUN_GH_TOKEN=dedicated-run-credential\n"
+        )
+        creds.chmod(0o644)
+        with self.assertRaisesRegex(ValueError, "owner-only"):
+            RunServices(self.store, config, environment={})
+        creds.chmod(0o600)
+        inside = self.root / "inside.env"
+        inside.write_bytes(creds.read_bytes())
+        inside.chmod(0o600)
+        with self.assertRaisesRegex(ValueError, "external"):
+            RunServices(
+                self.store,
+                {
+                    "version": 1,
+                    "change_request": {
+                        **config["change_request"],
+                        "credentials_file": str(inside),
+                    },
+                },
+                environment={},
+            )
+        link = ext_root / "link.env"
+        link.symlink_to(creds)
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            RunServices(
+                self.store,
+                {
+                    "version": 1,
+                    "change_request": {
+                        **config["change_request"],
+                        "credentials_file": str(link),
+                    },
+                },
+                environment={},
+            )
+
+    def test_foreground_run_poll_applies_persisted_run_spec_runtime_limits(self):
+        import io
+        import json
+        import tempfile
+        from contextlib import redirect_stdout
+        from pathlib import Path
+        from homebrew_harness.cli import main
+
+        (self.root / "input.txt").write_text("fixture")
+        for command in (
+            ("init", "-q"),
+            ("add", "input.txt"),
+            ("commit", "-qm", "fixture"),
+        ):
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.name=fixture",
+                    "-c",
+                    "user.email=fixture@invalid",
+                    "-c",
+                    "commit.gpgsign=false",
+                    "-c",
+                    "core.hooksPath=/dev/null",
+                    *command,
+                ],
+                cwd=self.root,
+                check=True,
+                capture_output=True,
+            )
+        head = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=self.root, text=True
+        ).strip()
+        server = RunServiceFixture(head)
+        self.addCleanup(server.close)
+        server.comments = [self.comment(41)]
+
+        external = tempfile.TemporaryDirectory()
+        self.addCleanup(external.cleanup)
+        ext_root = Path(external.name).resolve()
+        env_file = ext_root / "host.env"
+        env_file.write_text("OPENAI_API_KEY=fixture\n")
+        env_file.chmod(0o600)
+        creds = ext_root / "large-run-source.env"
+        creds.write_text(
+            "RUN_GH_API=" + server.url + "\nRUN_GH_TOKEN=dedicated-large-run-token\n"
+            + "# " + ("x" * 70000) + "\n"
+        )
+        creds.chmod(0o600)
+        control_file = ext_root / "run-control.json"
+        control_file.write_text(
+            json.dumps(
+                {
+                    "version": 1,
+                    "change_request": {
+                        "provider": "github",
+                        "instance": "primary",
+                        "project": "fixture/project",
+                        "number": 1,
+                        "actor_ids": [7],
+                        "app_ids": [11],
+                        "credentials_file": str(creds),
+                        "api_url_env": "RUN_GH_API",
+                        "token_env": "RUN_GH_TOKEN",
+                        "poll_seconds": 0.1,
+                    },
+                }
+            )
+        )
+        run = self.store.create(
+            RunSpec(
+                "Poll with raised config limit",
+                runtime_limits={"config_file_bytes": 131072},
+            )
+        )
+        output = io.StringIO()
+        with patch.dict(os.environ, {}, clear=True), redirect_stdout(output):
+            code = main(
+                [
+                    "run",
+                    "--cwd",
+                    str(self.root),
+                    "--env-file",
+                    str(env_file),
+                    "--control-config",
+                    str(control_file),
+                    "poll",
+                    run["id"],
+                ]
+            )
+        self.assertEqual(code, 0)
+        self.assertEqual(len(self.store.runtime.items("run_events")), 1)

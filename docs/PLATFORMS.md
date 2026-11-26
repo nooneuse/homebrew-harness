@@ -29,7 +29,11 @@ Use an explicit platform declaration in the external ServiceSpec:
 }
 ```
 
-`instance` is a stable host alias for the platform installation. `project` is validated by the selected adapter; GitHub uses owner/project. Future adapters can accept their own project IDs or nested namespaces. Connection values remain in external host files. Sources using the same provider/instance must identify the same host connection.
+`instance` is a stable host alias for the platform installation. `project` is validated by the selected adapter; GitHub uses owner/project. Future adapters can accept their own project IDs or nested namespaces. Connection values remain in external host files. Sources using the same provider/instance must resolve to the same host endpoint and certificate binding.
+
+Optionally, a repository source may set `"credentials_file": "/path/to/private/source.env"` to read its `api_url_env`, `token_env` and optional `ca_file_env` exclusively from an external, owner-only file without symlinks outside the control and project directories (no fallback to the host/model environment). This is optional: a source may omit `credentials_file` to read from the host environment, point to a dedicated read-only file, or reuse a host publication credentials file without exposing write tokens to the model/development environment. A dedicated read-only token is optional but helpful for least-privilege isolation.
+
+Existing configurations that omit `credentials_file` are unaffected. Because `credentials_file` is part of the persisted platform binding, migrating an already-bound Run between host environment variables and a credentials file (or changing its path) changes its identity and requires a new Run; restarting an existing Service by ID reuses its saved ServiceSpec, so switching an existing Service to file credentials requires creating or replacing the Service rather than editing the external spec file in place.
 
 For an instance using a private certificate authority, add `ca_file_env` referencing an environment variable whose value is an absolute CA-file path outside the mutable workspaces. The certificate is loaded explicitly and participates in the connection binding. HTTPS certificate verification remains enabled; ordinary public endpoints use default certificate trust.
 
@@ -54,7 +58,7 @@ The external Run control configuration uses a `change_request` declaration:
 }
 ```
 
-Actor and application IDs select admitted feedback under host policy. They grant no execution permissions. The native controller checks local/current head, object versions, inbox capacity and stable event identity before committing feedback. Notifications retain their separate host declaration.
+`change_request` accepts the same optional external owner-only `credentials_file` outside the workspace to load its `api_url_env`, `token_env` and optional `ca_file_env` without inheriting the host environment. Actor and application IDs select admitted feedback under host policy. They grant no execution permissions. The native controller checks local/current head, object versions, inbox capacity and stable event identity before committing feedback. Notifications retain their separate host declaration.
 
 ## Identity and state
 

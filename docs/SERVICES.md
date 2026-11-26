@@ -245,7 +245,7 @@ Add these fields to an external service specification:
 }
 ```
 
-The usual workspace, version and Run defaults also apply. Fill connection values only in the external host environment. Source credentials are used by the fixed read adapter. Scopes must fit within the host Run defaults for paths, tools and registered tests. Omitting `auto_categories` sends executable proposals to the operator for approval. Automatic categories choose among already authorized scopes; they do not expand permissions. Native tool approvals remain in effect.
+The usual workspace, version and Run defaults also apply. Fill connection values only in external host files—either the host environment or an optional per-source owner-only `credentials_file` (read exclusively without inheriting the host environment). Source credentials are used by the fixed read adapter. Scopes must fit within the host Run defaults for paths, tools and registered tests. Omitting `auto_categories` sends executable proposals to the operator for approval. Automatic categories choose among already authorized scopes; they do not expand permissions. Native tool approvals remain in effect.
 
 Repository polling records issue/PR identities and issue-comment versions, with durable page positions, overlap and deduplication. A poll observes available versions; it cannot reconstruct an edit or deletion that disappeared between polls. Source failures retain their cursor and show retry state. Unchanged polling makes no model calls.
 

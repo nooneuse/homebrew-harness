@@ -38,11 +38,24 @@ class Maintenance:
             else __import__("os").environ
         )
         try:
+            from homebrew_harness.platforms.registry import (
+                check_instance_binding,
+                transport_binding,
+            )
+
+            instances = {}
             for spec in runtime.spec.sources:
-                self.sources[spec["name"]] = RepositorySource(
+                source = RepositorySource(
                     spec,
                     environment,
                     roots=(runtime.store.root, runtime.spec.workspace),
+                )
+                self.sources[spec["name"]] = source
+                check_instance_binding(
+                    instances,
+                    spec["provider"],
+                    spec["instance"],
+                    source.connection_binding,
                 )
             self.agent = ServiceAgent(runtime, self.store, self.stop)
             if runtime.spec.communication:
@@ -51,10 +64,26 @@ class Maintenance:
                 self.communication = CommunicationRuntime(
                     runtime, self.store, environment
                 )
+                for (provider, instance, _project), (
+                    adapter,
+                    _identity,
+                ) in self.communication.projects.items():
+                    check_instance_binding(
+                        instances,
+                        provider,
+                        instance,
+                        transport_binding(adapter.transport),
+                    )
             if runtime.spec.delivery:
                 from .delivery.runtime import Delivery
 
                 self.delivery = Delivery(runtime, self.store, environment)
+                check_instance_binding(
+                    instances,
+                    runtime.spec.delivery["provider"],
+                    runtime.spec.delivery["instance"],
+                    transport_binding(self.delivery.adapter.transport),
+                )
         except BaseException:
             if self.communication:
                 self.communication.close()

@@ -393,62 +393,64 @@ def execute(args, parser):
                     "Managed host configuration must be outside the workspace."
                 )
             load_dotenv(args.env_file.expanduser(), override=False)
-        services = RunServices.load(store, args.control_config)
-        if args.command in {"poll", "effects-resolve"}:
-            from homebrew_harness.execution.execution_leases import ExecutionLeases
+        spec = load_run_spec(store.get(identity)["spec"])
+        with limits_scope(spec.runtime_limits):
+            services = RunServices.load(store, args.control_config)
+            if args.command in {"poll", "effects-resolve"}:
+                from homebrew_harness.execution.execution_leases import ExecutionLeases
 
-            leases = ExecutionLeases(store.root)
-            try:
-                with leases.use("managed-supervisor"):
-                    services.bind(identity)
-                    result = (
-                        services.tick(identity)
-                        if args.command == "poll"
-                        else services.resolve(
-                            identity,
-                            args.effect_id,
-                            args.revision,
-                            args.outcome,
-                            args.reason,
+                leases = ExecutionLeases(store.root)
+                try:
+                    with leases.use("managed-supervisor"):
+                        services.bind(identity)
+                        result = (
+                            services.tick(identity)
+                            if args.command == "poll"
+                            else services.resolve(
+                                identity,
+                                args.effect_id,
+                                args.revision,
+                                args.outcome,
+                                args.reason,
+                            )
                         )
+                    print(json.dumps(redact(result), ensure_ascii=False, indent=2))
+                finally:
+                    leases.close()
+                return 0
+            settings = []
+            for name in (
+                "env_file",
+                "models_config",
+                "test_config",
+                "bash_config",
+                "mcp_config",
+            ):
+                path = getattr(args, name)
+                if path is not None:
+                    settings.extend(
+                        ("--" + name.replace("_", "-"), str(path.expanduser().resolve()))
                     )
-                print(json.dumps(redact(result), ensure_ascii=False, indent=2))
-            finally:
-                leases.close()
-            return 0
-        settings = []
-        for name in (
-            "env_file",
-            "models_config",
-            "test_config",
-            "bash_config",
-            "mcp_config",
-        ):
-            path = getattr(args, name)
-            if path is not None:
-                settings.extend(
-                    ("--" + name.replace("_", "-"), str(path.expanduser().resolve()))
-                )
-        if args.approval_review is not None:
-            from homebrew_harness.security.approval_review import ReviewConfig
-            settings.extend(("--approval-review", json.dumps(ReviewConfig.parse(args.approval_review).data())))
-        if getattr(args, "runtime_limits", None) is not None:
-            # The CLI's explicit setting supplies the fallback for legacy records.
-            settings.extend(("--runtime-limits", json.dumps(args.runtime_limits)))
-        supervisor = RunSupervisor(
-            store,
-            host_arguments=settings,
-            services=services,
-            model_handoff=lambda owner, value, alias: handoff_model(
-                value,
-                alias,
-                "Host-declared fallback after " + value["last_outcome"]["reason_code"],
-                owner,
-            ),
-        )
-        result = supervisor.supervise(identity)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        return exit_status(result)
+            if args.approval_review is not None:
+                from homebrew_harness.security.approval_review import ReviewConfig
+                settings.extend(("--approval-review", json.dumps(ReviewConfig.parse(args.approval_review).data())))
+            if getattr(args, "runtime_limits", None) is not None:
+                # The CLI's explicit setting supplies the fallback for legacy records.
+                settings.extend(("--runtime-limits", json.dumps(args.runtime_limits)))
+            supervisor = RunSupervisor(
+                store,
+                host_arguments=settings,
+                services=services,
+                model_handoff=lambda owner, value, alias: handoff_model(
+                    value,
+                    alias,
+                    "Host-declared fallback after " + value["last_outcome"]["reason_code"],
+                    owner,
+                ),
+            )
+            result = supervisor.supervise(identity)
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+            return exit_status(result)
     except Exception as error:
         if (
             "store" in locals()

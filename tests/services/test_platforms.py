@@ -284,3 +284,288 @@ class PlatformTests(unittest.TestCase):
             self.assertEqual(page.events[0].subject.project, "42")
             self.assertEqual(page.cursor["position"], {"bookmark": "opaque"})
             self.assertEqual(self.peer.source_requests, [])
+
+    def test_repository_source_optional_credentials_file_is_isolated_and_bounded(self):
+        from homebrew_harness.platforms.registry import validate_declaration
+
+        creds = self.base / "source.env"
+        creds.write_text("E=" + self.peer.url + "\nT=dedicated-read-token\n")
+        creds.chmod(0o600)
+        declaration = {
+            "name": "project",
+            "provider": "github",
+            "instance": "primary",
+            "project": "example/project",
+            "credentials_file": str(creds),
+            "api_url_env": "E",
+            "token_env": "T",
+            "poll_seconds": 10,
+        }
+        source = RepositorySource(
+            declaration, {}, roots=(self.control, self.workspace)
+        )
+        self.addCleanup(source.close)
+        self.assertEqual(source.poll({}, Deadline.after(5)).events, ())
+
+        # Strict isolation: does not fall back to host environment when a key is absent.
+        incomplete = self.base / "incomplete.env"
+        incomplete.write_text("E=" + self.peer.url + "\n")
+        incomplete.chmod(0o600)
+        with self.assertRaisesRegex(ValueError, "missing"):
+            RepositorySource(
+                {**declaration, "credentials_file": str(incomplete)},
+                {"E": self.peer.url, "T": "host-fallback-token"},
+                roots=(self.control, self.workspace),
+            )
+
+        # Rejects relative path, non-owner-only permissions, workspace path, symlink & parent symlink.
+        with self.assertRaisesRegex(ValueError, "absolute"):
+            RepositorySource({**declaration, "credentials_file": "relative.env"}, {})
+        creds.chmod(0o644)
+        with self.assertRaisesRegex(ValueError, "owner-only"):
+            RepositorySource(declaration, {}, roots=(self.control, self.workspace))
+        creds.chmod(0o600)
+        inside = self.workspace / "source.env"
+        inside.write_bytes(creds.read_bytes())
+        inside.chmod(0o600)
+        with self.assertRaisesRegex(ValueError, "external"):
+            RepositorySource(
+                {**declaration, "credentials_file": str(inside)},
+                {},
+                roots=(self.control, self.workspace),
+            )
+        link = self.base / "source-link.env"
+        link.symlink_to(creds)
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            RepositorySource(
+                {**declaration, "credentials_file": str(link)},
+                {},
+                roots=(self.control, self.workspace),
+            )
+        parent_real = self.base / "cred-dir"
+        parent_real.mkdir(mode=0o700)
+        nested = parent_real / "source.env"
+        nested.write_bytes(creds.read_bytes())
+        nested.chmod(0o600)
+        parent_link = self.base / "cred-link-dir"
+        parent_link.symlink_to(parent_real)
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            RepositorySource(
+                {**declaration, "credentials_file": str(parent_link / "source.env")},
+                {},
+                roots=(self.control, self.workspace),
+            )
+
+        # Omitting credentials_file or passing None keeps the exact legacy spec & identity.
+        plain = self.source()
+        explicit_none = self.source(credentials_file=None)
+        self.assertNotIn("credentials_file", explicit_none.spec)
+        self.assertEqual(plain.identity, explicit_none.identity)
+
+        # Communication projects use top-level communication.credentials_file, not per-project credentials_file.
+        with self.assertRaisesRegex(ValueError, "Unknown platform declaration fields"):
+            validate_declaration(declaration, "communication", named=True)
+
+    def test_private_ca_bundle_allows_non_ascii_comments_outside_pem_blocks(self):
+        import hashlib
+        import shutil
+        import ssl
+        import subprocess
+        from homebrew_harness.platforms.github.delivery import GithubDelivery
+        from homebrew_harness.platforms.registry import load_ca_bundle
+
+        if not shutil.which("openssl"):
+            self.skipTest("TLS fixture requires openssl")
+        directory = self.base / "tls-comments"
+        directory.mkdir()
+        cert = directory / "server.pem"
+        key = directory / "server.key"
+        subprocess.run(
+            [
+                "openssl",
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-keyout",
+                str(key),
+                "-out",
+                str(cert),
+                "-days",
+                "1",
+                "-subj",
+                "/CN=localhost",
+                "-addext",
+                "basicConstraints=critical,CA:TRUE",
+                "-addext",
+                "subjectAltName=DNS:localhost,IP:127.0.0.1",
+            ],
+            check=True,
+            capture_output=True,
+            timeout=20,
+        )
+        raw = "# 公司内网私有根证书\n".encode("utf-8") + cert.read_bytes()
+        commented = directory / "commented.pem"
+        commented.write_bytes(raw)
+        ctx, digest_hex = load_ca_bundle(commented, roots=(self.control, self.workspace))
+        self.assertEqual(digest_hex, hashlib.sha256(raw).hexdigest())
+        self.assertIsNotNone(ctx)
+
+        adapter = GithubDelivery(
+            {
+                "project": "example/project",
+                "request_seconds": 5,
+                "ca_file_env": "CA",
+            },
+            {
+                "api_url": "https://platform.invalid",
+                "api_token": "synthetic",
+                "ca_file": str(commented),
+            },
+            roots=(self.control, self.workspace),
+        )
+        self.addCleanup(adapter.close)
+        self.assertEqual(adapter.transport.certificate_hash, digest_hex)
+
+        invalid = directory / "only-comments.pem"
+        invalid.write_text("# 没有证书块\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "Invalid platform CA certificate"):
+            load_ca_bundle(invalid, roots=(self.control, self.workspace))
+
+        # Dual-CA bundle where the second certificate has trailing tabs on Base64 lines
+        # must load both CAs rather than silently dropping the second one.
+        cert2 = directory / "server-two.pem"
+        key2 = directory / "server-two.key"
+        subprocess.run(
+            [
+                "openssl",
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-keyout",
+                str(key2),
+                "-out",
+                str(cert2),
+                "-days",
+                "1",
+                "-subj",
+                "/CN=second.localhost",
+                "-addext",
+                "basicConstraints=critical,CA:TRUE",
+                "-addext",
+                "subjectAltName=DNS:localhost,IP:127.0.0.1",
+            ],
+            check=True,
+            capture_output=True,
+            timeout=20,
+        )
+        tabbed_second = b"\n".join(
+            (line + b"\t") if line and not line.startswith(b"-----") else line
+            for line in cert2.read_bytes().splitlines()
+        ) + b"\n"
+        dual_raw = (
+            "# 第一张根证书\n".encode("utf-8")
+            + cert.read_bytes()
+            + "\n# 第二张根证书（含行尾制表符）\n".encode("utf-8")
+            + tabbed_second
+        )
+        dual = directory / "dual-ca.pem"
+        dual.write_bytes(dual_raw)
+        dual_ctx, dual_digest = load_ca_bundle(dual, roots=(self.control, self.workspace))
+        self.assertEqual(dual_digest, hashlib.sha256(dual_raw).hexdigest())
+        subjects = {
+            dict(item[0]).get("commonName")
+            for c in dual_ctx.get_ca_certs()
+            for item in [c.get("subject", ())]
+        }
+        self.assertEqual(subjects, {"localhost", "second.localhost"})
+
+        # Mixed bundle containing a standard CERTIFICATE and an OpenSSL TRUSTED CERTIFICATE
+        # must load the trusted certificate and complete a real TLS handshake against it.
+        trusted_cert2 = directory / "trusted-two.pem"
+        subprocess.run(
+            [
+                "openssl",
+                "x509",
+                "-in",
+                str(cert2),
+                "-trustout",
+                "-addtrust",
+                "serverAuth",
+                "-out",
+                str(trusted_cert2),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=20,
+        )
+        self.assertIn(b"-----BEGIN TRUSTED CERTIFICATE-----", trusted_cert2.read_bytes())
+        mixed_raw = cert.read_bytes() + b"\n" + trusted_cert2.read_bytes()
+        mixed = directory / "mixed-trusted.pem"
+        mixed.write_bytes(mixed_raw)
+        server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        server_ctx.load_cert_chain(cert2, key2)
+        self.peer.server.socket = server_ctx.wrap_socket(
+            self.peer.server.socket, server_side=True
+        )
+        endpoint = self.peer.url.replace("http:", "https:")
+        delivery = GithubDelivery(
+            {
+                "project": "example/project",
+                "request_seconds": 5,
+                "ca_file_env": "CA",
+            },
+            {
+                "api_url": endpoint,
+                "api_token": "synthetic",
+                "ca_file": str(mixed),
+            },
+            roots=(self.control, self.workspace),
+        )
+        self.addCleanup(delivery.close)
+        self.assertEqual(
+            delivery.transport.certificate_hash, hashlib.sha256(mixed_raw).hexdigest()
+        )
+        # Complete an actual TLS handshake against the server backed by cert2 (loaded via TRUSTED CERTIFICATE).
+        self.assertEqual(delivery.request("GET", "repos/example/project/issues"), [])
+
+        # Truncated second certificate block fails fast instead of silently keeping only the first.
+        truncated = directory / "truncated-dual.pem"
+        truncated.write_bytes(cert.read_bytes() + b"\n-----BEGIN CERTIFICATE-----\nAAAA\n")
+        with self.assertRaisesRegex(ValueError, "Invalid platform CA certificate"):
+            load_ca_bundle(truncated, roots=(self.control, self.workspace))
+
+        # Even when TMPDIR points inside the mutable workspace, load_ca_bundle must not
+        # stage the temporary CA bundle inside the workspace, and fails closed if no
+        # isolated temporary directory is available.
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from homebrew_harness.platforms.registry import _external_tempdir
+
+        ws_tmp = self.workspace / "tmp"
+        ws_tmp.mkdir()
+        seen_cafiles = []
+        real_create = ssl.create_default_context
+
+        def spy_context(*args, **kwargs):
+            if kwargs.get("cafile"):
+                seen_cafiles.append(Path(kwargs["cafile"]).resolve())
+            return real_create(*args, **kwargs)
+
+        with (
+            patch.dict(os.environ, {"TMPDIR": str(ws_tmp)}),
+            patch.object(tempfile, "tempdir", None),
+            patch("ssl.create_default_context", side_effect=spy_context),
+        ):
+            load_ca_bundle(cert, roots=(self.control, self.workspace))
+        self.assertEqual(len(seen_cafiles), 1)
+        self.assertFalse(seen_cafiles[0].is_relative_to(self.workspace.resolve()))
+        self.assertFalse(seen_cafiles[0].is_relative_to(self.control.resolve()))
+        self.assertEqual(list(ws_tmp.iterdir()), [])
+        with self.assertRaisesRegex(ValueError, "outside mutable workspaces"):
+            _external_tempdir((Path("/"),))
