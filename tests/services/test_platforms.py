@@ -369,6 +369,7 @@ class PlatformTests(unittest.TestCase):
     def test_private_ca_bundle_allows_non_ascii_comments_outside_pem_blocks(self):
         import hashlib
         import shutil
+        import ssl
         import subprocess
         from homebrew_harness.platforms.github.delivery import GithubDelivery
         from homebrew_harness.platforms.registry import load_ca_bundle
@@ -395,6 +396,10 @@ class PlatformTests(unittest.TestCase):
                 "1",
                 "-subj",
                 "/CN=localhost",
+                "-addext",
+                "basicConstraints=critical,CA:TRUE",
+                "-addext",
+                "subjectAltName=DNS:localhost,IP:127.0.0.1",
             ],
             check=True,
             capture_output=True,
@@ -448,6 +453,10 @@ class PlatformTests(unittest.TestCase):
                 "1",
                 "-subj",
                 "/CN=second.localhost",
+                "-addext",
+                "basicConstraints=critical,CA:TRUE",
+                "-addext",
+                "subjectAltName=DNS:localhost,IP:127.0.0.1",
             ],
             check=True,
             capture_output=True,
@@ -473,6 +482,55 @@ class PlatformTests(unittest.TestCase):
             for item in [c.get("subject", ())]
         }
         self.assertEqual(subjects, {"localhost", "second.localhost"})
+
+        # Mixed bundle containing a standard CERTIFICATE and an OpenSSL TRUSTED CERTIFICATE
+        # must load the trusted certificate and complete a real TLS handshake against it.
+        trusted_cert2 = directory / "trusted-two.pem"
+        subprocess.run(
+            [
+                "openssl",
+                "x509",
+                "-in",
+                str(cert2),
+                "-trustout",
+                "-addtrust",
+                "serverAuth",
+                "-out",
+                str(trusted_cert2),
+            ],
+            check=True,
+            capture_output=True,
+            timeout=20,
+        )
+        self.assertIn(b"-----BEGIN TRUSTED CERTIFICATE-----", trusted_cert2.read_bytes())
+        mixed_raw = cert.read_bytes() + b"\n" + trusted_cert2.read_bytes()
+        mixed = directory / "mixed-trusted.pem"
+        mixed.write_bytes(mixed_raw)
+        server_ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        server_ctx.load_cert_chain(cert2, key2)
+        self.peer.server.socket = server_ctx.wrap_socket(
+            self.peer.server.socket, server_side=True
+        )
+        endpoint = self.peer.url.replace("http:", "https:")
+        delivery = GithubDelivery(
+            {
+                "project": "example/project",
+                "request_seconds": 5,
+                "ca_file_env": "CA",
+            },
+            {
+                "api_url": endpoint,
+                "api_token": "synthetic",
+                "ca_file": str(mixed),
+            },
+            roots=(self.control, self.workspace),
+        )
+        self.addCleanup(delivery.close)
+        self.assertEqual(
+            delivery.transport.certificate_hash, hashlib.sha256(mixed_raw).hexdigest()
+        )
+        # Complete an actual TLS handshake against the server backed by cert2 (loaded via TRUSTED CERTIFICATE).
+        self.assertEqual(delivery.request("GET", "repos/example/project/issues"), [])
 
         # Truncated second certificate block fails fast instead of silently keeping only the first.
         truncated = directory / "truncated-dual.pem"

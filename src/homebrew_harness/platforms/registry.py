@@ -163,36 +163,9 @@ def validate_declaration(raw, capability, *, named=False):
     return result
 
 
-def _extract_pem_blocks(raw):
-    content = raw[3:] if raw.startswith(b"\xef\xbb\xbf") else raw
-    blocks = []
-    current = None
-    expected_end = None
-    for line in content.splitlines(keepends=True):
-        stripped = line.rstrip(b" \t\r\n")
-        if current is None:
-            if stripped.startswith(b"-----BEGIN ") and stripped.endswith(b"-----"):
-                label = stripped[11:-5]
-                if not label or any(
-                    not (65 <= b <= 90 or 48 <= b <= 57 or b == 32) for b in label
-                ):
-                    raise ValueError("Invalid platform CA certificate.")
-                current = [line]
-                expected_end = b"-----END " + label + b"-----"
-        else:
-            current.append(line)
-            if stripped == expected_end:
-                blocks.append(b"".join(current))
-                current = None
-                expected_end = None
-            elif stripped.startswith(b"-----BEGIN ") and stripped.endswith(b"-----"):
-                raise ValueError("Invalid platform CA certificate.")
-    if current is not None or not blocks:
-        raise ValueError("Invalid platform CA certificate.")
-    return b"\n".join(blocks)
-
-
 def load_ca_bundle(ca_file, roots=()):
+    import tempfile
+
     path = Path(ca_file).expanduser()
     if (
         not path.is_absolute()
@@ -222,11 +195,20 @@ def load_ca_bundle(ca_file, roots=()):
         os.close(fd)
     if len(raw) > 1_000_000:
         raise ValueError("Platform CA file exceeds its limit.")
-    pem_bytes = _extract_pem_blocks(raw)
     try:
-        pem = pem_bytes.decode("ascii")
-        verify = ssl.create_default_context(cadata=pem)
-    except (ValueError, UnicodeError, ssl.SSLError):
+        with tempfile.TemporaryDirectory(prefix="harness-ca-") as tmp_dir:
+            os.chmod(tmp_dir, 0o700)
+            tmp_file = os.path.join(tmp_dir, "bundle.pem")
+            out_fd = os.open(
+                tmp_file, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600
+            )
+            try:
+                with os.fdopen(out_fd, "wb", closefd=False) as out:
+                    out.write(raw)
+            finally:
+                os.close(out_fd)
+            verify = ssl.create_default_context(cafile=tmp_file)
+    except (ValueError, OSError, ssl.SSLError):
         raise ValueError("Invalid platform CA certificate.") from None
     return verify, hashlib.sha256(raw).hexdigest()
 
