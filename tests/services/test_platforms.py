@@ -365,3 +365,65 @@ class PlatformTests(unittest.TestCase):
         # Communication projects use top-level communication.credentials_file, not per-project credentials_file.
         with self.assertRaisesRegex(ValueError, "Unknown platform declaration fields"):
             validate_declaration(declaration, "communication", named=True)
+
+    def test_private_ca_bundle_allows_non_ascii_comments_outside_pem_blocks(self):
+        import hashlib
+        import shutil
+        import subprocess
+        from homebrew_harness.platforms.github.delivery import GithubDelivery
+        from homebrew_harness.platforms.registry import load_ca_bundle
+
+        if not shutil.which("openssl"):
+            self.skipTest("TLS fixture requires openssl")
+        directory = self.base / "tls-comments"
+        directory.mkdir()
+        cert = directory / "server.pem"
+        key = directory / "server.key"
+        subprocess.run(
+            [
+                "openssl",
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-keyout",
+                str(key),
+                "-out",
+                str(cert),
+                "-days",
+                "1",
+                "-subj",
+                "/CN=localhost",
+            ],
+            check=True,
+            capture_output=True,
+            timeout=20,
+        )
+        raw = "# 公司内网私有根证书\n".encode("utf-8") + cert.read_bytes()
+        commented = directory / "commented.pem"
+        commented.write_bytes(raw)
+        ctx, digest_hex = load_ca_bundle(commented, roots=(self.control, self.workspace))
+        self.assertEqual(digest_hex, hashlib.sha256(raw).hexdigest())
+        self.assertIsNotNone(ctx)
+
+        adapter = GithubDelivery(
+            {
+                "project": "example/project",
+                "request_seconds": 5,
+                "ca_file_env": "CA",
+            },
+            {
+                "api_url": "https://platform.invalid",
+                "api_token": "synthetic",
+                "ca_file": str(commented),
+            },
+            roots=(self.control, self.workspace),
+        )
+        self.addCleanup(adapter.close)
+        self.assertEqual(adapter.transport.certificate_hash, digest_hex)
+
+        invalid = directory / "only-comments.pem"
+        invalid.write_text("# 没有证书块\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "Invalid platform CA certificate"):
+            load_ca_bundle(invalid, roots=(self.control, self.workspace))

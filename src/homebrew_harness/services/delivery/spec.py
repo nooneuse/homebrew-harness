@@ -267,6 +267,12 @@ def read_values(spec, environment, roots):
             or any(ord(c) < 32 for c in result[key])
         ):
             raise ValueError("Missing or invalid delivery host value: " + key)
+    if spec.get("ca_file_env") and (
+        not isinstance(result["ca_file"], str)
+        or not result["ca_file"]
+        or any(ord(c) < 32 for c in result["ca_file"])
+    ):
+        raise ValueError("Platform CA configuration is missing.")
     for key in ("api_token", "git_token"):
         if result.get(key):
             register_private_values(result[key])

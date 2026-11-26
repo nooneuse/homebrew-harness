@@ -37,6 +37,8 @@ class GithubDelivery:
         self.lock = ControlledRLock()
         verify = True
         cert_hash = None
+        if spec.get("ca_file_env") and not values.get("ca_file"):
+            raise ValueError("Platform CA configuration is missing.")
         if values.get("ca_file"):
             from homebrew_harness.platforms.registry import load_ca_bundle
 

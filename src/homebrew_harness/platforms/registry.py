@@ -163,6 +163,12 @@ def validate_declaration(raw, capability, *, named=False):
     return result
 
 
+_PEM_BLOCK = re.compile(
+    rb"^-----BEGIN [A-Z0-9 ]+-----\r?\n[\x20-\x7e\r\n]+?^-----END [A-Z0-9 ]+-----[ \t]*(?:\r?\n|$)",
+    re.MULTILINE,
+)
+
+
 def load_ca_bundle(ca_file, roots=()):
     path = Path(ca_file).expanduser()
     if (
@@ -193,8 +199,13 @@ def load_ca_bundle(ca_file, roots=()):
         os.close(fd)
     if len(raw) > 1_000_000:
         raise ValueError("Platform CA file exceeds its limit.")
+    content = raw[3:] if raw.startswith(b"\xef\xbb\xbf") else raw
+    blocks = _PEM_BLOCK.findall(content)
+    if not blocks:
+        raise ValueError("Invalid platform CA certificate.")
     try:
-        verify = ssl.create_default_context(cadata=raw.decode("ascii"))
+        pem = b"\n".join(blocks).decode("ascii")
+        verify = ssl.create_default_context(cadata=pem)
     except (ValueError, UnicodeError, ssl.SSLError):
         raise ValueError("Invalid platform CA certificate.") from None
     return verify, hashlib.sha256(raw).hexdigest()

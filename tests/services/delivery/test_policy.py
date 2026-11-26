@@ -91,6 +91,30 @@ class PolicyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "symlink"):
             read_values(linked_spec, {}, (self.workspace, self.control))
 
+    def test_declared_ca_file_env_rejects_missing_value_at_delivery_startup(self):
+        from homebrew_harness.platforms.github.delivery import GithubDelivery
+
+        spec = validate({**self.spec, "ca_file_env": "CA"})
+        values = {
+            "REMOTE": str(self.remote),
+            "API": "http://127.0.0.1:9",
+            "TOKEN": "synthetic",
+            "AUTHOR": "fixture",
+            "EMAIL": "fixture@invalid",
+        }
+        with self.assertRaisesRegex(ValueError, "Platform CA configuration is missing"):
+            read_values(spec, values, (self.workspace, self.control))
+        with self.assertRaisesRegex(ValueError, "Platform CA configuration is missing"):
+            GithubDelivery(
+                spec,
+                {
+                    "api_url": "http://127.0.0.1:9",
+                    "api_token": "synthetic",
+                    "ca_file": None,
+                },
+                roots=(self.workspace, self.control),
+            )
+
     @unittest.skipUnless(os.name == "posix", "requires POSIX descriptor locks")
     def test_live_child_retains_execution_lease_after_parent_descriptor_close(self):
         owner = ExecutionLeases(self.control)
