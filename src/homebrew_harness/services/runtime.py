@@ -22,47 +22,55 @@ def saved_config(values):
 
 def prepare_binding(core, spec):
     from homebrew_harness.api.core import Harness
+    from homebrew_harness.runtime.limits import limits_scope
 
-    spec.validate_location(core.workdir)
-    core.config.require_reconstructable()
-    core.config.settings.worker_arguments(core.workdir)
-    coding_resources = None
-    if spec.preset == "self_maintenance":
-        from .self_maintenance import preflight
+    with limits_scope(core.config.settings.runtime_limits):
+        spec.validate_location(core.workdir)
+        core.config.require_reconstructable()
+        core.config.settings.worker_arguments(core.workdir)
+        coding_resources = None
+        if spec.preset == "self_maintenance":
+            from .self_maintenance import preflight
 
-        coding_resources = preflight(spec, core.config.settings, core.workdir, live=True)
-    with Harness(workdir=spec.workspace, config=core.config) as host:
-        bindings, _head, controls = host.runs.prepare(
-            spec.run_spec("Validate service execution scope")
-        )
-    result = {"runtime": runtime_binding(), "execution": bindings, "controls": controls}
-    if coding_resources is not None:
-        if coding_resources["bash"] is not None and coding_resources["bash"] != bindings["bash"]:
-            raise ValueError("The self_maintenance Bash policy changed during admission.")
-        result["coding_resources"] = coding_resources
-    if spec.profile == "repository_maintenance":
-        from types import SimpleNamespace
-        from .maintenance import Maintenance
-
-        probe = Maintenance(
-            SimpleNamespace(
-                core=core,
-                store=__import__(
-                    "homebrew_harness.services.store", fromlist=["ServiceStore"]
-                ).ServiceStore(core.workdir),
-                header={"id": "svc_" + "0" * 32},
-                spec=spec,
+            coding_resources = preflight(spec, core.config.settings, core.workdir, live=True)
+        with Harness(workdir=spec.workspace, config=core.config) as host:
+            bindings, _head, controls = host.runs.prepare(
+                spec.run_spec("Validate service execution scope")
             )
-        )
-        try:
-            result["maintenance"] = probe.identity()
-        finally:
-            probe.close()
-    return result
+        result = {"runtime": runtime_binding(), "execution": bindings, "controls": controls}
+        if coding_resources is not None:
+            if coding_resources["bash"] is not None and coding_resources["bash"] != bindings["bash"]:
+                raise ValueError("The self_maintenance Bash policy changed during admission.")
+            result["coding_resources"] = coding_resources
+        if spec.profile == "repository_maintenance":
+            from types import SimpleNamespace
+            from .maintenance import Maintenance
+
+            probe = Maintenance(
+                SimpleNamespace(
+                    core=core,
+                    store=__import__(
+                        "homebrew_harness.services.store", fromlist=["ServiceStore"]
+                    ).ServiceStore(core.workdir),
+                    header={"id": "svc_" + "0" * 32},
+                    spec=spec,
+                )
+            )
+            try:
+                result["maintenance"] = probe.identity()
+            finally:
+                probe.close()
+        return result
 
 
 class ServiceRuntime:
     def __init__(self, core, store, identity, *, token=None):
+        from homebrew_harness.runtime.limits import limits_scope
+
+        with limits_scope(core.config.settings.runtime_limits):
+            self._init_runtime(core, store, identity, token=token)
+
+    def _init_runtime(self, core, store, identity, *, token=None):
         self.core, self.store, self.id = core, store, identity
         self.spec = ServiceSpec(**store.get(identity)["spec"])
         self.spec.validate_location(store.root)

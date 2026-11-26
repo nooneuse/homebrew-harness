@@ -33,6 +33,8 @@ instance 是平台部署的稳定宿主别名，project 由具体适配器验证
 
 仓库源可按需增加可选的 `"credentials_file": "/path/to/private/source.env"`，仅从该外部、仅属主可读、无软链且位于控制目录与工作区之外的文件读取 `api_url_env`、`token_env` 与可选 `ca_file_env`（不回退到宿主／模型环境）。此项并非强制：既可省略 `credentials_file` 从宿主环境读取，也可指向独立只读凭据文件，或复用宿主发布凭据文件而无需把写 token 放进模型／开发环境；独立只读 token 有助于最小权限隔离，但不强制要求。
 
+已有配置省略 `credentials_file` 时不受影响。由于 `credentials_file` 参与持久化平台绑定，将已绑定的 Run 从宿主环境变量迁移到凭据文件（或修改凭据文件路径）会改变绑定身份，需要新建 Run；已有 Service 按 ID 重启时会继续沿用已保存的 ServiceSpec，编辑外部 spec 文件不会生效，切换到文件凭据需新建或替换 Service。
+
 私有 CA 实例可增加 ca_file_env，指向环境变量中的 CA 文件绝对路径；文件位于可变工作区之外。证书显式加载并参与连接绑定，HTTPS 校验保持开启，公共端点默认使用普通证书信任。
 
 ## Run 反馈

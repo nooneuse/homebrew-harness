@@ -64,7 +64,9 @@ class Delivery:
         from homebrew_harness.platforms.registry import PROVIDERS
 
         self.adapter = PROVIDERS[self.spec["provider"]]["delivery"](
-            self.spec, self.values
+            self.spec,
+            self.values,
+            roots=(runtime.store.root, runtime.spec.workspace),
         )
         try:
             capabilities = self.adapter.capabilities()

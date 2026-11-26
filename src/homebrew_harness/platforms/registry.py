@@ -163,6 +163,57 @@ def validate_declaration(raw, capability, *, named=False):
     return result
 
 
+def load_ca_bundle(ca_file, roots=()):
+    path = Path(ca_file).expanduser()
+    if (
+        not path.is_absolute()
+        or path.is_symlink()
+        or any(p.is_symlink() for p in path.parents)
+        or any(path.resolve().is_relative_to(Path(r).resolve()) for r in roots)
+    ):
+        raise ValueError(
+            "Platform CA must be a host file outside mutable workspaces."
+        )
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode) or before.st_size > 1_000_000:
+            raise ValueError("Platform CA must be a bounded regular file.")
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            raw = stream.read(1_000_001)
+        after = os.stat(path, follow_symlinks=False)
+        if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+        ):
+            raise ValueError("Platform CA changed while reading.")
+    finally:
+        os.close(fd)
+    if len(raw) > 1_000_000:
+        raise ValueError("Platform CA file exceeds its limit.")
+    try:
+        verify = ssl.create_default_context(cadata=raw.decode("ascii"))
+    except (ValueError, UnicodeError, ssl.SSLError):
+        raise ValueError("Invalid platform CA certificate.") from None
+    return verify, hashlib.sha256(raw).hexdigest()
+
+
+def transport_binding(transport):
+    return (transport.endpoint.rstrip("/"), getattr(transport, "certificate_hash", None))
+
+
+def check_instance_binding(instances, provider, instance, binding):
+    key = (provider, instance)
+    expected = instances.get(key)
+    if expected is not None and expected != binding:
+        raise ValueError(
+            "Source and publisher must use the same declared platform instance."
+        )
+    instances[key] = binding
+
+
 def connection(spec, environment, roots=()):
     values = (
         read_credentials_file(
@@ -181,40 +232,7 @@ def connection(spec, environment, roots=()):
         value = values.get(spec["ca_file_env"])
         if not value:
             raise ValueError("Platform CA configuration is missing.")
-        path = Path(value).expanduser()
-        if (
-            not path.is_absolute()
-            or path.is_symlink()
-            or any(p.is_symlink() for p in path.parents)
-            or any(path.resolve().is_relative_to(Path(r).resolve()) for r in roots)
-        ):
-            raise ValueError(
-                "Platform CA must be a host file outside mutable workspaces."
-            )
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        try:
-            before = os.fstat(fd)
-            if not stat.S_ISREG(before.st_mode) or before.st_size > 1_000_000:
-                raise ValueError("Platform CA must be a bounded regular file.")
-            with os.fdopen(fd, "rb", closefd=False) as stream:
-                raw = stream.read(1_000_001)
-            after = os.stat(path, follow_symlinks=False)
-            if (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns) != (
-                after.st_dev,
-                after.st_ino,
-                after.st_size,
-                after.st_mtime_ns,
-            ):
-                raise ValueError("Platform CA changed while reading.")
-        finally:
-            os.close(fd)
-        if len(raw) > 1_000_000:
-            raise ValueError("Platform CA file exceeds its limit.")
-        try:
-            verify = ssl.create_default_context(cadata=raw.decode("ascii"))
-        except (ValueError, UnicodeError, ssl.SSLError):
-            raise ValueError("Invalid platform CA certificate.") from None
-        cert_hash = hashlib.sha256(raw).hexdigest()
+        verify, cert_hash = load_ca_bundle(value, roots=roots)
     transport = JsonTransport(endpoint, token, verify=verify)
     transport.certificate_hash = cert_hash
     return transport, digest({"endpoint": transport.identity, "certificate": cert_hash})
@@ -224,10 +242,7 @@ class RepositorySource:
     def __init__(self, declaration, environment, *, roots=()):
         self.spec = validate_declaration(declaration, "repository_events", named=True)
         transport, identity = connection(self.spec, environment, roots)
-        self.connection_binding = (
-            transport.endpoint.rstrip("/"),
-            transport.certificate_hash,
-        )
+        self.connection_binding = transport_binding(transport)
         try:
             self.adapter = PROVIDERS[self.spec["provider"]]["repository_events"](
                 self.spec, transport
