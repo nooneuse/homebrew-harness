@@ -427,3 +427,55 @@ class PlatformTests(unittest.TestCase):
         invalid.write_text("# 没有证书块\n", encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "Invalid platform CA certificate"):
             load_ca_bundle(invalid, roots=(self.control, self.workspace))
+
+        # Dual-CA bundle where the second certificate has trailing tabs on Base64 lines
+        # must load both CAs rather than silently dropping the second one.
+        cert2 = directory / "server-two.pem"
+        key2 = directory / "server-two.key"
+        subprocess.run(
+            [
+                "openssl",
+                "req",
+                "-x509",
+                "-newkey",
+                "rsa:2048",
+                "-nodes",
+                "-keyout",
+                str(key2),
+                "-out",
+                str(cert2),
+                "-days",
+                "1",
+                "-subj",
+                "/CN=second.localhost",
+            ],
+            check=True,
+            capture_output=True,
+            timeout=20,
+        )
+        tabbed_second = b"\n".join(
+            (line + b"\t") if line and not line.startswith(b"-----") else line
+            for line in cert2.read_bytes().splitlines()
+        ) + b"\n"
+        dual_raw = (
+            "# 第一张根证书\n".encode("utf-8")
+            + cert.read_bytes()
+            + "\n# 第二张根证书（含行尾制表符）\n".encode("utf-8")
+            + tabbed_second
+        )
+        dual = directory / "dual-ca.pem"
+        dual.write_bytes(dual_raw)
+        dual_ctx, dual_digest = load_ca_bundle(dual, roots=(self.control, self.workspace))
+        self.assertEqual(dual_digest, hashlib.sha256(dual_raw).hexdigest())
+        subjects = {
+            dict(item[0]).get("commonName")
+            for c in dual_ctx.get_ca_certs()
+            for item in [c.get("subject", ())]
+        }
+        self.assertEqual(subjects, {"localhost", "second.localhost"})
+
+        # Truncated second certificate block fails fast instead of silently keeping only the first.
+        truncated = directory / "truncated-dual.pem"
+        truncated.write_bytes(cert.read_bytes() + b"\n-----BEGIN CERTIFICATE-----\nAAAA\n")
+        with self.assertRaisesRegex(ValueError, "Invalid platform CA certificate"):
+            load_ca_bundle(truncated, roots=(self.control, self.workspace))
