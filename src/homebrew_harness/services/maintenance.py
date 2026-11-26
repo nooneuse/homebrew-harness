@@ -38,12 +38,20 @@ class Maintenance:
             else __import__("os").environ
         )
         try:
+            instances = {}
             for spec in runtime.spec.sources:
-                self.sources[spec["name"]] = RepositorySource(
+                source = RepositorySource(
                     spec,
                     environment,
                     roots=(runtime.store.root, runtime.spec.workspace),
                 )
+                self.sources[spec["name"]] = source
+                key = (spec["provider"], spec["instance"])
+                if key in instances and instances[key] != source.connection_binding:
+                    raise ValueError(
+                        "A platform instance alias has conflicting connection declarations."
+                    )
+                instances[key] = source.connection_binding
             self.agent = ServiceAgent(runtime, self.store, self.stop)
             if runtime.spec.communication:
                 from .communication.runtime import CommunicationRuntime

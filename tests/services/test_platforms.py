@@ -284,3 +284,84 @@ class PlatformTests(unittest.TestCase):
             self.assertEqual(page.events[0].subject.project, "42")
             self.assertEqual(page.cursor["position"], {"bookmark": "opaque"})
             self.assertEqual(self.peer.source_requests, [])
+
+    def test_repository_source_optional_credentials_file_is_isolated_and_bounded(self):
+        from homebrew_harness.platforms.registry import validate_declaration
+
+        creds = self.base / "source.env"
+        creds.write_text("E=" + self.peer.url + "\nT=dedicated-read-token\n")
+        creds.chmod(0o600)
+        declaration = {
+            "name": "project",
+            "provider": "github",
+            "instance": "primary",
+            "project": "example/project",
+            "credentials_file": str(creds),
+            "api_url_env": "E",
+            "token_env": "T",
+            "poll_seconds": 10,
+        }
+        source = RepositorySource(
+            declaration, {}, roots=(self.control, self.workspace)
+        )
+        self.addCleanup(source.close)
+        self.assertEqual(source.poll({}, Deadline.after(5)).events, ())
+
+        # Strict isolation: does not fall back to host environment when a key is absent.
+        incomplete = self.base / "incomplete.env"
+        incomplete.write_text("E=" + self.peer.url + "\n")
+        incomplete.chmod(0o600)
+        with self.assertRaisesRegex(ValueError, "missing"):
+            RepositorySource(
+                {**declaration, "credentials_file": str(incomplete)},
+                {"E": self.peer.url, "T": "host-fallback-token"},
+                roots=(self.control, self.workspace),
+            )
+
+        # Rejects relative path, non-owner-only permissions, workspace path, symlink & parent symlink.
+        with self.assertRaisesRegex(ValueError, "absolute"):
+            RepositorySource({**declaration, "credentials_file": "relative.env"}, {})
+        creds.chmod(0o644)
+        with self.assertRaisesRegex(ValueError, "owner-only"):
+            RepositorySource(declaration, {}, roots=(self.control, self.workspace))
+        creds.chmod(0o600)
+        inside = self.workspace / "source.env"
+        inside.write_bytes(creds.read_bytes())
+        inside.chmod(0o600)
+        with self.assertRaisesRegex(ValueError, "external"):
+            RepositorySource(
+                {**declaration, "credentials_file": str(inside)},
+                {},
+                roots=(self.control, self.workspace),
+            )
+        link = self.base / "source-link.env"
+        link.symlink_to(creds)
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            RepositorySource(
+                {**declaration, "credentials_file": str(link)},
+                {},
+                roots=(self.control, self.workspace),
+            )
+        parent_real = self.base / "cred-dir"
+        parent_real.mkdir(mode=0o700)
+        nested = parent_real / "source.env"
+        nested.write_bytes(creds.read_bytes())
+        nested.chmod(0o600)
+        parent_link = self.base / "cred-link-dir"
+        parent_link.symlink_to(parent_real)
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            RepositorySource(
+                {**declaration, "credentials_file": str(parent_link / "source.env")},
+                {},
+                roots=(self.control, self.workspace),
+            )
+
+        # Omitting credentials_file or passing None keeps the exact legacy spec & identity.
+        plain = self.source()
+        explicit_none = self.source(credentials_file=None)
+        self.assertNotIn("credentials_file", explicit_none.spec)
+        self.assertEqual(plain.identity, explicit_none.identity)
+
+        # Communication projects use top-level communication.credentials_file, not per-project credentials_file.
+        with self.assertRaisesRegex(ValueError, "Unknown platform declaration fields"):
+            validate_declaration(declaration, "communication", named=True)

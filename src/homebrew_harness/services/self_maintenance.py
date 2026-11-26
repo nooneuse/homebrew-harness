@@ -81,7 +81,7 @@ def preflight(spec, config, control, *, test_runner=None, live=False, return_pin
         value = getattr(config, key)
         if value is not None:
             _external(value, roots)
-    for section in (spec.delivery, spec.communication):
+    for section in (*spec.sources, spec.delivery, spec.communication):
         if section.get("credentials_file"):
             _external(section["credentials_file"], roots)
 

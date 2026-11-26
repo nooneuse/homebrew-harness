@@ -165,6 +165,61 @@ class SetupValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "same declared platform instance"):
             self.validate()
 
+    def test_source_can_reuse_publisher_credentials_file_without_model_env_token(self):
+        self.environment.write_text(
+            "OPENAI_API_KEY=model-fixture\nOPENAI_MODEL=fixture\nOPENAI_BASE_URL="
+            + self.model_endpoint
+            + "\n"
+        )
+        self.spec["sources"] = [
+            {
+                **self.source,
+                "credentials_file": str(self.publisher),
+                "token_env": "PROJECT_PUBLISH_TOKEN",
+            }
+        ]
+        result = self.validate()
+        self.assertEqual(result["state"], "validated")
+        for value in ("model-fixture", "publish-fixture", self.endpoint, self.model_endpoint):
+            self.assertNotIn(value, json.dumps(result))
+
+    def test_source_credentials_file_boundaries_and_multi_source_instance_matching(self):
+        # Source credentials file must be outside control/workspace and owner-only.
+        local = self.workspace / "source.env"
+        local.write_bytes(self.publisher.read_bytes())
+        local.chmod(0o600)
+        self.spec["sources"] = [
+            {**self.source, "credentials_file": str(local), "token_env": "PROJECT_PUBLISH_TOKEN"}
+        ]
+        with self.assertRaisesRegex(ValueError, "outside|external"):
+            self.validate()
+
+        second_creds = self.private / "read-other.env"
+        second_creds.write_text(
+            "ALT_ENDPOINT=" + self.endpoint + "\nALT_TOKEN=read-second\n"
+        )
+        second_creds.chmod(0o600)
+        self.spec["sources"] = [
+            self.source,
+            {
+                "name": "project-secondary",
+                "provider": "github",
+                "instance": "primary",
+                "project": "example/project-two",
+                "credentials_file": str(second_creds),
+                "api_url_env": "ALT_ENDPOINT",
+                "token_env": "ALT_TOKEN",
+            },
+        ]
+        self.assertEqual(self.validate()["state"], "validated")
+
+        # Same instance resolving to a different endpoint in another credentials_file is rejected.
+        second_creds.write_text(
+            "ALT_ENDPOINT=https://other.invalid\nALT_TOKEN=read-second\n"
+        )
+        with self.assertRaisesRegex(ValueError, "same declared platform instance"):
+            self.validate()
+
     def test_remote_pr_execution_requires_container(self):
         self.spec["communication"]["required_tests"] = ["unit-tests"]
         with self.assertRaisesRegex(ValueError, "container backend"):

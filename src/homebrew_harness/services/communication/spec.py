@@ -8,8 +8,11 @@ import re
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from homebrew_harness.execution.model_connections import read_environment
-from homebrew_harness.platforms.registry import validate_declaration, connection
+from homebrew_harness.platforms.registry import (
+    validate_declaration,
+    connection,
+    read_credentials_file,
+)
 from homebrew_harness.platforms.contracts import digest
 from homebrew_harness.services.maintenance_spec import number, text
 
@@ -144,6 +147,15 @@ def validate(raw, sources):
     if type(value["require_tests_for_approval"]) is not bool:
         raise boundary_error(ValueError, "communication_contract", "Invalid approval test policy.")
     if value["credentials_file"] is not None:
+        if (
+            not isinstance(value["credentials_file"], str)
+            or not value["credentials_file"].strip()
+        ):
+            raise boundary_error(
+                ValueError,
+                "communication_contract",
+                "Communication credentials require an absolute external path.",
+            )
         path = Path(value["credentials_file"]).expanduser()
         if not path.is_absolute():
             raise boundary_error(ValueError, "communication_contract",
@@ -157,19 +169,13 @@ def validate(raw, sources):
 
 def open_projects(spec, environment, roots):
     if spec["credentials_file"]:
-        path = Path(spec["credentials_file"])
-        if (
-            path.is_symlink()
-            or any(p.is_symlink() for p in path.parents)
-            or any(
-                path.resolve().is_relative_to(Path(root).resolve()) for root in roots
-            )
-        ):
-            raise boundary_error(ValueError, "communication_contract",
-                "Publishing credentials belong outside control and code directories."
-            )
-        values = read_environment(
-            path, roots[0], private=True, inherit_environment=False
+        values = read_credentials_file(
+            spec["credentials_file"],
+            roots=roots,
+            label="Communication credentials",
+            error=lambda message: boundary_error(
+                ValueError, "communication_contract", message
+            ),
         )
     else:
         values = dict(environment)

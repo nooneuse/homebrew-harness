@@ -40,7 +40,7 @@
 - 安装 harness 的宿主、独立且仅属主可访问的控制目录、仓库外私有配置目录。运行时安装在可变 checkout 外，托管自身时也如此。原生 Windows Service 尚不支持，Windows 客户端可以通过 HTTP 监督受支持宿主。
 - 模型环境／目录和宿主配置路径。只选择已登记模型别名，研判、开发和审查可使用不同的已有别名。缺少配置时询问协议／模型选择，让用户在属主私有文件中填写凭据。
 - 固定测试名称、宿主 TestRunner 配置，按项目要求收集 CI 检查名／可信 app ID、审查者 ID 和批准数量。从代码及用户信息确认实际命令，不编造通过的测试。测试定义在可变项目外；第三方 PR 测试需要容器 TestRunner，没有 Docker 时提供静态审查并说明不会运行这些测试。
-- 读取凭据、独立发布凭据、Git remote 和提交身份。只询问**文件路径或环境变量名**，不要求在聊天粘贴 token。真实密钥、地址和身份由用户填入私有文件，不打印、不写入项目、不交给模型／开发环境。GitHub 写操作使用仓库范围的服务身份，不猜测部署者身份。
+- 读取凭据、发布凭据、Git remote 和提交身份。只询问**文件路径或环境变量名**，不要求在聊天粘贴 token。真实密钥、地址和身份由用户填入私有文件，不打印、不写入项目、不交给模型／开发环境。仓库 source 既可以从宿主环境取值（省略 `credentials_file`），也可以通过可选的外部仅属主 `credentials_file` 取值（可用独立只读凭据文件，也可直接复用宿主发布凭据文件，且同样不会把写 token 暴露给模型／开发环境）。采用哪种方式结合用户情况自主判断；独立只读 token 并非强制，仅在最小权限隔离和轮换审计上更有优势，可按需提示。GitHub 写操作使用仓库范围的服务身份，不猜测部署者身份。
 - 收件／汇报周期（建议半天）、代码审查（建议每周）及授权偏好。初始不自动接受开发类别，不预授权分支／PR 或公开回复，`merge.mode=manual`。解释窄范围 bug／文档任务、`publish_branch`／`ensure_change_request` 和 acknowledge／clarify／followup 回复的可选预授权；正式 Review、路线承诺和服务合并仍明确决定。只有用户授权才配置自动选项。
 
 文件工具仅用于允许 cwd 内的路径。确有需要时通过获批的明确宿主 Bash 操作创建私有部署文件，不绕过已经拒绝的文件操作。宿主 Bash 不可用或仅支持容器时，交付配置与准确宿主命令，并报告部署待完成。
@@ -100,7 +100,7 @@
 - delivery 的固定 Git 程序、同一项目、独立凭据、Git remote／提交身份引用、目标、固定测试和 manual 合并政策；
 - 使用 `review_repository` 的固定代码审查计划。
 
-宿主环境包含模型设置、`PROJECT_API_ENDPOINT` 和 `PROJECT_READ_TOKEN`。发布环境单独保存 `PROJECT_API_ENDPOINT`、`PROJECT_PUBLISH_TOKEN`、`PROJECT_GIT_REMOTE`、`PROJECT_AUTHOR_NAME` 和 `PROJECT_AUTHOR_EMAIL`；Git HTTPS 需要独立认证时增加 `git_token_env`／`git_user_env` 引用。两个文件指向同一平台实例，真实值只填入外部文件，不将发布环境加载到启动服务的 shell。
+宿主环境包含模型设置；当 `sources[]` 省略 `credentials_file` 时，也在宿主环境中提供 `PROJECT_API_ENDPOINT` 和 `PROJECT_READ_TOKEN`。也可以给 source 设置可选的 `credentials_file`，仅从外部仅属主文件读取其 `api_url_env`、`token_env`（及可选 `ca_file_env`，不回退宿主环境）——既可以是独立只读凭据文件，也可以直接复用 `ABSOLUTE_PUBLICATION_ENV_FILE`（并将 `token_env` 设为 `PROJECT_PUBLISH_TOKEN`）。独立只读 token 为可选推荐（利于最小权限隔离），并非强制。发布环境单独保存 `PROJECT_API_ENDPOINT`、`PROJECT_PUBLISH_TOKEN`、`PROJECT_GIT_REMOTE`、`PROJECT_AUTHOR_NAME` 和 `PROJECT_AUTHOR_EMAIL`；Git HTTPS 需要独立认证时增加 `git_token_env`／`git_user_env` 引用。同一平台实例对应的各文件必须指向同一端点，真实值只填入外部文件，不将发布环境加载到启动服务的 shell。
 
 Communication 的 `required_tests=[]` 表示外部 PR 静态审查，不关闭 Delivery 测试。用户选择并配置容器后端后才增加 PR 测试和 `require_tests_for_approval`。按真实 CI／项目政策填写 Delivery 的 `required_checks`／`check_app_ids` 和审查要求，在汇总中说明尚未配置的要求。
 

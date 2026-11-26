@@ -34,6 +34,46 @@ def catalog():
     ]
 
 
+def read_credentials_file(path, roots=(), *, label="Platform credentials", error=None):
+    fail = error or ValueError
+    target = Path(path).expanduser()
+    if (
+        not target.is_absolute()
+        or target.is_symlink()
+        or any(parent.is_symlink() for parent in target.parents)
+        or any(target.resolve().is_relative_to(Path(root).resolve()) for root in roots)
+    ):
+        raise fail(f"{label} must be an external host file without symlinks.")
+    fd = None
+    try:
+        fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        info = os.fstat(fd)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_uid != os.geteuid()
+            or info.st_mode & 0o077
+        ):
+            raise fail(f"{label} must be an owner-only regular host file.")
+        limit = current_limits().config_file_bytes
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            raw = stream.read(limit + 1)
+        if len(raw) > limit:
+            raise fail(f"{label} file exceeds its size limit.")
+        import io
+        from dotenv import dotenv_values
+
+        return dict(
+            dotenv_values(stream=io.StringIO(raw.decode("utf-8")), interpolate=False)
+        )
+    except FileNotFoundError:
+        raise fail(f"{label} file is unavailable.") from None
+    except (OSError, UnicodeError) as exc:
+        raise fail(f"Cannot read {label.lower()} ({type(exc).__name__}).") from exc
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
 def validate_declaration(raw, capability, *, named=False):
     if not isinstance(raw, dict):
         raise ValueError("Platform declaration must be an object.")
@@ -49,6 +89,8 @@ def validate_declaration(raw, capability, *, named=False):
         "request_seconds",
     }
     extra = {"name"} if named else {"number", "actor_ids", "app_ids"}
+    if capability != "communication":
+        extra = extra | {"credentials_file"}
     if set(raw) - common - extra:
         raise ValueError("Unknown platform declaration fields.")
     provider = raw.get("provider")
@@ -73,6 +115,18 @@ def validate_declaration(raw, capability, *, named=False):
             r"[A-Z][A-Z0-9_]{0,100}", value
         ):
             raise ValueError("Platform connections require environment references.")
+    credentials_file = raw.get("credentials_file")
+    if credentials_file is not None:
+        if not isinstance(credentials_file, str) or not credentials_file.strip():
+            raise ValueError(
+                "Platform credentials file must be an absolute external path."
+            )
+        cred_path = Path(credentials_file).expanduser()
+        if not cred_path.is_absolute():
+            raise ValueError(
+                "Platform credentials file must be an absolute external path."
+            )
+        credentials_file = str(cred_path)
     project = PROVIDERS[provider]["project"](raw.get("project"))
     result = {
         "poll_seconds": 43200 if named else 30,
@@ -81,6 +135,10 @@ def validate_declaration(raw, capability, *, named=False):
         **raw,
         "project": project,
     }
+    if credentials_file is None:
+        result.pop("credentials_file", None)
+    else:
+        result["credentials_file"] = credentials_file
     import math
     positive(result["request_seconds"], "platform.request_seconds")
 
@@ -106,14 +164,21 @@ def validate_declaration(raw, capability, *, named=False):
 
 
 def connection(spec, environment, roots=()):
-    endpoint = environment.get(spec["api_url_env"])
-    token = environment.get(spec["token_env"])
+    values = (
+        read_credentials_file(
+            spec["credentials_file"], roots=roots, label="Platform credentials"
+        )
+        if spec.get("credentials_file")
+        else environment
+    )
+    endpoint = values.get(spec["api_url_env"])
+    token = values.get(spec["token_env"])
     if not endpoint or not token:
         raise ValueError("Platform host credentials are missing.")
     verify = True
     cert_hash = None
     if spec.get("ca_file_env"):
-        value = environment.get(spec["ca_file_env"])
+        value = values.get(spec["ca_file_env"])
         if not value:
             raise ValueError("Platform CA configuration is missing.")
         path = Path(value).expanduser()
@@ -151,6 +216,7 @@ def connection(spec, environment, roots=()):
             raise ValueError("Invalid platform CA certificate.") from None
         cert_hash = hashlib.sha256(raw).hexdigest()
     transport = JsonTransport(endpoint, token, verify=verify)
+    transport.certificate_hash = cert_hash
     return transport, digest({"endpoint": transport.identity, "certificate": cert_hash})
 
 
@@ -158,6 +224,10 @@ class RepositorySource:
     def __init__(self, declaration, environment, *, roots=()):
         self.spec = validate_declaration(declaration, "repository_events", named=True)
         transport, identity = connection(self.spec, environment, roots)
+        self.connection_binding = (
+            transport.endpoint.rstrip("/"),
+            transport.certificate_hash,
+        )
         try:
             self.adapter = PROVIDERS[self.spec["provider"]]["repository_events"](
                 self.spec, transport

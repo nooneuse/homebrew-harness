@@ -78,6 +78,18 @@ class PolicyTests(unittest.TestCase):
             read_values(spec, {}, (self.workspace, self.control))["api_token"],
             "private-fixture",
         )
+        real_dir = self.base / "real-creds"
+        real_dir.mkdir(mode=0o700)
+        nested = real_dir / "private.env"
+        nested.write_bytes(path.read_bytes())
+        nested.chmod(0o600)
+        link_dir = self.base / "link-creds"
+        link_dir.symlink_to(real_dir)
+        linked_spec = validate(
+            {**self.spec, "mode": "isolated", "credentials_file": str(link_dir / "private.env")}
+        )
+        with self.assertRaisesRegex(ValueError, "symlink"):
+            read_values(linked_spec, {}, (self.workspace, self.control))
 
     @unittest.skipUnless(os.name == "posix", "requires POSIX descriptor locks")
     def test_live_child_retains_execution_lease_after_parent_descriptor_close(self):

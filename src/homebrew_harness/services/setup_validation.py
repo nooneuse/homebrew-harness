@@ -5,7 +5,7 @@ from pathlib import Path
 
 from homebrew_harness.execution.model_connections import HostModels, read_environment
 from homebrew_harness.execution.test_runner import load_test_runner
-from homebrew_harness.platforms.registry import connection
+from homebrew_harness.platforms.registry import connection, read_credentials_file
 from homebrew_harness.runtime.interaction_config import InteractionConfig
 from .spec import ServiceSpec
 
@@ -73,11 +73,10 @@ def validate_service(spec_file, host_file, control):
 
     instances = {}
     for source in spec.sources:
-        transport, _identity = connection(source, environment, roots)
-        try:
-            instances[(source["provider"], source["instance"])] = transport.endpoint.rstrip("/")
-        finally:
-            transport.close()
+        path = source.get("credentials_file")
+        if path:
+            _external(path, roots)
+        _check_connection(source, environment, roots, instances)
     if spec.delivery:
         from .delivery.spec import read_values
 
@@ -89,8 +88,7 @@ def validate_service(spec_file, host_file, control):
             **spec.delivery,
             "token_env": spec.delivery["api_token_env"],
         }
-        dedicated = read_environment(path, control, private=True, inherit_environment=False) if path else environment
-        _check_connection(declaration, dedicated, roots, instances)
+        _check_connection(declaration, environment, roots, instances)
         program = Path(spec.delivery["git_executable"])
         if not program.is_file() or not os.access(program, os.X_OK):
             raise ValueError("The declared Git executable is unavailable.")
@@ -102,7 +100,11 @@ def validate_service(spec_file, host_file, control):
         path = spec.communication.get("credentials_file")
         if path:
             _external(path, roots)
-        dedicated = read_environment(path, control, private=True, inherit_environment=False) if path else environment
+        dedicated = (
+            read_credentials_file(path, roots, label="Communication credentials")
+            if path
+            else environment
+        )
         for declaration in spec.communication["projects"]:
             _check_connection(declaration, dedicated, roots, instances)
         projects = open_projects(spec.communication, environment, roots)
@@ -145,8 +147,11 @@ def check_model_profiles(spec, models):
 def _check_connection(declaration, environment, roots, instances):
     transport, _identity = connection(declaration, environment, roots)
     try:
-        expected = instances.get((declaration["provider"], declaration["instance"]))
-        if expected is not None and expected != transport.endpoint.rstrip("/"):
+        key = (declaration["provider"], declaration["instance"])
+        resolved = (transport.endpoint.rstrip("/"), transport.certificate_hash)
+        expected = instances.get(key)
+        if expected is not None and expected != resolved:
             raise ValueError("Source and publisher must use the same declared platform instance.")
+        instances[key] = resolved
     finally:
         transport.close()

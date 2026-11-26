@@ -64,7 +64,11 @@ def validate_sources(sources):
         raise boundary_error(ValueError, "service_configuration", "Source names must be unique.")
     instances = {}
     for source in result:
-        identity = (source["provider"], source["instance"])
+        identity = (
+            source["provider"],
+            source["instance"],
+            source.get("credentials_file"),
+        )
         connection = (source["api_url_env"], source.get("ca_file_env"))
         if identity in instances and instances[identity] != connection:
             raise boundary_error(ValueError, "service_configuration",

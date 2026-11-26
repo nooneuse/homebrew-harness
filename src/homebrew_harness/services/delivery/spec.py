@@ -3,9 +3,7 @@ from homebrew_harness.runtime.limits import current_limits
 
 import ipaddress
 import json
-import os
 import re
-import stat
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -231,44 +229,23 @@ def validate(raw):
             "Isolated delivery needs a dedicated external credentials file."
         )
     if value["credentials_file"] is not None:
-        if not isinstance(value["credentials_file"], str):
+        if not isinstance(value["credentials_file"], str) or not value["credentials_file"].strip():
             raise ValueError("Credentials file must be an external host path.")
-        value["credentials_file"] = str(Path(value["credentials_file"]).expanduser())
+        cred_path = Path(value["credentials_file"]).expanduser()
+        if not cred_path.is_absolute():
+            raise ValueError("Credentials file must be an external host path.")
+        value["credentials_file"] = str(cred_path)
     return json.loads(json.dumps(value, allow_nan=False))
 
 
 def read_values(spec, environment, roots):
     values = dict(environment)
     if spec["credentials_file"]:
-        path = Path(spec["credentials_file"])
-        if (
-            not path.is_absolute()
-            or path.is_symlink()
-            or any(path.resolve().is_relative_to(Path(r).resolve()) for r in roots)
-        ):
-            raise ValueError("Delivery credentials must be an external host file.")
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        try:
-            info = os.fstat(fd)
-            if (
-                not stat.S_ISREG(info.st_mode)
-                or info.st_uid != os.geteuid()
-                or info.st_mode & 0o077
-            ):
-                raise ValueError(
-                    "Delivery credentials must be an owner-only regular file."
-                )
-            with os.fdopen(fd, "r", closefd=False) as stream:
-                raw = stream.read(current_limits().config_file_bytes + 1)
-        finally:
-            os.close(fd)
-        if len(raw) > current_limits().config_file_bytes:
-            raise ValueError("Delivery credential file exceeds its limit.")
-        import io
-        from dotenv import dotenv_values
+        from homebrew_harness.platforms.registry import read_credentials_file
 
-        dedicated = dict(dotenv_values(stream=io.StringIO(raw), interpolate=False))
-        values = dedicated
+        values = read_credentials_file(
+            spec["credentials_file"], roots=roots, label="Delivery credentials"
+        )
     keys = {
         "remote",
         "api_url",

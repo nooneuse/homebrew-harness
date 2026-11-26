@@ -97,6 +97,17 @@ class PresetTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "named Delivery required_tests"):
             self.validate()
 
+    def test_preset_rejects_source_credentials_file_inside_workspace(self):
+        self.isolated_files()
+        inside = self.workspace / "source.env"
+        inside.write_bytes(self.publisher.read_bytes())
+        inside.chmod(0o600)
+        self.spec["sources"] = [
+            {**self.source, "credentials_file": str(inside), "token_env": "PROJECT_PUBLISH_TOKEN"}
+        ]
+        with self.assertRaisesRegex(ValueError, "outside|external"):
+            self.validate()
+
     def test_delivery_startup_accepts_the_isolated_preset_and_pins_executor(self):
         from homebrew_harness import Harness, HostConfig
         from homebrew_harness.services.runtime import prepare_binding
