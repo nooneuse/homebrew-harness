@@ -537,3 +537,35 @@ class PlatformTests(unittest.TestCase):
         truncated.write_bytes(cert.read_bytes() + b"\n-----BEGIN CERTIFICATE-----\nAAAA\n")
         with self.assertRaisesRegex(ValueError, "Invalid platform CA certificate"):
             load_ca_bundle(truncated, roots=(self.control, self.workspace))
+
+        # Even when TMPDIR points inside the mutable workspace, load_ca_bundle must not
+        # stage the temporary CA bundle inside the workspace, and fails closed if no
+        # isolated temporary directory is available.
+        import os
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from homebrew_harness.platforms.registry import _external_tempdir
+
+        ws_tmp = self.workspace / "tmp"
+        ws_tmp.mkdir()
+        seen_cafiles = []
+        real_create = ssl.create_default_context
+
+        def spy_context(*args, **kwargs):
+            if kwargs.get("cafile"):
+                seen_cafiles.append(Path(kwargs["cafile"]).resolve())
+            return real_create(*args, **kwargs)
+
+        with (
+            patch.dict(os.environ, {"TMPDIR": str(ws_tmp)}),
+            patch.object(tempfile, "tempdir", None),
+            patch("ssl.create_default_context", side_effect=spy_context),
+        ):
+            load_ca_bundle(cert, roots=(self.control, self.workspace))
+        self.assertEqual(len(seen_cafiles), 1)
+        self.assertFalse(seen_cafiles[0].is_relative_to(self.workspace.resolve()))
+        self.assertFalse(seen_cafiles[0].is_relative_to(self.control.resolve()))
+        self.assertEqual(list(ws_tmp.iterdir()), [])
+        with self.assertRaisesRegex(ValueError, "outside mutable workspaces"):
+            _external_tempdir((Path("/"),))

@@ -163,6 +163,29 @@ def validate_declaration(raw, capability, *, named=False):
     return result
 
 
+def _external_tempdir(roots=()):
+    import tempfile
+
+    resolved_roots = tuple(Path(r).resolve() for r in roots)
+    seen = set()
+    for candidate in (tempfile.gettempdir(), "/tmp", "/var/tmp"):
+        if not candidate:
+            continue
+        target = Path(candidate).resolve()
+        if target in seen:
+            continue
+        seen.add(target)
+        if (
+            target.is_dir()
+            and os.access(target, os.W_OK | os.X_OK)
+            and not any(target.is_relative_to(root) for root in resolved_roots)
+        ):
+            return str(target)
+    raise ValueError(
+        "Platform CA requires a temporary directory outside mutable workspaces."
+    )
+
+
 def load_ca_bundle(ca_file, roots=()):
     import tempfile
 
@@ -195,8 +218,9 @@ def load_ca_bundle(ca_file, roots=()):
         os.close(fd)
     if len(raw) > 1_000_000:
         raise ValueError("Platform CA file exceeds its limit.")
+    tmp_base = _external_tempdir(roots)
     try:
-        with tempfile.TemporaryDirectory(prefix="harness-ca-") as tmp_dir:
+        with tempfile.TemporaryDirectory(prefix="harness-ca-", dir=tmp_base) as tmp_dir:
             os.chmod(tmp_dir, 0o700)
             tmp_file = os.path.join(tmp_dir, "bundle.pem")
             out_fd = os.open(
