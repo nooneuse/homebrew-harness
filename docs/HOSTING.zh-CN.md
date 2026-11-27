@@ -66,6 +66,14 @@ Git author／committer 使用 delivery.author_name_env／author_email_env；push
 
 交付执行宿主登记的固定测试。外部 PR 可只做静态审查，执行第三方 PR 测试需要容器 TestRunner。目前原生 Service 部署面向受支持 Unix 宿主，Windows 客户端可通过同一 HTTP 接口监督。
 
+## 配置收件箱 webhook
+
+`manual` 和 `repository_maintenance` 都可选择启用收件箱通知。不需要提醒时，省略 `notifications` 或设为 `{}`。接收方会收到整个服务的收件箱，其中可能包含审批或提问的预览，默认也包含过期项。请使用自己控制的端点，或仅发送给可信且有权接收这些信息的端点。此出站连接独立于 Service 控制端点和仓库平台凭据。ServiceSpec 示例、发送时机和 payload 见[收件箱通知](SERVICES.zh-CN.md#收件箱通知)。
+
+在服务声明中，将 `notifications.url_env` 设为存放 webhook URL 的宿主变量名。需要 Bearer 令牌时添加 `token_env`，使用私有 CA 时添加 `ca_file_env`。后者所引用的变量值应为 CA 证书包的绝对路径；文件须在项目 checkout 和私有控制目录之外，且路径不得含符号链接。HTTPS 证书验证保持开启，不跟随重定向，也不使用环境代理。非回环目标必须使用 HTTPS；仅 `localhost`、`127.0.0.1` 或 `::1` 可使用 HTTP。`mode: "local"` 只允许这三种回环主机，不论协议。URL 不得包含用户信息、查询字符串或片段。
+
+建议设置独立的 `notifications.credentials_file`，填写位于上述两个目录之外的绝对路径。文件采用 dotenv 格式（`NAME=value`），必须是服务账号所有、仅属主可访问的普通文件（例如权限 `0600`），文件和各级父目录都不能是符号链接。配置后，URL、令牌及 CA 路径只从该文件读取，不插值，也不回退到其他来源。否则从宿主配置指定的外部 `env_file` 与服务进程环境读取，同名时进程变量优先。不要把真实连接值写入仓库、提示词或 CLI 参数，只向部署助手提供路径和变量名。
+
 ## 自我维护部署预设
 
 专用编码部署可在 ServiceSpec 中为 `"profile": "repository_maintenance"` 添加 `"preset": "self_maintenance"`。它要求有范围的文件、搜索、测试工具和非空的 Delivery `required_tests`，开发 Run 默认预授权这些测试，并提供执行状态、隔离 Bash 和产物读取。集成默认使用定期评估，候选默认接受独立审查；可显式缩小工具范围（包括去掉 Bash）或选择其他基线策略。预设不授予 GitHub 发布、回复或合并权限，也不替代 Work 授权。
@@ -83,9 +91,9 @@ homebrew-harness service --cwd CONTROL_DIR validate --spec SERVICE_JSON --host-c
 homebrew-harness service --cwd CONTROL_DIR start --spec SERVICE_JSON --host-config HOST_JSON --detach --request-id DEPLOYMENT_ID
 ```
 
-把标记替换为部署实际路径和标识，并正确引用路径。验证复用宿主／Service 配置合同，检查文件位置、凭据分离、模型别名和固定测试，不调用模型或平台、不执行测试、不创建运行状态。平台权限、Git remote、分支规则、Docker／镜像可用性仍需运行验证。前提或宿主执行批准尚未具备时，模型交付配置和剩余步骤。
+把标记替换为部署实际路径和标识，并正确引用路径。验证复用宿主／Service 配置合同，检查文件位置、凭据分离、模型别名和固定测试；通知启用时，还会在本地检查 webhook URL、凭据和自定义 CA。离线验证不发 webhook 请求、不调用模型或平台、不执行测试，也不创建运行状态。Webhook 的连通性和接收情况、平台权限、Git remote、分支规则及 Docker／镜像可用性仍需运行验证。前提或宿主执行批准尚未具备时，模型交付配置和剩余步骤。
 
-启动后保存 Service ID。模型检查实际 owner 与收件读取结果，再提供该部署的命令。OS 开机启动／重启单独按用户要求配置。
+启动后保存 Service ID。模型检查实际 owner 与收件读取结果，再提供该部署的命令。可用 `service inbox SERVICE_ID notify-status` 查看通知状态；`notify --force --request-id ...` 会实际发送当前收件箱，只在确认该端点有权接收这些数据后使用。OS 开机启动／重启单独按用户要求配置。
 
 ## 监督项目
 

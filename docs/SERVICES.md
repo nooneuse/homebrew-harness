@@ -102,6 +102,47 @@ Delivery approval receives one exact action plan; identical copies in request an
 
 `exit` or EOF disconnects the UI and leaves a detached service running. Ctrl-C cancels the current input/observation. `stop` explicitly requests service shutdown. Output is plain JSON/text; external terminal control characters are escaped. No terminal UI library is required. Text UI and individual control commands use the same authenticated HTTP API.
 
+## Inbox notifications
+
+Both `manual` and `repository_maintenance` services can send their [operator inbox](#operator-inbox) to a host-configured JSON webhook. Omit the top-level `notifications` object or set it to `{}` to keep the existing behavior: no outbound notifications. A nonempty object enables notifications by default (`enabled: true`) and requires `url_env`; set `enabled: false` to disable sending while retaining the declaration.
+
+```json
+{
+  "notifications": {
+    "url_env": "HARNESS_INBOX_WEBHOOK_URL",
+    "token_env": "HARNESS_INBOX_WEBHOOK_TOKEN",
+    "credentials_file": "/path/to/private/inbox-webhook.env",
+    "min_pending": 3
+  }
+}
+```
+
+`mode` defaults to `remote`. Both modes require HTTPS for non-loopback destinations and allow HTTP only on `localhost`, `127.0.0.1`, or `::1`; `local` restricts the destination to those loopback hosts, even over HTTPS. The URL may have a path, but no userinfo, query, or fragment. `url_env`, optional Bearer `token_env`, and optional `ca_file_env` name host variables, not literal connection values. See [webhook host setup](HOSTING.md#configure-the-inbox-webhook) for credential sources and offline validation.
+
+| Field | Default | Accepted values |
+| --- | --- | --- |
+| `every_seconds` | `43200` (12 hours) | `0.1`–`31536000` seconds |
+| `min_pending` | `null` (no early trigger) | `null` or a positive integer |
+| `cooldown_seconds` | `300` (5 minutes) | `0`–`86400` seconds |
+| `request_seconds` | `10` | `0.1`–`60` seconds per POST, subject to host transport limits |
+| `include_expired` | `true` | Boolean |
+
+The webhook receives a JSON POST with `event: "service.inbox.digest"`, `service_id`, `trigger` (`schedule`, `threshold`, or `manual`), and `generated_at`, plus the same bounded `items`, `counts`, `oldest_created_at`, `digest`, and human-readable `summary` as `inbox list --json` (all Work, up to 50 items, possibly fewer under the size limit). The items and summary can contain request titles and clipped previews. Expired items appear after pending items when included, and do not count as actionable. Use only an endpoint you trust to receive this private context. The webhook is a reminder, not a way to approve, answer, or refresh a request; re-list the live inbox before acting on its short numbers.
+
+Automatic delivery only runs while the service is running and not draining or parked. It does not send an empty or expired-only inbox, and it may send the first actionable inbox immediately. After a successful send, the same pending-item digest is suppressed until a full `every_seconds` interval has elapsed. The optional threshold can send earlier only when the actionable count shown reaches `min_pending` **and** the digest has changed. All automatic sends respect the cooldown, and failures delay the next attempt using backoff (including bounded `Retry-After` on HTTP `429` or `503`).
+
+Pausing the service suspends automatic sends. Manual sends bypass the automatic timing rules and work during an ordinary pause, but are blocked during draining, parking, or shutdown. Without `--force`, manual sends also require an actionable item; `--force` permits empty or expired-only snapshots, but does not enable notifications on a disabled service.
+
+```sh
+homebrew-harness service inbox SERVICE_ID notify-status
+homebrew-harness service inbox SERVICE_ID notify --force --request-id inbox-notify-1
+homebrew-harness service receipt SERVICE_ID inbox-notify-1
+```
+
+In Text UI, omit the service ID: `inbox notify-status`, `inbox notify --force --request-id inbox-notify-1`, and `receipt inbox-notify-1`. In synchronous or asynchronous Python, use `service.notification_status()`, `service.send_notification(force=True, request_id="inbox-notify-1")`, and `service.receipt("inbox-notify-1")`. Status shows the effective non-secret settings, the last successful delivery, and retry/error state.
+
+The POST carries an `Idempotency-Key` identifying the logical delivery. Give each intended manual send a stable `--request-id`. On a lost response or `delivery_unknown`/`delivery_failed`, inspect the receipt and check the receiver before choosing to send again. Repeating the accepted ID with the same arguments returns its existing receipt instead of resending. The receiver should deduplicate by the `Idempotency-Key`; notifications do not guarantee exactly-once delivery.
+
 ## HTTP connections and remote clients
 
 The service binds to loopback. A private control credential is generated once per service, and each instance publishes a private endpoint descriptor in `.harness/control/endpoint.json`. Local commands discover only this connection configuration; they do not read the service database.

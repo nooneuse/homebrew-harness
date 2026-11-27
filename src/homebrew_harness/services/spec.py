@@ -64,6 +64,7 @@ class ServiceSpec:
     operations: dict = field(default_factory=dict)
     communication: dict = field(default_factory=dict)
     preset: str | None = None
+    notifications: dict = field(default_factory=dict)
 
     def __post_init__(self):
         from homebrew_harness.runtime.limits import limits_scope
@@ -148,6 +149,9 @@ class ServiceSpec:
         from .operations.spec import validate as validate_operations
 
         object.__setattr__(self, "operations", validate_operations(self.operations))
+        from .notifications import validate_notifications
+
+        object.__setattr__(self, "notifications", validate_notifications(self.notifications))
         if (
             any(job.action == "review_repository" for job in schedules)
             and self.profile != "repository_maintenance"
@@ -189,6 +193,8 @@ class ServiceSpec:
         value = asdict(self)
         if self.preset is None:
             value.pop("preset")  # Keep existing specs and request identities stable.
+        if not self.notifications:
+            value.pop("notifications")
         return json.loads(json.dumps(value, allow_nan=False))
 
     def validate_location(self, control):
@@ -208,6 +214,10 @@ class ServiceSpec:
         from .operations.spec import validate_location
 
         validate_location(self.operations, (control, workspace))
+        if self.notifications.get("credentials_file"):
+            from .notifications import read_notification_credentials
+
+            read_notification_credentials(self.notifications, (control, workspace))
         import homebrew_harness
 
         installed = Path(homebrew_harness.__file__).resolve().parent

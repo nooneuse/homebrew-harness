@@ -203,6 +203,59 @@ class SetupValidationTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "owner-only"):
             self.validate()
 
+    def test_webhook_credentials_validate_without_posting(self):
+        credentials = self.private / "webhook.env"
+        url = "https://webhook.invalid/private/digest"
+        token = "notification-fixture-token"
+        credentials.write_text(f"WEBHOOK_URL={url}\nWEBHOOK_TOKEN={token}\n")
+        credentials.chmod(0o600)
+        self.spec["notifications"] = {
+            "url_env": "WEBHOOK_URL",
+            "token_env": "WEBHOOK_TOKEN",
+            "credentials_file": str(credentials),
+        }
+        with patch(
+            "homebrew_harness.platforms.http.JsonTransport.request",
+            side_effect=AssertionError("validation attempted a network request"),
+        ) as request:
+            result = self.validate()
+            credentials.write_text(f"WEBHOOK_URL={url}\n")
+            with (
+                patch.dict(os.environ, {"WEBHOOK_TOKEN": token}),
+                self.assertRaisesRegex(ValueError, "Notification host credentials are missing"),
+            ):
+                self.validate()
+        request.assert_not_called()
+        self.assertEqual(result["state"], "validated")
+        self.assertTrue(any("Webhook reachability" in check for check in result["pending"]))
+        for value in (url, token, str(credentials)):
+            self.assertNotIn(value, json.dumps(result))
+        self.assertFalse(list(self.control.iterdir()))
+
+    def test_webhook_credentials_file_must_be_external_and_owner_only(self):
+        credentials = self.private / "webhook.env"
+        credentials.write_text("WEBHOOK_URL=https://webhook.invalid/digest\n")
+        credentials.chmod(0o600)
+        self.spec["notifications"] = {"url_env": "WEBHOOK_URL"}
+        for parent in (self.workspace, self.control):
+            path = parent / credentials.name
+            path.write_bytes(credentials.read_bytes())
+            path.chmod(0o600)
+            self.spec["notifications"]["credentials_file"] = str(path)
+            with self.subTest(path=path), self.assertRaisesRegex(ValueError, "outside|external"):
+                self.validate()
+
+        alias = self.private / "webhook-alias.env"
+        alias.symlink_to(credentials)
+        self.spec["notifications"]["credentials_file"] = str(alias)
+        with self.assertRaisesRegex(ValueError, "without symlinks"):
+            self.validate()
+
+        self.spec["notifications"]["credentials_file"] = str(credentials)
+        credentials.chmod(0o644)
+        with self.assertRaisesRegex(ValueError, "owner-only"):
+            self.validate()
+
     def test_source_and_publisher_cannot_bind_different_instances(self):
         raw = self.publisher.read_text().replace(self.endpoint, "https://" + "other.invalid")
         self.publisher.write_text(raw)

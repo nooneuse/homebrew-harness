@@ -89,6 +89,7 @@ QUERY_METHODS = {
     "schedules": {"cursor", "limit"},
     "requests": {"work_id"},
     "service_inbox": {"work_id", "include_expired", "limit"},
+    "notification_status": set(),
     "receipt": {"request_id"},
 }
 MAINTENANCE_COMMANDS = {
@@ -149,6 +150,7 @@ COMMAND_METHODS = {
     **MAINTENANCE_COMMANDS,
     "focus": {"context", "id", "revision"},
     "tick": set(),
+    "notification_send": {"force"},
     "submit": {"text", "goal", "priority"},
     "pause": {"revision", "scope"},
     "resume": {"revision"},

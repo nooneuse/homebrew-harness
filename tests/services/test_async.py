@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from homebrew_harness import AsyncHarness, HostConfig, ServiceSpec
 from tests.integration.test_native_model_protocols import ProtocolService
+from tests.services.test_notifications import Webhook
 from tests.support.clients import reply
 
 
@@ -63,3 +64,52 @@ class AsyncServices(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(result, {"request_id": "async-refresh", "refreshed": [], "skipped": []})
                 await service.stop()
                 self.assertTrue(await service.wait_closed(10))
+
+    async def test_notification_status_and_manual_send_are_awaitable(self):
+        webhook = Webhook()
+        self.addCleanup(webhook.close)
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory).resolve()
+            control = base / "control"
+            control.mkdir(mode=0o700)
+            workspace = base / "workspace"
+            workspace.mkdir()
+            env = base / "model.env"
+            env.write_text(
+                "OPENAI_API_KEY=synthetic\n"
+                f"OPENAI_BASE_URL=http://127.0.0.1:{webhook.port}/v1\n"
+                "OPENAI_MODEL=fixture\n"
+                f"WEBHOOK_URL={webhook.url}\n"
+            )
+            env.chmod(0o600)
+            with patch.dict("os.environ", {}, clear=True):
+                async with AsyncHarness(
+                    workdir=control, config=HostConfig.from_files(env_file=env)
+                ) as host:
+                    service = await host.services.start(ServiceSpec(
+                        str(workspace), notifications={"url_env": "WEBHOOK_URL", "mode": "local"},
+                    ))
+                    status = await service.notification_status()
+                    self.assertTrue(status["enabled"])
+                    self.assertEqual(status["sent_count"], 0)
+                    self.assertEqual(await service.send_notification(), {
+                        "sent": False, "reason": "no_actionable_items",
+                    })
+                    self.assertEqual(webhook.calls, [])
+
+                    options = {"force": True, "request_id": "async-notify"}
+                    sent = await service.send_notification(**options)
+                    self.assertTrue(sent["sent"])
+                    self.assertEqual(await service.send_notification(**options), sent)
+                    status = await service.notification_status()
+                    self.assertEqual(status["sent_count"], 1)
+                    self.assertEqual(status["last_delivery_id"], sent["delivery_id"])
+                    self.assertEqual(len(webhook.calls), 1)
+                    path, headers, payload = webhook.calls[0]
+                    self.assertEqual(path, "/private/digest")
+                    self.assertEqual(headers["Idempotency-Key"], sent["delivery_id"])
+                    self.assertEqual(payload["event"], "service.inbox.digest")
+                    self.assertEqual(payload["service_id"], service.id)
+                    self.assertEqual(payload["trigger"], "manual")
+                    await service.stop()
+                    self.assertTrue(await service.wait_closed(10))

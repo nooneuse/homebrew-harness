@@ -98,6 +98,47 @@ Service 审批使用当前已接受的 Work 需求与执行说明、冻结动作
 
 `exit` 或 EOF 断开界面，detached 服务继续运行；Ctrl-C 取消当前输入／观察；`stop` 才请求停止服务。界面采用普通 JSON／文本，外部终端控制字符转义，不依赖 UI 库。Text UI 和单项控制命令使用同一套认证 HTTP API。
 
+## 收件箱通知
+
+`manual` 和 `repository_maintenance` 两种 profile 都可将[操作者收件箱](#操作者收件箱)发送到宿主配置的 JSON webhook。省略顶层 `notifications` 对象或设为 `{}` 时保持原行为，不发送外部通知。非空对象默认启用（`enabled: true`），并要求填写 `url_env`；设置 `enabled: false` 可保留声明但不发送。
+
+```json
+{
+  "notifications": {
+    "url_env": "HARNESS_INBOX_WEBHOOK_URL",
+    "token_env": "HARNESS_INBOX_WEBHOOK_TOKEN",
+    "credentials_file": "/path/to/private/inbox-webhook.env",
+    "min_pending": 3
+  }
+}
+```
+
+`mode` 默认为 `remote`。两种模式都要求非回环目标使用 HTTPS，仅 `localhost`、`127.0.0.1` 或 `::1` 可使用 HTTP；`local` 即使使用 HTTPS 也只允许这三个回环主机。URL 可包含路径，不得包含用户信息、查询字符串或片段。`url_env`、可选的 Bearer 令牌 `token_env` 和可选的 `ca_file_env` 填写宿主变量名，而不是实际连接值。凭据来源和离线验证详见 [webhook 宿主配置](HOSTING.zh-CN.md#配置收件箱-webhook)。
+
+| 字段 | 默认值 | 允许的值 |
+| --- | --- | --- |
+| `every_seconds` | `43200`（12 小时） | `0.1`–`31536000` 秒 |
+| `min_pending` | `null`（不提前触发） | `null` 或正整数 |
+| `cooldown_seconds` | `300`（5 分钟） | `0`–`86400` 秒 |
+| `request_seconds` | `10` | 每次 POST `0.1`–`60` 秒，同时受宿主传输限额约束 |
+| `include_expired` | `true` | 布尔值 |
+
+Webhook 接收 JSON POST，包含 `event: "service.inbox.digest"`、`service_id`、`trigger`（`schedule`、`threshold` 或 `manual`）和 `generated_at`，以及与 `inbox list --json` 相同的有界 `items`、`counts`、`oldest_created_at`、`digest` 和可读 `summary`。范围为整个服务（不限定 Work），最多 50 项，达到大小限制时可能更少。条目和概要可能包含请求标题和截短的预览；启用过期项时，过期项排在待办项后，不计入可处理项。只向有权接收这些私有信息的可信端点发送。Webhook 只用于提醒，不批准、回答或续期请求；用短编号处理前先重新列出实时收件箱。
+
+仅当服务运行且未进入排空或停靠阶段时才自动发送。收件箱为空或只有过期项时不自动发送；首次出现可处理项时可立即发送。成功发送后，待办项指纹若未变化，至少等到完整的 `every_seconds` 周期结束才再次发送。只有显示的可处理数达到 `min_pending` 且指纹发生变化，阈值才可提前触发。所有自动发送均受冷却时间限制，失败后按退避延迟下次尝试；遇到 HTTP `429` 或 `503` 时也会参考有上限的 `Retry-After`。
+
+暂停服务会暂停自动发送。手动发送不受自动发送的时间规则限制，普通暂停时仍可用，但在排空、停靠或关停时不可用。不加 `--force` 时也必须有可处理项；`--force` 允许发送空收件箱或只有过期项的快照，但不能启用已关闭的通知。
+
+```sh
+homebrew-harness service inbox SERVICE_ID notify-status
+homebrew-harness service inbox SERVICE_ID notify --force --request-id inbox-notify-1
+homebrew-harness service receipt SERVICE_ID inbox-notify-1
+```
+
+Text UI 省略服务 ID：`inbox notify-status`、`inbox notify --force --request-id inbox-notify-1` 和 `receipt inbox-notify-1`。同步或异步 Python 中使用 `service.notification_status()`、`service.send_notification(force=True, request_id="inbox-notify-1")` 和 `service.receipt("inbox-notify-1")`。状态显示不含私密值的生效设置、上次成功发送记录及重试／错误状态。
+
+POST 携带标识同一次逻辑投递的 `Idempotency-Key` 请求头。每次计划的手动发送应使用稳定的 `--request-id`。响应丢失或状态为 `delivery_unknown`／`delivery_failed` 时，先查询回执并向接收方核实，再决定是否另发一次。对已受理的 ID 使用相同参数只会返回原回执，不会再次发送。接收方应按 `Idempotency-Key` 去重；通知不保证恰好投递一次。
+
 ## HTTP 连接与远程客户端
 
 提交输出通过工作 ID 和 request_id 确认受理，执行进度用 status/show 查询。传输错误也显示 request_id，便于在回执丢失后检查原请求。

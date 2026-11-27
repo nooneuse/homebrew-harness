@@ -136,9 +136,11 @@ class ServiceRuntime:
                 port=self.spec.control_port,
                 runtime_limits=self.core.config.settings.runtime_limits,
             )
+            from .notifications import ServiceNotifications
             from .operations.runtime import Operations
 
             self.operations = Operations(self)
+            self.notifications = ServiceNotifications(self)
             self.token = token
             self.started = False
             self.server_started = False
@@ -192,6 +194,7 @@ class ServiceRuntime:
         self.store.update(
             self.header, launch={"token": self.token, "phase": "accepted"}, error=None
         )
+        self.notifications.start()
 
     def start_business(self):
         from homebrew_harness.runtime.runtime_control import WorkAccepted
@@ -1126,6 +1129,12 @@ class ServiceRuntime:
             and self.store.get(self.id).get("operations_phase", "active") != "active"
         ):
             raise ValueError("Service is parked or draining; use operations controls.")
+        if method == "notification_status":
+            return self.notifications.status()
+        if method == "notification_send":
+            return self.notifications.send(
+                payload.get("force", False), request_id or "command_" + uuid.uuid4().hex
+            )
         if method in MAINTENANCE_COMMANDS or method in MAINTENANCE_QUERIES:
             if self.maintenance is None:
                 raise ValueError("This service has no maintenance profile.")
@@ -1251,6 +1260,7 @@ class ServiceRuntime:
             self.leases.close()
             self.finished.set()
             return
+        self.notifications.close()
         self.operations.close()
         if self.approval_review.running:
             from homebrew_harness.runtime.runtime_control import ClosePending

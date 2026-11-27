@@ -66,6 +66,14 @@ Writing formats are model guidance, not an enforced template engine. Custom PR d
 
 Delivery uses registered tests. External PR review can be static; executing third-party PR tests requires the container TestRunner backend. Native service execution currently targets supported Unix hosts. Windows clients can supervise the same HTTP control API.
 
+## Configure the inbox webhook
+
+Inbox notifications are optional for both `manual` and `repository_maintenance`. Omit `notifications` or use `{}` unless you want to send reminders. The destination receives the service-wide inbox with approval and question previews (and expired items by default), so use an endpoint you control or trust with that data. This is an outbound connection, separate from the Service control endpoint and repository platform credentials. See [Inbox notifications](SERVICES.md#inbox-notifications) for the ServiceSpec example, timing, and payload.
+
+In the service specification, set `notifications.url_env` to the name of a host variable containing the webhook URL. Add `token_env` if the endpoint requires a Bearer token, and `ca_file_env` if it uses a private CA. The latter variable contains an absolute CA bundle path outside both the project checkout and private control directory, without symlinks. Certificate verification stays on; redirects and environment proxies are not used. Non-loopback destinations require HTTPS. HTTP is allowed only for `localhost`, `127.0.0.1`, or `::1`; `mode: "local"` restricts the destination to those hosts regardless of scheme. Do not put userinfo, query parameters, or a fragment in the URL.
+
+Prefer a dedicated `notifications.credentials_file`: an absolute path outside both directories to a regular dotenv (`NAME=value`) file owned by the service account and accessible only to that owner (for example, mode `0600`). Neither the file nor any parent directory may be a symlink. With this setting the URL, token, and CA path are read exclusively from that file, without interpolation or fallback. Otherwise values come from the external host-configured `env_file` and the service process environment, with process variables taking precedence. Keep real connection values out of repository files, prompts, and CLI arguments; give the hosting assistant only the path and variable names.
+
 ## Self-maintenance deployment preset
 
 For a dedicated coding deployment, set `"preset": "self_maintenance"` alongside `"profile": "repository_maintenance"` in ServiceSpec. The preset requires scoped file/search/test tools and named Delivery `required_tests`, defaults `allow_tests` to those recipes, and exposes execution controls, isolated Bash and artifact inspection. It defaults to periodic integration and independent candidate review. Explicit Service values can narrow the tool list (including omitting Bash) or choose another base policy. The preset does not preauthorize GitHub publication, replies or merge, or change which categories of Work are authorized.
@@ -83,9 +91,9 @@ homebrew-harness service --cwd CONTROL_DIR validate --spec SERVICE_JSON --host-c
 homebrew-harness service --cwd CONTROL_DIR start --spec SERVICE_JSON --host-config HOST_JSON --detach --request-id DEPLOYMENT_ID
 ```
 
-Replace markers with the deployment's actual quoted paths and identifiers. Validation checks host/service schemas, file locations, credentials separation, model aliases and named tests. It does not call a model or platform, execute tests, or create runtime state. Platform permissions, Git remote access, branch rules and Docker/image availability still need operational verification. If prerequisites or host execution approval are unavailable, the assistant reports the prepared configuration and remaining steps.
+Replace markers with the deployment's actual quoted paths and identifiers. Validation checks host/service schemas, file locations, credentials separation, model aliases and named tests. For enabled notifications, it also checks the webhook URL, credentials and any custom CA locally. It does not send a webhook request, call a model or platform, execute tests, or create runtime state. Webhook reachability and acceptance, platform permissions, Git remote access, branch rules and Docker/image availability still need operational verification. If prerequisites or host execution approval are unavailable, the assistant reports the prepared configuration and remaining steps.
 
-After startup, keep the Service ID. The assistant checks the live owner and repository source results, then provides commands for that deployment. OS startup/restart after reboot is configured separately when requested.
+After startup, keep the Service ID. The assistant checks the live owner and repository source results, then provides commands for that deployment. For notifications, check `service inbox SERVICE_ID notify-status`; a live `notify --force --request-id ...` sends the current inbox, so use it only after confirming the endpoint may receive that data. OS startup/restart after reboot is configured separately when requested.
 
 ## Supervise the project
 

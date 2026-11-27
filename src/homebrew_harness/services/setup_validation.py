@@ -118,7 +118,18 @@ def validate_service(spec_file, host_file, control):
             for adapter, _identity in projects.values():
                 adapter.close()
 
+        if spec.notifications:
+            from .notifications import open_notification_transport
+
+            path = spec.notifications.get("credentials_file")
+            if path:
+                _external(path, roots)
+            if spec.notifications["enabled"]:
+                open_notification_transport(spec.notifications, environment, roots).close()
+
         pending = ["Platform access, Git remote access and server-side branch rules are checked during service operation."]
+        if spec.notifications.get("enabled"):
+            pending.append("Webhook reachability and acceptance are checked during service operation.")
         if container:
             pending.append("Docker host and image availability have not been tested by this offline check.")
         return {

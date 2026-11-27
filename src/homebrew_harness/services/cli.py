@@ -322,6 +322,10 @@ def commands(parser, *, attach=True):
     refresh = inbox_ops.add_parser("refresh-expired")
     refresh.add_argument("--ids", nargs="+", metavar="REQUEST_ID")
     refresh.add_argument("--request-id")
+    inbox_ops.add_parser("notify-status", help="Show webhook configuration and delivery status.")
+    notify = inbox_ops.add_parser("notify", help="Send the current inbox digest to the configured webhook.")
+    notify.add_argument("--force", action="store_true", help="Send even when no items are actionable.")
+    notify.add_argument("--request-id")
     tasks = work.add_subparsers(dest="work_command", required=True)
     submit = tasks.add_parser("submit")
     submit.add_argument("text")
@@ -484,6 +488,10 @@ def _operate_inbox(service, args):
     work_id = getattr(args, "work_id", None)
     if args.inbox_command == "refresh-expired":
         return service.refresh_expired(ids=args.ids, request_id=args.request_id)
+    if args.inbox_command == "notify-status":
+        return service.notification_status()
+    if args.inbox_command == "notify":
+        return service.send_notification(force=args.force, request_id=args.request_id)
     if args.inbox_command != "decide":
         return service.inbox(
             work_id=work_id,

@@ -162,6 +162,14 @@ class AsyncService(AsyncHandle):
             self._target.refresh_expired, ids=ids, request_id=request_id
         )
 
+    async def notification_status(self):
+        return await self._root._calls.call(self._target.notification_status)
+
+    async def send_notification(self, force=False, request_id=None):
+        return await self._root._calls.call(
+            self._target.send_notification, force=force, request_id=request_id
+        )
+
 
 class AsyncHarness:
     def __init__(self, *, workdir=None, config=None):
