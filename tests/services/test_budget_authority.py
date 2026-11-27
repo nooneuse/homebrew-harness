@@ -1,5 +1,6 @@
 import copy
 import unittest
+from homebrew_harness.runs.spec import RunSpec
 from homebrew_harness.services.protocol import fingerprint
 from tests.services import test_maintenance as fixture
 
@@ -18,8 +19,11 @@ class BudgetAuthority(unittest.TestCase):
         self.addCleanup(restore_fixture)
         with store.db.write() as conn:
             value=store.get('work',work.id,conn)
+            # Persist the native control tools just as granting a real Work would.
+            run_spec = RunSpec(value['prompt'], write_paths=('src',),
+                               tools=('read_file', 'write_file')).data()
             value.update(state='in_progress',requirements_revision=0,triage=self.peer.triage,triage_revision=0,
-                run_id='run_'+'a'*32,run_spec={'write_paths':['src'],'tools':['read_file','write_file'],'allow_tests':[]},
+                run_id='run_'+'a'*32,run_spec=run_spec,
                 authority={'scope':'code','policy':'old-budget-policy','requirements_revision':0,'expires_at':0,'revoked':False})
             store.put(conn,'work',value)
         before=service.store.work(work.id)

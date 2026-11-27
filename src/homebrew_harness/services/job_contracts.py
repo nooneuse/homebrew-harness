@@ -164,10 +164,11 @@ class JobContract:
 
     @property
     def code_available(self):
+        job_input = self.job.get("input") or {}
         return self.handler.code and not (
             self.kind == "discussion"
-            and self.job["input"].get("subject", {}).get("kind") == "change_request"
-            and not self.job["input"].get("review_id")
+            and job_input.get("subject", {}).get("kind") == "change_request"
+            and not job_input.get("review_id")
         )
 
     def discussion_evidence_instruction(self):
@@ -290,10 +291,12 @@ class JobContract:
         return value
 
     def followup_instruction(self, *, drafting=False):
-        if self.kind != "discussion" or not self.job["input"].get("own_pr"):
+        job_input = self.job.get("input") or {}
+        own_pr = job_input.get("own_pr")
+        if self.kind != "discussion" or not own_pr:
             return ""
-        if ((self.job["input"].get("observed_pr") or {}).get("state") == "closed"
-                or self.job["input"]["own_pr"].get("delivery_state") == "delivered"):
+        if ((job_input.get("observed_pr") or {}).get("state") == "closed"
+                or own_pr.get("delivery_state") == "delivered"):
             return (
                 " This discussion concerns our own PR that is no longer open for changes. "
                 "Decide whether an ordinary follow-up comment would help. Treat unresolved feedback as "
@@ -319,6 +322,7 @@ class JobContract:
         )
 
     def instruction(self, loader):
+        job_input = self.job.get("input") or {}
         skills = [loader.skills[n] for n in self.handler.skills if n in loader.skills]
         return (
             COMMON
@@ -328,11 +332,12 @@ class JobContract:
                 " For an existing periodic PR whose exact published head fails CI due to a confirmed "
                 "target-base blocker, choose next_action=assess_integration. This asks for early assessment, "
                 "not immediate integration or a source edit. Do not use it for local candidate failures."
-                if self.kind == "ci_triage" and self.store.delivery is not None
+                if self.kind == "ci_triage" and self.store is not None
+                and self.store.delivery is not None
                 and self.store.delivery.spec.get("base_update") == "periodic" else ""
             )
             + (" The operator explicitly requested applying your scoped recovery choice. Return optional action={mode:resume/fork/adopt_candidate,source_ref,reason,start:Boolean,integration:{method:merge/rebase,target_ref}}. Inspect Work sources and observe a fixed target before selecting references; do not guess IDs. The proposal completes this reasoning phase; native controls apply it afterward under current authority."
-               if self.kind=='recovery_plan' and self.job['input'].get('execute_requested') else "")
+               if self.kind == "recovery_plan" and job_input.get("execute_requested") else "")
             + (
                 " Use glob/search_text and service_read_code for permitted repository context; paths are relative to this job code root."
                 if self.code_available
