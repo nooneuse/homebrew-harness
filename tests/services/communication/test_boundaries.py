@@ -1,13 +1,39 @@
 """Version, source, policy and execution boundaries of multi-round communication."""
 
+import tempfile
 import time
 from unittest.mock import patch
 
+from homebrew_harness import ServiceSpec
 from homebrew_harness.platforms.contracts import ObjectRef, SourceEvent, SourcePage
 from homebrew_harness.services.communication.spec import validate_plan
 from tests.services.communication import test_flow as fixture
 import unittest
 from tests.runtime.test_interaction import eventually
+
+
+class RequirementsAcceptancePolicy(unittest.TestCase):
+    def spec(self, maintenance):
+        with tempfile.TemporaryDirectory() as workspace:
+            return ServiceSpec(
+                workspace, profile="repository_maintenance", maintenance=maintenance
+            ).data()["maintenance"]
+
+    def test_requirements_grant_opt_in_stays_absent_when_omitted(self):
+        self.assertNotIn("grant_on_requirements_acceptance", self.spec({}))
+
+    def test_requirements_grant_opt_in_preserves_explicit_booleans(self):
+        option = "grant_on_requirements_acceptance"
+        for value in (True, False):
+            with self.subTest(value=value):
+                self.assertIs(self.spec({option: value})[option], value)
+
+    def test_requirements_grant_opt_in_rejects_non_booleans(self):
+        option = "grant_on_requirements_acceptance"
+        for value in (None, 0, 1, "true", "false", [], {}):
+            with self.subTest(value=value):
+                with self.assertRaisesRegex(ValueError, option + " must be Boolean"):
+                    self.spec({option: value})
 
 
 class CommunicationBoundaries(unittest.TestCase):

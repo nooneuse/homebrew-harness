@@ -67,9 +67,11 @@ def prepare(delivery, row):
             return False
         rejected = feedback(store, current, conn)
         publication = content(current)
-        needs_draft = (not publication and store.spec["require_review"]
-                       and "ensure_change_request" not in store.spec["auto_actions"]
-                       or same_content(publication, rejected))
+        needs_draft = (
+            not publication and store.spec["require_review"]
+            and ("ensure_change_request" not in store.spec["auto_actions"]
+                 or store.spec.get("auto_publish_pr_text"))
+        ) or same_content(publication, rejected)
         if rejected and not publication:
             needs_draft = True
         if not needs_draft and current["state"] != "publication_attention":

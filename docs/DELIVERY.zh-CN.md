@@ -27,7 +27,9 @@ mode=isolated 使用真实 ContainerBackend 和固定镜像；开发范围使用
 
 Run 开始前记录输入基线，收尾后把授权差量应用到目标基线；CI 修复使用上一候选。已有的无关工作区改动不会被打包。
 
-候选固定 commit、tree、文件清单和目标基线。登记的测试、原始 Goal 硬条件和独立模型审查检查这份内容。审查可提交 publication={title,body} 草案；模型自定义正文使用明确的发布决定，预授权 PR 创建使用运行时固定摘要。正文不隐式关闭 Issue。
+候选固定 commit、tree、文件清单和目标基线。登记的测试、原始 Goal 硬条件和独立模型审查检查这份内容。审查可通过 `publication={title,body}` 提供 PR 标题和正文。默认 `auto_publish_pr_text=false`，将审查或发布任务生成的文案用于正式 PR 仍需另行批准。现有草稿 PR 流程与固定摘要的预授权不变。
+
+设置 `delivery.auto_publish_pr_text: true` 时，`auto_actions` 必须包含 `ensure_change_request`。若 `require_review=true` 且未提供发布文案，发布任务可根据已接受的需求、审查和验证事实起草。交付随后可用审查提供或发布任务起草的文案自动创建非草稿 PR。此设置不授权合并、关闭 Issue 或放宽质量与范围门禁。
 
 ```text
 完成开发 → 固定候选 → 测试／Goal／审查 → 审查分支与 PR
@@ -44,7 +46,7 @@ merge_ready 是可以长期保留的等待状态，不消耗模型调用，也�
 
 ## 反馈与基线刷新
 
-CI 绑定当前 head 和可信应用。诊断区分代码、基线、偶发、基础设施和未知失败；代码修复复用原生 Run、原范围、有效 Work 授权和累计尝试，更新同一 PR 后重新检查。默认 `ci_fix_limit=null`、`ci_fix_warning=2`，修复和重测次数作为进度观察，由模型决定继续、调整方案或请求帮助；明确配置整数 `ci_fix_limit` 时才执行次数硬上限。
+CI 绑定当前 head 和可信应用。诊断区分代码、基线、偶发、基础设施和未知失败；代码修复复用原生 Run、原范围、有效 Work 授权和累计尝试，更新同一 PR 后重新检查。默认 `ci_fix_limit=null`、`ci_fix_warning=2`，修复和重测次数作为进度观察，由模型决定继续、调整方案或请求帮助；明确配置整数 `ci_fix_limit` 时才执行次数硬上限。即使在 `approval_review.kinds` 中启用了 `ci_repair`，超出上限的额外修复尝试也须由操作者明确批准。
 
 冲突修复 Run 会在 `.harness/service-inputs` 获得只读 Git 源码快照索引，绑定确切目标基线、原候选 head 和报告的冲突路径，提供 blob 标识、校验值与可读文件位置。模型使用现有文件工具比较版本，工作草稿继续可编辑；缺失或因预算省略的证据交由模型判断。快照不改变范围，也不授予发布权限。
 

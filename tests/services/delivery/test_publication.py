@@ -72,6 +72,62 @@ class Publication(unittest.TestCase):
         )
         self.assertEqual(service.store.work(work.id)["run_id"], before["run_id"])
 
+    def test_opt_in_drafts_and_publishes_wording_before_merge_approval(self):
+        self.held()
+        service = self.start(auto_publish_pr_text=True)
+        work = service.work.submit("Restore the documented value.")
+        try:
+            if not self.peer.publication_started.wait(60):
+                self.fail(f"Publication job did not start: {service.health()['issues']}")
+            self.assertEqual(self.row(service)["state"], "publication_drafting")
+            self.assertNotIn("publication", self.row(service)["review"])
+            self.assertFalse(self.peer.pulls)
+            self.assertFalse(
+                any(
+                    action["kind"] == "ensure_change_request"
+                    for action in service.records("actions")["items"]
+                )
+            )
+        finally:
+            self.peer.publication_hold.set()
+
+        request = eventually(lambda: self.pending_target(service), 60)
+        delivery = service.runtime.maintenance.delivery
+        merge = delivery.store.get("actions", request.arguments["action_id"])
+        self.assertEqual(merge["kind"], "merge_change_request")
+        self.assertEqual(merge["state"], "awaiting_approval")
+        self.assertIsNone(merge["authorization"])
+        self.assertEqual(merge["attempts"], 0)
+        self.assertFalse(any(kind == "merge" for kind, _ in self.peer.writes))
+
+        self.assertEqual(self.row(service)["publication"], self.draft)
+        jobs = [
+            job for job in service.records("jobs")["items"] if job["kind"] == "publication"
+        ]
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["state"], "completed")
+        actions = [
+            action
+            for action in delivery.rows("actions")
+            if action["kind"] == "ensure_change_request"
+        ]
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["state"], "confirmed")
+        self.assertEqual(actions[0]["authorization"], "host_policy")
+        self.assertIs(actions[0]["plan"].get("draft", False), False)
+        self.assertEqual(len(self.peer.pulls), 1)
+        self.assertEqual(self.peer.pulls[0]["title"], self.draft["title"])
+        self.assertEqual(
+            self.peer.pulls[0]["body"].split("\n\n<!--", 1)[0], self.draft["body"]
+        )
+        pull_writes = [data for kind, data in self.peer.writes if kind == "pull"]
+        self.assertEqual(len(pull_writes), 1)
+        self.assertIs(pull_writes[0].get("draft", False), False)
+
+        service.decide(request, "approve", decision_id="approve-merge")
+        eventually(lambda: work.snapshot().state == "delivered", 80)
+        self.assertEqual(sum(kind == "merge" for kind, _ in self.peer.writes), 1)
+
     def test_denied_wording_gets_a_new_exact_approval_and_keeps_confirmed_branch(self):
         self.held()
         bad = {"title": "Restore value", "body": "An unprefixed draft."}

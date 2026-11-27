@@ -115,6 +115,7 @@ def validate(raw):
         "author_name_env",
         "author_email_env",
         "periodic_integration",
+        "auto_publish_pr_text",
     }
     if not isinstance(raw, dict) or set(raw) - fields:
         raise ValueError("Invalid delivery declaration fields.")
@@ -203,6 +204,12 @@ def validate(raw):
     for key in ("require_review", "auto_ci_fix"):
         if type(value[key]) is not bool:
             raise ValueError("Invalid delivery boolean.")
+    # Keep omitted opt-ins out of the persisted spec and its binding fingerprint.
+    auto_publish_pr_text = value.get("auto_publish_pr_text", False)
+    if type(auto_publish_pr_text) is not bool:
+        raise ValueError("auto_publish_pr_text must be Boolean.")
+    if auto_publish_pr_text and "ensure_change_request" not in value["auto_actions"]:
+        raise ValueError("auto_publish_pr_text requires ensure_change_request in auto_actions.")
     for key, minimum, maximum in (
         ("request_seconds", 1, 60),
         ("gate_seconds", 1, 3600),

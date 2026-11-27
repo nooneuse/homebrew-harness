@@ -511,6 +511,11 @@ class DeliveryStore:
         old = self.db._get(conn, "service_actions", identity)
         if old:
             return old
+        auto = kind in self.spec["auto_actions"] and (
+            kind != "ensure_change_request"
+            or (self.spec.get("auto_publish_pr_text") and not draft)
+            or not (row.get("publication") or (row.get("review") or {}).get("publication"))
+        )
         value = {
             "id": identity,
             "kind": kind,
@@ -518,24 +523,8 @@ class DeliveryStore:
             "changeset_id": row["id"],
             "plan": content,
             "plan_hash": fingerprint(content),
-            "state": (
-                "queued"
-                if kind in self.spec["auto_actions"]
-                and not (
-                    kind == "ensure_change_request"
-                    and (row.get("publication") or row.get("review", {}).get("publication"))
-                )
-                else "awaiting_approval"
-            ),
-            "authorization": (
-                "host_policy"
-                if kind in self.spec["auto_actions"]
-                and not (
-                    kind == "ensure_change_request"
-                    and (row.get("publication") or row.get("review", {}).get("publication"))
-                )
-                else None
-            ),
+            "state": "queued" if auto else "awaiting_approval",
+            "authorization": "host_policy" if auto else None,
             "expires_at": expiry(self.spec["authorization_seconds"], time.time()),
             "revision": 0,
             "attempts": 0,

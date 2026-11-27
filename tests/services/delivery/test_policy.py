@@ -31,6 +31,28 @@ class PolicyTests(unittest.TestCase):
             with self.subTest(warning=warning), self.assertRaises(ValueError):
                 validate({**raw, 'ci_fix_warning': warning})
 
+    def test_automatic_pr_text_requires_a_boolean_and_pr_preauthorization(self):
+        raw = {k: v for k, v in self.spec.items() if k != "auto_publish_pr_text"}
+        # Keep omitted settings out of persisted policy fingerprints.
+        self.assertNotIn("auto_publish_pr_text", validate(raw))
+        self.assertIs(
+            validate({**raw, "auto_publish_pr_text": False})["auto_publish_pr_text"],
+            False,
+        )
+        for actions in ([], ["publish_branch"]):
+            with self.subTest(actions=actions), self.assertRaisesRegex(
+                ValueError, "ensure_change_request"
+            ):
+                validate({**raw, "auto_actions": actions, "auto_publish_pr_text": True})
+        enabled = {**raw, "auto_actions": ["ensure_change_request"]}
+        self.assertIs(
+            validate({**enabled, "auto_publish_pr_text": True})["auto_publish_pr_text"],
+            True,
+        )
+        for value in (None, 0, 1, "false", "true", [], {}):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                validate({**enabled, "auto_publish_pr_text": value})
+
     def test_connection_values_use_external_references(self):
         for values in (
             {"mode": []},

@@ -783,7 +783,8 @@ class CommunicationStore:
         return None
 
     def accept_requirements(
-        self, conn, row, draft, category, *, automatic=False, origin="operator"
+        self, conn, row, draft, category, *, automatic=False, origin="operator",
+        grant_authority=False,
     ):
         work = self.ms.get("work", row["work_id"], conn) if row["work_id"] else None
         if unavailable := self.amendment_closed(conn, work):
@@ -852,8 +853,8 @@ class CommunicationStore:
             revision=work["revision"] + 1,
         )
         self.db._put(conn, "service_work", work["id"], work)
-        if automatic:
-            self.ms.grant(conn, work, proposal, "host_policy")
+        if automatic or grant_authority:
+            self.ms.grant(conn, work, proposal, "host_policy" if automatic else origin)
         else:
             self.ms.work_request(conn, work, proposal)
         row["state"] = "settled"
@@ -996,7 +997,10 @@ class CommunicationStore:
             raise boundary_error(ValueError, "communication_contract", "This discussion already has a pending public message.")
         auto = (
             proposal["intent"] in self.policy["auto_intents"]
-            and proposal["kind"] != "submit_review"
+            and (
+                proposal["kind"] != "submit_review"
+                or (proposal["intent"] == "review_feedback" and proposal.get("event") == "COMMENT")
+            )
         )
         if auto and proposal["intent"] == "own_pr_reply":
             work = self.db._get(conn, "service_work", row["work_id"])
@@ -1099,6 +1103,7 @@ class CommunicationStore:
                     request["candidate"],
                     request.get("category", "feature"),
                     origin="operator:" + decision_id,
+                    grant_authority=self.ms.policy.get("grant_on_requirements_acceptance", False),
                 )
                 request["state"] = "approved"
             else:

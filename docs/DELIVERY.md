@@ -32,6 +32,7 @@ Add `delivery` to an external `repository_maintenance` ServiceSpec. Keep connect
   "check_app_ids": [11],
   "require_review": true,
   "auto_actions": ["publish_branch", "ensure_change_request"],
+  "auto_publish_pr_text": false,
   "merge": {"mode": "manual", "poll_seconds": 300},
   "auto_ci_fix": false,
   "ci_fix_limit": null,
@@ -60,7 +61,9 @@ Service execution additionally requires native platform merge capability and enf
 
 Before a native Run starts, the service captures its input baseline. After cleanup, delivery applies that Work's approved delta to the target baseline, or to the previous candidate during CI repair. Unrelated existing workspace changes are excluded.
 
-The candidate has a fixed commit, tree, file manifest and target baseline in a private Git repository. Registered tests, original Goal hard conditions and an independent model review examine that content. An optional review `publication={title,body}` provides PR text. Custom model text uses an explicit publication decision; preauthorized PR creation uses the fixed runtime summary. Text cannot implicitly close issues.
+The candidate has a fixed commit, tree, file manifest and target baseline in a private Git repository. Registered tests, original Goal hard conditions and an independent model review examine that content. Review can supply PR wording as `publication={title,body}`. With `auto_publish_pr_text` at its default `false`, model-written wording from review or the publication job requires a separate decision for a non-draft PR. The existing Draft PR path and preauthorization for the fixed runtime summary are unchanged.
+
+Set `delivery.auto_publish_pr_text: true` to opt in; `auto_actions` must include `ensure_change_request`. If `require_review=true` and no publication wording is available, a publication job can draft it from accepted requirements, review and verification facts. Delivery can then automatically open a non-draft PR with the wording supplied by review or the publication job. This setting does not authorize merging or issue closure and does not relax quality or scope gates.
 
 ```text
 completed development → fixed candidate → tests / Goal / review
@@ -77,7 +80,7 @@ Tests and original Goal hard conditions verify a materialized, fixed result. Inc
 
 ## CI, review and base updates
 
-CI feedback belongs to the exact published head and admitted apps. CI diagnosis distinguishes code, baseline, flaky, infrastructure and unknown failures. Code repair uses native Runs, the original scope, valid Work authority and cumulative attempts; the next candidate updates the same PR and repeats its checks. The default `ci_fix_limit=null` and `ci_fix_warning=2` report repair and recheck progress for the model to decide whether to continue, change its plan or request help. Only an explicitly configured integer `ci_fix_limit` enforces an attempt ceiling.
+CI feedback belongs to the exact published head and admitted apps. CI diagnosis distinguishes code, baseline, flaky, infrastructure and unknown failures. Code repair uses native Runs, the original scope, valid Work authority and cumulative attempts; the next candidate updates the same PR and repeats its checks. The default `ci_fix_limit=null` and `ci_fix_warning=2` report repair and recheck progress for the model to decide whether to continue, change its plan or request help. Only an explicitly configured integer `ci_fix_limit` enforces an attempt ceiling. A repair requiring an extra attempt beyond that ceiling requires explicit operator approval, even when `approval_review.kinds` includes `ci_repair`.
 
 Conflict repair Runs receive an index of read-only Git source snapshots under `.harness/service-inputs`. It binds the exact target base and proposed head to the reported conflict paths, including blob identity, checksum and readable file location. Existing file tools can compare these versions while preserving the editable draft. Missing or omitted evidence is reported for the model to assess; snapshots do not change scope or authorize publication.
 

@@ -1,4 +1,4 @@
-"""PR-writing preferences reach review and a custom draft still needs approval."""
+"""PR-writing preferences and the opt-in boundary for custom publication."""
 
 import json
 import unittest
@@ -26,6 +26,10 @@ class CustomPublication(unittest.TestCase):
         action = delivery.store.get("actions", request.arguments["action_id"])
         self.assertEqual(action["kind"], "ensure_change_request")
         self.assertEqual(action["state"], "awaiting_approval")
+        self.assertIs(
+            service.runtime.spec.delivery.get("auto_publish_pr_text", False), False
+        )
+        self.assertIsNone(action["authorization"])
         self.assertEqual(action["plan"]["title"], publication["title"])
         self.assertEqual(action["plan"]["body"], publication["body"])
         self.assertEqual(len(self.peer.pulls), 0)
@@ -35,6 +39,51 @@ class CustomPublication(unittest.TestCase):
         eventually(lambda: len(self.peer.pulls) == 1, 15)
         self.assertEqual(self.peer.pulls[0]["title"], publication["title"])
         self.assertEqual(self.peer.pulls[0]["body"].split("\n\n<!--", 1)[0], publication["body"])
+
+    def test_opt_in_publishes_review_text_but_does_not_authorize_draft_prs(self):
+        publication = {
+            "title": "Restore the documented value",
+            "body": "Restore behavior and preserve the unit-test contract.",
+        }
+        self.peer.review_extra = {"publication": publication}
+        service = self.start(auto_publish_pr_text=True, merge={"mode": "manual"})
+        service.work.submit("Restore the documented value.")
+        confirmed = eventually(
+            lambda: next(
+                (
+                    action
+                    for action in service.records("actions")["items"]
+                    if action["kind"] == "ensure_change_request"
+                    and action["state"] in {"confirmed", "awaiting_approval"}
+                ),
+                None,
+            ),
+            40,
+        )
+        self.assertEqual(confirmed["state"], "confirmed")
+        self.assertEqual(confirmed["authorization"], "host_policy")
+        self.assertIs(confirmed["plan"].get("draft", False), False)
+        self.assertEqual(len(self.peer.pulls), 1)
+        self.assertEqual(self.peer.pulls[0]["title"], publication["title"])
+        self.assertEqual(
+            self.peer.pulls[0]["body"].split("\n\n<!--", 1)[0], publication["body"]
+        )
+        self.assertFalse(
+            any(job["kind"] == "publication" for job in service.records("jobs")["items"])
+        )
+
+        service.pause("all")
+        changeset = service.delivery(confirmed["changeset_id"])
+        self.assertEqual(changeset["review"]["publication"], publication)
+        draft = service.plan_delivery(
+            changeset["id"], "ensure_change_request", draft=True, publication=publication
+        )
+        self.assertIs(draft["plan"]["draft"], True)
+        self.assertEqual(draft["state"], "awaiting_approval")
+        self.assertIsNone(draft["authorization"])
+        request = self.pending_target(service)
+        self.assertIsNotNone(request)
+        self.assertEqual(request.arguments["action_id"], draft["id"])
 
 
 if __name__ == "__main__":

@@ -32,6 +32,8 @@ REVIEW_KINDS = {
     "work_authority",
     "delivery_authority",
     "communication_authority",
+    "discussion_requirements",
+    "ci_repair",
 }
 
 

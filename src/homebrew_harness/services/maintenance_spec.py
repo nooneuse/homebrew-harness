@@ -82,6 +82,7 @@ def validate_policy(raw, run_spec):
         "non_goals",
         "scopes",
         "auto_categories",
+        "grant_on_requirements_acceptance",
         "authority_seconds",
         "report_seconds",
         "job_seconds",
@@ -144,6 +145,9 @@ def validate_policy(raw, run_spec):
         c not in CATEGORIES for c in policy["auto_categories"]
     ):
         raise boundary_error(ValueError, "service_configuration", "Invalid automatically accepted categories.")
+    # An omitted opt-in stays absent so persisted Work authority and discussion bases still match.
+    if type(policy.get("grant_on_requirements_acceptance", False)) is not bool:
+        raise boundary_error(ValueError, "service_configuration", "grant_on_requirements_acceptance must be Boolean.")
     if not isinstance(policy["scopes"], dict) or (current_limits().service_scopes is not None and len(policy["scopes"]) > current_limits().service_scopes):
         raise boundary_error(ValueError, "service_configuration", "Invalid scope catalog.")
     scopes = {}
