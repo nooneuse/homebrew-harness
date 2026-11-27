@@ -109,6 +109,22 @@ class RepairAuthorityTests(unittest.TestCase):
         with self.assertRaises(SDKError):
             service.decide(request, "approve", allow_extra_attempt=True, decision_id="stale-ref")
 
+    def test_inbox_refresh_keeps_ci_plan_and_extra_attempt_requirement(self):
+        service, work, request, _ = self.pending()
+        store = service.runtime.maintenance.delivery.store
+        old = store.update("decisions", request.ref.id, expires_at=time.time() - 1)
+        inbox = service.inbox(work.id, include_expired=True)
+        item = next(item for item in inbox["items"] if item["kind"] == "ci_repair")
+        self.assertEqual(item["state"], "expired")
+        self.assertIs(item["extra_required"], True)
+        result = service.refresh_expired([request.ref.id], request_id="refresh-ci-inbox")
+        self.assertEqual(result["skipped"], [])
+        self.assertEqual(result["refreshed"][0]["revision"], old["revision"] + 1)
+        current = store.get("decisions", request.ref.id)
+        self.assertEqual(current["candidate"], old["candidate"])
+        self.assertEqual(current["state"], "pending")
+        self.assertNotIn("authorized_attempt", current)
+
     def test_non_boolean_or_denied_extra_grants_cannot_mutate_state(self):
         service, work, request, old = self.pending()
         store = service.runtime.maintenance.delivery.store

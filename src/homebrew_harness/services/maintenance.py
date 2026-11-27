@@ -399,25 +399,22 @@ class Maintenance:
                     payload["id"], payload["revision"], request_id
                 )
             return self.communication.store.command(method, payload, request_id)
-        if method.startswith(("delivery_", "batch_")):
-            if (
-                method.startswith("batch_")
-                and self.delivery is None
-                and self.communication is not None
-            ):
-                from .delivery.batches import DecisionBatches
+        if method == "inbox_refresh_expired":
+            from .inbox import refresh_expired
 
-                batches = DecisionBatches(self.runtime, self.store)
-                return (
-                    batches.create(payload["refs"], request_id)
-                    if method == "batch_create"
-                    else batches.apply(
-                        payload["id"],
-                        payload["revision"],
-                        payload["decisions"],
-                        request_id,
-                    )
-                )
+            return refresh_expired(
+                self.runtime, ids=payload.get("ids"), request_id=request_id
+            )
+        if method in {"batch_create", "batch_decide"}:
+            from .delivery.batches import DecisionBatches
+
+            batches = DecisionBatches(self.runtime, self.store)
+            if method == "batch_create":
+                return batches.create(payload["refs"], request_id)
+            return batches.apply(
+                payload["id"], payload["revision"], payload["decisions"], request_id
+            )
+        if method.startswith("delivery_"):
             if self.delivery is None:
                 raise ValueError("Delivery is not configured for this service.")
             from .delivery.controls import command
@@ -634,6 +631,8 @@ class Maintenance:
                 return self.communication.store.read(**payload)
             return self.communication.store.get(payload["kind"], payload["id"])
         if method == "delivery_status":
+            if payload["kind"] == "batches":
+                return self.store.get("batches", payload["id"])
             if self.delivery is None:
                 raise ValueError("Delivery is not configured.")
             from .delivery.controls import status

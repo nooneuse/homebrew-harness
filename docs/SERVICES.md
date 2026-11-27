@@ -287,9 +287,23 @@ with RemoteService.from_file(connection_file, control=True) as service:
 
 Each maintenance job has one input and result contract. Conversations read same-context history through the current message and evidence associated with their explicitly selected Work. General conversations can browse a minimal Work directory. Reports read their frozen activity window and referenced records, distinguishing those historical facts from current details. Candidate submission prepares a result; the runtime validates and applies it with the job completion in one transaction.
 
-Messages are durable and their replies can be read after reconnect. Reports reference recorded work and execution facts; acknowledging one updates that reader's position. Reports are available through the control interface. Public GitHub replies, outbound report delivery and grouped publication approvals are not performed by this profile.
+Messages are durable and their replies can be read after reconnect. Reports reference recorded work and execution facts; acknowledging one updates that reader's position. Reports are available through the control interface, not sent outbound. Public GitHub replies and PR publication require their optional capabilities.
 
 `reports` lists unread ready reports for a control context. `job-retry JOB_ID --request-id ...` explicitly authorizes another bounded reasoning attempt cycle; cumulative attempts remain recorded. `work request-authority WORK_ID` refreshes an expired or denied request for the current plan, without rerunning triage or granting execution. Work triage questions (`work_information`) use `answer`; their replies amend requirements before a new triage pass. Delivery clarification requests (`delivery_information`) also use `answer`, but append execution context without revising requirements or granting approval.
+
+### Operator inbox
+
+`inbox` combines service approvals and questions with requests from the active Run. It prints a numbered summary by default; `--json` adds exact refs, counts and a digest of the pending refs shown. Use `--work-id` to restrict the list and `--include-expired` to display expired requests after pending ones. The default limit is 50 (maximum 100).
+
+```sh
+homebrew-harness service inbox SERVICE_ID list --include-expired
+homebrew-harness service inbox SERVICE_ID decide --approve 1 --deny 2 --answer '3=Keep the existing behavior' --request-id inbox-1
+homebrew-harness service inbox SERVICE_ID refresh-expired --request-id refresh-1
+```
+
+In Text UI, omit the `homebrew-harness service` prefix and the service ID. Re-list before using short numbers; they refer to the current inbox in the same Work scope, not a saved snapshot. You can also use full request IDs from the JSON output. Repeat `--answer TOKEN=TEXT` for multiple questions. Only use `--allow-extra-attempt TOKEN` with an explicitly approved CI repair.
+
+Batches and expiry refresh are available in `repository_maintenance` even without delivery or communication. `batch decide` also accepts `--answer REQUEST_ID=TEXT`. Refresh reopens only eligible, still-current service decisions; it neither approves them nor renews native Run requests. Pass `--ids REQUEST_ID ...` to restrict the refresh. In synchronous or asynchronous Python, use `service.inbox(...)` and `service.refresh_expired(ids=..., request_id=...)`.
 
 Run the complete deterministic P2 scenario:
 

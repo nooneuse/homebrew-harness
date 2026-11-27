@@ -68,7 +68,9 @@ def review(store, job, raw, conn=None):
             raise boundary_error(ValueError, "service_result_invalid", "Only a delivery review can propose PR publication text.")
         text(publication["title"], "PR title", 200)
         text(publication["body"], "PR body", 16000)
-        if CLOSING.search(publication["title"]) or CLOSING.search(publication["body"]):
+        if not (store.delivery and store.delivery.spec.get("allow_closing_keywords")) and (
+            CLOSING.search(publication["title"]) or CLOSING.search(publication["body"])
+        ):
             raise boundary_error(ValueError, "service_result_invalid", "PR text cannot implicitly close issues.")
     for item in raw["findings"]:
         if (
@@ -93,7 +95,9 @@ def publication(store, job, raw, conn=None):
         raise boundary_error(ValueError, "service_result_invalid", "Publication needs title/body or an explicit human_required reason.")
     text(raw["title"], "PR title", 200)
     text(raw["body"], "PR body", 16000)
-    if CLOSING.search(raw["title"]) or CLOSING.search(raw["body"]):
+    if not (store.delivery and store.delivery.spec.get("allow_closing_keywords")) and (
+        CLOSING.search(raw["title"]) or CLOSING.search(raw["body"])
+    ):
         raise boundary_error(ValueError, "service_result_invalid", "PR text cannot implicitly close issues.")
     return raw
 

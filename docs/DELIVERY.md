@@ -63,7 +63,9 @@ Before a native Run starts, the service captures its input baseline. After clean
 
 The candidate has a fixed commit, tree, file manifest and target baseline in a private Git repository. Registered tests, original Goal hard conditions and an independent model review examine that content. Review can supply PR wording as `publication={title,body}`. With `auto_publish_pr_text` at its default `false`, model-written wording from review or the publication job requires a separate decision for a non-draft PR. The existing Draft PR path and preauthorization for the fixed runtime summary are unchanged.
 
-Set `delivery.auto_publish_pr_text: true` to opt in; `auto_actions` must include `ensure_change_request`. If `require_review=true` and no publication wording is available, a publication job can draft it from accepted requirements, review and verification facts. Delivery can then automatically open a non-draft PR with the wording supplied by review or the publication job. This setting does not authorize merging or issue closure and does not relax quality or scope gates.
+Set `delivery.auto_publish_pr_text: true` to opt in; `auto_actions` must include `ensure_change_request`. If `require_review=true` and no publication wording is available, a publication job can draft it from accepted requirements, review and verification facts. Delivery can then automatically open a non-draft PR with the wording supplied by review or the publication job. This setting does not itself authorize merging or issue closure and does not relax quality or scope gates.
+
+`delivery.allow_closing_keywords` is a separate Boolean opt-in (default `false`). Set it to `true` to allow PR wording such as `Fixes #1`; GitHub can then close the referenced issue when the PR is merged under its normal rules. This flag does not approve publication or merge, and it does not change the service's native merge message policy.
 
 ```text
 completed development → fixed candidate → tests / Goal / review
@@ -137,7 +139,7 @@ request = next(r for r in service.requests()
 service.decide(request, "approve", decision_id="merge-decision")
 ```
 
-`service.delivery()`, `plan_delivery()`, `inspect_delivery()`, `refresh_delivery()`, `request_delivery()`, `batch()` and `decide_batch()` expose the same controls. Large records and full candidate history are available through `service.record("changesets", id, offset=..., limit=...)`.
+`service.delivery()`, `plan_delivery()`, `inspect_delivery()`, `refresh_delivery()`, `request_delivery()`, `batch()` and `decide_batch()` expose the same controls. Use the [operator inbox](SERVICES.md#operator-inbox) to review delivery plans, handle questions and approvals together, or reopen eligible expired requests without authorizing an action. Large records and full candidate history are available through `service.record("changesets", id, offset=..., limit=...)`.
 
 ## Recovery, synchronization and retention
 

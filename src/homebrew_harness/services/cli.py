@@ -308,11 +308,20 @@ def commands(parser, *, attach=True):
     show.add_argument("identity")
     decide = batch_ops.add_parser("decide")
     decide.add_argument("identity")
-    decide.add_argument("--approve", nargs="*", default=[])
-    decide.add_argument("--deny", nargs="*", default=[])
-    decide.add_argument("--allow-extra-attempt", nargs="*", default=[], metavar="REQUEST_ID")
+    _decision_arguments(decide, "REQUEST_ID")
     decide.add_argument("--revision", type=int, default=0)
-    decide.add_argument("--request-id")
+    inbox = actions.add_parser("inbox", help="List, decide, or refresh human requests.")
+    if attach:
+        inbox.add_argument("service_id")
+    _inbox_list_arguments(inbox)
+    inbox_ops = inbox.add_subparsers(dest="inbox_command")
+    _inbox_list_arguments(inbox_ops.add_parser("list"))
+    inbox_decide = inbox_ops.add_parser("decide")
+    _decision_arguments(inbox_decide, "TOKEN")
+    inbox_decide.add_argument("--work-id", default=argparse.SUPPRESS)
+    refresh = inbox_ops.add_parser("refresh-expired")
+    refresh.add_argument("--ids", nargs="+", metavar="REQUEST_ID")
+    refresh.add_argument("--request-id")
     tasks = work.add_subparsers(dest="work_command", required=True)
     submit = tasks.add_parser("submit")
     submit.add_argument("text")
@@ -381,6 +390,22 @@ def commands(parser, *, attach=True):
     return actions
 
 
+def _decision_arguments(parser, token):
+    parser.add_argument("--approve", nargs="*", action="extend", default=[], metavar=token)
+    parser.add_argument("--deny", nargs="*", action="extend", default=[], metavar=token)
+    parser.add_argument("--answer", action="append", default=[], metavar=token + "=TEXT")
+    parser.add_argument("--allow-extra-attempt", nargs="*", action="extend", default=[], metavar=token)
+    parser.add_argument("--request-id")
+
+
+def _inbox_list_arguments(parser):
+    # Shared by the implicit and explicit list forms; do not overwrite parent flags.
+    parser.add_argument("--work-id", default=argparse.SUPPRESS)
+    parser.add_argument("--include-expired", action="store_true", default=argparse.SUPPRESS)
+    parser.add_argument("--limit", type=int, default=argparse.SUPPRESS)
+    parser.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+
+
 def register(groups):
     parser = groups.add_parser(
         "service", help="Manage persistent services and attach a local text interface."
@@ -437,7 +462,77 @@ def submit(service, text, *, priority=0, request_id=None):
     }
 
 
+def _batch_decisions(args, resolve=lambda token: token):
+    approved = [resolve(token) for token in args.approve]
+    extra = {resolve(token) for token in args.allow_extra_attempt}
+    if extra - set(approved):
+        raise ValueError("Extra attempts must name approved CI repair requests in this batch.")
+    decisions = [
+        {"id": identity, "decision": "approve", **({"allow_extra_attempt": True} if identity in extra else {})}
+        for identity in approved
+    ]
+    decisions.extend({"id": resolve(token), "decision": "deny"} for token in args.deny)
+    for answer in args.answer:
+        token, separator, text = answer.partition("=")
+        if not separator or not token or not text.strip():
+            raise ValueError("Use --answer TOKEN=TEXT with a nonempty answer.")
+        decisions.append({"id": resolve(token), "decision": "answer", "text": text})
+    return decisions
+
+
+def _operate_inbox(service, args):
+    work_id = getattr(args, "work_id", None)
+    if args.inbox_command == "refresh-expired":
+        return service.refresh_expired(ids=args.ids, request_id=args.request_id)
+    if args.inbox_command != "decide":
+        return service.inbox(
+            work_id=work_id,
+            include_expired=getattr(args, "include_expired", False),
+            limit=getattr(args, "limit", 50),
+        )
+
+    from .delivery.batches import validate_decisions
+    from .inbox import MAX_ITEMS
+
+    current = service.inbox(work_id=work_id, limit=MAX_ITEMS)["items"]
+    pending = {item["ref"]["id"]: item for item in current if item["state"] == "pending"}
+    indices = {str(item["index"]): item["ref"]["id"] for item in pending.values()}
+
+    def resolve(token):
+        identity = indices.get(token, token)
+        if identity not in pending:
+            raise ValueError("No pending inbox request matches " + token + "; list the inbox again.")
+        return identity
+
+    decisions = _batch_decisions(args, resolve)
+    if not decisions:
+        raise ValueError("Supply at least one --approve, --deny, or --answer.")
+    validate_decisions(decisions)
+    for decision in decisions:
+        if decision.get("allow_extra_attempt") and pending[decision["id"]]["kind"] != "ci_repair":
+            raise ValueError("Extra attempts apply only to CI repair requests.")
+    batch = service.batch(
+        [pending[d["id"]]["ref"] for d in decisions], request_id=args.request_id
+    )
+    return service.decide_batch(
+        batch["id"], decisions, revision=batch["revision"], request_id=args.request_id
+    )
+
+
+def _render_command(value, args):
+    if (
+        args.command == "inbox"
+        and args.inbox_command in {None, "list"}
+        and not getattr(args, "json", False)
+    ):
+        print(value["summary"])
+    else:
+        render(value)
+
+
 def operate(service, args):
+    if args.command == "inbox":
+        return _operate_inbox(service, args)
     if args.command == "ops":
         op = args.ops_command
         if op == "health":
@@ -523,16 +618,9 @@ def operate(service, args):
             )
         if args.batch_command == "show":
             return service.delivery(args.identity, kind="batches")
-        extra = set(getattr(args, "allow_extra_attempt", []))
-        if extra - set(args.approve):
-            raise ValueError("Extra attempts must name approved CI repair requests in this batch.")
         return service.decide_batch(
-            args.identity,
-            [{"id": i, "decision": "approve", **({"allow_extra_attempt": True} if i in extra else {})}
-             for i in args.approve]
-            + [{"id": i, "decision": "deny"} for i in args.deny],
-            revision=args.revision,
-            request_id=args.request_id,
+            args.identity, _batch_decisions(args),
+            revision=args.revision, request_id=args.request_id,
         )
     if args.command == "reports":
         return service.reports(
@@ -788,7 +876,7 @@ def attach(service, *, input_fn=input, context="default"):
                     else:
                         render([r.data() for r in service.requests(focus["work_id"])])
                 else:
-                    render(operate(service, args))
+                    _render_command(operate(service, args), args)
         except StopIteration:
             continue
         except KeyboardInterrupt:
@@ -888,7 +976,7 @@ def execute(args, parser):
                 )
             attach(remote, context=args.context)
         else:
-            render(operate(remote, args))
+            _render_command(operate(remote, args), args)
         return 0
     except Exception as error:
         render_error(error, file=sys.stderr)

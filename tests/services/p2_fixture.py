@@ -49,6 +49,7 @@ class Peer:
         self.hold = None
         self.native_hold = None
         self.native_started = threading.Event()
+        self.native_attention = None
         self.review_verdict = None
         self.review_started = threading.Event()
         self.review_hold = None
@@ -102,6 +103,14 @@ class Peer:
                     if outer.review_hold:
                         outer.review_hold.wait(10)
                     self.send(completion(json.dumps(outer.review_verdict)))
+                    return
+                if outer.native_attention and any(
+                    tool["function"]["name"] == "request_attention" for tool in body.get("tools", [])
+                ):
+                    question, outer.native_attention = outer.native_attention, None
+                    self.send(completion(tool="request_attention", arguments={
+                        "question": question, "reason": "Clarify the target behavior.", "impact": "Work result",
+                    }))
                     return
                 if messages[-1]["role"] == "tool":
                     self.send(completion("Candidate recorded."))

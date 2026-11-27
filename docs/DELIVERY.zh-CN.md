@@ -29,7 +29,9 @@ Run 开始前记录输入基线，收尾后把授权差量应用到目标基线�
 
 候选固定 commit、tree、文件清单和目标基线。登记的测试、原始 Goal 硬条件和独立模型审查检查这份内容。审查可通过 `publication={title,body}` 提供 PR 标题和正文。默认 `auto_publish_pr_text=false`，将审查或发布任务生成的文案用于正式 PR 仍需另行批准。现有草稿 PR 流程与固定摘要的预授权不变。
 
-设置 `delivery.auto_publish_pr_text: true` 时，`auto_actions` 必须包含 `ensure_change_request`。若 `require_review=true` 且未提供发布文案，发布任务可根据已接受的需求、审查和验证事实起草。交付随后可用审查提供或发布任务起草的文案自动创建非草稿 PR。此设置不授权合并、关闭 Issue 或放宽质量与范围门禁。
+设置 `delivery.auto_publish_pr_text: true` 时，`auto_actions` 必须包含 `ensure_change_request`。若 `require_review=true` 且未提供发布文案，发布任务可根据已接受的需求、审查和验证事实起草。交付随后可用审查提供或发布任务起草的文案自动创建非草稿 PR。此设置本身不授权合并或关闭 Issue，也不放宽质量与范围门禁。
+
+`delivery.allow_closing_keywords` 是独立的布尔开关，默认为 `false`。设为 `true` 后，允许 PR 文案包含 `Fixes #1` 等关键词；PR 合并时，GitHub 可按其正常规则关闭关联 Issue。它不会授予发布或合并权限，也不会改变服务原生合并消息的限制。
 
 ```text
 完成开发 → 固定候选 → 测试／Goal／审查 → 审查分支与 PR
@@ -79,7 +81,7 @@ homebrew-harness service delivery SERVICE_ID refresh CHANGESET_ID --request-id r
 
 Text UI 中省略命令前缀与 SERVICE_ID。delivery prepare 准备当前已开发工作，正常维护会自动进行。service_approved 下，delivery plan CHANGESET_ID merge_change_request 准备登记计划，不直接授予执行权。delivery request ACTION_ID 更新未执行或明确失败动作的请求。公开评论仍单独绑定目标及正文批准。
 
-Python 复用 service.delivery、plan_delivery、inspect_delivery、refresh_delivery、request_delivery、batch 和 decide_batch。模型提议和普通聊天不等于批准；具体示例见[英文控制说明](DELIVERY.md#operator-controls)。大记录与完整候选历史通过 service.record("changesets", id, offset=..., limit=...) 分页读取。
+Python 复用 service.delivery、plan_delivery、inspect_delivery、refresh_delivery、request_delivery、batch 和 decide_batch。可用[操作者收件箱](SERVICES.zh-CN.md#操作者收件箱)查看交付计划、同时处理问题和审批，或续期仍有效的过期请求而不授予执行权。模型提议和普通聊天不等于批准；具体示例见[英文控制说明](DELIVERY.md#operator-controls)。大记录与完整候选历史通过 service.record("changesets", id, offset=..., limit=...) 分页读取。
 
 ## 恢复、同步与退休
 

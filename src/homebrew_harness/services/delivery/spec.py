@@ -116,6 +116,7 @@ def validate(raw):
         "author_email_env",
         "periodic_integration",
         "auto_publish_pr_text",
+        "allow_closing_keywords",
     }
     if not isinstance(raw, dict) or set(raw) - fields:
         raise ValueError("Invalid delivery declaration fields.")
@@ -205,6 +206,8 @@ def validate(raw):
         if type(value[key]) is not bool:
             raise ValueError("Invalid delivery boolean.")
     # Keep omitted opt-ins out of the persisted spec and its binding fingerprint.
+    if type(value.get("allow_closing_keywords", False)) is not bool:
+        raise ValueError("allow_closing_keywords must be Boolean.")
     auto_publish_pr_text = value.get("auto_publish_pr_text", False)
     if type(auto_publish_pr_text) is not bool:
         raise ValueError("auto_publish_pr_text must be Boolean.")

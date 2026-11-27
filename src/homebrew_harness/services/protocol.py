@@ -88,6 +88,7 @@ QUERY_METHODS = {
     "work_list": {"state", "cursor", "limit"},
     "schedules": {"cursor", "limit"},
     "requests": {"work_id"},
+    "service_inbox": {"work_id", "include_expired", "limit"},
     "receipt": {"request_id"},
 }
 MAINTENANCE_COMMANDS = {
@@ -129,6 +130,7 @@ MAINTENANCE_COMMANDS = {
     "delivery_base_update": {"mode"},
     "batch_create": {"refs"},
     "batch_decide": {"id", "revision", "decisions"},
+    "inbox_refresh_expired": {"ids"},
     "conversation_submit": {"text", "context", "work_id", "revision"},
     "service_decide": {"id", "revision", "decision", "text", "allow_extra_attempt"},
     "report_create": set(),

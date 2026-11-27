@@ -40,6 +40,29 @@ class CustomPublication(unittest.TestCase):
         self.assertEqual(self.peer.pulls[0]["title"], publication["title"])
         self.assertEqual(self.peer.pulls[0]["body"].split("\n\n<!--", 1)[0], publication["body"])
 
+    def test_closing_keywords_opt_in_publishes_exact_body_after_approval(self):
+        publication = {"title": "Restore the value", "body": "Fixes #1\n\nFixed unit tests passed."}
+        self.peer.review_extra = {"publication": publication}
+        service = self.start(allow_closing_keywords=True, merge={"mode": "manual"})
+        service.work.submit("Restore the documented value.")
+        request = eventually(lambda: self.pending_target(service), 30)
+        inbox = service.inbox()
+        item = next(item for item in inbox["items"] if item["ref"]["id"] == request.ref.id)
+        self.assertIn("Restore the value Fixes #1", item["preview"])
+        self.assertEqual(self.peer.pulls, [])
+        import time
+
+        store = service.runtime.maintenance.delivery.store
+        old = store.update("decisions", request.ref.id, expires_at=time.time() - 1)
+        refreshed = service.refresh_expired([request.ref.id], request_id="refresh-pr-text")
+        self.assertEqual(refreshed["skipped"], [])
+        self.assertEqual(refreshed["refreshed"][0]["revision"], old["revision"] + 1)
+        self.assertEqual(self.peer.pulls, [])
+        request = self.pending_target(service)
+        service.decide(request, "approve")
+        eventually(lambda: len(self.peer.pulls) == 1, 15)
+        self.assertEqual(self.peer.pulls[0]["body"].split("\n\n<!--", 1)[0], publication["body"])
+
     def test_opt_in_publishes_review_text_but_does_not_authorize_draft_prs(self):
         publication = {
             "title": "Restore the documented value",

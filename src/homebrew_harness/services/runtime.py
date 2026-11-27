@@ -1195,6 +1195,10 @@ class ServiceRuntime:
                 return self.store.page(self.id, section="service_jobs", **payload)
             if method == "requests":
                 return self.requests(payload.get("work_id"))
+            if method == "service_inbox":
+                from .inbox import build_inbox
+
+                return build_inbox(self, **payload)
             if method == "receipt":
                 return self.store.runtime.get(
                     "service_commands",

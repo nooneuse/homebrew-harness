@@ -489,6 +489,36 @@ class CommunicationFlow(unittest.TestCase):
         self.assertEqual(self.peer.inline[-1]["in_reply_to_id"], 9)
         eventually(lambda: service.discussion(did)["state"] == "waiting_participant", 5)
 
+    def test_inbox_renews_only_current_communication_authority(self):
+        self.peer.issue()
+        self.peer.proposals = [{
+            "next_step": "clarify", "reason": "Clarify requirements.", "alignment": "Keep offline support.",
+            "questions": [{"id": "offline", "text": "Must it work offline?", "sources": []}],
+            "communication": {"kind": "post_comment", "intent": "clarify", "body": "Must it work offline?"},
+        }]
+        service = self.start()
+        request = eventually(lambda: next((r for r in service.requests()
+                                           if r.kind == "communication_authority"), None), 20)
+        store = service.runtime.maintenance.store
+        with store.db.write() as conn:
+            old = store.get("decisions", request.ref.id, conn)
+            old = store.put(conn, "decisions", {**old, "expires_at": time.time() - 1})
+        item = next(i for i in service.inbox(include_expired=True)["items"] if i["ref"]["id"] == old["id"])
+        self.assertEqual(item["group_key"], "issue:#1")
+        self.assertEqual(item["preview"], "Must it work offline?")
+        self.assertEqual(item["state"], "expired")
+        result = service.refresh_expired([old["id"]], request_id="refresh-comment")
+        self.assertEqual(result["skipped"], [])
+        self.assertEqual(result["refreshed"][0]["revision"], old["revision"] + 1)
+        self.assertEqual(self.peer.writes, [])
+        self.assertEqual(service.communication(old["action_id"])["state"], "awaiting_approval")
+        with store.db.write() as conn:
+            renewed = store.get("decisions", old["id"], conn)
+            store.put(conn, "decisions", {**renewed, "expires_at": time.time() - 1, "basis": "old-basis"})
+        result = service.refresh_expired([old["id"]], request_id="skip-stale-comment")
+        self.assertEqual(result["refreshed"], [])
+        self.assertIn("basis changed", result["skipped"][0]["reason"])
+
     def test_new_reply_invalidates_old_approval_and_preserves_round_history(self):
         self.peer.issue()
         self.peer.proposals = [

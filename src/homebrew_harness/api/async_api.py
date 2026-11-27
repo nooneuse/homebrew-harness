@@ -7,6 +7,7 @@ import time
 from concurrent.futures import Future
 
 from homebrew_harness.runtime.runtime_control import Workers, WorkAccepted
+from homebrew_harness.services.views import ServiceControls
 from homebrew_harness.storage.api_state import digest
 from .core import Harness
 from .base import Handle
@@ -150,6 +151,18 @@ class AsyncHandle(_View):
             await asyncio.sleep(interval)
 
 
+class AsyncService(AsyncHandle):
+    async def inbox(self, work_id=None, include_expired=False, limit=50):
+        return await self._root._calls.call(
+            self._target.inbox, work_id=work_id, include_expired=include_expired, limit=limit
+        )
+
+    async def refresh_expired(self, ids=None, request_id=None):
+        return await self._root._calls.call(
+            self._target.refresh_expired, ids=ids, request_id=request_id
+        )
+
+
 class AsyncHarness:
     def __init__(self, *, workdir=None, config=None):
         self._sync = Harness(workdir=workdir, config=config)
@@ -166,6 +179,8 @@ class AsyncHarness:
             setattr(self, name, _View(self, getattr(self._sync, name)))
 
     def _wrap(self, value):
+        if isinstance(value, ServiceControls):
+            return AsyncService(self, value)
         if getattr(value, "_api_service", False):
             return _View(self, value)
         return AsyncHandle(self, value) if isinstance(value, Handle) else value

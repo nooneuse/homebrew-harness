@@ -391,6 +391,15 @@ class ServiceControls:
         values = self.query("requests", {"work_id": work_id} if work_id else {})
         return self._human_requests(values)
 
+    def inbox(self, work_id=None, include_expired=False, limit=50):
+        return self.query(
+            "service_inbox",
+            {"work_id": work_id, "include_expired": include_expired, "limit": limit},
+        )
+
+    def refresh_expired(self, ids=None, request_id=None):
+        return self.command("inbox_refresh_expired", {"ids": ids}, request_id)
+
     def requests_page(self, *, work_id=None, cursor=0, limit=20, expired=False):
         result = self.query(
             "requests_page",

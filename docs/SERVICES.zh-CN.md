@@ -272,9 +272,23 @@ homebrew-harness service report-ack SERVICE_ID REPORT_ID
 
 每类维护任务使用统一的输入和结果契约。对话可读取截至当前消息的同一 context 历史，以及明确选定 Work 的关联证据；通用对话可浏览最小 Work 目录。报告读取冻结活动窗口与引用记录，并区分历史事实和当前详情。模型提交候选后，运行时校验并将业务结果与 job 完成状态放在同一事务中提交。
 
-Python 对应 `service.converse()`、`service.conversation(id)`、`service.records(kind)`、`service.report()` 等方法。消息及回复可在重连后查询，报告引用工作与执行事实；ack 保存当前读者的已读位置。P2 通过控制接口提供报告，不发送公开 GitHub 回复，也不执行分组发布审批。
+Python 对应 `service.converse()`、`service.conversation(id)`、`service.records(kind)`、`service.report()` 等方法。消息及回复可在重连后查询，报告引用工作与执行事实；ack 保存当前读者的已读位置。报告通过控制接口读取，不会主动发送。公开 GitHub 回复和 PR 发布需要另行配置对应能力。
 
 `reports` 查询当前控制 context 的未读就绪报告。`job-retry JOB_ID --request-id ...` 明确授权另一个有界研判尝试周期，累计尝试数继续保留。`work request-authority WORK_ID` 为当前计划刷新过期或被拒请求，不重新运行研判，也不直接授予执行权限。工作研判问题（`work_information`）通过 `answer` 回答，答复修订需求后再次研判。交付澄清问题（`delivery_information`）也通过 `answer` 回答，但只追加执行上下文，不修订需求或授予权限。
+
+### 操作者收件箱
+
+`inbox` 汇总服务的审批、提问和活动 Run 的请求，默认输出带短编号的摘要；`--json` 输出精确引用、计数以及所列待办引用的摘要指纹。用 `--work-id` 限定 Work，或用 `--include-expired` 把过期项列在待办项之后。默认最多显示 50 项，上限为 100。
+
+```sh
+homebrew-harness service inbox SERVICE_ID list --include-expired
+homebrew-harness service inbox SERVICE_ID decide --approve 1 --deny 2 --answer '3=保留现有行为' --request-id inbox-1
+homebrew-harness service inbox SERVICE_ID refresh-expired --request-id refresh-1
+```
+
+Text UI 中省去 `homebrew-harness service` 前缀和服务 ID。使用短编号前请按相同 Work 范围重新列出：编号按当前收件箱解析，不绑定旧快照。也可使用 JSON 中的完整请求 ID。回答多个问题可重复传 `--answer TOKEN=TEXT`。只有在明确批准 CI 修复时，才可用 `--allow-extra-attempt TOKEN` 授权额外一次尝试。
+
+`repository_maintenance` 即使不配置 delivery 或 communication，也支持批处理和过期续期。`batch decide` 同样支持 `--answer REQUEST_ID=TEXT`。续期只重新开放仍有效且符合条件的服务请求，不批准请求，也不续期原生 Run 请求。用 `--ids REQUEST_ID ...` 限定要续期的请求。同步及异步 Python 对应 `service.inbox(...)` 和 `service.refresh_expired(ids=..., request_id=...)`。
 
 完整确定性 P2 演示：
 

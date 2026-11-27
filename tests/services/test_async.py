@@ -34,5 +34,32 @@ class AsyncServices(unittest.IsolatedAsyncioTestCase):
                     work = await service.work.submit("Work", request_id="one")
                     self.assertEqual((await work.wait(20)).snapshot.state, "review")
                     self.assertEqual((await work.result()).text, "Done")
+                    inbox = await service.inbox(work.id, include_expired=True)
+                    self.assertEqual(inbox["counts"]["total"], 0)
                     await service.stop()
                     self.assertTrue(await service.wait_closed(10))
+
+    async def test_maintenance_refresh_expired_is_awaitable(self):
+        from tests.services import test_maintenance as fixture
+
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        base = Path(temporary.name).resolve()
+        control = base / "control"
+        control.mkdir(mode=0o700)
+        workspace = base / "workspace"
+        workspace.mkdir()
+        peer = fixture.Peer()
+        self.addCleanup(peer.close)
+        env = base / "model.env"
+        env.write_text(f"OPENAI_API_KEY=synthetic\nOPENAI_BASE_URL={peer.url}/v1\nOPENAI_MODEL=fixture\n")
+        with patch.dict("os.environ", {}, clear=True):
+            async with AsyncHarness(workdir=control, config=HostConfig.from_files(env_file=env)) as host:
+                service = await host.services.start(ServiceSpec(
+                    str(workspace), profile="repository_maintenance",
+                    maintenance={"scopes": {"code": {"write_paths": ["src"]}}},
+                ))
+                result = await service.refresh_expired(ids=[], request_id="async-refresh")
+                self.assertEqual(result, {"request_id": "async-refresh", "refreshed": [], "skipped": []})
+                await service.stop()
+                self.assertTrue(await service.wait_closed(10))
