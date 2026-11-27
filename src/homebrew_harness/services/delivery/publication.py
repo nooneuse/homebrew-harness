@@ -61,9 +61,12 @@ def prepare(delivery, row):
         store.runtime.store.guard(conn, store.runtime.header)
         current = store.get("changesets", row["id"], conn)
         store.current(current, conn)
-        if current["revision"] != row["revision"]:
-            raise StaleDelivery("Candidate changed before publication preparation.")
-        if current.get('change_request') and current['state'] not in {'publication_denied','publication_attention'}:
+        if current["revision"] != row["revision"] or current["state"] != row["state"]:
+            return True  # A concurrent answer or transition already advanced this candidate.
+        redraft = current.get("publication_redraft")
+        if current.get("change_request") and not redraft and current["state"] not in {
+            "publication_denied", "publication_attention",
+        }:
             return False
         rejected = feedback(store, current, conn)
         publication = content(current)
@@ -74,7 +77,7 @@ def prepare(delivery, row):
         ) or same_content(publication, rejected)
         if rejected and not publication:
             needs_draft = True
-        if not needs_draft and current["state"] != "publication_attention":
+        if not needs_draft and not redraft and current["state"] != "publication_attention":
             return False
         if rejected and rejected["review_state"] == "reviewing":
             return True  # The native decision has landed; wait for its audit verdict.
@@ -88,6 +91,7 @@ def prepare(delivery, row):
             if action["state"] in {"queued", "awaiting_approval"}:
                 action.update(state="superseded", error="publication_redraft", revision=action["revision"] + 1)
                 store.put(conn, "actions", action)
+        current.pop("publication_redraft", None)
         current.update(state="publication_drafting", publication_basis=signature,
                        publication_feedback=rejected, error=None, error_detail=None, error_info=None,
                        revision=current["revision"] + 1)
@@ -110,6 +114,8 @@ def accept(store, row, job, result, conn):
     if result.get("human_required"):
         row.update(state="publication_attention", error="publication_needs_operator",
                    error_detail=result["reason"], publication_basis=job["input"]["basis"])
+        store.information_request(conn, row, stage="publication", basis=job["input"]["basis"],
+                                  reason=result["reason"])
         return
     if same_content(result, rejected):
         raise boundary_error(ValueError, "service_result_invalid", "This exact title/body was already denied. Correct the draft or return human_required with a reason.")

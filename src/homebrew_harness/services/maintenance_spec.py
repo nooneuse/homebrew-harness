@@ -155,13 +155,24 @@ def validate_policy(raw, run_spec):
         if (
             not NAME.fullmatch(name)
             or not isinstance(scope, dict)
-            or set(scope) - {"write_paths", "tools", "allow_tests"}
+            or set(scope) - {"write_paths", "tools", "allow_tests", "allow_attention"}
         ):
             raise boundary_error(ValueError, "service_configuration", "Invalid execution scope.")
+        allow_attention = scope.get("allow_attention", True)
+        if type(allow_attention) is not bool:
+            raise boundary_error(ValueError, "service_configuration", "allow_attention must be Boolean.")
         compiled = {
             key: list(scope.get(key, getattr(run_spec, key)))
             for key in ("write_paths", "tools", "allow_tests")
         }
+        tools = compiled["tools"]
+        if allow_attention:
+            if "request_attention" in run_spec.tools and "request_attention" not in tools:
+                tools.append("request_attention")
+        elif "request_attention" in tools:
+            if "tools" in scope:
+                raise boundary_error(ValueError, "service_configuration", "allow_attention=False conflicts with request_attention in scope tools.")
+            tools.remove("request_attention")
         from homebrew_harness.runs.spec import RunSpec
 
         RunSpec(**{**run_spec.data(), **compiled})
@@ -173,6 +184,8 @@ def validate_policy(raw, run_spec):
             compiled["allow_tests"]
         ) - set(run_spec.allow_tests):
             raise boundary_error(ValueError, "service_configuration", "Scope widens tools or fixed tests.")
+        if "allow_attention" in scope:
+            compiled["allow_attention"] = allow_attention
         scopes[name] = compiled
     policy["scopes"] = scopes
     return json.loads(json.dumps(policy, allow_nan=False))

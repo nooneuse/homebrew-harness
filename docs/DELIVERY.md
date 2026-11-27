@@ -113,12 +113,13 @@ Closing without merge enters `closed_unmerged`. Reopening is observed from the p
 
 ## Operator controls
 
-CLI, Text UI and synchronous/asynchronous Python use the same authenticated HTTP control API:
+CLI, Text UI and synchronous/asynchronous Python use the same authenticated HTTP control API. If publication drafting or CI diagnosis returns `human_required`, `service.requests()` lists a `delivery_information` request for the current candidate and stage. Reply with `service.decide(request, "answer", text="...")` or the CLI `answer` command. The reply is added to the Work's execution context, and the service redrafts the PR text or runs a new CI diagnosis. It does not change requirements, approve publication, authorize a repair, or waive any checks. For publication, `work.context(...)` also remains available; once it restarts drafting, the old question is no longer actionable.
 
 ```sh
 homebrew-harness service delivery SERVICE_ID list
 homebrew-harness service delivery SERVICE_ID show CHANGESET_ID
 homebrew-harness service requests SERVICE_ID
+homebrew-harness service answer SERVICE_ID REQUEST_ID REVISION "Clarify the expected behavior" --decision-id clarify-1
 homebrew-harness service batch SERVICE_ID create --ids REQUEST_ID --request-id group-1
 homebrew-harness service batch SERVICE_ID decide BATCH_ID --approve REQUEST_ID --request-id decision-1
 homebrew-harness service delivery SERVICE_ID inspect ACTION_ID --request-id inspection-1

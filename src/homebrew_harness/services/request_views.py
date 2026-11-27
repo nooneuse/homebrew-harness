@@ -23,7 +23,24 @@ def _project(maintenance, value, work_id):
             )
         except ValueError:
             return None, "candidate_changed"
-    if value["kind"] in {
+    if value["kind"] == "delivery_information":
+        if maintenance.delivery is None:
+            return None, "delivery_not_configured"
+        delivery = maintenance.delivery.store
+        try:
+            row = store.get("changesets", value["changeset_id"])
+            delivery.current(row)
+        except ValueError:
+            return None, "candidate_changed"
+        if not delivery.information_matches(row, value):
+            return None, "basis_changed"
+        question = value.get("reason", "")
+        arguments = {
+            "work_id": value["work_id"],
+            "changeset_id": value["changeset_id"],
+            "stage": value["stage"],
+        }
+    elif value["kind"] in {
         "communication_authority",
         "discussion_information",
         "discussion_requirements",

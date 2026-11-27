@@ -10,7 +10,10 @@ from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
+from homebrew_harness import ServiceSpec
 from homebrew_harness.cli import main
+from homebrew_harness.runs.spec import RunSpec
+from homebrew_harness.services.maintenance_spec import validate_policy
 from homebrew_harness.services.setup_validation import validate_service
 
 
@@ -102,6 +105,47 @@ class SetupValidationTests(unittest.TestCase):
             self.assertEqual(main(["service", "--cwd", str(self.control), "validate", "--spec", str(self.spec_file), "--host-config", str(self.host_file)]), 0)
         self.assertEqual(json.loads(output.getvalue())["state"], "validated")
         self.assertFalse(list(self.control.iterdir()))
+
+    def test_scope_attention_defaults_do_not_duplicate_tools_or_widen_host_defaults(self):
+        options = dict(workspace=str(self.workspace), profile="repository_maintenance")
+        maintenance = {"scopes": {
+            "narrow": {"tools": ["read_file"]},
+            "existing": {"tools": ["request_attention", "read_file"]},
+            "disabled": {"tools": ["read_file"], "allow_attention": False},
+        }}
+        spec = ServiceSpec(**options, maintenance=maintenance)
+        scopes = spec.maintenance["scopes"]
+        self.assertEqual(scopes["narrow"]["tools"], ["read_file", "request_attention"])
+        self.assertEqual(scopes["existing"]["tools"], ["request_attention", "read_file"])
+        self.assertNotIn("allow_attention", scopes["narrow"])
+        self.assertNotIn("allow_attention", scopes["existing"])
+        self.assertEqual(scopes["disabled"]["tools"], ["read_file"])
+        self.assertIs(scopes["disabled"]["allow_attention"], False)
+        self.assertEqual(ServiceSpec(**spec.data()).maintenance, spec.maintenance)
+
+        # Native RunSpec supplies its own control tools. Exercise the policy
+        # compiler separately with a host tool catalog that lacks attention.
+        from types import SimpleNamespace
+
+        native = RunSpec("Use the configured tools.")
+        host = SimpleNamespace(
+            tools=["read_file"], write_paths=native.write_paths,
+            allow_tests=native.allow_tests, data=native.data,
+        )
+        limited = validate_policy({"scopes": {"code": {"allow_attention": True}}}, host)
+        self.assertEqual(limited["scopes"]["code"]["tools"], ["read_file"])
+
+    def test_scope_attention_rejects_contradictions_and_non_booleans(self):
+        for scope, message in [
+            ({"tools": ["request_attention"], "allow_attention": False}, "conflicts"),
+            ({"allow_attention": 1}, "must be Boolean"),
+        ]:
+            with self.subTest(scope=scope), self.assertRaisesRegex(ValueError, message) as caught:
+                ServiceSpec(
+                    str(self.workspace), profile="repository_maintenance",
+                    maintenance={"scopes": {"code": scope}},
+                )
+            self.assertEqual(caught.exception.code, "service_configuration")
 
     def test_unknown_or_denied_test_is_rejected(self):
         self.recipe["authorization"] = "deny"

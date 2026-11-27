@@ -242,6 +242,8 @@ python examples/service_demo.py --output /tmp/harness-service-demo
 
 连接值只放外部宿主文件——既可放在宿主环境，也可在单个 source 上配置可选的外部仅属主 `credentials_file`（仅从该文件取值，不回退宿主环境）。Source 凭据由固定只读适配器使用。scope 的路径、工具、固定测试必须属于 Run 默认范围；未配置 auto_categories 时，可执行提议交给部署者批准。自动类别只选择预授权范围，不扩大权限，也不跳过原生工具审批。
 
+只要宿主 Run 包含 `request_attention`，维护编译器默认将其保留在开发 scope 中，即使该 scope 的工具列表未列出它。可用布尔值 `allow_attention: false` 将它排除在编译后的 scope 外；此时不能同时在该 scope 的 `tools` 中声明 `request_attention`。此设置只控制 scope 编译，不改变原生 Run 的固定控制工具。
+
 默认情况下，批准 `discussion_requirements` 请求后，仍需单独作出 `work_authority` 决定才能开发。设置 `maintenance.grant_on_requirements_acceptance: true`（默认 `false`）后，接受需求即授予开发权限。原生 Run 仍遵守原先批准的范围、注册测试和既有工具审批。
 
 轮询保存 Issue/PR 和评论版本、分页位置与去重记录。轮询只能观察尚可读取的版本，不能恢复两次轮询间消失的编辑或删除。失败保留游标并显示重试状态，无变化时不调用模型。
@@ -272,7 +274,7 @@ homebrew-harness service report-ack SERVICE_ID REPORT_ID
 
 Python 对应 `service.converse()`、`service.conversation(id)`、`service.records(kind)`、`service.report()` 等方法。消息及回复可在重连后查询，报告引用工作与执行事实；ack 保存当前读者的已读位置。P2 通过控制接口提供报告，不发送公开 GitHub 回复，也不执行分组发布审批。
 
-`reports` 查询当前控制 context 的未读就绪报告。`job-retry JOB_ID --request-id ...` 明确授权另一个有界研判尝试周期，累计尝试数继续保留。`work request-authority WORK_ID` 为当前计划刷新过期或被拒请求，不重新运行研判，也不直接授予执行权限。信息请求通过 `answer` 回答，答复修订需求后再次研判。
+`reports` 查询当前控制 context 的未读就绪报告。`job-retry JOB_ID --request-id ...` 明确授权另一个有界研判尝试周期，累计尝试数继续保留。`work request-authority WORK_ID` 为当前计划刷新过期或被拒请求，不重新运行研判，也不直接授予执行权限。工作研判问题（`work_information`）通过 `answer` 回答，答复修订需求后再次研判。交付澄清问题（`delivery_information`）也通过 `answer` 回答，但只追加执行上下文，不修订需求或授予权限。
 
 完整确定性 P2 演示：
 

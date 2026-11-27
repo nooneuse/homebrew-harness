@@ -247,6 +247,8 @@ Add these fields to an external service specification:
 
 The usual workspace, version and Run defaults also apply. Fill connection values only in external host files—either the host environment or an optional per-source owner-only `credentials_file` (read exclusively without inheriting the host environment). Source credentials are used by the fixed read adapter. Scopes must fit within the host Run defaults for paths, tools and registered tests. Omitting `auto_categories` sends executable proposals to the operator for approval. Automatic categories choose among already authorized scopes; they do not expand permissions. Native tool approvals remain in effect.
 
+When the host Run includes `request_attention`, the maintenance compiler retains it in the development scope even if the scope's tool list omits it. Set the optional Boolean `allow_attention: false` to exclude it from the compiled scope; do not also list `request_attention` in that scope's `tools`. This setting controls scope compilation, not the native Run's fixed control tools.
+
 By default, approving a `discussion_requirements` request still requires a separate `work_authority` decision before development. Set `maintenance.grant_on_requirements_acceptance: true` (default `false`) to grant development authority immediately on acceptance. The native Run remains bound to the original approved scope, registered tests and existing tool approvals.
 
 Repository polling records issue/PR identities and issue-comment versions, with durable page positions, overlap and deduplication. A poll observes available versions; it cannot reconstruct an edit or deletion that disappeared between polls. Source failures retain their cursor and show retry state. Unchanged polling makes no model calls.
@@ -287,7 +289,7 @@ Each maintenance job has one input and result contract. Conversations read same-
 
 Messages are durable and their replies can be read after reconnect. Reports reference recorded work and execution facts; acknowledging one updates that reader's position. Reports are available through the control interface. Public GitHub replies, outbound report delivery and grouped publication approvals are not performed by this profile.
 
-`reports` lists unread ready reports for a control context. `job-retry JOB_ID --request-id ...` explicitly authorizes another bounded reasoning attempt cycle; cumulative attempts remain recorded. `work request-authority WORK_ID` refreshes an expired or denied request for the current plan, without rerunning triage or granting execution. Information requests use `answer`, and their replies amend requirements before a new triage pass.
+`reports` lists unread ready reports for a control context. `job-retry JOB_ID --request-id ...` explicitly authorizes another bounded reasoning attempt cycle; cumulative attempts remain recorded. `work request-authority WORK_ID` refreshes an expired or denied request for the current plan, without rerunning triage or granting execution. Work triage questions (`work_information`) use `answer`; their replies amend requirements before a new triage pass. Delivery clarification requests (`delivery_information`) also use `answer`, but append execution context without revising requirements or granting approval.
 
 Run the complete deterministic P2 scenario:
 

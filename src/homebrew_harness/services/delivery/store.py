@@ -123,6 +123,40 @@ class DeliveryStore:
             "reason": result["reason"],
         })
 
+    def information_request(self, conn, row, *, stage, basis, reason):
+        identity = "request_" + request_key(
+            "delivery-information", self.id, row["id"] + ":" + stage + ":" + basis
+        )
+        prior = self.db._get(conn, "service_decisions", identity)
+        if prior:
+            return prior
+        return self.put(conn, "decisions", {
+            "id": identity, "kind": "delivery_information", "work_id": row["work_id"],
+            "requirements_revision": row["requirements_revision"], "changeset_id": row["id"],
+            "stage": stage, "basis": basis, "reason": reason,
+            "candidate": {"scope": "delivery", "stage": stage, "plan": reason},
+            "expires_at": None, "revision": 0, "state": "pending", "created_at": time.time(),
+        })
+
+    @staticmethod
+    def information_matches(row, request):
+        basis = request.get("basis")
+        if (
+            not basis
+            or request["work_id"] != row["work_id"]
+            or request["requirements_revision"] != row["requirements_revision"]
+        ):
+            return False
+        if request["stage"] == "publication":
+            return row["state"] == "publication_attention" and row.get("publication_basis") == basis
+        if request["stage"] == "ci_triage":
+            return (
+                row["state"] == "blocked"
+                and row.get("error") == "model_human_required"
+                and row.get("reasoning_job_id") == basis
+            )
+        return False
+
     def renew_repair_request(self, row):
         with self.db.write() as conn:
             self.runtime.store.guard(conn, self.runtime.header)
@@ -579,7 +613,41 @@ class DeliveryStore:
         }
         return self.put(conn, "decisions", value)
 
+    def answer_information(self, conn, request, payload, decision_id):
+        if payload["decision"] != "answer":
+            raise boundary_error(ValueError, "delivery_contract", "Delivery information requires an operator answer.")
+        answer = text(payload.get("text"), "operator answer", 8000)
+        row = self.get("changesets", request["changeset_id"], conn)
+        work = self.current(row, conn)
+        if (
+            type(payload["revision"]) is not int
+            or request["revision"] != payload["revision"]
+            or request["state"] != "pending"
+            or not self.information_matches(row, request)
+        ):
+            raise boundary_error(ValueError, "delivery_contract", "Delivery information request is stale.")
+
+        stage = request["stage"]
+        work.setdefault("execution_context", []).append(f"Delivery clarification ({stage}): {answer}")
+        work["revision"] += 1
+        self.db._put(conn, "service_work", work["id"], work)
+        request.update(state="answered", answer=answer, revision=request["revision"] + 1)
+        self.put(conn, "decisions", request)
+        row.update(error=None, error_detail=None, error_info=None, revision=row["revision"] + 1)
+        if stage == "publication":
+            row.update(state="review_branch_ready", publication_basis=None, publication_redraft=True)
+        else:
+            row["state"] = "ci_diagnosing"
+            job = self.ms.job(conn, "ci_triage", row["id"], row["revision"], {},
+                              row["id"] + ":ci-answer:" + str(row["revision"]))
+            row["reasoning_job_id"] = job["id"]
+        self.put(conn, "changesets", row)
+        self.ms.changed(conn, work["id"])
+        return {"id": request["id"], "state": "answered", "request_id": decision_id}
+
     def decide(self, conn, request, payload, decision_id):
+        if request["kind"] == "delivery_information":
+            return self.answer_information(conn, request, payload, decision_id)
         if request["kind"] == "ci_repair":
             row = self.get("changesets", request["changeset_id"], conn)
             work = self.current(row, conn)
@@ -907,6 +975,9 @@ class DeliveryStore:
                            integration_ci_basis=ci_failure_basis(self.spec, row["ci"]), next_merge=0)
             elif action in {"defer", "stop", "human_required"}:
                 row.update(state="blocked", error="model_" + action, error_detail=result["reason"])
+                if action == "human_required":
+                    self.information_request(conn, row, stage="ci_triage", basis=job["id"],
+                                             reason=result["reason"])
             elif action == "plan_validation":
                 row["validation_history"] = [*row.get("validation_history", []), {"candidate_commit": row["candidate"]["commit"], "quality": row.get("quality"), "test_failure": row.get("test_failure"), "validation_plan": row.get("validation_plan"), "reason": result["reason"]}]
                 row.update(state="validating", validation_execution=None, validation_plan=None, error=None)

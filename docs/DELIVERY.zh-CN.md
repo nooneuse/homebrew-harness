@@ -66,12 +66,13 @@ CI 绑定当前 head 和可信应用。诊断区分代码、基线、偶发、�
 
 ## 操作者入口
 
-CLI、Text UI、同步与异步 Python 共用认证 HTTP 控制：
+CLI、Text UI、同步与异步 Python 共用认证 HTTP 控制。PR 文案起草或 CI 研判返回 `human_required` 时，`service.requests()` 会列出绑定当前候选和阶段的 `delivery_information`。用 `service.decide(request, "answer", text="...")` 或 CLI 的 `answer` 回答。答复会追加到 Work 的执行上下文，服务随后重新起草 PR 文案或启动新的 CI 研判；它不会修改需求、批准发布、授权修复或豁免检查。发布阶段仍可通过 `work.context(...)` 补充说明；重新起草后，旧问题不再待答。
 
 ```sh
 homebrew-harness service delivery SERVICE_ID list
 homebrew-harness service delivery SERVICE_ID show CHANGESET_ID
 homebrew-harness service requests SERVICE_ID
+homebrew-harness service answer SERVICE_ID REQUEST_ID REVISION "说明预期行为" --decision-id clarify-1
 homebrew-harness service delivery SERVICE_ID inspect ACTION_ID --request-id inspection-1
 homebrew-harness service delivery SERVICE_ID refresh CHANGESET_ID --request-id refresh-1
 ```
