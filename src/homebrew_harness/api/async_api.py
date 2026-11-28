@@ -157,6 +157,12 @@ class AsyncService(AsyncHandle):
             self._target.inbox, work_id=work_id, include_expired=include_expired, limit=limit
         )
 
+    async def decide_inbox(self, actions, *, work_id=None, snapshot=None, limit=50, request_id=None):
+        return await self._root._calls.call(
+            self._target.decide_inbox, actions, work_id=work_id,
+            snapshot=snapshot, limit=limit, request_id=request_id,
+        )
+
     async def refresh_expired(self, ids=None, request_id=None):
         return await self._root._calls.call(
             self._target.refresh_expired, ids=ids, request_id=request_id

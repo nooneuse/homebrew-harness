@@ -7,6 +7,7 @@ import socket
 import threading
 import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
@@ -250,6 +251,61 @@ class NotificationsTests(unittest.TestCase):
             self.assertTrue(remote.stop()["accepted"])
         self.assertTrue(service.wait_closed(4))
         self.assertFalse(service.runtime.notifications.thread.is_alive())
+
+    def test_quiesce_drains_webhook_blocks_new_sends_and_resumes_notifications(self):
+        webhook = self.webhook()
+        self.configure(webhook.url)
+        service = self.start(request_seconds=10, every_seconds=3600, min_pending=2)
+        service.pause("all")  # Let the manual send reach the receiver first.
+        self.seed(service, "Before operations park")
+        webhook.wait.clear()
+        with (
+            RemoteService.from_root(self.control, control=True) as remote,
+            ThreadPoolExecutor(max_workers=2) as pool,
+        ):
+            first = pool.submit(remote.send_notification, request_id="before-park")
+            try:
+                eventually(lambda: webhook.calls, 3)
+                park = remote.quiesce()
+                self.assertTrue(service.runtime.notifications.parked.wait(3))
+                self.assertEqual(remote.health()["operations_phase"], "draining")
+                self.assertFalse(first.done())
+                self.assertEqual(remote.notification_status()["sent_count"], 0)
+                refused = pool.submit(
+                    remote.send_notification, force=True, request_id="after-park"
+                )
+                with self.assertRaisesRegex(SDKError, r"Service is stopping or parked\."):
+                    refused.result(timeout=2)
+                self.assertIsNone(remote.receipt("after-park"))
+                self.assertEqual(remote.operation(park["id"])["state"], "running")
+                self.assertEqual(len(webhook.calls), 1)
+            finally:
+                webhook.wait.set()
+
+            delivered = first.result(timeout=4)
+            eventually(lambda: remote.operation(park["id"])["state"] == "completed")
+            self.assertTrue(remote.operation(park["id"])["result"]["parked"])
+            self.assertEqual(remote.health()["operations_phase"], "parked")
+            self.assertTrue(delivered["sent"])
+            self.assertEqual(delivered["delivery_id"], webhook.calls[0][1]["Idempotency-Key"])
+            self.assertEqual(remote.notification_status()["sent_count"], 1)
+            self.assertEqual(delivered, remote.receipt("before-park")["result"])
+            self.assertEqual(delivered, remote.send_notification(request_id="before-park"))
+            with self.assertRaisesRegex(SDKError, "another command payload"):
+                remote.send_notification(force=True, request_id="before-park")
+            with self.assertRaisesRegex(SDKError, "parked"):
+                remote.send_notification(force=True, request_id="after-park")
+            self.assertEqual(len(webhook.calls), 1)
+
+            resume = remote.resume_operations()
+            eventually(lambda: remote.operation(resume["id"])["state"] == "completed")
+            self.assertTrue(remote.send_notification(force=True, request_id="after-park")["sent"])
+            self.seed(service, "After operations resume")
+            self.assertEqual(self.send_count(service, 3)["last_trigger"], "threshold")
+            self.assertEqual(
+                [payload["trigger"] for _, _, payload in webhook.calls],
+                ["manual", "manual", "threshold"],
+            )
 
     def test_manual_force_replay_cli_and_text_ui_in_manual_profile(self):
         webhook = self.webhook()

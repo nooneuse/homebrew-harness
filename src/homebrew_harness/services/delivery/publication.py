@@ -48,10 +48,13 @@ def same_content(publication, rejected):
 
 
 def basis(store, row, rejected, conn):
-    return fingerprint({"commit": row["candidate"]["commit"], "frozen": row["frozen"],
-                        "work": work_context(store.ms, store.current(row, conn), conn),
-                        "instructions": instructions_for(store.ms.policy, "review"),
-                        "publication": content(row), "rejection": rejected})
+    evidence = {"commit": row["candidate"]["commit"], "frozen": row["frozen"],
+                "work": work_context(store.ms, store.current(row, conn), conn),
+                "instructions": instructions_for(store.ms.policy, "review"),
+                "publication": content(row), "rejection": rejected}
+    if row.get("clarifications"):
+        evidence["clarifications"] = row["clarifications"]
+    return fingerprint(evidence)
 
 
 def prepare(delivery, row):

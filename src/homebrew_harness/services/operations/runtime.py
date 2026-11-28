@@ -304,13 +304,20 @@ class Operations:
             and self.runtime.maintenance.delivery.git.processes
         ):
             raise ValueError("Delivery processes still own resources.")
-        check(cancel_events=(self.stop,))
-        self.store.update(
-            self.runtime.header,
-            operations_phase="parked",
-            parked_at=time.time(),
-            error=None,
-        )
+        # Quiesce has already closed notification admission. Wait outside the
+        # coordinator lock so an admitted delivery can finish and save its outcome.
+        try:
+            self.runtime.notifications.park(cancel_events=(self.stop,))
+            check(cancel_events=(self.stop,))
+            self.store.update(
+                self.runtime.header,
+                operations_phase="parked",
+                parked_at=time.time(),
+                error=None,
+            )
+        except Exception:
+            self.runtime.notifications.unpark()
+            raise
         return {
             "parked": True,
             "native_runs": len(handles),
@@ -350,6 +357,7 @@ class Operations:
             error=None,
             revision=meta["revision"] + 1,
         )
+        self.runtime.notifications.unpark()
         return {"resumed": True}
 
     def perform(self, row):

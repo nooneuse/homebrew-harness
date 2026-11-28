@@ -397,6 +397,19 @@ class ServiceControls:
             {"work_id": work_id, "include_expired": include_expired, "limit": limit},
         )
 
+    def decide_inbox(self, actions, *, work_id=None, snapshot=None, limit=50, request_id=None):
+        """Apply inbox actions, each with a token, a decision, and text for answers.
+
+        Use exact REQUEST_ID:REVISION tokens or pass the digest for a listed
+        snapshot. Add an allow_extra_attempt action for an approved CI repair
+        token when explicitly granting an extra attempt.
+        """
+        return self.command(
+            "inbox_decide",
+            {"actions": actions, "work_id": work_id, "snapshot": snapshot, "limit": limit},
+            request_id,
+        )
+
     def refresh_expired(self, ids=None, request_id=None):
         return self.command("inbox_refresh_expired", {"ids": ids}, request_id)
 

@@ -393,6 +393,48 @@ class CommunicationFlow(unittest.TestCase):
         ]
         eventually(lambda: service.discussion(did)["review_id"] != review, 15)
 
+    def _propose_review_feedback_comment(self, *, pr):
+        self.peer.issue(pr=pr)
+        self.peer.proposals = [
+            {
+                "next_step": "wait",
+                "reason": "Provide advisory feedback.",
+                "alignment": "Within scope.",
+                "communication": {
+                    "kind": "post_comment",
+                    "intent": "review_feedback",
+                    "body": "Please clarify the expected behavior.",
+                },
+            }
+        ]
+        service = self.start(auto_intents=["review_feedback"])
+        (action,) = eventually(lambda: service.communication_actions()["items"], 20)
+        return service, service.communication(action["id"])
+
+    def test_review_feedback_policy_holds_issue_comment(self):
+        service, action = self._propose_review_feedback_comment(pr=False)
+        self.assertEqual(action["plan"]["subject"]["kind"], "issue")
+        self.assertEqual(action["state"], "awaiting_approval")
+        self.assertIsNone(action["authorization"])
+        self.assertEqual(action["attempts"], 0)
+        (request,) = service.requests()
+        self.assertEqual(request.kind, "communication_authority")
+        self.assertEqual(request.state, "pending")
+        self.assertEqual(request.arguments["action_id"], action["id"])
+        self.assertFalse(self.peer.writes)
+
+    def test_review_feedback_policy_publishes_external_pr_post_comment(self):
+        service, action = self._propose_review_feedback_comment(pr=True)
+        self.assertEqual(action["plan"]["subject"]["kind"], "change_request")
+        self.assertEqual(action["authorization"], "host_policy")
+        eventually(
+            lambda: service.communication(action["id"])["state"] == "confirmed", 10
+        )
+        self.assertFalse(service.records("decisions")["items"])
+        (kind, comment), = self.peer.writes
+        self.assertEqual(kind, "comment")
+        self.assertTrue(comment["body"].startswith(action["plan"]["body"] + "\n\n"))
+
     def _propose_external_review(self, event, intent):
         self.peer.issue(pr=True)
         self.peer.proposals = [

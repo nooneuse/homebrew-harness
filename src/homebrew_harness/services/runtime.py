@@ -1123,6 +1123,11 @@ class ServiceRuntime:
                         "Restore commit is in progress; retry controls after its receipt."
                     )
                 return dispatch(self.operations, method, payload, request_id)
+        if method == "notification_send":
+            # Notification admission checks the phase after looking for a replay.
+            return self.notifications.send(
+                payload.get("force", False), request_id or "command_" + uuid.uuid4().hex
+            )
         if (
             method not in QUERY_METHODS
             and method not in {"stop", "work_execution_stop", "service_execution_stop"}
@@ -1131,10 +1136,6 @@ class ServiceRuntime:
             raise ValueError("Service is parked or draining; use operations controls.")
         if method == "notification_status":
             return self.notifications.status()
-        if method == "notification_send":
-            return self.notifications.send(
-                payload.get("force", False), request_id or "command_" + uuid.uuid4().hex
-            )
         if method in MAINTENANCE_COMMANDS or method in MAINTENANCE_QUERIES:
             if self.maintenance is None:
                 raise ValueError("This service has no maintenance profile.")

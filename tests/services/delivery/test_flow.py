@@ -441,7 +441,10 @@ class FlowTests(unittest.TestCase):
         self.assertNotEqual(job["id"], first_job)
         self.assertEqual((job["kind"], job["state"], job["revision"]),
                          ("ci_triage", "queued", resumed["revision"]))
-        note = "Delivery clarification (ci_triage): " + answer
+        note = (
+            f"Delivery clarification (ci_triage):\n"
+            f"Question (model): {reason}\nAnswer (operator): {answer}"
+        )
         clarified = service.store.work(work.id)
         self.assertEqual(clarified["execution_context"], [prior_note, note])
         self.assertEqual(clarified["revision"], work_before["revision"] + 1)

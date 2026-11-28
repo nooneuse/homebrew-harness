@@ -319,6 +319,9 @@ def commands(parser, *, attach=True):
     inbox_decide = inbox_ops.add_parser("decide")
     _decision_arguments(inbox_decide, "TOKEN")
     inbox_decide.add_argument("--work-id", default=argparse.SUPPRESS)
+    inbox_decide.add_argument("--snapshot", metavar="DIGEST", help="Pending inbox snapshot for indices and bare IDs.")
+    inbox_decide.add_argument("--limit", metavar="N", type=int, default=argparse.SUPPRESS,
+                              help="Limit used to list the snapshot (default: 50).")
     refresh = inbox_ops.add_parser("refresh-expired")
     refresh.add_argument("--ids", nargs="+", metavar="REQUEST_ID")
     refresh.add_argument("--request-id")
@@ -466,25 +469,28 @@ def submit(service, text, *, priority=0, request_id=None):
     }
 
 
-def _batch_decisions(args, resolve=lambda token: token):
-    approved = [resolve(token) for token in args.approve]
-    extra = {resolve(token) for token in args.allow_extra_attempt}
+def _batch_decisions(args):
+    approved = args.approve
+    extra = set(args.allow_extra_attempt)
     if extra - set(approved):
         raise ValueError("Extra attempts must name approved CI repair requests in this batch.")
     decisions = [
         {"id": identity, "decision": "approve", **({"allow_extra_attempt": True} if identity in extra else {})}
         for identity in approved
     ]
-    decisions.extend({"id": resolve(token), "decision": "deny"} for token in args.deny)
-    for answer in args.answer:
-        token, separator, text = answer.partition("=")
-        if not separator or not token or not text.strip():
-            raise ValueError("Use --answer TOKEN=TEXT with a nonempty answer.")
-        decisions.append({"id": resolve(token), "decision": "answer", "text": text})
+    decisions.extend({"id": token, "decision": "deny"} for token in args.deny)
+    decisions.extend(_answer_action(answer, "id") for answer in args.answer)
     return decisions
 
 
-def _operate_inbox(service, args):
+def _answer_action(answer, key):
+    token, separator, text = answer.partition("=")
+    if not separator or not token or not text.strip():
+        raise ValueError("Use --answer TOKEN=TEXT with a nonempty answer.")
+    return {key: token, "decision": "answer", "text": text}
+
+
+def _operate_inbox(service, args, *, inbox_snapshot=None):
     work_id = getattr(args, "work_id", None)
     if args.inbox_command == "refresh-expired":
         return service.refresh_expired(ids=args.ids, request_id=args.request_id)
@@ -499,31 +505,22 @@ def _operate_inbox(service, args):
             limit=getattr(args, "limit", 50),
         )
 
-    from .delivery.batches import validate_decisions
-    from .inbox import MAX_ITEMS
-
-    current = service.inbox(work_id=work_id, limit=MAX_ITEMS)["items"]
-    pending = {item["ref"]["id"]: item for item in current if item["state"] == "pending"}
-    indices = {str(item["index"]): item["ref"]["id"] for item in pending.values()}
-
-    def resolve(token):
-        identity = indices.get(token, token)
-        if identity not in pending:
-            raise ValueError("No pending inbox request matches " + token + "; list the inbox again.")
-        return identity
-
-    decisions = _batch_decisions(args, resolve)
-    if not decisions:
-        raise ValueError("Supply at least one --approve, --deny, or --answer.")
-    validate_decisions(decisions)
-    for decision in decisions:
-        if decision.get("allow_extra_attempt") and pending[decision["id"]]["kind"] != "ci_repair":
-            raise ValueError("Extra attempts apply only to CI repair requests.")
-    batch = service.batch(
-        [pending[d["id"]]["ref"] for d in decisions], request_id=args.request_id
-    )
-    return service.decide_batch(
-        batch["id"], decisions, revision=batch["revision"], request_id=args.request_id
+    snapshot = args.snapshot
+    limit = getattr(args, "limit", 50)
+    if snapshot is None and inbox_snapshot is not None:
+        # The digest covers only the displayed pending items, even when the
+        # listing included expired requests. Reuse the same scope by default.
+        snapshot = inbox_snapshot["digest"]
+        work_id = getattr(args, "work_id", inbox_snapshot.get("work_id"))
+        limit = getattr(args, "limit", inbox_snapshot.get("limit", 50))
+    actions = [
+        {"token": token, "decision": decision}
+        for decision in ("approve", "deny", "allow_extra_attempt")
+        for token in getattr(args, decision)
+    ]
+    actions.extend(_answer_action(answer, "token") for answer in args.answer)
+    return service.decide_inbox(
+        actions, work_id=work_id, snapshot=snapshot, limit=limit, request_id=args.request_id
     )
 
 
@@ -538,9 +535,9 @@ def _render_command(value, args):
         render(value)
 
 
-def operate(service, args):
+def operate(service, args, *, inbox_snapshot=None):
     if args.command == "inbox":
-        return _operate_inbox(service, args)
+        return _operate_inbox(service, args, inbox_snapshot=inbox_snapshot)
     if args.command == "ops":
         op = args.ops_command
         if op == "health":
@@ -831,6 +828,7 @@ def attach(service, *, input_fn=input, context="default"):
     focus = service.current_focus(context=context)
     if focus and focus["work_id"]:
         render({"focus": focus})
+    last_inbox = None
     while True:
         try:
             line = input_fn("service> ")
@@ -884,7 +882,16 @@ def attach(service, *, input_fn=input, context="default"):
                     else:
                         render([r.data() for r in service.requests(focus["work_id"])])
                 else:
-                    _render_command(operate(service, args), args)
+                    value = operate(service, args, inbox_snapshot=last_inbox)
+                    if args.command == "inbox" and args.inbox_command in {None, "list"}:
+                        last_inbox = {
+                            "digest": value["digest"],
+                            "work_id": getattr(args, "work_id", None),
+                            "limit": getattr(args, "limit", 50),
+                        }
+                    # Keep the listed digest for exact retries with --request-id;
+                    # a new decision against a stale digest is rejected server-side.
+                    _render_command(value, args)
         except StopIteration:
             continue
         except KeyboardInterrupt:

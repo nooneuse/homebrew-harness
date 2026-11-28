@@ -1002,6 +1002,8 @@ class CommunicationStore:
                 or (proposal["intent"] == "review_feedback" and proposal.get("event") == "COMMENT")
             )
         )
+        if auto and proposal["intent"] == "review_feedback":
+            auto = row["subject"].get("kind") == "change_request"
         if auto and proposal["intent"] == "own_pr_reply":
             work = self.db._get(conn, "service_work", row["work_id"])
             auto = (not work.get("pause_requested") and not work.get("cancel_requested")

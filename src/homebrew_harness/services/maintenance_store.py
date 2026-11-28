@@ -953,9 +953,14 @@ class MaintenanceStore:
                     "Finish or cancel the previous Run before authorizing replacement requirements."
                 )
             if action == "approve":
-                scope = self.scopes.get(authority["scope"])
-                if not scope or any(set(scope[field]) - set(work["run_spec"][field])
-                                    for field in ("write_paths", "tools", "allow_tests")):
+                # The compatible legacy policy differs only by the compiler's
+                # implicit request_attention. Check renewal against that policy;
+                # new grants still use the recompiled scopes.
+                scope = self.policy.get("scopes", {}).get(authority["scope"])
+                if not scope or any(
+                    set(scope[field]) - set(work["run_spec"][field])
+                    for field in ("write_paths", "tools", "allow_tests")
+                ):
                     raise ValueError("Renewal cannot widen the current Work's accepted execution scope.")
                 authority.update(
                     policy=fingerprint(self.policy),

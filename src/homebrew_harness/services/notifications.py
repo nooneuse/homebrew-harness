@@ -185,6 +185,9 @@ class ServiceNotifications:
         self.spec = runtime.spec.notifications
         self.enabled = self.spec.get("enabled", False)
         self.stop = threading.Event()
+        self.parked = threading.Event()
+        if runtime.header.get("operations_phase", "active") != "active":
+            self.parked.set()
         self.send_lock = threading.Lock()
         self.thread = None
         self.transport = None
@@ -217,6 +220,15 @@ class ServiceNotifications:
                     self.transport = None
                     _WEBHOOK_IO.reset(token)
 
+    def park(self, *, cancel_events=()):
+        self.parked.set()
+        # Drain both the POST and its durable outcome without stopping the worker.
+        with acquired(self.send_lock, cancel_events=(self.stop, *cancel_events)):
+            pass
+
+    def unpark(self):
+        self.parked.clear()
+
     def _state(self):
         saved = self.store.runtime.get(_SECTION, self.id, {})
         return {key: saved.get(key, value) for key, value in _INITIAL_STATE.items()}
@@ -236,9 +248,14 @@ class ServiceNotifications:
     def _active(self, meta):
         return (
             not self.stop.is_set()
+            and not self.parked.is_set()
             and meta.get("operations_phase", "active") == "active"
             and meta["state"] not in {"stopping", "stopped"}
         )
+
+    def _require_active(self, meta):
+        if not self._active(meta):
+            raise ValueError("Service is stopping or parked.")
 
     def _host_environment(self):
         env_file = self.runtime.core.config.settings.env_file
@@ -284,7 +301,10 @@ class ServiceNotifications:
             return (inbox, "schedule") if due else (None, None)
 
     def tick(self):
-        if not self.enabled or not self.send_lock.acquire(blocking=False):
+        if (
+            not self.enabled or self.parked.is_set()
+            or not self.send_lock.acquire(blocking=False)
+        ):
             return
         try:
             state = self._state()
@@ -333,12 +353,21 @@ class ServiceNotifications:
         arguments = {"force": force}
         key = request_key("command", self.id, request_id)
         signature = fingerprint([_METHOD, arguments])
+        # New commands should not wait behind a delivery being drained. A
+        # replay can still wait for that delivery's final, durable receipt.
+        meta = self.store.get(self.id)
+        if (
+            not self._active(meta)
+            and self.store.runtime.get("service_commands", key) is None
+        ):
+            self._require_active(meta)
         with acquired(self.send_lock, cancel_events=(self.stop,)):
             prior = self.store.runtime.get("service_commands", key)
             if prior:
                 if prior["payload"] != signature:
                     raise ValueError("Control request_id has another command payload.")
                 return prior["result"]
+            self._require_active(self.store.get(self.id))
             inbox = None
             if self.enabled:
                 with acquired(self.runtime.lock, cancel_events=(self.stop,)):
@@ -355,8 +384,7 @@ class ServiceNotifications:
 
             def reserve(conn):
                 nonlocal accepted
-                if not self._active(self.store.guard(conn, self.runtime.header)):
-                    raise ValueError("Service is stopping or parked.")
+                self._require_active(self.store.guard(conn, self.runtime.header))
                 if not self.enabled:
                     return {"sent": False, "reason": "notifications_disabled"}
                 if not force and not inbox["counts"]["actionable"]:
@@ -374,8 +402,13 @@ class ServiceNotifications:
 
     def _attempt(self, inbox, trigger, state, *, key=None, receipt=None):
         meta = self.store.get(self.id)
-        if not self._active(meta) or (key is None and meta["state"] != "running"):
+        if key is None:
+            if not self._active(meta) or meta["state"] != "running":
+                return receipt
+        elif self.stop.is_set() or meta["state"] in {"stopping", "stopped"}:
             return receipt
+        # A manual send was admitted when its receipt was reserved. Quiesce
+        # waits for it (and any automatic send admitted above) to commit.
         if receipt is None:
             # Retry the same logical reminder with the same key, but rotate the
             # key for each successful period, even when the digest is unchanged.
@@ -421,8 +454,8 @@ class ServiceNotifications:
                          next_retry_at=now + _retry_seconds(error, attempts, now))
         with self.store.db.write() as conn:
             meta = self.store.guard(conn, self.runtime.header)
-            if meta.get("operations_phase", "active") != "active":
-                # Do not write into a database being parked for backup/restore.
+            # Quiesce waits on send_lock before changing draining to parked.
+            if meta.get("operations_phase", "active") not in {"active", "draining"}:
                 return receipt
             self.store.db._put(conn, _SECTION, self.id, {
                 **state, "service_id": self.id, "checkpoint": "service:" + self.id,

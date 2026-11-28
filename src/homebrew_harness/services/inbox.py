@@ -1,6 +1,7 @@
 """A bounded operator view over service decisions and native Run requests."""
 
 import json
+import re
 import time
 from collections import Counter
 
@@ -9,7 +10,7 @@ from homebrew_harness.security.data_boundary import redact
 
 from . import request_views
 from .maintenance_spec import text
-from .protocol import fingerprint
+from .protocol import fingerprint, request_key
 
 MAX_ITEMS = 100
 QUESTIONS = {"attention", "work_information", "discussion_information", "delivery_information"}
@@ -115,7 +116,8 @@ def _result(items):
         "questions": sum(item["action_type"] == "question" for item in items),
         "by_kind": dict(sorted(Counter(item["kind"] for item in items).items())),
     }
-    lines = [f"Inbox: {counts['actionable']} pending, {counts['expired']} expired (shown)."]
+    digest = fingerprint([(item["ref"]["id"], item["ref"]["revision"], item["state"]) for item in actionable])
+    lines = [f"Inbox: {counts['actionable']} pending, {counts['expired']} expired (shown).", f"Snapshot: {digest}"]
     for item in items:
         label = item["action_type"] if item["state"] == "pending" else "expired " + item["action_type"]
         line = f"[#{item['index']}] {item['group_key']} | {label} | {item['title']}"
@@ -125,7 +127,7 @@ def _result(items):
             line += " (approval needs --allow-extra-attempt)"
         lines.append(line)
     if actionable:
-        lines.append('Use inbox decide --approve N, --deny N, or --answer \'N=TEXT\'. Re-list before using short numbers.')
+        lines.append('Use inbox decide --snapshot DIGEST with --approve N, --deny N, or --answer \'N=TEXT\'.')
     if any(item["kind"] == "test_grant" for item in actionable):
         lines.append("Use renew-tests for Run test grants.")
     if counts["expired"]:
@@ -134,7 +136,7 @@ def _result(items):
         "items": items,
         "counts": counts,
         "oldest_created_at": min((item["created_at"] for item in items if item["created_at"] is not None), default=None),
-        "digest": fingerprint([(item["ref"]["id"], item["ref"]["revision"], item["state"]) for item in actionable]),
+        "digest": digest,
         "summary": "\n".join(lines),
     }
 
@@ -197,6 +199,129 @@ def build_inbox(runtime, *, work_id=None, include_expired=False, limit=50):
         selected.pop()
         result = _result(selected)
     return result
+
+
+def _resolve_decisions(runtime, actions, work_id, snapshot, limit):
+    from .delivery.batches import validate_decisions
+
+    if not isinstance(actions, list) or not actions:
+        raise ValueError("Supply at least one --approve, --deny, or --answer.")
+    if type(limit) is not int or not 1 <= limit <= MAX_ITEMS:
+        raise ValueError(f"Inbox limit must be an integer from 1 to {MAX_ITEMS}.")
+    if work_id is not None:
+        text(work_id, "work_id")
+    exact = {}
+    for action in actions:
+        if (
+            not isinstance(action, dict)
+            or not {"token", "decision"} <= action.keys()
+            or action.keys() - {"token", "decision", "text"}
+            or not isinstance(action["decision"], str)
+        ):
+            raise ValueError("Invalid inbox decision action.")
+        token = action["token"]
+        if not isinstance(token, str) or not token.strip() or len(token) > 256:
+            raise ValueError("Invalid inbox decision token.")
+        if ":" in token:
+            match = re.fullmatch(r"([^:]+):([0-9]+)", token)
+            if not match:
+                raise ValueError("Exact inbox references must use REQUEST_ID:REVISION.")
+            exact[token] = (match[1], int(match[2]))
+        elif snapshot is None:
+            raise ValueError("Inbox indices and bare IDs require --snapshot DIGEST; otherwise use REQUEST_ID:REVISION.")
+
+    indices = {}
+    if snapshot is not None:
+        current = build_inbox(runtime, work_id=work_id, limit=limit)
+        if current["digest"] != snapshot:
+            raise ValueError("Inbox changed since snapshot; list the inbox again.")
+        pending = {item["ref"]["id"]: item for item in current["items"] if item["state"] == "pending"}
+        indices = {str(item["index"]): identity for identity, item in pending.items()}
+    else:
+        # Exact refs don't depend on the rendered list's page or byte budget.
+        pending = {request["ref"]["id"]: request for request in runtime.requests(work_id)}
+        for identity, _ in exact.values():
+            if identity not in pending:
+                raw = runtime.store.db.get("service_decisions", identity)
+                if raw and raw["service_id"] == runtime.id and raw["state"] == "pending":
+                    request = request_views.project(runtime.maintenance, raw, work_id)
+                    if request:
+                        pending[identity] = request
+
+    refs, decisions, extra = [], [], set()
+    for action in actions:
+        token = action["token"]
+        identity, revision = exact[token] if token in exact else (indices.get(token, token), None)
+        item = pending.get(identity)
+        if (
+            not item or item["state"] != "pending" or expired(item.get("expires_at"), time.time())
+            or (revision is not None and item["ref"]["revision"] != revision)
+        ):
+            raise ValueError("No pending inbox request matches " + token + "; list the inbox again.")
+        decision = action["decision"]
+        if decision == "allow_extra_attempt":
+            if item["kind"] != "ci_repair" or "text" in action:
+                raise ValueError("Extra attempts apply only to CI repair requests.")
+            extra.add(identity)
+        else:
+            refs.append(item["ref"])
+            decisions.append({"id": identity, **{k: action[k] for k in ("decision", "text") if k in action}})
+    if extra - {d["id"] for d in decisions if d["decision"] == "approve"}:
+        raise ValueError("Extra attempts must name approved CI repair requests in this batch.")
+    for decision in decisions:
+        if decision["decision"] == "approve" and decision["id"] in extra:
+            decision["allow_extra_attempt"] = True
+    validate_decisions(decisions)
+    return refs, decisions
+
+
+def _complete(result, decisions):
+    return all(result["results"].get(d["id"], {}).get("state") not in {None, "unknown"} for d in decisions)
+
+
+def decide_inbox(runtime, *, actions, work_id=None, snapshot=None, limit=50, request_id):
+    from .delivery.batches import DecisionBatches
+
+    method = "inbox_decide"
+    signature = fingerprint([method, {"actions": actions, "work_id": work_id, "snapshot": snapshot, "limit": limit}])
+    key = request_key("command", runtime.id, request_id)
+    batches = DecisionBatches(runtime, runtime.maintenance.store)
+    db = runtime.store.db
+    with db.write() as conn:
+        meta = runtime.store.guard(conn, runtime.header)
+        command = db._get(conn, "service_commands", key)
+        if command:
+            if command["payload"] != signature:
+                raise ValueError("Control request_id has another command payload.")
+            if _complete(command["result"], command["resolved_decisions"]):
+                return command["result"]
+        else:
+            if meta["state"] in {"stopping", "stopped"}:
+                raise ValueError("Service is stopping.")
+            refs, decisions = _resolve_decisions(runtime, actions, work_id, snapshot, limit)
+            # Commit the batch and its command together before applying any decision.
+            batch = batches.create(refs, request_id, conn=conn, work_id=work_id)
+            command = {
+                "service_id": runtime.id,
+                "method": method,
+                "payload": signature,
+                "batch_id": batch["id"],
+                "revision": batch["revision"],
+                "resolved_decisions": decisions,
+                "result": {"batch_id": batch["id"], "results": {}, "complete": False, "request_id": request_id},
+                "checkpoint": "service:" + runtime.id,
+            }
+            db._put(conn, "service_commands", key, command)
+            # Execute exactly what replay will load, including storage redaction.
+            command = db._get(conn, "service_commands", key)
+
+    decisions = command["resolved_decisions"]
+    result = batches.apply(command["batch_id"], command["revision"], decisions, request_id)
+    result["complete"] = _complete(result, decisions)
+    with db.write() as conn:
+        runtime.store.guard(conn, runtime.header)
+        db._put(conn, "service_commands", key, {**command, "result": result})
+        return db._get(conn, "service_commands", key)["result"]
 
 
 def _renew(maintenance, conn, request):
@@ -270,27 +395,60 @@ def _renew(maintenance, conn, request):
 
 
 def refresh_expired(runtime, *, ids=None, request_id):
+    from .protocol import VERSION
+
     if ids is not None and (
         not isinstance(ids, list)
         or any(not isinstance(identity, str) or not 1 <= len(identity) <= 100 for identity in ids)
     ):
         raise ValueError("ids must be a list of request IDs.")
     maintenance = runtime.maintenance
+    method = "inbox_refresh_expired"
+    checkpoint = "service:" + runtime.id
 
     def apply(conn):
         meta = runtime.store.guard(conn, runtime.header)
         if meta["state"] in {"stopping", "stopped"}:
             raise ValueError("Service is stopping.")
+        reply = {"refreshed": [], "skipped": [], "request_id": request_id, "has_more": False}
+        # The receipt's HTTP envelope is larger than the direct command reply.
+        # Its payload field is a fixed-width SHA-256 hex digest. Reserve the
+        # longer spelling of has_more (false) when sizing the empty envelope.
+        receipt = {
+            "service_id": runtime.id, "method": method, "payload": "0" * 64,
+            "result": reply, "checkpoint": checkpoint,
+        }
+        envelope = {"version": VERSION, "service_id": runtime.id, "ok": True, "result": receipt}
+
+        def encoded_size(value):
+            return len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode())
+
+        remaining = current_limits().control_frame_bytes - encoded_size(envelope)
+        if remaining < 0:
+            raise ValueError("Refresh receipt cannot fit in the control frame.")
+
+        def append_if_fits(key, item):
+            nonlocal remaining
+            entries = reply[key]
+            # Account for the default JSON list separator after the first item.
+            size = encoded_size(item) + (2 if entries else 0)
+            if size > remaining:
+                reply["has_more"] = True
+                return False
+            entries.append(item)
+            remaining -= size
+            return True
+
         sql = (
             "SELECT value FROM records WHERE section='service_decisions' AND owner=? "
             "AND json_extract(value,'$.state')='pending' AND json_extract(value,'$.expires_at')<=?"
         )
-        parameters = ("service:" + runtime.id, time.time())
+        parameters = (checkpoint, time.time())
         if ids is not None:
             sql += " AND key IN (SELECT value FROM json_each(?))"
             parameters += (json.dumps(ids),)
         rows = conn.execute(sql + " ORDER BY rowid", parameters).fetchall()
-        refreshed, skipped, seen = [], [], set()
+        seen = set()
         for (raw,) in rows:
             request = json.loads(raw)
             identity = request["id"]
@@ -304,16 +462,21 @@ def refresh_expired(runtime, *, ids=None, request_id):
                     raise ValueError("The original request is no longer current.")
             except ValueError as error:
                 conn.execute("ROLLBACK TO inbox_refresh_item")
-                skipped.append({"id": identity, "kind": request["kind"], "reason": _display(str(error), 200)})
+                append_if_fits("skipped", {"id": identity, "kind": request["kind"], "reason": _display(str(error), 200)})
             else:
-                refreshed.append({
+                if not append_if_fits("refreshed", {
                     "id": identity, "kind": result["kind"], "revision": result["revision"],
                     "state": result["state"], "expires_at": result["expires_at"],
-                })
+                }):
+                    conn.execute("ROLLBACK TO inbox_refresh_item")
             conn.execute("RELEASE inbox_refresh_item")
+            if reply["has_more"]:
+                return reply
         for identity in dict.fromkeys(ids or []):
-            if identity not in seen:
-                skipped.append({"id": identity, "reason": "Not an expired pending service request."})
-        return {"refreshed": refreshed, "skipped": skipped, "request_id": request_id}
+            if identity not in seen and not append_if_fits("skipped", {
+                "id": identity, "reason": "Not an expired pending service request.",
+            }):
+                break
+        return reply
 
-    return runtime.store.command(runtime.header, "inbox_refresh_expired", {"ids": ids}, request_id, apply)
+    return runtime.store.command(runtime.header, method, {"ids": ids}, request_id, apply)

@@ -63,7 +63,46 @@ class CustomPublication(unittest.TestCase):
         eventually(lambda: len(self.peer.pulls) == 1, 15)
         self.assertEqual(self.peer.pulls[0]["body"].split("\n\n<!--", 1)[0], publication["body"])
 
-    def test_opt_in_publishes_review_text_but_does_not_authorize_draft_prs(self):
+    def test_explicit_wording_without_stored_wording_requires_approval(self):
+        service = self.start(merge={"mode": "manual"})
+        work = service.work.submit("Restore the documented value.")
+        store = service.runtime.maintenance.delivery.store
+        fallback = eventually(
+            lambda: next(
+                (
+                    action for action in service.records("actions")["items"]
+                    if action["kind"] == "ensure_change_request"
+                    and action["state"] == "confirmed"
+                ),
+                None,
+            ),
+            40,
+        )
+        service.pause("all")
+        row = store.get("changesets", fallback["changeset_id"])
+        self.assertFalse(row.get("publication"))
+        self.assertNotIn("publication", row["review"])
+        self.assertEqual(fallback["authorization"], "host_policy")
+        self.assertEqual(fallback["plan"]["title"], "Maintain " + work.id)
+
+        publication = {"title": "Custom title", "body": "Describe the reviewed change."}
+        for draft in (False, True):
+            with self.subTest(draft=draft):
+                explicit = service.plan_delivery(
+                    row["id"], "ensure_change_request", draft=draft, publication=publication
+                )
+                self.assertEqual(explicit["state"], "awaiting_approval")
+                self.assertIsNone(explicit["authorization"])
+                self.assertEqual(explicit["attempts"], 0)
+                self.assertEqual({k: explicit["plan"][k] for k in publication}, publication)
+                self.assertIn(
+                    explicit["id"],
+                    {request.arguments["action_id"] for request in service.requests(work.id)
+                     if request.kind == "delivery_authority"},
+                )
+        self.assertEqual(self.peer.pulls[0]["title"], fallback["plan"]["title"])
+
+    def test_opt_in_publishes_review_text_but_does_not_authorize_explicit_plans(self):
         publication = {
             "title": "Restore the documented value",
             "body": "Restore behavior and preserve the unit-test contract.",
@@ -107,6 +146,25 @@ class CustomPublication(unittest.TestCase):
         request = self.pending_target(service)
         self.assertIsNotNone(request)
         self.assertEqual(request.arguments["action_id"], draft["id"])
+
+        # An explicit plan still needs approval if its wording is identical to
+        # that of an implicitly authorized plan for the same candidate.
+        implicit = service.plan_delivery(changeset["id"], "ensure_change_request")
+        self.assertEqual(implicit["authorization"], "host_policy")
+        for wording in (publication, {"title": "Explicit override", "body": "Override body"}):
+            with self.subTest(title=wording["title"]):
+                explicit = service.plan_delivery(
+                    changeset["id"], "ensure_change_request", publication=wording
+                )
+                self.assertEqual({k: explicit["plan"][k] for k in wording}, wording)
+                self.assertNotEqual(explicit["id"], implicit["id"])
+                self.assertEqual(explicit["state"], "awaiting_approval")
+                self.assertIsNone(explicit["authorization"])
+                self.assertEqual(explicit["attempts"], 0)
+                self.assertIn(explicit["id"], {
+                    r.arguments["action_id"] for r in service.requests()
+                    if r.kind == "delivery_authority" and r.state == "pending"
+                })
 
 
 if __name__ == "__main__":

@@ -442,6 +442,7 @@ class DeliveryStore:
         if not row.get('candidate'):raise ValueError('Capture a source candidate before draft publication.')
         if draft and kind=='ensure_change_request' and not publication:
             raise ValueError('Draft PR publication requires a truthful title/body.')
+        explicit_publication = publication is not None
         if not draft and not row.get("frozen"):
             raise boundary_error(
                 ValueError, "delivery_contract", "Candidate is not quality-ready."
@@ -539,16 +540,23 @@ class DeliveryStore:
                         existing=prior["change_request"],
                         previous_correlation=prior["change_request_action"],
                     )
+        action_key = [kind, content]
+        if kind == "ensure_change_request" and explicit_publication:
+            # Identical wording must not inherit an implicit plan's authorization.
+            action_key.append("explicit_publication")
         identity = "delivery_" + request_key(
-            "action", self.id, fingerprint([kind, content])
+            "action", self.id, fingerprint(action_key)
         )
         old = self.db._get(conn, "service_actions", identity)
         if old:
             return old
+        # The opt-in covers stored review/drafting output, not caller-supplied text.
         auto = kind in self.spec["auto_actions"] and (
             kind != "ensure_change_request"
-            or (self.spec.get("auto_publish_pr_text") and not draft)
-            or not (row.get("publication") or (row.get("review") or {}).get("publication"))
+            or (
+                not explicit_publication
+                and (not publication or (self.spec.get("auto_publish_pr_text") and not draft))
+            )
         )
         value = {
             "id": identity,
@@ -628,7 +636,20 @@ class DeliveryStore:
             raise boundary_error(ValueError, "delivery_contract", "Delivery information request is stale.")
 
         stage = request["stage"]
-        work.setdefault("execution_context", []).append(f"Delivery clarification ({stage}): {answer}")
+        question = request.get("reason") or row.get("error_detail") or ""
+        row.setdefault("clarifications", []).append({
+            "stage": stage,
+            "request_id": request["id"],
+            "basis": request["basis"],
+            "question": question,
+            "question_origin": "model",
+            "answer": answer,
+            "answer_origin": "operator",
+        })
+        work.setdefault("execution_context", []).append(
+            f"Delivery clarification ({stage}):\n"
+            f"Question (model): {question}\nAnswer (operator): {answer}"
+        )
         work["revision"] += 1
         self.db._put(conn, "service_work", work["id"], work)
         request.update(state="answered", answer=answer, revision=request["revision"] + 1)

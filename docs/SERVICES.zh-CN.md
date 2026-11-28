@@ -319,17 +319,17 @@ Python 对应 `service.converse()`、`service.conversation(id)`、`service.recor
 
 ### 操作者收件箱
 
-`inbox` 汇总服务的审批、提问和活动 Run 的请求，默认输出带短编号的摘要；`--json` 输出精确引用、计数以及所列待办引用的摘要指纹。用 `--work-id` 限定 Work，或用 `--include-expired` 把过期项列在待办项之后。默认最多显示 50 项，上限为 100。
+`inbox` 汇总服务的审批、提问和活动 Run 的请求，默认输出短编号和所列待办请求的快照指纹；`--json` 还输出精确引用和计数。用 `--work-id` 限定 Work，或用 `--include-expired` 把过期项列在待办项之后。默认最多显示 50 项，上限为 100。
 
 ```sh
 homebrew-harness service inbox SERVICE_ID list --include-expired
-homebrew-harness service inbox SERVICE_ID decide --approve 1 --deny 2 --answer '3=保留现有行为' --request-id inbox-1
+homebrew-harness service inbox SERVICE_ID decide --snapshot DIGEST --approve 1 --deny 2 --answer '3=保留现有行为' --request-id inbox-1
 homebrew-harness service inbox SERVICE_ID refresh-expired --request-id refresh-1
 ```
 
-Text UI 中省去 `homebrew-harness service` 前缀和服务 ID。使用短编号前请按相同 Work 范围重新列出：编号按当前收件箱解析，不绑定旧快照。也可使用 JSON 中的完整请求 ID。回答多个问题可重复传 `--answer TOKEN=TEXT`。只有在明确批准 CI 修复时，才可用 `--allow-extra-attempt TOKEN` 授权额外一次尝试。
+使用短编号或不带修订号的请求 ID 时，须提供列表中的快照指纹，并使用相同的 Work 范围和条数上限。待办项发生变化时，请重新列出收件箱。使用 JSON 引用中的精确 `REQUEST_ID:REVISION` 则无需提供快照。Text UI 中省去命令前缀和服务 ID，默认沿用上次列表的快照、范围和条数上限。回答多个问题可重复传 `--answer TOKEN=TEXT`。只有在明确批准 CI 修复时，才可用 `--allow-extra-attempt TOKEN` 授权额外一次尝试。若未收到结果，可用相同的 `--request-id` 重试同一条决定命令。
 
-`repository_maintenance` 即使不配置 delivery 或 communication，也支持批处理和过期续期。`batch decide` 同样支持 `--answer REQUEST_ID=TEXT`。续期只重新开放仍有效且符合条件的服务请求，不批准请求，也不续期原生 Run 请求。用 `--ids REQUEST_ID ...` 限定要续期的请求。同步及异步 Python 对应 `service.inbox(...)` 和 `service.refresh_expired(ids=..., request_id=...)`。
+`repository_maintenance` 即使不配置 delivery 或 communication，也支持批处理和过期续期。`batch decide` 同样支持 `--answer REQUEST_ID=TEXT`。续期只重新开放仍有效且符合条件的服务请求，不批准请求，也不续期原生 Run 请求。用 `--ids REQUEST_ID ...` 限定要续期的请求。如果结果中有 `has_more: true`，请使用新的请求 ID 继续。同步和异步 Python 均可使用 `service.inbox(...)`、`service.decide_inbox(actions, ...)` 或 `service.refresh_expired(ids=..., request_id=...)`。
 
 完整确定性 P2 演示：
 

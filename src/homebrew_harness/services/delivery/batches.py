@@ -2,6 +2,8 @@ from homebrew_harness.runtime.limits import current_limits
 """Frozen request groups; decisions remain per-item and independently replayable."""
 
 import time
+from contextlib import nullcontext
+
 from homebrew_harness.contracts import StaleReference
 from homebrew_harness.services.maintenance_spec import text
 from homebrew_harness.services.protocol import request_key, fingerprint
@@ -42,20 +44,19 @@ class DecisionBatches:
     def __init__(self, runtime, maintenance):
         self.runtime, self.ms = runtime, maintenance
 
-    def create(self, refs, request_id):
+    def create(self, refs, request_id, *, conn=None, work_id=None):
         if not isinstance(refs, list) or not refs or current_limits().delivery_batch_items is not None and len(refs) > current_limits().delivery_batch_items:
             raise ValueError("Batch requires bounded exact request references.")
         key = "batch_" + request_key("batch", self.runtime.id, request_id)
         prior = (
-            self.ms.db.get("service_batches", key)
-            if hasattr(self.ms.db, "get")
-            else self.ms.store.runtime.get("service_batches", key)
+            self.ms.db.get("service_batches", key) if conn is None
+            else self.ms.db._get(conn, "service_batches", key)
         )
         if prior:
             if prior["items"] != refs:
                 raise ValueError("Batch request ID has another membership.")
             return prior
-        available = {r["ref"]["id"]: r for r in self.runtime.requests()}
+        available = {r["ref"]["id"]: r for r in self.runtime.requests(work_id)}
         normalized = []
         for ref in refs:
             if not isinstance(ref, dict) or not isinstance(ref.get("id"), str):
@@ -81,7 +82,7 @@ class DecisionBatches:
             normalized.append(ref)
         if len({r["id"] for r in normalized}) != len(normalized):
             raise ValueError("Duplicate batch members.")
-        with self.ms.db.write() as conn:
+        with (self.ms.db.write() if conn is None else nullcontext(conn)) as conn:
             self.runtime.store.guard(conn, self.runtime.header)
             old = self.ms.db._get(conn, "service_batches", key)
             if old:

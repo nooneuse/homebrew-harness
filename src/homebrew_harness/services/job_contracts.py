@@ -218,6 +218,8 @@ class JobContract:
                       "previous", "requirements_id", "quality", "test_failure", "goal_evidence",
                       "review", "ci", "ci_diagnosis", "validation_rechecks", "error", "error_detail",
                       "error_info", "reasoning_job_id", "publication", "publication_feedback", "validation_plan", "review_response", "review_history", "ci_wait_observation")}
+            if primary.get("clarifications"):
+                value["clarifications"] = copy.deepcopy(primary["clarifications"])
             value["candidate"] = {k: copy.deepcopy((primary.get("candidate") or {}).get(k))
                                   for k in ("commit", "tree", "target_base", "delta", "conflicts")}
             if self.kind == "validation_plan":

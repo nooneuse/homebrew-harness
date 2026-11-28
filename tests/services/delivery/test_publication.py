@@ -7,6 +7,7 @@ import unittest
 from dataclasses import replace
 
 from homebrew_harness.contracts import SDKError
+from homebrew_harness.services.delivery.publication import basis
 from tests.runtime.test_interaction import eventually
 from tests.services.delivery import test_flow as fixture
 
@@ -199,8 +200,8 @@ class Publication(unittest.TestCase):
             service.decide(question, "answer", text="Outdated clarification.")
 
     def test_answer_publication_question_redrafts_without_new_authority(self):
-        reason = "Which public heading should we use?"
-        answer = "Start with FROM TEST AGENT and summarize verified changes."
+        reason = "Use title A or B?"
+        answer = "Use the second one"
         self.peer.publication_value = {"human_required": True, "reason": reason}
         service = self.start(auto_actions=["publish_branch"], merge={"mode": "manual"})
         work = service.work.submit("Restore the value.")
@@ -243,9 +244,32 @@ class Publication(unittest.TestCase):
         self.assertEqual(after["revision"], before["revision"] + 1)
         for key in ("error", "error_detail", "error_info", "publication_basis"):
             self.assertIsNone(after[key])
+        clarification = {
+            "stage": "publication",
+            "request_id": question.ref.id,
+            "basis": before["publication_basis"],
+            "question": reason,
+            "question_origin": "model",
+            "answer": answer,
+            "answer_origin": "operator",
+        }
+        self.assertEqual(after["clarifications"], [clarification])
+        # Work context is identical in these two probes; the row's structured
+        # provenance alone must also affect the publication basis.
+        delivery = service.runtime.maintenance.delivery.store
+        with delivery.db.connection() as conn:
+            self.assertNotEqual(
+                basis(delivery, after, None, conn),
+                basis(delivery, {**after, "clarifications": []}, None, conn),
+            )
         clarified = service.store.work(work.id)
-        note = "Delivery clarification (publication): " + answer
-        self.assertEqual(clarified["execution_context"], [*work_before.get("execution_context", []), note])
+        note = (
+            f"Delivery clarification (publication):\n"
+            f"Question (model): {reason}\nAnswer (operator): {answer}"
+        )
+        self.assertEqual(
+            clarified["execution_context"], [*work_before.get("execution_context", []), note]
+        )
         self.assertEqual(clarified["revision"], work_before["revision"] + 1)
         for key in ("requirements_revision", "authority", "run_id", "changeset_id"):
             self.assertEqual(clarified[key], work_before[key])
@@ -258,7 +282,12 @@ class Publication(unittest.TestCase):
         for key in ("candidate", "quality", "review", "frozen"):
             self.assertEqual(after[key], before[key])
         self.assertEqual(after["publication"], self.draft)
+        self.assertEqual(after["clarifications"], [clarification])
         self.assertNotEqual(after["reasoning_job_id"], before["reasoning_job_id"])
+        self.assertNotEqual(after["publication_basis"], before["publication_basis"])
+        self.assertEqual(
+            after["publication_basis"], service.job(after["reasoning_job_id"])["input"]["basis"]
+        )
         payloads = [
             json.loads(message["content"])
             for request in self.peer.model_requests
@@ -266,6 +295,7 @@ class Publication(unittest.TestCase):
             if message.get("role") == "user" and message.get("content", "").startswith('{"job":')
         ]
         draft = next(p for p in payloads if p["job"]["id"] == after["reasoning_job_id"])
+        self.assertEqual(draft["input"]["clarifications"], [clarification])
         self.assertIn(note, draft["input"]["work_context"]["execution_context"])
         self.assertEqual(target.kind, "delivery_authority")
 

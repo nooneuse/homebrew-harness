@@ -399,6 +399,10 @@ class Maintenance:
                     payload["id"], payload["revision"], request_id
                 )
             return self.communication.store.command(method, payload, request_id)
+        if method == "inbox_decide":
+            from .inbox import decide_inbox
+
+            return decide_inbox(self.runtime, **payload, request_id=request_id)
         if method == "inbox_refresh_expired":
             from .inbox import refresh_expired
 
