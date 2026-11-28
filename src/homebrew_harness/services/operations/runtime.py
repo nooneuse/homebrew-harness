@@ -324,10 +324,16 @@ class Operations:
             "generation": self.runtime.header["generation"],
         }
 
-    def unpark(self):
-        meta = self.store.get(self.runtime.id)
+    @staticmethod
+    def _require_parked(meta):
+        if meta["state"] in {"stopping", "stopped"}:
+            raise ValueError("Service is stopping or stopped.")
         if meta.get("operations_phase") != "parked":
             raise ValueError("Service is not parked.")
+
+    def unpark(self):
+        meta = self.store.get(self.runtime.id)
+        self._require_parked(meta)
         from homebrew_harness.services.spec import runtime_binding
 
         upgrade = (
@@ -341,23 +347,56 @@ class Operations:
             )
         if meta["binding"]["runtime"] != runtime_binding():
             raise ValueError("Installed service binding changed.")
-        if self.runtime.maintenance:
-            from homebrew_harness.services.maintenance import Maintenance
+        ready = threading.Event()
+        activated = False
+        maintenance = None
 
-            if self.runtime.maintenance.finished.is_set():
-                self.runtime.maintenance = Maintenance(self.runtime)
-            if self.runtime.maintenance.identity() != meta["binding"]["maintenance"]:
-                raise ValueError("Maintenance binding changed.")
-            self.runtime.start_business()
-        self.store.update(
-            self.runtime.header,
-            operations_phase="active",
-            state="running",
-            scope="execution",
-            error=None,
-            revision=meta["revision"] + 1,
-        )
-        self.runtime.notifications.unpark()
+        def await_activation():
+            ready.wait()
+            return activated
+
+        try:
+            previous = self.runtime.maintenance
+            if previous is not None:
+                from homebrew_harness.services.maintenance import Maintenance
+
+                maintenance = (
+                    Maintenance(self.runtime) if previous.finished.is_set() else previous
+                )
+                if maintenance.identity() != meta["binding"]["maintenance"]:
+                    raise ValueError("Maintenance binding changed.")
+                self._require_parked(self.store.get(self.runtime.id))
+                self.runtime.maintenance = maintenance
+                # Launches can fail or race stop; no business loop runs until commit.
+                self.runtime.start_business(await_activation=await_activation)
+
+            # Stop must be able to commit during startup, but not between this
+            # transition and the release of worker and webhook admission.
+            with self.runtime.transition_lock:
+                with self.store.db.write() as conn:
+                    current = self.store.guard(conn, self.runtime.header)
+                    self._require_parked(current)
+                    check(cancel_events=(self.stop,))
+                    current.update(
+                        operations_phase="active",
+                        state="running",
+                        scope="execution",
+                        error=None,
+                        revision=current["revision"] + 1,
+                    )
+                    self.store.db._put(conn, "service_meta", self.runtime.id, current)
+                activated = True
+                try:
+                    self.runtime.notifications.unpark()
+                finally:
+                    ready.set()
+        finally:
+            if not activated:
+                ready.set()
+                # Shutdown waits for the Operations worker before closing
+                # maintenance; drain rejected launches outside the transition lock.
+                if maintenance is not None:
+                    maintenance.close()
         return {"resumed": True}
 
     def perform(self, row):

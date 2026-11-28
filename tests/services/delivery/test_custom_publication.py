@@ -95,12 +95,35 @@ class CustomPublication(unittest.TestCase):
                 self.assertIsNone(explicit["authorization"])
                 self.assertEqual(explicit["attempts"], 0)
                 self.assertEqual({k: explicit["plan"][k] for k in publication}, publication)
-                self.assertIn(
-                    explicit["id"],
-                    {request.arguments["action_id"] for request in service.requests(work.id)
-                     if request.kind == "delivery_authority"},
-                )
+                self.assertIs(explicit["explicit_publication"], True)
+                self.assertNotIn("context_hash", explicit)
+                decision = next(request for request in service.requests(work.id)
+                                if request.arguments.get("action_id") == explicit["id"])
+                self.assertIs(decision.arguments["explicit_publication"], True)
+                self.assertIs(store.get("actions", explicit["id"])["explicit_publication"], True)
+                self.assertIs(store.get("decisions", decision.ref.id)["explicit_publication"], True)
         self.assertEqual(self.peer.pulls[0]["title"], fallback["plan"]["title"])
+
+    def test_validation_plan_draft_retains_host_policy_authorization(self):
+        from unittest.mock import patch
+
+        from homebrew_harness.services.delivery.runtime import Delivery
+
+        self.peer.validation_extra = {
+            "draft": {"title": "Draft the scoped change", "body": "Verification is pending."}
+        }
+        # This peer has no GitHub Draft API; hold execution at the queued boundary.
+        with patch.object(Delivery, "execute"):
+            service = self.start(merge={"mode": "manual"})
+            service.work.submit("Restore the documented value.")
+            draft = eventually(lambda: next((a for a in service.records("actions")["items"]
+                                             if a["kind"] == "ensure_change_request" and a["plan"].get("draft")), None), 40)
+            service.pause("all")
+        self.assertEqual(draft["state"], "queued")
+        self.assertEqual(draft["authorization"], "host_policy")
+        self.assertIsNot(draft.get("explicit_publication"), True)
+        self.assertNotIn("context_hash", draft)
+        self.assertNotIn(draft["id"], {r.arguments.get("action_id") for r in service.requests()})
 
     def test_opt_in_publishes_review_text_but_does_not_authorize_explicit_plans(self):
         publication = {

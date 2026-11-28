@@ -61,7 +61,10 @@ class AsyncServices(unittest.IsolatedAsyncioTestCase):
                     maintenance={"scopes": {"code": {"write_paths": ["src"]}}},
                 ))
                 result = await service.refresh_expired(ids=[], request_id="async-refresh")
-                self.assertEqual(result, {"request_id": "async-refresh", "refreshed": [], "skipped": []})
+                self.assertEqual(result, {
+                    "request_id": "async-refresh", "refreshed": [], "skipped": [],
+                    "has_more": False, "next_cursor": None,
+                })
                 await service.stop()
                 self.assertTrue(await service.wait_closed(10))
 

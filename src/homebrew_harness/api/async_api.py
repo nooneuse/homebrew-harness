@@ -163,9 +163,9 @@ class AsyncService(AsyncHandle):
             snapshot=snapshot, limit=limit, request_id=request_id,
         )
 
-    async def refresh_expired(self, ids=None, request_id=None):
+    async def refresh_expired(self, ids=None, request_id=None, *, cursor=0):
         return await self._root._calls.call(
-            self._target.refresh_expired, ids=ids, request_id=request_id
+            self._target.refresh_expired, ids=ids, request_id=request_id, cursor=cursor
         )
 
     async def notification_status(self):

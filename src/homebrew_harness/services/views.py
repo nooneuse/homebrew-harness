@@ -410,8 +410,9 @@ class ServiceControls:
             request_id,
         )
 
-    def refresh_expired(self, ids=None, request_id=None):
-        return self.command("inbox_refresh_expired", {"ids": ids}, request_id)
+    def refresh_expired(self, ids=None, request_id=None, *, cursor=0):
+        """Continue with next_cursor, the same IDs (if supplied), and a new request ID."""
+        return self.command("inbox_refresh_expired", {"ids": ids, "cursor": cursor}, request_id)
 
     def notification_status(self):
         return self.query("notification_status")

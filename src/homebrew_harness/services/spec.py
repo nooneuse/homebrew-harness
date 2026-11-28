@@ -214,7 +214,7 @@ class ServiceSpec:
         from .operations.spec import validate_location
 
         validate_location(self.operations, (control, workspace))
-        if self.notifications.get("credentials_file"):
+        if self.notifications.get("enabled") and self.notifications["credentials_file"]:
             from .notifications import read_notification_credentials
 
             read_notification_credentials(self.notifications, (control, workspace))

@@ -5,6 +5,7 @@ import json
 import shlex
 import sys
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 
 from homebrew_harness.cli_arguments import add_location_arguments
@@ -324,6 +325,10 @@ def commands(parser, *, attach=True):
                               help="Limit used to list the snapshot (default: 50).")
     refresh = inbox_ops.add_parser("refresh-expired")
     refresh.add_argument("--ids", nargs="+", metavar="REQUEST_ID")
+    refresh.add_argument(
+        "--cursor", type=int, default=0,
+        help="Continue from next_cursor with the same selection and a new request ID.",
+    )
     refresh.add_argument("--request-id")
     inbox_ops.add_parser("notify-status", help="Show webhook configuration and delivery status.")
     notify = inbox_ops.add_parser("notify", help="Send the current inbox digest to the configured webhook.")
@@ -490,10 +495,10 @@ def _answer_action(answer, key):
     return {key: token, "decision": "answer", "text": text}
 
 
-def _operate_inbox(service, args, *, inbox_snapshot=None):
+def _operate_inbox(service, args, *, inbox_snapshot=None, inbox_requests=None):
     work_id = getattr(args, "work_id", None)
     if args.inbox_command == "refresh-expired":
-        return service.refresh_expired(ids=args.ids, request_id=args.request_id)
+        return service.refresh_expired(ids=args.ids, request_id=args.request_id, cursor=args.cursor)
     if args.inbox_command == "notify-status":
         return service.notification_status()
     if args.inbox_command == "notify":
@@ -505,20 +510,36 @@ def _operate_inbox(service, args, *, inbox_snapshot=None):
             limit=getattr(args, "limit", 50),
         )
 
-    snapshot = args.snapshot
-    limit = getattr(args, "limit", 50)
-    if snapshot is None and inbox_snapshot is not None:
-        # The digest covers only the displayed pending items, even when the
-        # listing included expired requests. Reuse the same scope by default.
-        snapshot = inbox_snapshot["digest"]
-        work_id = getattr(args, "work_id", inbox_snapshot.get("work_id"))
-        limit = getattr(args, "limit", inbox_snapshot.get("limit", 50))
+    from .inbox import EXACT_TOKEN
+
     actions = [
         {"token": token, "decision": decision}
         for decision in ("approve", "deny", "allow_extra_attempt")
         for token in getattr(args, decision)
     ]
     actions.extend(_answer_action(answer, "token") for answer in args.answer)
+    snapshot = args.snapshot
+    limit = getattr(args, "limit", 50)
+    needs_snapshot = any(not EXACT_TOKEN.fullmatch(action["token"]) for action in actions)
+    saved = inbox_requests.get(args.request_id) if inbox_requests is not None else None
+    if saved is not None and (needs_snapshot or snapshot is not None):
+        original_snapshot, original_work, original_limit = saved
+        if snapshot is None:
+            snapshot = original_snapshot
+        work_id = getattr(args, "work_id", original_work)
+        limit = getattr(args, "limit", original_limit)
+    elif snapshot is None and needs_snapshot and inbox_snapshot is not None:
+        # The digest covers only displayed pending items, even when the listing
+        # included expired requests. Exact references never inherit this scope.
+        snapshot = inbox_snapshot["digest"]
+        work_id = getattr(args, "work_id", inbox_snapshot["work_id"])
+        limit = getattr(args, "limit", inbox_snapshot["limit"])
+    if inbox_requests is not None and snapshot is not None and args.request_id:
+        # Remember before sending: a lost response can still mean acceptance.
+        inbox_requests.setdefault(args.request_id, (snapshot, work_id, limit))
+        inbox_requests.move_to_end(args.request_id)
+        if len(inbox_requests) > 100:
+            inbox_requests.popitem(last=False)
     return service.decide_inbox(
         actions, work_id=work_id, snapshot=snapshot, limit=limit, request_id=args.request_id
     )
@@ -535,9 +556,9 @@ def _render_command(value, args):
         render(value)
 
 
-def operate(service, args, *, inbox_snapshot=None):
+def operate(service, args, *, inbox_snapshot=None, inbox_requests=None):
     if args.command == "inbox":
-        return _operate_inbox(service, args, inbox_snapshot=inbox_snapshot)
+        return _operate_inbox(service, args, inbox_snapshot=inbox_snapshot, inbox_requests=inbox_requests)
     if args.command == "ops":
         op = args.ops_command
         if op == "health":
@@ -829,6 +850,7 @@ def attach(service, *, input_fn=input, context="default"):
     if focus and focus["work_id"]:
         render({"focus": focus})
     last_inbox = None
+    last_inbox_requests = OrderedDict()
     while True:
         try:
             line = input_fn("service> ")
@@ -882,7 +904,9 @@ def attach(service, *, input_fn=input, context="default"):
                     else:
                         render([r.data() for r in service.requests(focus["work_id"])])
                 else:
-                    value = operate(service, args, inbox_snapshot=last_inbox)
+                    value = operate(
+                        service, args, inbox_snapshot=last_inbox, inbox_requests=last_inbox_requests
+                    )
                     if args.command == "inbox" and args.inbox_command in {None, "list"}:
                         last_inbox = {
                             "digest": value["digest"],

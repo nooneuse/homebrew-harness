@@ -122,6 +122,7 @@ class DecisionBatches:
                 "payload": signature,
                 "batch_id": identity,
                 "results": {},
+                "hashed_child_keys": True,
                 "checkpoint": "service:" + self.runtime.id,
             }
             self.ms.db._put(conn, "service_batch_decisions", key, receipt)
@@ -132,9 +133,14 @@ class DecisionBatches:
             ):
                 continue
             ref = refs[decision["id"]]
-            child_id = "batch_" + request_key(
-                "batch-child", identity, request_id + ":" + decision["id"]
-            )
+            child_key = fingerprint([request_id, decision["id"]])
+            # An interrupted pre-upgrade batch must still find any old child
+            # receipt. Oversized legacy keys could never have been accepted.
+            if not receipt.get("hashed_child_keys"):
+                legacy_key = request_id + ":" + decision["id"]
+                if len(legacy_key) <= 256:
+                    child_key = legacy_key
+            child_id = "batch_" + request_key("batch-child", identity, child_key)
             control_id = "decision_" + request_key("decision", str(ref), child_id)
             choice = {k: decision[k] for k in ("decision", "text") if k in decision}
             try:

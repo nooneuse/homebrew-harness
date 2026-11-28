@@ -9,6 +9,14 @@ from homebrew_harness.services.protocol import fingerprint
 from .git import StaleDelivery
 
 
+class StalePublication(StaleDelivery):
+    """The code is still current, but its queued automatic wording is not."""
+
+
+def context_hash(work):
+    return fingerprint(work.get("execution_context", []))
+
+
 def actions(store, row, conn):
     return [json.loads(value) for value, in conn.execute(
         "SELECT value FROM records WHERE section='service_actions' AND owner=? "
@@ -57,6 +65,21 @@ def basis(store, row, rejected, conn):
     return fingerprint(evidence)
 
 
+def mark_redraft(store, row, conn, action_id):
+    """Restart only the current, unpublished wording lane, not code validation."""
+    if (row["state"] != "review_branch_ready" or row.get("observation_terminal")
+            or (row.get("candidate") or {}).get("artifacts_retired")
+            or not row.get("frozen") or row["frozen"] != store.freeze(row)
+            or store.merged_pr(conn, row)):
+        return False
+    row.update(publication=None, publication_basis=None, publication_redraft=True,
+               publication_redraft_action=action_id, error=None, error_detail=None, error_info=None,
+               revision=row["revision"] + 1)
+    store.put(conn, "changesets", row)
+    store.ms.changed(conn, row["work_id"])
+    return True
+
+
 def prepare(delivery, row):
     """Accept a writing job; never restart code validation or replay a denied plan."""
     store = delivery.store
@@ -67,7 +90,7 @@ def prepare(delivery, row):
         if current["revision"] != row["revision"] or current["state"] != row["state"]:
             return True  # A concurrent answer or transition already advanced this candidate.
         redraft = current.get("publication_redraft")
-        if current.get("change_request") and not redraft and current["state"] not in {
+        if current.get("change_request") and not current.get("draft_published") and not redraft and current["state"] not in {
             "publication_denied", "publication_attention",
         }:
             return False
@@ -89,11 +112,9 @@ def prepare(delivery, row):
             return True
         existing = actions(store, current, conn)
         if any(action["state"] in {"started", "unknown"} for action in existing):
-            raise boundary_error(ValueError, "delivery_contract", "Publication effects must settle before changing their wording.")
+            return True  # Reconcile the external write before admitting new wording.
         for action in existing:
-            if action["state"] in {"queued", "awaiting_approval"}:
-                action.update(state="superseded", error="publication_redraft", revision=action["revision"] + 1)
-                store.put(conn, "actions", action)
+            store.supersede_unstarted(conn, action, "publication_redraft")
         current.pop("publication_redraft", None)
         current.update(state="publication_drafting", publication_basis=signature,
                        publication_feedback=rejected, error=None, error_detail=None, error_info=None,
@@ -111,8 +132,10 @@ def accept(store, row, job, result, conn):
     if row["state"] != "publication_drafting":
         raise StaleDelivery("Publication job is no longer current.")
     if any(action["state"] in {"started", "unknown"}
-           for action in actions(store,row,conn)):
+           for action in actions(store, row, conn)):
         raise boundary_error(ValueError, "delivery_contract", "Publication already has an accepted external effect.")
+    if row["frozen"] != store.freeze(row):
+        raise StaleDelivery("Code quality changed while drafting publication.")
     rejected = job["input"].get("feedback")
     if result.get("human_required"):
         row.update(state="publication_attention", error="publication_needs_operator",
@@ -127,5 +150,3 @@ def accept(store, row, job, result, conn):
                                    "job_id": job["id"]}]
     row.update(publication=result, state="review_branch_ready", error=None,
                error_detail=None, error_info=None)
-    if row["frozen"] != store.freeze(row):
-        raise StaleDelivery("Code quality changed while drafting publication.")

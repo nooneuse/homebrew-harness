@@ -81,6 +81,8 @@ def _project(maintenance, value, work_id):
                 head=action["plan"]["commit"],
                 method=action["plan"].get("method"),
             )
+            if action.get("explicit_publication") is True or value.get("explicit_publication") is True:
+                arguments["explicit_publication"] = True
         elif value["kind"] == "ci_repair":
             delivery = maintenance.delivery
             if delivery is None:

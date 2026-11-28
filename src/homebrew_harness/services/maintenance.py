@@ -111,7 +111,6 @@ class Maintenance:
         }
 
     def poll_loop(self):
-        self.poll_started = True
         try:
             while not self.stop.wait(0.05):
                 meta = self.runtime.store.get(self.store.id)
@@ -186,6 +185,7 @@ class Maintenance:
                 )
             except WorkAccepted:
                 pass
+            self.poll_started = True
             self.runtime.store.runtime_failure(self.runtime.header, "maintenance")
             while not self.stop.wait(0.05):
                 meta = self.runtime.store.get(self.store.id)
@@ -406,9 +406,7 @@ class Maintenance:
         if method == "inbox_refresh_expired":
             from .inbox import refresh_expired
 
-            return refresh_expired(
-                self.runtime, ids=payload.get("ids"), request_id=request_id
-            )
+            return refresh_expired(self.runtime, **payload, request_id=request_id)
         if method in {"batch_create", "batch_decide"}:
             from .delivery.batches import DecisionBatches
 

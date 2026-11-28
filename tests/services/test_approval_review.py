@@ -164,6 +164,7 @@ class ServiceReview(unittest.TestCase):
             "discussions": {
                 "id": "discussion", "subject": {"kind": "change_request", "number": 1},
                 "reason": "The scope is clear.", "alignment": "Preserves compatibility.",
+                "operator_note": "Support offline export only; leave cloud sync out of scope.",
                 "projection": {"draft": draft, "facts": [{"text": "x" * 50000}]},
                 "review_id": "snapshot", "last_round": "round",
             },
@@ -183,6 +184,7 @@ class ServiceReview(unittest.TestCase):
         self.assertEqual(discussion["projection"]["draft"], draft)
         self.assertTrue(discussion["projection"]["facts"]["truncated"])
         self.assertEqual(discussion["alignment"], rows["discussions"]["alignment"])
+        self.assertEqual(discussion["operator_note"], rows["discussions"]["operator_note"])
         self.assertEqual(discussion["review_snapshot"]["coverage"], {"complete": True})
         self.assertEqual(context["host_scope"]["communication_policy"], {"auto_intents": []})
         self.assertEqual(context["cwd"], str(workspace))
@@ -278,6 +280,56 @@ class ServiceReview(unittest.TestCase):
                 self.assertFalse(published)
                 client.chat.completions.create.assert_not_called()
                 self.assertEqual(request["state"], "pending")
+
+    def test_explicit_pr_publication_stays_manual_when_delivery_is_delegated(self):
+        from homebrew_harness.services.request_views import project
+
+        runtime, request, published, client, _ = self.runtime(["delivery_authority"])
+        runtime.workers = Mock()
+        maintenance = runtime.maintenance
+        maintenance.runtime = runtime
+        maintenance.store.id = runtime.id
+        maintenance.delivery = SimpleNamespace(store=SimpleNamespace(
+            current=Mock(), spec={"auto_publish_pr_text": False},
+        ))
+        plan = {"commit": "a" * 40, "title": "Fix parser", "body": "Preserve existing behavior."}
+        decision = {
+            "id": request["ref"]["id"], "kind": "delivery_authority", "revision": 0,
+            "work_id": "work-fixture", "requirements_revision": 0,
+            "action_id": "action-fixture", "changeset_id": "change-fixture",
+            "candidate": {"scope": "delivery", "plan": str(plan)},
+            "expires_at": request["expires_at"], "explicit_publication": True,
+        }
+        action = {"kind": "ensure_change_request", "plan": plan,
+                  "state": "awaiting_approval", "explicit_publication": True}
+        rows = {"decisions": decision, "actions": action, "changesets": {}}
+        maintenance.store.get = lambda section, identity: rows[section]
+        runtime.requests = lambda: (
+            [project(maintenance, decision, None)] if request["state"] == "pending" else []
+        )
+        reviewer = ServiceApprovalReview(runtime)
+        self.addCleanup(reviewer.close)
+
+        view, = runtime.requests()
+        self.assertIs(view["arguments"]["explicit_publication"], True)
+        self.assertEqual(view["state"], "pending")
+        self.assertIsNone(reviewer.context(view))
+        reviewer.tick()
+        runtime.workers.start.assert_not_called()
+        reviewer.run()
+        client.chat.completions.create.assert_not_called()
+        self.assertFalse(published)
+        self.assertFalse(runtime.store.runtime.items("approval_reviews"))
+        with self.assertRaisesRegex(ValueError, "no longer pending or delegated"):
+            reviewer.retry(view["ref"]["id"], view["ref"]["revision"])
+
+        # The same text from an implicit delivery plan can still be reviewed.
+        del action["explicit_publication"], decision["explicit_publication"]
+        reviewer.run()
+        client.chat.completions.create.assert_called_once()
+        self.assertEqual(published, [("service_decide", {
+            "id": view["ref"]["id"], "revision": 0, "decision": "approve",
+        })])
 
     def test_delivery_review_includes_frozen_plan_and_quality_facts(self):
         runtime, request, published, client, payloads = self.runtime(

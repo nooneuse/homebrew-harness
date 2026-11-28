@@ -8,7 +8,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from homebrew_harness import RemoteService
+from homebrew_harness import Harness, HostConfig, RemoteService, ServiceSpec
 from homebrew_harness.cli import main
 from homebrew_harness.contracts import SDKError
 from homebrew_harness.runtime.limits import current_limits
@@ -47,6 +47,16 @@ class InboxTests(unittest.TestCase):
         with redirect_stderr(io.StringIO()) as output:
             self.assertEqual(main(["service", "--cwd", str(self.control), "inbox", service.id, *args]), 1)
         return output.getvalue()
+
+    def set_frame_limit(self, size):
+        self.host.close()
+        self.host = Harness(
+            workdir=self.control,
+            config=HostConfig.from_files(
+                env_file=self.env, shutdown_seconds=5, runtime_limits={"control_frame_bytes": size},
+            ),
+        )
+        self.addCleanup(self.host.close)
 
     def test_summary_redaction_limits_and_cli_text_vs_json(self):
         service = self.start(auto=False)
@@ -97,6 +107,47 @@ class InboxTests(unittest.TestCase):
             self.assertEqual(store.get("decisions", request["id"])["state"], state)
         self.assertEqual(store.get("decisions", answered["id"])["answer"], "variant = A")
         self.assertEqual(service.inbox()["items"], [])
+
+    def test_text_ui_reuses_snapshot_scope_and_limit_after_relisting(self):
+        service = self.start(auto=False)
+        service.pause("all")
+        first = self.seed(service, "Use the originally listed decision")
+        second = self.seed(service, "Do not decide the later listing")
+        decide = "inbox decide --approve 1 --request-id attach-replay"
+        lines = iter([
+            f"inbox list --work-id {first['work_id']} --limit 1",
+            decide,
+            f"inbox list --work-id {second['work_id']} --limit 2",
+            decide,
+            "exit",
+        ])
+        with RemoteService.from_root(self.control, control=True) as remote, redirect_stdout(io.StringIO()) as output:
+            attach(remote, input_fn=lambda _: next(lines))
+        receipt = service.receipt("attach-replay")["result"]
+        self.assertEqual(output.getvalue().count(json.dumps(receipt, ensure_ascii=False, indent=2)), 2)
+        self.assertEqual(list(receipt["results"]), [first["id"]])
+        self.assertEqual([r.ref.id for r in service.requests()], [second["id"]])
+
+    def test_text_ui_exact_answer_ignores_stale_scoped_snapshot(self):
+        service = self.start(auto=False)
+        service.pause("all")
+        first = self.seed(service, "Resolve the listed decision separately")
+        second = self.seed(service, "Which variant?", disposition="needs_info")
+
+        def commands():
+            yield f"inbox list --work-id {first['work_id']} --limit 1"
+            request = service.requests(first["work_id"])[0]
+            service.decide(request, "approve")
+            yield f"inbox decide --answer '{second['id']}:{second['revision']}=Use A' --request-id exact-attach"
+            yield "exit"
+
+        lines = commands()
+        with RemoteService.from_root(self.control, control=True) as remote, redirect_stdout(io.StringIO()) as output:
+            attach(remote, input_fn=lambda _: next(lines))
+        self.assertIn('"complete": true', output.getvalue())
+        receipt = service.receipt("exact-attach")
+        self.assertEqual(receipt["result"]["results"][second["id"]]["state"], "confirmed")
+        self.assertEqual(service.runtime.maintenance.store.get("decisions", second["id"])["answer"], "Use A")
 
     def test_short_indices_cannot_approve_a_request_that_shifted_into_view(self):
         service = self.start(auto=False)
@@ -187,6 +238,55 @@ class InboxTests(unittest.TestCase):
         self.assertEqual(result["results"][second["id"]]["state"], "confirmed")
         self.assertEqual(service.receipt("partial")["result"], result)
 
+    def test_batch_accepts_a_full_length_request_id(self):
+        service = self.start(auto=False)
+        service.pause("all")
+        request = self.seed(service, "Approve under a long idempotency key")
+        batch = service.batch(service.requests())
+        decisions = [{"id": request["id"], "decision": "approve"}]
+        request_id = "a" * 256
+        result = service.decide_batch(batch["id"], decisions, request_id=request_id)
+        self.assertEqual(result["results"][request["id"]]["state"], "confirmed")
+        self.assertEqual(service.decide_batch(batch["id"], decisions, request_id=request_id), result)
+
+    def test_http_receipt_does_not_expose_frozen_answer_text(self):
+        self.set_frame_limit(2048)
+        service = self.start(auto=False)
+        service.pause("all")
+        request = self.seed(service, "Choose a detailed approach", disposition="needs_info")
+        answer = "a" * 1550
+        actions = [{"token": f"{request['id']}:{request['revision']}", "decision": "answer", "text": answer}]
+        with RemoteService.from_root(self.control, control=True) as remote:
+            result = remote.decide_inbox(actions, request_id="long-answer")
+            self.assertEqual(result["results"][request["id"]]["state"], "confirmed")
+            receipt = remote.receipt("long-answer")
+            self.assertEqual(set(receipt), {"service_id", "method", "payload", "result", "checkpoint"})
+            self.assertEqual(receipt["result"], result)
+            self.assertEqual(remote.decide_inbox(actions, request_id="long-answer"), result)
+        self.assertEqual(service.runtime.maintenance.store.get("decisions", request["id"])["answer"], answer)
+
+    def test_small_local_and_remote_frames_use_the_same_inbox_snapshot(self):
+        self.set_frame_limit(1024)
+        service = self.start(auto=False)
+        service.pause("all")
+        first = self.seed(service, "First decision", subject={"kind": "issue", "number": 1})
+        self.seed(service, "Second decision")
+        listed = service.inbox()
+        self.assertEqual([item["ref"]["id"] for item in listed["items"]], [first["id"]])
+        with RemoteService.from_root(self.control, control=True) as remote:
+            self.assertEqual(remote.inbox(), listed)
+        result = service.decide_inbox([{"token": "1", "decision": "approve"}], snapshot=listed["digest"])
+        self.assertEqual(result["results"][first["id"]]["state"], "confirmed")
+
+    def test_manual_inbox_advertises_exact_controls_instead_of_inbox_decide(self):
+        self.peer.native_attention = "Which behavior?"
+        service = self.host.services.start(ServiceSpec(str(self.workspace), profile="manual"))
+        service.work.submit("Ask before making changes")
+        inbox = eventually(lambda: (view if (view := service.inbox())["items"] else None), 15)
+        self.assertEqual(inbox["items"][0]["kind"], "attention")
+        self.assertIn("Use approve, deny, or answer with the exact request ID and revision", inbox["summary"])
+        self.assertNotIn("inbox decide", inbox["summary"])
+
     def test_later_service_page_is_available_for_batch_creation(self):
         service = self.start(auto=False)
         service.pause("all")
@@ -275,34 +375,43 @@ class InboxTests(unittest.TestCase):
         with self.assertRaises(SDKError):
             service.refresh_expired([], request_id="refresh-one")
         self.assertFalse(reply["has_more"])
+        self.assertIsNone(reply["next_cursor"])
         result = service.refresh_expired(request_id="refresh-all")
         self.assertEqual([r["id"] for r in result["refreshed"]], [unselected["id"]])
         self.assertFalse(result["has_more"])
+        self.assertIsNone(result["next_cursor"])
 
-    def test_refresh_fits_remote_control_frame_and_rolls_back_overflow(self):
+    def start_with_refresh_frame(self, frame_bytes):
         from homebrew_harness import Harness, HostConfig
 
         self.host.close()
         self.host = Harness(
             workdir=self.control,
             config=HostConfig.from_files(
-                env_file=self.env, shutdown_seconds=5, runtime_limits={"control_frame_bytes": 2048},
+                env_file=self.env, shutdown_seconds=5, runtime_limits={"control_frame_bytes": frame_bytes},
             ),
         )
         self.addCleanup(self.host.close)
         service = self.start(auto=False, authority_seconds=3600)
         service.pause("all")
+        return service
+
+    def test_refresh_fits_remote_control_frame_and_rolls_back_overflow(self):
+        service = self.start_with_refresh_frame(2048)
         requests = [self.seed(service, f"Plan {i}", elapsed=60) for i in range(20)]
         store = service.runtime.maintenance.store
         activity = service.store.get(service.id).get("activity", 0)
         with RemoteService.from_root(self.control, control=True) as remote:
             first = remote.refresh_expired(request_id="batch-1")
             self.assertTrue(first["has_more"])
+            self.assertTrue(first["next_cursor"])
             self.assertEqual(first["skipped"], [])
             count = len(first["refreshed"])
             self.assertTrue(0 < count < len(requests))
             self.assertEqual(first, remote.receipt("batch-1")["result"])
             self.assertEqual(first, remote.refresh_expired(request_id="batch-1"))
+            with self.assertRaisesRegex(SDKError, "another command payload"):
+                remote.refresh_expired(request_id="batch-1", cursor=first["next_cursor"])
             self.assertEqual([r["id"] for r in first["refreshed"]], [r["id"] for r in requests[:count]])
             self.assertEqual(service.store.get(service.id)["activity"], activity + count)
             for original, renewed in zip(requests, first["refreshed"]):
@@ -317,24 +426,92 @@ class InboxTests(unittest.TestCase):
             for index in range(2, len(requests) + 1):
                 if not page["has_more"]:
                     break
-                request_id = f"batch-{index}"
-                page = remote.refresh_expired(request_id=request_id)
+                options = {"request_id": f"batch-{index}", "cursor": page["next_cursor"]}
+                page = remote.refresh_expired(**options)
                 self.assertTrue(page["refreshed"])
-                self.assertEqual(page, remote.receipt(request_id)["result"])
+                self.assertEqual(page, remote.receipt(options["request_id"])["result"])
+                self.assertEqual(page, remote.refresh_expired(**options))
                 renewed_ids.extend(r["id"] for r in page["refreshed"])
             self.assertFalse(page["has_more"])
+            self.assertIsNone(page["next_cursor"])
             self.assertEqual(renewed_ids, [r["id"] for r in requests])
 
             # These IDs fit in the request, but the skipped entries' UTF-8 bytes
-            # plus receipt metadata cannot all fit in one response.
+            # plus receipt metadata cannot all fit in one response. Continue with
+            # the full selection; duplicate and no-longer-expired IDs count once.
             missing = ["界" * 29 + str(i) for i in range(17)]
-            skipped = remote.refresh_expired(missing, request_id="skip-bounded")
+            last = self.seed(service, "Selected expired request after missing IDs", elapsed=60)
+            expected_skipped = [requests[0]["id"], *missing]
+            selection = [*expected_skipped, missing[0], last["id"]]
+            skipped = remote.refresh_expired(selection, request_id="skip-bounded")
             self.assertTrue(skipped["has_more"])
             self.assertEqual(skipped["refreshed"], [])
             count = len(skipped["skipped"])
-            self.assertTrue(0 < count < len(missing))
-            self.assertEqual([r["id"] for r in skipped["skipped"]], missing[:count])
+            self.assertTrue(0 < count < len(expected_skipped))
+            self.assertEqual([r["id"] for r in skipped["skipped"]], expected_skipped[:count])
             self.assertEqual(skipped, remote.receipt("skip-bounded")["result"])
-            rest = remote.refresh_expired(missing[count:], request_id="skip-rest")
+            cursor = skipped["next_cursor"]
+            for invalid in (None, True, "1", -1, 2**63, len(selection) + 1):
+                with self.assertRaisesRegex(SDKError, "Invalid refresh cursor"):
+                    remote.refresh_expired(selection, cursor=invalid, request_id="bad-cursor")
+            rest = json.loads(self.cli(
+                service, "refresh-expired", "--ids", *selection, "--cursor", str(cursor), "--request-id", "skip-rest",
+            ))
             self.assertFalse(rest["has_more"])
-            self.assertEqual([r["id"] for r in rest["skipped"]], missing[count:])
+            self.assertIsNone(rest["next_cursor"])
+            self.assertEqual([r["id"] for r in rest["skipped"]], expected_skipped[count:])
+            self.assertEqual([r["id"] for r in rest["refreshed"]], [last["id"]])
+            self.assertEqual(rest, remote.receipt("skip-rest")["result"])
+
+    def test_refresh_cursor_advances_past_a_page_of_unrenewable_requests(self):
+        service = self.start_with_refresh_frame(1024)
+        revoked = [self.seed(service, f"Revoked plan {i}", elapsed=60) for i in range(8)]
+        for request in revoked:
+            service.store.update_work(service.runtime.header, request["work_id"], authority={"revoked": True})
+        eligible = self.seed(service, "Still the current plan", elapsed=60)
+        with RemoteService.from_root(self.control, control=True) as remote:
+            page = remote.refresh_expired(request_id="scan-0")
+            self.assertTrue(page["has_more"])
+            self.assertTrue(page["skipped"])
+            self.assertEqual(page["refreshed"], [])
+            skipped = list(page["skipped"])
+            refreshed = []
+            for i in range(1, len(revoked) + 2):
+                if not page["has_more"]:
+                    break
+                page = remote.refresh_expired(request_id=f"scan-{i}", cursor=page["next_cursor"])
+                skipped.extend(page["skipped"])
+                refreshed.extend(page["refreshed"])
+            self.assertFalse(page["has_more"])
+            self.assertIsNone(page["next_cursor"])
+        self.assertEqual([item["id"] for item in skipped], [r["id"] for r in revoked])
+        self.assertEqual([item["id"] for item in refreshed], [eligible["id"]])
+
+    def test_refresh_budgets_redacted_bytes_for_response_and_receipt(self):
+        from homebrew_harness.security import data_boundary
+
+        self.start_with_refresh_frame(2048)
+        private = "redactme"
+        missing = [private * 12 + str(i) for i in range(12)]
+        expected_ids = ["[redacted]" * 12 + str(i) for i in range(len(missing))]
+        returned_ids = []
+        cursor = 0
+        with RemoteService.from_root(self.control, control=True) as remote:
+            with patch.object(data_boundary, "_VALUES", data_boundary._VALUES | {private}):
+                for i in range(len(missing)):
+                    request_id = private * 31 + f"-{i}"
+                    options = {"request_id": request_id, "cursor": cursor}
+                    page = remote.refresh_expired(missing, **options)
+                    self.assertEqual(page["request_id"], "[redacted]" * 31 + f"-{i}")
+                    self.assertEqual(page["refreshed"], [])
+                    self.assertTrue(page["skipped"])
+                    self.assertEqual(page, remote.receipt(request_id)["result"])
+                    self.assertEqual(page, remote.refresh_expired(missing, **options))
+                    if i == 0:
+                        self.assertTrue(page["has_more"])
+                    returned_ids.extend(item["id"] for item in page["skipped"])
+                    cursor = page["next_cursor"]
+                    if not page["has_more"]:
+                        break
+        self.assertIsNone(cursor)
+        self.assertEqual(returned_ids, expected_ids)

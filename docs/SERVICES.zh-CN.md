@@ -329,7 +329,7 @@ homebrew-harness service inbox SERVICE_ID refresh-expired --request-id refresh-1
 
 使用短编号或不带修订号的请求 ID 时，须提供列表中的快照指纹，并使用相同的 Work 范围和条数上限。待办项发生变化时，请重新列出收件箱。使用 JSON 引用中的精确 `REQUEST_ID:REVISION` 则无需提供快照。Text UI 中省去命令前缀和服务 ID，默认沿用上次列表的快照、范围和条数上限。回答多个问题可重复传 `--answer TOKEN=TEXT`。只有在明确批准 CI 修复时，才可用 `--allow-extra-attempt TOKEN` 授权额外一次尝试。若未收到结果，可用相同的 `--request-id` 重试同一条决定命令。
 
-`repository_maintenance` 即使不配置 delivery 或 communication，也支持批处理和过期续期。`batch decide` 同样支持 `--answer REQUEST_ID=TEXT`。续期只重新开放仍有效且符合条件的服务请求，不批准请求，也不续期原生 Run 请求。用 `--ids REQUEST_ID ...` 限定要续期的请求。如果结果中有 `has_more: true`，请使用新的请求 ID 继续。同步和异步 Python 均可使用 `service.inbox(...)`、`service.decide_inbox(actions, ...)` 或 `service.refresh_expired(ids=..., request_id=...)`。
+`repository_maintenance` 即使不配置 delivery 或 communication，也支持批处理和过期续期。`batch decide` 同样支持 `--answer REQUEST_ID=TEXT`。续期只重新开放仍有效且符合条件的服务请求，不批准请求，也不续期原生 Run 请求。用 `--ids REQUEST_ID ...` 限定要续期的请求。如果结果中有 `has_more: true`，请将返回的 `next_cursor` 传给 `--cursor`，保持 `--ids` 列表及顺序不变（如有），并使用新的请求 ID。同步和异步 Python 均可使用 `service.inbox(...)`、`service.decide_inbox(actions, ...)` 或 `service.refresh_expired(ids=..., cursor=..., request_id=...)`。
 
 完整确定性 P2 演示：
 

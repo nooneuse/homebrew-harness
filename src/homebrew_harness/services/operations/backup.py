@@ -254,14 +254,6 @@ def restore(manager, row, manifest, source):
         if state["backup_id"] != row["payload"]["id"]:
             raise ValueError("Restore journal belongs to another backup.")
         file.publish(json.dumps(state).encode(), version, 0o600)
-    # Preserve controls and accepted maintenance receipts independently of backup age.
-    with manager.store.db.connection() as conn:
-        overlay = [
-            (section, key, value)
-            for section, key, value in conn.execute(
-                "SELECT section,key,value FROM records WHERE section IN ('service_meta','service_operations','service_incidents','service_commands','service_upgrade_plans','service_retention_plans')"
-            )
-        ]
     with ExitStack() as resources:
         for root in sorted(map(Path, actual.values())):
             resources.enter_context(maintenance(root))
@@ -288,13 +280,29 @@ def restore(manager, row, manifest, source):
                     raise ValueError("Restore staging database cannot be a symlink.")
                 with manager.runtime.lock:
                     manager.restoring = True
+                    # Preserve accepted maintenance commands even when the
+                    # backup predates them, including unfinished inbox batches.
                     with manager.store.db.connection() as conn:
-                        overlay = [
-                            tuple(r)
-                            for r in conn.execute(
-                                "SELECT section,key,value,owner,revision FROM records WHERE section IN ('service_meta','service_operations','service_incidents','service_commands','service_upgrade_plans','service_retention_plans')"
+                        overlay = conn.execute(
+                            """
+                            WITH frozen_batches(id) AS (
+                                SELECT json_extract(value, '$.batch_id') FROM records
+                                WHERE section='service_inbox_decisions'
+                                UNION
+                                SELECT json_extract(value, '$.batch_id') FROM records
+                                WHERE section='service_commands'
+                                  AND json_extract(value, '$.method')='inbox_decide'
+                                  AND json_extract(value, '$.result.complete')=0
                             )
-                        ]
+                            SELECT section,key,value,owner,revision FROM records
+                            WHERE section IN ('service_meta','service_operations','service_incidents',
+                                'service_commands','service_upgrade_plans','service_retention_plans',
+                                'service_inbox_decisions')
+                               OR (section='service_batches' AND key IN (SELECT id FROM frozen_batches))
+                               OR (section='service_batch_decisions'
+                                   AND json_extract(value, '$.batch_id') IN (SELECT id FROM frozen_batches))
+                            """
+                        ).fetchall()
                 src = sqlite3.connect(origin.as_uri() + "?mode=ro", uri=True)
                 dst = sqlite3.connect(stage)
                 try:

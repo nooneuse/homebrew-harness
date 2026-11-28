@@ -441,10 +441,9 @@ class FlowTests(unittest.TestCase):
         self.assertNotEqual(job["id"], first_job)
         self.assertEqual((job["kind"], job["state"], job["revision"]),
                          ("ci_triage", "queued", resumed["revision"]))
-        note = (
-            f"Delivery clarification (ci_triage):\n"
-            f"Question (model): {reason}\nAnswer (operator): {answer}"
-        )
+        note = f"Delivery clarification (ci_triage): {answer}"
+        self.assertEqual(resumed["clarifications"][-1]["question"], reason)
+        self.assertEqual(resumed["clarifications"][-1]["question_origin"], "model")
         clarified = service.store.work(work.id)
         self.assertEqual(clarified["execution_context"], [prior_note, note])
         self.assertEqual(clarified["revision"], work_before["revision"] + 1)
@@ -555,6 +554,29 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(
             context["requirements_revision"], saved["requirements_revision"]
         )
+
+    def test_stale_preflight_does_not_overwrite_a_newer_action_or_changeset(self):
+        from homebrew_harness.services.delivery.git import StaleDelivery
+
+        service = self.start()
+        service.work.submit("Fix the scoped value.")
+        request = eventually(lambda: self.pending_target(service), 120)
+        service.pause("all")
+        store = service.runtime.maintenance.delivery.store
+        action = store.get("actions", request.arguments["action_id"])
+        row = store.get("changesets", action["changeset_id"])
+        service.decide(request, "approve")
+        queued = store.get("actions", action["id"])
+        err = StaleDelivery("An earlier observation is stale.")
+        self.assertFalse(store.recover_stale_action(action, err))
+        self.assertEqual(store.get("actions", action["id"]), queued)
+
+        started = store.update("actions", action["id"], state="started", attempts=1)
+        self.assertFalse(store.recover_stale_action(queued, err))
+        self.assertEqual(store.get("actions", action["id"]), started)
+        advanced = store.update("changesets", row["id"], state="review_waiting")
+        store.supersede_changeset(row, err)
+        self.assertEqual(store.get("changesets", row["id"]), advanced)
 
     def test_lost_pull_creation_ack_is_reconciled_without_duplicate_write(self):
         self.peer.drop = "pull"

@@ -229,12 +229,7 @@ class Delivery:
                         with control_scope(Deadline.after(self.spec["gate_seconds"])):
                             self.advance(row)
                     except StaleDelivery as error:
-                        self.store.update(
-                            "changesets",
-                            row["id"],
-                            state="superseded",
-                            error=type(error).__name__,
-                        )
+                        self.store.supersede_changeset(row, error)
                     except Exception as error:
                         from homebrew_harness.runtime.errors import (
                             annotate_error,
@@ -838,13 +833,7 @@ class Delivery:
                     return
             accepted = self.store.start_action(action)
         except StaleDelivery as error:
-            self.store.update(
-                "actions", action["id"], state="superseded", error=type(error).__name__
-            )
-            if action["kind"] == "merge_change_request":
-                current = self.store.get("changesets", action["changeset_id"])
-                if current["state"] == "merge_ready":
-                    self.store.commit_feedback(current, {"state": "review_waiting", "next_ci": 0})
+            self.store.recover_stale_action(action, error)
             return
         except Exception as error:
             self.store.preflight_failed(action, error)

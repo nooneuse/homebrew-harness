@@ -10,9 +10,10 @@ import unittest
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import redirect_stdout
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from homebrew_harness import RemoteService, ServiceSpec
+from homebrew_harness import Harness, HostConfig, RemoteService, ServiceSpec
 from homebrew_harness.cli import main
 from homebrew_harness.contracts import SDKError
 from homebrew_harness.security.data_boundary import redact
@@ -26,6 +27,7 @@ from tests.services import test_maintenance as fixture
 class Webhook:
     def __init__(self, port=0):
         self.calls = []
+        self.bodies = []
         self.status = 204
         self.retry_after = None
         self.wait = threading.Event()
@@ -37,8 +39,9 @@ class Webhook:
                 pass
 
             def do_POST(self):
-                body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
-                webhook.calls.append((self.path, dict(self.headers), body))
+                raw = self.rfile.read(int(self.headers["Content-Length"]))
+                webhook.bodies.append(raw)
+                webhook.calls.append((self.path, dict(self.headers), json.loads(raw)))
                 webhook.wait.wait(5)
                 detail = json.dumps({"message": f"private: {webhook.url} {self.headers.get('Authorization')}"}).encode()
                 status = webhook.status
@@ -178,6 +181,26 @@ class NotificationsTests(unittest.TestCase):
         time.sleep(1.3)
         self.assertEqual(len(webhook.calls), 2)  # unchanged digest is not a threshold trigger after restart
 
+    def test_attached_restart_uses_saved_webhook_environment(self):
+        saved = self.webhook()
+        other = self.webhook()
+        self.configure(saved.url)
+        service = self.start(profile="manual")
+        self.stop(service)
+        attach_env = self.base / "attach.env"
+        attach_env.write_text(
+            self.env.read_text().replace(saved.url, other.url).replace(self.token, "other-webhook-token")
+        )
+        with Harness(workdir=self.control, config=HostConfig.from_files(env_file=attach_env)) as host:
+            resumed = host.services.start(identity=service.id)
+            try:
+                self.assertTrue(resumed.send_notification(force=True, request_id="saved-webhook")["sent"])
+                self.assertEqual(len(saved.calls), 1)
+                self.assertEqual(saved.calls[0][1]["Authorization"], "Bearer " + self.token)
+                self.assertEqual(other.calls, [])
+            finally:
+                self.stop(resumed)
+
     def test_backoff_for_500_and_429_and_recovery_does_not_echo_secrets(self):
         webhook = self.webhook()
         webhook.status = 500
@@ -220,6 +243,56 @@ class NotificationsTests(unittest.TestCase):
         for private in (webhook.url, self.token):
             self.assertNotIn(private, data)
             self.assertEqual(redact(private), "[redacted]")
+
+    def test_retry_keeps_wire_body_and_backoff_when_outcome_writes_fail(self):
+        webhook = self.webhook()
+        webhook.status, webhook.retry_after = 429, 30
+        self.configure(webhook.url)
+        # Drive the worker directly with a controlled clock while using real POSTs.
+        with patch("homebrew_harness.services.notifications.ServiceNotifications.start"):
+            service = self.start(every_seconds=3600)
+        self.seed(service, "First pending item")
+        worker = service.runtime.notifications
+        db = worker.store.db
+        put = db._put
+
+        def fail_outcome(conn, section, key, value):
+            if section == "service_notifications":
+                raise OSError("outcome store temporarily unavailable")
+            return put(conn, section, key, value)
+
+        initial = now = time.time()
+        clock = SimpleNamespace(time=lambda: now)
+        with patch("homebrew_harness.services.notifications.time", clock):
+            with patch.object(db, "_put", fail_outcome), self.assertRaisesRegex(OSError, "outcome store"):
+                worker.tick()
+            self.assertEqual(len(webhook.calls), 1)
+            original_body = webhook.bodies[0]
+            original_key = webhook.calls[0][1]["Idempotency-Key"]
+            # An expired row changes the outgoing body without changing the pending digest.
+            self.seed(service, "Now visible as expired", expires_at=initial - 1)
+            self.assertEqual(service.inbox(include_expired=True)["counts"]["expired"], 1)
+            webhook.status, webhook.retry_after = 204, None
+            now = initial + 10
+            worker.tick()
+            failed = service.notification_status()
+            self.assertEqual(failed["attempts"], 1)
+            self.assertEqual(failed["next_retry_at"], initial + 30)
+            self.assertEqual(len(webhook.calls), 1)
+
+            now = initial + 30
+            with patch.object(db, "_put", fail_outcome), self.assertRaisesRegex(OSError, "outcome store"):
+                worker.tick()
+            self.assertEqual(webhook.bodies, [original_body, original_body])
+            self.assertEqual(webhook.calls[1][1]["Idempotency-Key"], original_key)
+            # The successful POST should settle without a third request.
+            worker.tick()
+            settled = service.notification_status()
+            self.assertEqual(settled["sent_count"], 1)
+            self.assertEqual(settled["attempts"], 0)
+            self.assertIsNone(settled["next_retry_at"])
+            self.assertEqual(settled["last_delivery_id"], original_key)
+            self.assertEqual(len(webhook.calls), 2)
 
     def test_connection_failure_retries_and_reuses_its_transport(self):
         with socket.socket() as sock:
@@ -337,6 +410,56 @@ class NotificationsTests(unittest.TestCase):
         self.assertIn('"sent": true', output.getvalue())
         self.assertEqual(len(webhook.calls), 2)
 
+    def test_manual_replay_never_reposts_after_receipt_write_failure(self):
+        webhook = self.webhook()
+        self.configure(webhook.url)
+        with patch("homebrew_harness.services.notifications.ServiceNotifications.start"):
+            service = self.start(profile="manual")
+        worker = service.runtime.notifications
+        db = worker.store.db
+        put = db._put
+
+        def fail_final_receipt(conn, section, key, value):
+            if section == "service_commands" and (value.get("result") or {}).get("sent"):
+                raise OSError("receipt store temporarily unavailable")
+            return put(conn, section, key, value)
+
+        with patch.object(db, "_put", fail_final_receipt):
+            with self.assertRaises(SDKError):
+                service.send_notification(force=True, request_id="uncertain-send")
+            prior = service.receipt("uncertain-send")["result"]
+            self.assertEqual(prior["reason"], "delivery_unknown")
+            self.assertEqual(service.send_notification(force=True, request_id="uncertain-send"), prior)
+            self.assertEqual(len(webhook.calls), 1)
+        worker.tick()
+        settled = service.receipt("uncertain-send")["result"]
+        self.assertTrue(settled["sent"])
+        self.assertEqual(service.send_notification(force=True, request_id="uncertain-send"), settled)
+        self.assertEqual(service.notification_status()["sent_count"], 1)
+        self.assertEqual(len(webhook.calls), 1)
+
+    def test_short_bearer_is_redacted_before_webhook_preview_clipping(self):
+        webhook = self.webhook()
+        short_token = "Q7kP2vZ"
+        credentials = self.base / "webhook.env"
+        credentials.write_text(f"WEBHOOK_URL={webhook.url}\nWEBHOOK_TOKEN={short_token}\n")
+        credentials.chmod(0o600)
+        service = self.start(credentials_file=str(credentials))
+        service.pause("all")
+        # Leave room for only part of the second token if redaction runs after clipping.
+        plan = f"Secret {short_token}: " + "x" * 483 + " " + short_token
+        self.seed(service, "Short credential in preview", plan=plan)
+        sent = service.send_notification(request_id="short-credential")
+        self.assertTrue(sent["sent"])
+        _, headers, body = webhook.calls[0]
+        self.assertEqual(headers["Authorization"], "Bearer " + short_token)
+        self.assertNotIn(short_token, json.dumps(body))
+        self.assertIn("Secret [redacted]", body["items"][0]["preview"])
+        self.assertNotIn(" Q7", body["items"][0]["preview"])
+        self.assertEqual(redact(short_token), short_token)  # not a global redaction rule
+        durable = service.store.runtime.get("service_notifications", service.id)
+        self.assertNotIn(short_token, json.dumps([durable, service.receipt("short-credential")]))
+
     def test_manual_send_with_pending_items_bypasses_retry_and_cooldown(self):
         webhook = self.webhook()
         self.configure(webhook.url)
@@ -355,12 +478,15 @@ class NotificationsTests(unittest.TestCase):
         self.assertTrue(service.send_notification()["sent"])
         self.assertEqual([payload["trigger"] for _, _, payload in webhook.calls], ["manual"] * 3)
 
-    def test_disabled_never_starts_a_worker_or_sends(self):
-        service = self.start(profile="manual", enabled=False)
-        self.assertIsNone(service.runtime.notifications.thread)
-        self.assertIsNone(service.runtime.notifications.transport)
-        self.assertFalse(service.notification_status()["enabled"])
-        self.assertEqual(service.send_notification(force=True), {"sent": False, "reason": "notifications_disabled"})
+    def test_disabled_never_reads_credentials_starts_a_worker_or_sends(self):
+        credentials = self.base / "missing-credentials.env"
+        with patch("homebrew_harness.services.notifications.read_notification_credentials") as read:
+            service = self.start(profile="manual", enabled=False, credentials_file=str(credentials))
+            self.assertIsNone(service.runtime.notifications.thread)
+            self.assertIsNone(service.runtime.notifications.transport)
+            self.assertFalse(service.notification_status()["enabled"])
+            self.assertEqual(service.send_notification(force=True), {"sent": False, "reason": "notifications_disabled"})
+            read.assert_not_called()
 
     def test_spec_compatibility_and_credential_file_boundaries(self):
         spec = ServiceSpec(str(self.workspace))

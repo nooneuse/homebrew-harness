@@ -132,7 +132,7 @@ MAINTENANCE_COMMANDS = {
     "batch_create": {"refs"},
     "batch_decide": {"id", "revision", "decisions"},
     "inbox_decide": {"actions", "work_id", "snapshot", "limit"},
-    "inbox_refresh_expired": {"ids"},
+    "inbox_refresh_expired": {"ids", "cursor"},
     "conversation_submit": {"text", "context", "work_id", "revision"},
     "service_decide": {"id", "revision", "decision", "text", "allow_extra_attempt"},
     "report_create": set(),

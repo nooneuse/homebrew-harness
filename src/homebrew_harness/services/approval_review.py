@@ -32,6 +32,9 @@ class ServiceApprovalReview:
     @staticmethod
     def requires_operator(view):
         arguments = view.get("arguments") or {}
+        if view["kind"] == "delivery_authority":
+            # Delegation does not cover caller-supplied PR wording.
+            return arguments.get("explicit_publication") is True
         if view["kind"] == "ci_repair":
             return bool((arguments.get("repair_attempts") or {}).get("extra_required"))
         if view["kind"] == "communication_authority":
@@ -124,6 +127,7 @@ class ServiceApprovalReview:
                     "subject": evidence_preview(discussion.get("subject"), 1000),
                     "reason": evidence_preview(discussion.get("reason")),
                     "alignment": evidence_preview(discussion.get("alignment")),
+                    "operator_note": evidence_preview(discussion.get("operator_note")),
                     "projection": {key: evidence_preview(projection[key])
                                    for key in ("facts", "questions", "findings", "draft")
                                    if key in projection},

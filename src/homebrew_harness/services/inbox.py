@@ -10,7 +10,10 @@ from homebrew_harness.security.data_boundary import redact
 
 from . import request_views
 from .maintenance_spec import text
-from .protocol import fingerprint, request_key
+from .protocol import VERSION, fingerprint, request_key
+
+EXACT_TOKEN = re.compile(r"([^:]+):([0-9]+)")
+_REPLAY_SECTION = "service_inbox_decisions"
 
 MAX_ITEMS = 100
 QUESTIONS = {"attention", "work_information", "discussion_information", "delivery_information"}
@@ -29,9 +32,9 @@ TITLES = {
 }
 
 
-def _display(value, limit):
+def _display(value, limit, redact_text=redact):
     # Redact before clipping, and strip terminal controls and Unicode format controls.
-    value = " ".join("".join(c if c.isprintable() else " " for c in redact(value)).split())
+    value = " ".join("".join(c if c.isprintable() else " " for c in redact_text(value)).split())
     return value if len(value) <= limit else value[: limit - 1] + "…"
 
 
@@ -39,7 +42,7 @@ def _preview(*parts):
     return "\n".join(part for part in parts if isinstance(part, str) and part.strip())
 
 
-def _item(runtime, request, active_work):
+def _item(runtime, request, active_work, redact_text):
     ref, kind = request["ref"], request["kind"]
     args = request.get("arguments") or {}
     title = TITLES.get(kind, kind.replace("_", " ").capitalize())
@@ -96,15 +99,15 @@ def _item(runtime, request, active_work):
         "action_type": "question" if question else "approval",
         "state": request["state"],
         "group_key": group,
-        "title": _display(title, 100),
-        "preview": _display(preview or request.get("reason") or request.get("question") or "", 500),
+        "title": _display(title, 100, redact_text),
+        "preview": _display(preview or request.get("reason") or request.get("question") or "", 500, redact_text),
         "expires_at": request.get("expires_at"),
         "created_at": created_at,
         **({"extra_required": bool(args["repair_attempts"]["extra_required"])} if kind == "ci_repair" else {}),
     }
 
 
-def _result(items):
+def _result(items, *, maintenance=True):
     for index, item in enumerate(items, 1):
         item["index"] = index
     actionable = [item for item in items if item["state"] == "pending"]
@@ -127,10 +130,13 @@ def _result(items):
             line += " (approval needs --allow-extra-attempt)"
         lines.append(line)
     if actionable:
-        lines.append('Use inbox decide --snapshot DIGEST with --approve N, --deny N, or --answer \'N=TEXT\'.')
+        if maintenance:
+            lines.append('Use inbox decide --snapshot DIGEST with --approve N, --deny N, or --answer \'N=TEXT\'.')
+        else:
+            lines.append("Use approve, deny, or answer with the exact request ID and revision from requests or inbox --json.")
     if any(item["kind"] == "test_grant" for item in actionable):
         lines.append("Use renew-tests for Run test grants.")
-    if counts["expired"]:
+    if maintenance and counts["expired"]:
         lines.append("Use inbox refresh-expired to renew eligible service requests, then list again.")
     return {
         "items": items,
@@ -141,7 +147,7 @@ def _result(items):
     }
 
 
-def build_inbox(runtime, *, work_id=None, include_expired=False, limit=50):
+def build_inbox(runtime, *, work_id=None, include_expired=False, limit=50, redact_text=redact):
     if type(limit) is not int or not 1 <= limit <= MAX_ITEMS:
         raise ValueError(f"Inbox limit must be an integer from 1 to {MAX_ITEMS}.")
     if type(include_expired) is not bool:
@@ -165,7 +171,7 @@ def build_inbox(runtime, *, work_id=None, include_expired=False, limit=50):
             return
         identity = request["ref"]["id"]
         if identity not in items:
-            item = _item(runtime, {**request, "state": state}, active_work)
+            item = _item(runtime, {**request, "state": state}, active_work, redact_text)
             if item:
                 items[identity] = item
 
@@ -192,13 +198,22 @@ def build_inbox(runtime, *, work_id=None, include_expired=False, limit=50):
         items.values(),
         key=lambda item: (item["state"] != "pending", item["created_at"] is None, item["created_at"] or 0),
     )[:limit]
-    result = _result(selected)
-    # The preview and its summary can contain multibyte characters.
-    budget = current_limits().control_frame_bytes - 1024
-    while selected and len(json.dumps(result, ensure_ascii=False).encode()) > budget:
-        selected.pop()
-        result = _result(selected)
-    return result
+    budget = current_limits().control_frame_bytes
+    while True:
+        result = _result(selected, maintenance=runtime.maintenance is not None)
+        envelope = {"version": VERSION, "service_id": runtime.id, "ok": True, "result": result}
+        if len(json.dumps(envelope, ensure_ascii=False, allow_nan=False).encode()) <= budget:
+            return result
+        if not selected:
+            raise ValueError("Inbox summary cannot fit in the control frame.")
+        if len(selected) == 1 and selected[0]["preview"]:
+            # Prefer preserving at least one exact reference to dropping all
+            # requests merely because the first item's display text is long.
+            selected[0]["preview"] = _display(
+                selected[0]["preview"], len(selected[0]["preview"]) // 2
+            ) if len(selected[0]["preview"]) > 2 else ""
+        else:
+            selected.pop()
 
 
 def _resolve_decisions(runtime, actions, work_id, snapshot, limit):
@@ -223,7 +238,7 @@ def _resolve_decisions(runtime, actions, work_id, snapshot, limit):
         if not isinstance(token, str) or not token.strip() or len(token) > 256:
             raise ValueError("Invalid inbox decision token.")
         if ":" in token:
-            match = re.fullmatch(r"([^:]+):([0-9]+)", token)
+            match = EXACT_TOKEN.fullmatch(token)
             if not match:
                 raise ValueError("Exact inbox references must use REQUEST_ID:REVISION.")
             exact[token] = (match[1], int(match[2]))
@@ -290,37 +305,50 @@ def decide_inbox(runtime, *, actions, work_id=None, snapshot=None, limit=50, req
     with db.write() as conn:
         meta = runtime.store.guard(conn, runtime.header)
         command = db._get(conn, "service_commands", key)
+        checkpoint = "service:" + runtime.id
         if command:
             if command["payload"] != signature:
                 raise ValueError("Control request_id has another command payload.")
-            if _complete(command["result"], command["resolved_decisions"]):
+            if command["result"]["complete"]:
                 return command["result"]
+            frozen = db._get(conn, _REPLAY_SECTION, key)
+            if frozen is None:
+                # Recover an interrupted decision accepted before this upgrade.
+                fields = ("batch_id", "revision", "resolved_decisions")
+                if not all(k in command for k in fields):
+                    raise ValueError("Frozen inbox decision is unavailable.")
+                frozen = {**{k: command.pop(k) for k in fields}, "checkpoint": checkpoint}
+                db._put(conn, _REPLAY_SECTION, key, frozen)
+                db._put(conn, "service_commands", key, command)
         else:
             if meta["state"] in {"stopping", "stopped"}:
                 raise ValueError("Service is stopping.")
             refs, decisions = _resolve_decisions(runtime, actions, work_id, snapshot, limit)
-            # Commit the batch and its command together before applying any decision.
+            # Commit the batch, replay state and receipt before applying any decision.
             batch = batches.create(refs, request_id, conn=conn, work_id=work_id)
+            db._put(conn, _REPLAY_SECTION, key, {
+                "batch_id": batch["id"], "revision": batch["revision"],
+                "resolved_decisions": decisions, "checkpoint": checkpoint,
+            })
             command = {
                 "service_id": runtime.id,
                 "method": method,
                 "payload": signature,
-                "batch_id": batch["id"],
-                "revision": batch["revision"],
-                "resolved_decisions": decisions,
                 "result": {"batch_id": batch["id"], "results": {}, "complete": False, "request_id": request_id},
-                "checkpoint": "service:" + runtime.id,
+                "checkpoint": checkpoint,
             }
             db._put(conn, "service_commands", key, command)
             # Execute exactly what replay will load, including storage redaction.
-            command = db._get(conn, "service_commands", key)
+            frozen = db._get(conn, _REPLAY_SECTION, key)
 
-    decisions = command["resolved_decisions"]
-    result = batches.apply(command["batch_id"], command["revision"], decisions, request_id)
+    decisions = frozen["resolved_decisions"]
+    result = batches.apply(frozen["batch_id"], frozen["revision"], decisions, request_id)
     result["complete"] = _complete(result, decisions)
     with db.write() as conn:
         runtime.store.guard(conn, runtime.header)
         db._put(conn, "service_commands", key, {**command, "result": result})
+        if result["complete"]:
+            conn.execute("DELETE FROM records WHERE section=? AND key=?", (_REPLAY_SECTION, key))
         return db._get(conn, "service_commands", key)["result"]
 
 
@@ -394,89 +422,125 @@ def _renew(maintenance, conn, request):
     raise ValueError("This request kind has no inbox renewal path.")
 
 
-def refresh_expired(runtime, *, ids=None, request_id):
-    from .protocol import VERSION
-
+def refresh_expired(runtime, *, ids=None, cursor=0, request_id):
     if ids is not None and (
         not isinstance(ids, list)
         or any(not isinstance(identity, str) or not 1 <= len(identity) <= 100 for identity in ids)
     ):
         raise ValueError("ids must be a list of request IDs.")
-    maintenance = runtime.maintenance
+    if type(cursor) is not int or not 0 <= cursor <= 2**63 - 1:
+        raise ValueError("Invalid refresh cursor.")
+    selection = None if ids is None else list(dict.fromkeys(ids))
+    if selection is not None and cursor > len(selection):
+        raise ValueError("Invalid refresh cursor for this selection.")
     method = "inbox_refresh_expired"
     checkpoint = "service:" + runtime.id
 
-    def apply(conn):
-        meta = runtime.store.guard(conn, runtime.header)
-        if meta["state"] in {"stopping", "stopped"}:
-            raise ValueError("Service is stopping.")
-        reply = {"refreshed": [], "skipped": [], "request_id": request_id, "has_more": False}
-        # The receipt's HTTP envelope is larger than the direct command reply.
-        # Its payload field is a fixed-width SHA-256 hex digest. Reserve the
-        # longer spelling of has_more (false) when sizing the empty envelope.
-        receipt = {
-            "service_id": runtime.id, "method": method, "payload": "0" * 64,
-            "result": reply, "checkpoint": checkpoint,
-        }
-        envelope = {"version": VERSION, "service_id": runtime.id, "ok": True, "result": receipt}
-
-        def encoded_size(value):
-            return len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode())
-
-        remaining = current_limits().control_frame_bytes - encoded_size(envelope)
-        if remaining < 0:
-            raise ValueError("Refresh receipt cannot fit in the control frame.")
-
-        def append_if_fits(key, item):
-            nonlocal remaining
-            entries = reply[key]
-            # Account for the default JSON list separator after the first item.
-            size = encoded_size(item) + (2 if entries else 0)
-            if size > remaining:
-                reply["has_more"] = True
-                return False
-            entries.append(item)
-            remaining -= size
-            return True
-
+    def candidates(conn):
         sql = (
-            "SELECT value FROM records WHERE section='service_decisions' AND owner=? "
+            "SELECT rowid,key,value FROM records WHERE section='service_decisions' AND owner=? "
             "AND json_extract(value,'$.state')='pending' AND json_extract(value,'$.expires_at')<=?"
         )
         parameters = (checkpoint, time.time())
-        if ids is not None:
-            sql += " AND key IN (SELECT value FROM json_each(?))"
-            parameters += (json.dumps(ids),)
-        rows = conn.execute(sql + " ORDER BY rowid", parameters).fetchall()
-        seen = set()
-        for (raw,) in rows:
-            request = json.loads(raw)
-            identity = request["id"]
-            seen.add(identity)
-            # A native helper may derive a different identity (e.g. a new Work
-            # grant round). Roll back that item rather than reopen another request.
-            conn.execute("SAVEPOINT inbox_refresh_item")
-            try:
-                result = _renew(maintenance, conn, request)
-                if result["id"] != identity or result["revision"] <= request["revision"]:
-                    raise ValueError("The original request is no longer current.")
-            except ValueError as error:
-                conn.execute("ROLLBACK TO inbox_refresh_item")
-                append_if_fits("skipped", {"id": identity, "kind": request["kind"], "reason": _display(str(error), 200)})
-            else:
-                if not append_if_fits("refreshed", {
-                    "id": identity, "kind": result["kind"], "revision": result["revision"],
-                    "state": result["state"], "expires_at": result["expires_at"],
-                }):
-                    conn.execute("ROLLBACK TO inbox_refresh_item")
-            conn.execute("RELEASE inbox_refresh_item")
-            if reply["has_more"]:
-                return reply
-        for identity in dict.fromkeys(ids or []):
-            if identity not in seen and not append_if_fits("skipped", {
-                "id": identity, "reason": "Not an expired pending service request.",
-            }):
-                break
-        return reply
+        if selection is not None:
+            # Advance over each distinct requested ID, even if there is no row
+            # or it is no longer expired. Renewing a row cannot shift the cursor.
+            for position in range(cursor, len(selection)):
+                identity = selection[position]
+                row = conn.execute(sql + " AND key=?", (*parameters, identity)).fetchone()
+                yield position + 1, identity, row[2] if row else None
+            return
+        position = cursor
+        while True:
+            rows = conn.execute(sql + " AND rowid>? ORDER BY rowid LIMIT 100", (*parameters, position)).fetchall()
+            yield from rows
+            if len(rows) < 100:
+                return
+            position = rows[-1][0]
 
-    return runtime.store.command(runtime.header, method, {"ids": ids}, request_id, apply)
+    def encoded_size(value):
+        return len(json.dumps(value, ensure_ascii=False, allow_nan=False).encode())
+
+    def receipt_size(receipt):
+        # The receipt's HTTP envelope is larger than the direct command reply.
+        return encoded_size({"version": VERSION, "service_id": runtime.id, "ok": True, "result": receipt})
+
+    # Keep first-page signatures compatible with existing receipts.
+    payload = {"ids": ids, "cursor": cursor} if cursor else {"ids": ids}
+    signature = fingerprint([method, payload])
+    key = request_key("command", runtime.id, request_id)
+    db = runtime.store.db
+    with db.write() as conn:
+        meta = runtime.store.guard(conn, runtime.header)
+        prior = db._get(conn, "service_commands", key)
+        if prior:
+            if prior["payload"] != signature:
+                raise ValueError("Control request_id has another command payload.")
+            return prior["result"]
+        if meta["state"] in {"stopping", "stopped"}:
+            raise ValueError("Service is stopping.")
+        reply = {"refreshed": [], "skipped": [], "request_id": request_id, "has_more": False, "next_cursor": None}
+        receipt = {
+            "service_id": runtime.id, "method": method, "payload": signature,
+            "result": reply, "checkpoint": checkpoint,
+        }
+        frame_bytes = current_limits().control_frame_bytes
+        remaining = frame_bytes - receipt_size(redact(receipt))
+        if remaining < 0:
+            raise ValueError("Refresh receipt cannot fit in the control frame.")
+
+        rows = candidates(conn)
+        candidate = next(rows, None)
+        while candidate is not None:
+            position, identity, raw = candidate
+            candidate = next(rows, None)
+            continuation = position if candidate is not None else None
+            bucket = "skipped"
+            if raw is None:
+                item = {"id": identity, "reason": "Not an expired pending service request."}
+            else:
+                # A native helper may derive a different identity (e.g. a new
+                # Work grant round). Roll it back rather than open another request.
+                request = json.loads(raw)
+                conn.execute("SAVEPOINT inbox_refresh_item")
+                try:
+                    result = _renew(runtime.maintenance, conn, request)
+                    if result["id"] != identity or result["revision"] <= request["revision"]:
+                        raise ValueError("The original request is no longer current.")
+                except ValueError as error:
+                    conn.execute("ROLLBACK TO inbox_refresh_item")
+                    item = {"id": identity, "kind": request["kind"], "reason": _display(str(error), 200)}
+                else:
+                    bucket = "refreshed"
+                    item = {
+                        "id": identity, "kind": result["kind"], "revision": result["revision"],
+                        "state": result["state"], "expires_at": result["expires_at"],
+                    }
+
+            # Storage redaction can expand strings. Budget the bytes it will
+            # write, including the list separator and the actual cursor overhead.
+            entries = reply[bucket]
+            size = encoded_size(redact(item)) + (2 if entries else 0)
+            # A continuing page replaces null with an integer and false with true.
+            cursor_overhead = 0 if continuation is None else len(str(continuation)) - 5
+            fits = size + cursor_overhead <= remaining
+            if raw is not None:
+                if not fits and bucket == "refreshed":
+                    conn.execute("ROLLBACK TO inbox_refresh_item")
+                conn.execute("RELEASE inbox_refresh_item")
+            if not fits:
+                if reply["next_cursor"] is None:
+                    raise ValueError("A refresh result cannot fit in the control frame.")
+                break
+            entries.append(item)
+            remaining -= size
+            reply["next_cursor"] = continuation
+            reply["has_more"] = continuation is not None
+
+        db._put(conn, "service_commands", key, receipt)
+        saved = db._get(conn, "service_commands", key)
+        # Return exactly what replay reads. Check the persisted envelope before
+        # committing in case the redaction registry changed while sizing entries.
+        if receipt_size(saved) > frame_bytes:
+            raise ValueError("Refresh receipt cannot fit in the control frame.")
+        return saved["result"]

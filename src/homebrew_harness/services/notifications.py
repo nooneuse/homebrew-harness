@@ -6,6 +6,7 @@ import os
 import re
 import threading
 import time
+import uuid
 from contextvars import ContextVar
 from email.utils import parsedate_to_datetime
 from pathlib import Path
@@ -20,7 +21,7 @@ from homebrew_harness.platforms.http import JsonTransport, RemoteFailure, valida
 from homebrew_harness.platforms.registry import load_ca_bundle, read_credentials_file
 from homebrew_harness.runtime.limits import backoff
 from homebrew_harness.runtime.runtime_control import WorkAccepted
-from homebrew_harness.security.data_boundary import register_private_values
+from homebrew_harness.security.data_boundary import redact, register_private_values
 from .inbox import build_inbox
 from .protocol import fingerprint, request_key
 
@@ -141,9 +142,11 @@ def open_notification_transport(spec, environment, roots):
     for logger in ("httpx", "httpcore.connection", "httpcore.http11", "httpcore.http2"):
         logging.getLogger(logger).addFilter(_PRIVATE_WEBHOOK_LOGS)
     try:
-        return JsonTransport(url, token, verify=verify)
+        transport = JsonTransport(url, token, verify=verify)
     except (ValueError, httpx.InvalidURL):
         raise ValueError("Invalid notification URL or credential.") from None
+    transport._webhook_short_token = token if len(token) < 8 else ""
+    return transport
 
 
 def _retry_seconds(error, attempts, now):
@@ -191,6 +194,11 @@ class ServiceNotifications:
         self.send_lock = threading.Lock()
         self.thread = None
         self.transport = None
+        # Protected by send_lock. Keep the exact in-flight body process-local;
+        # only delivery metadata and receipts go into the durable store.
+        self._auto_retry = None
+        self._unpersisted_outcome = None
+        self._next_retry_at = 0
         if self.enabled and not self.spec["credentials_file"]:
             try:
                 _register_credentials(self.spec, self._host_environment())
@@ -219,12 +227,14 @@ class ServiceNotifications:
                 finally:
                     self.transport = None
                     _WEBHOOK_IO.reset(token)
+            self._auto_retry = None
+            self._flush_outcome()
 
     def park(self, *, cancel_events=()):
         self.parked.set()
         # Drain both the POST and its durable outcome without stopping the worker.
         with acquired(self.send_lock, cancel_events=(self.stop, *cancel_events)):
-            pass
+            self._flush_outcome()
 
     def unpark(self):
         self.parked.clear()
@@ -258,7 +268,9 @@ class ServiceNotifications:
             raise ValueError("Service is stopping or parked.")
 
     def _host_environment(self):
-        env_file = self.runtime.core.config.settings.env_file
+        # The child uses the saved service config, unlike the attaching Harness.
+        host = getattr(self.runtime, "child", None) or self.runtime.core
+        env_file = host.config.settings.env_file
         if not env_file:
             return os.environ
         path = Path(env_file).expanduser()
@@ -274,8 +286,17 @@ class ServiceNotifications:
         environment = {} if self.spec["credentials_file"] else self._host_environment()
         self.transport = open_notification_transport(self.spec, environment, roots)
 
+    def _redact_preview(self, text):
+        text = redact(text)
+        # Globally registering a short token would redact common substrings in
+        # unrelated records. Apply it only to webhook display text, before clipping.
+        short_token = getattr(self.transport, "_webhook_short_token", "")
+        return text.replace(short_token, "[redacted]") if isinstance(short_token, str) and short_token else text
+
     def _inbox(self):
-        return build_inbox(self.runtime, include_expired=self.spec["include_expired"])
+        return build_inbox(
+            self.runtime, include_expired=self.spec["include_expired"], redact_text=self._redact_preview,
+        )
 
     def _auto_candidate(self, state):
         with acquired(self.runtime.lock, cancel_events=(self.stop,)):
@@ -283,11 +304,15 @@ class ServiceNotifications:
             if not self._active(meta) or meta["state"] != "running":
                 return None, None
             now = time.time()
-            if state["next_retry_at"] is not None and now < state["next_retry_at"]:
+            if now < max(self._next_retry_at, state["next_retry_at"] or 0):
                 return None, None
             last = state["last_sent_at"]
             if last is not None and now - last < self.spec["cooldown_seconds"]:
                 return None, None
+            if self._auto_retry is not None:
+                # Retry the admitted snapshot even if the live inbox has changed.
+                payload, _ = self._auto_retry
+                return payload, payload["trigger"]
             due = last is None or now - last >= self.spec["every_seconds"]
             minimum = self.spec["min_pending"]
             if not due and minimum is None:
@@ -307,6 +332,8 @@ class ServiceNotifications:
         ):
             return
         try:
+            if not self._flush_outcome():
+                return
             state = self._state()
             inbox, trigger = self._auto_candidate(state)
             if trigger is None:
@@ -368,6 +395,8 @@ class ServiceNotifications:
                     raise ValueError("Control request_id has another command payload.")
                 return prior["result"]
             self._require_active(self.store.get(self.id))
+            if not self._flush_outcome():
+                raise ValueError("Service is stopping or parked.")
             inbox = None
             if self.enabled:
                 with acquired(self.runtime.lock, cancel_events=(self.stop,)):
@@ -409,22 +438,26 @@ class ServiceNotifications:
             return receipt
         # A manual send was admitted when its receipt was reserved. Quiesce
         # waits for it (and any automatic send admitted above) to commit.
-        if receipt is None:
-            # Retry the same logical reminder with the same key, but rotate the
-            # key for each successful period, even when the digest is unchanged.
-            delivery_id = "notify_" + fingerprint([self.id, state["sent_count"], inbox["digest"]])[:32]
-            receipt = {"sent": False, "delivery_id": delivery_id, "trigger": trigger, "counts": inbox["counts"]}
-        else:
-            delivery_id = receipt["delivery_id"]
-        error = None
-        message = None
-        if self.transport is None:
-            message = "Webhook host configuration is missing or invalid."
+        if key is None and self._auto_retry is not None:
+            payload, receipt = self._auto_retry
         else:
             payload = {
                 "event": "service.inbox.digest", "service_id": self.id,
                 "trigger": trigger, "generated_at": time.time(), **inbox,
-            }
+            } if self.transport is not None else None
+            if receipt is None:
+                receipt = {
+                    "sent": False, "delivery_id": "notify_" + uuid.uuid4().hex,
+                    "trigger": trigger, "counts": inbox["counts"],
+                }
+                if payload is not None:
+                    self._auto_retry = payload, receipt
+        delivery_id = receipt["delivery_id"]
+        error = None
+        message = None
+        if payload is None:
+            message = "Webhook host configuration is missing or invalid."
+        else:
             deadline = Deadline.after(self.spec["request_seconds"])
             scope = _WEBHOOK_IO.set(True)
             try:
@@ -447,20 +480,34 @@ class ServiceNotifications:
             state.update(last_sent_at=now, last_digest=inbox["digest"], last_trigger=trigger,
                          last_delivery_id=delivery_id, last_error=None, attempts=0,
                          next_retry_at=None, sent_count=state["sent_count"] + 1)
+            if key is None:
+                self._auto_retry = None
+                self._next_retry_at = 0
         else:
             result = {**receipt, "reason": "delivery_failed", "last_error": message}
             attempts = state["attempts"] + 1
             state.update(last_error=message, attempts=attempts,
                          next_retry_at=now + _retry_seconds(error, attempts, now))
+            self._next_retry_at = max(self._next_retry_at, state["next_retry_at"])
+        # A failed commit must not turn a successful POST into a new send or
+        # discard the backoff from a failed one. Retry the write, not the POST.
+        self._unpersisted_outcome = state, key, result
+        return result if self._flush_outcome() else receipt
+
+    def _flush_outcome(self):
+        if self._unpersisted_outcome is None:
+            return True
+        state, key, result = self._unpersisted_outcome
         with self.store.db.write() as conn:
             meta = self.store.guard(conn, self.runtime.header)
             # Quiesce waits on send_lock before changing draining to parked.
             if meta.get("operations_phase", "active") not in {"active", "draining"}:
-                return receipt
+                return False
             self.store.db._put(conn, _SECTION, self.id, {
                 **state, "service_id": self.id, "checkpoint": "service:" + self.id,
             })
             if key is not None:
                 command = self.store.db._get(conn, "service_commands", key)
                 self.store.db._put(conn, "service_commands", key, {**command, "result": result})
-        return result
+        self._unpersisted_outcome = None
+        return True

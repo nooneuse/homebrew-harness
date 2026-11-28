@@ -131,6 +131,93 @@ class Publication(unittest.TestCase):
         eventually(lambda: work.snapshot().state == "delivered", 80)
         self.assertEqual(sum(kind == "merge" for kind, _ in self.peer.writes), 1)
 
+    def test_published_draft_still_needs_final_wording(self):
+        from homebrew_harness.services.delivery.publication import prepare
+
+        service = self.start(merge={"mode": "manual"})
+        work = service.work.submit("Restore the documented value.")
+        delivery = service.runtime.maintenance.delivery
+        eventually(lambda: any(row.get("change_request") for row in delivery.rows("changesets")), 40)
+        service.pause("all")
+        row = delivery.store.get("changesets", service.store.work(work.id)["changeset_id"])
+        self.assertIsNotNone(row["change_request"])
+        self.assertIsNone(row.get("publication"))
+        self.assertNotIn("publication", row["review"])
+        # Simulate an existing draft without requiring the peer's GraphQL API.
+        delivery.spec["auto_publish_pr_text"] = True
+        row = delivery.store.update("changesets", row["id"], state="review_branch_ready", draft_published=True)
+        self.assertTrue(prepare(delivery, row))
+        after = delivery.store.get("changesets", row["id"])
+        self.assertEqual(after["state"], "publication_drafting")
+        self.assertEqual(after["change_request"], row["change_request"])
+        self.assertEqual(after["frozen"], row["frozen"])
+        job_id = after["reasoning_job_id"]
+        self.assertEqual(service.job(job_id)["kind"], "publication")
+        self.peer.publication_value = self.draft
+        service.resume()
+        eventually(lambda: service.job(job_id)["state"] == "completed", 30)
+        updated = eventually(lambda: next((a for a in delivery.rows("actions")
+                                          if a["kind"] == "ensure_change_request"
+                                          and a["plan"]["title"] == self.draft["title"]
+                                          and a["state"] == "confirmed"), None), 30)
+        self.assertEqual(updated["plan"]["existing"], row["change_request"])
+        self.assertEqual(updated["plan"]["body"], self.draft["body"])
+        self.assertFalse(updated["plan"].get("draft"))
+        self.assertFalse(self.row(service)["draft_published"])
+        self.assertEqual(len(self.peer.pulls), 1)
+
+    def test_queued_automatic_wording_redrafts_on_work_context_change(self):
+        from unittest.mock import patch
+
+        from homebrew_harness.services.delivery.runtime import Delivery
+        from homebrew_harness.services.protocol import fingerprint
+
+        self.peer.review_extra = {"publication": self.draft}
+        self.peer.publication_value = self.draft  # Identical wording must get a fresh action.
+        queued, release = threading.Event(), threading.Event()
+        first = []
+        original = Delivery.execute
+
+        def execute(delivery, action):
+            if action["kind"] == "ensure_change_request" and not first:
+                first.append(action)
+                queued.set()
+                release.wait(20)
+            return original(delivery, action)
+
+        with patch.object(Delivery, "execute", execute):
+            service = self.start(auto_publish_pr_text=True, merge={"mode": "manual"})
+            work = service.work.submit("Restore the documented value.")
+            try:
+                self.assertTrue(queued.wait(40))
+                old = first[0]
+                before = self.row(service)
+                context = service.store.work(work.id).get("execution_context", [])
+                self.assertEqual(old["context_hash"], fingerprint(context))
+                self.assertNotIn("context_hash", old["plan"])
+                work.context("Reconsider the wording with this operator clarification.")
+                self.assertEqual(service.plan_delivery(before["id"], "ensure_change_request")["id"], old["id"])
+                self.assertFalse(self.peer.pulls)
+            finally:
+                release.set()
+            eventually(lambda: self.peer.pulls, 40)
+
+        delivery = service.runtime.maintenance.delivery
+        saved = delivery.store.get("actions", old["id"])
+        self.assertEqual((saved["state"], saved["attempts"]), ("superseded", 0))
+        replacement = next(a for a in delivery.rows("actions")
+                           if a["kind"] == "ensure_change_request" and a["id"] != old["id"])
+        self.assertEqual(replacement["plan"], old["plan"])
+        self.assertEqual(replacement["plan_hash"], old["plan_hash"])
+        self.assertNotEqual(replacement["context_hash"], old["context_hash"])
+        eventually(lambda: delivery.store.get("actions", replacement["id"])["state"] == "confirmed", 15)
+        self.assertEqual(sum(kind == "pull" for kind, _ in self.peer.writes), 1)
+        for key in ("candidate", "quality", "review", "frozen", "review_commit"):
+            self.assertEqual(self.row(service)[key], before[key])
+        jobs = service.records("jobs")["items"]
+        self.assertEqual(sum(job["kind"] == "review" for job in jobs), 1)
+        self.assertEqual(sum(job["kind"] == "publication" for job in jobs), 1)
+
     def test_denied_wording_gets_a_new_exact_approval_and_keeps_confirmed_branch(self):
         self.held()
         bad = {"title": "Restore value", "body": "An unprefixed draft."}
@@ -263,10 +350,8 @@ class Publication(unittest.TestCase):
                 basis(delivery, {**after, "clarifications": []}, None, conn),
             )
         clarified = service.store.work(work.id)
-        note = (
-            f"Delivery clarification (publication):\n"
-            f"Question (model): {reason}\nAnswer (operator): {answer}"
-        )
+        note = f"Delivery clarification (publication): {answer}"
+        self.assertNotIn(reason, "\n".join(clarified["execution_context"]))
         self.assertEqual(
             clarified["execution_context"], [*work_before.get("execution_context", []), note]
         )

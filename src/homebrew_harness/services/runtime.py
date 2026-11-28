@@ -5,6 +5,7 @@ from homebrew_harness.runtime.errors import failure_fields
 import threading
 import time
 import uuid
+from contextlib import nullcontext
 from pathlib import Path
 
 from homebrew_harness.api.config import HostConfig
@@ -75,6 +76,7 @@ class ServiceRuntime:
         self.spec = ServiceSpec(**store.get(identity)["spec"])
         self.spec.validate_location(store.root)
         self.lock = threading.RLock()
+        self.transition_lock = threading.Lock()
         self.workers = Workers()
         self.shutdown = Shutdown()
         self.finished = threading.Event()
@@ -196,46 +198,35 @@ class ServiceRuntime:
         )
         self.notifications.start()
 
-    def start_business(self):
+    def start_business(self, *, await_activation=None):
         from homebrew_harness.runtime.runtime_control import WorkAccepted
 
-        if (
-            self.maintenance
-            and self.maintenance.communication
-            and not self.maintenance.communication.started
+        maintenance = self.maintenance
+        if maintenance is None:
+            return
+        for worker, name in (
+            (maintenance.communication, "service-communication"),
+            (maintenance, "service-maintenance"),
+            (maintenance.delivery, "service-delivery"),
         ):
-            try:
-                self.workers.start(
-                    self.maintenance.communication.loop,
-                    name="service-communication",
-                    track_operation=False,
-                )
-            except WorkAccepted:
-                pass
-        from homebrew_harness.runtime.runtime_control import WorkAccepted
+            if worker is None or worker.started:
+                continue
 
-        if self.maintenance is not None and not self.maintenance.started:
+            def run(worker=worker):
+                if await_activation is None or await_activation():
+                    worker.loop()
+                else:
+                    worker.finished.set()
+
+            # Close must wait for an accepted worker even if its loop has not run.
+            worker.started = True
             try:
-                self.workers.start(
-                    self.maintenance.loop,
-                    name="service-maintenance",
-                    track_operation=False,
-                )
+                self.workers.start(run, name=name, track_operation=False)
             except WorkAccepted:
                 pass
-        if (
-            self.maintenance
-            and self.maintenance.delivery
-            and not self.maintenance.delivery.started
-        ):
-            try:
-                self.workers.start(
-                    self.maintenance.delivery.loop,
-                    name="service-delivery",
-                    track_operation=False,
-                )
-            except WorkAccepted:
-                pass
+            except BaseException:
+                worker.started = False
+                raise
 
     def _binding(self):
         bindings, _head, controls = self.child.runs.prepare(
@@ -871,7 +862,8 @@ class ServiceRuntime:
                 "request_id": request_id,
             }
 
-        result = self.store.command(self.header, method, payload, request_id, apply)
+        with self.transition_lock if method == "stop" else nullcontext():
+            result = self.store.command(self.header, method, payload, request_id, apply)
         # Do not acquire execution-manager locks while holding a database write:
         # a concurrently recovering manager may need the same database.
         if method == "pause" and payload.get("scope") == "all" and self.maintenance:
@@ -1210,10 +1202,7 @@ class ServiceRuntime:
 
                 return build_inbox(self, **payload)
             if method == "receipt":
-                return self.store.runtime.get(
-                    "service_commands",
-                    request_key("command", self.id, payload["request_id"]),
-                )
+                return self.store.receipt(self.id, payload["request_id"])
             request_id = request_id or "command_" + uuid.uuid4().hex
             if method == "tick":
                 return self.store.command(
@@ -1234,16 +1223,17 @@ class ServiceRuntime:
             return self._external(method, payload, request_id)
 
     def close(self, timeout=0):
-        if self.finished.is_set():
-            return self.snapshot()
-        meta = self.store.get(self.id)
-        if meta["state"] not in {"stopping", "stopped"}:
-            self.store.update(
-                self.header,
-                state="stopping",
-                scope="all",
-                revision=meta["revision"] + 1,
-            )
+        with self.transition_lock:
+            if self.finished.is_set():
+                return self.snapshot()
+            meta = self.store.get(self.id)
+            if meta["state"] not in {"stopping", "stopped"}:
+                self.store.update(
+                    self.header,
+                    state="stopping",
+                    scope="all",
+                    revision=meta["revision"] + 1,
+                )
         self.closed = True
         self.approval_review.request_close()
         self.work_executions.request_close()
