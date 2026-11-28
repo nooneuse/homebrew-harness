@@ -28,7 +28,7 @@ INTENTS = {
     "roadmap_commitment",
     "own_pr_reply",
 }
-AUTOMATIC = {"acknowledge", "clarify", "followup", "own_pr_reply"}
+AUTOMATIC = {"acknowledge", "clarify", "followup", "own_pr_reply", "review_feedback"}
 NEXT = {
     "clarify",
     "discuss",

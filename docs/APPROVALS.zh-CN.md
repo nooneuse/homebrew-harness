@@ -67,7 +67,9 @@ Session 审核包含原始约束、输入版本、执行角色、工作区和工
 
 Run 在持久请求受理后审核。工具请求批准后仍需 `execute_approved`，原操作受理时只消费一次。成员测试续期保留任务范围和注册次数／时间上限。Attention 问题及成员与 Lead 的边界保留原有语义。
 
-Service 异步审核业务请求，其原生 Run 自行审核工具请求。需要在 `kinds` 中明确加入 `work_authority`、`delivery_authority` 或 `communication_authority`，并配置相应项目政策，才能委托对应业务决定。审核器读取固定提案、发布计划或消息及当前政策。平台 PR approve、merge 权限仍取决于所配置账户和项目政策。Service 业务请求目前没有捕获模型请求者绑定，使用 `requester` 时需要显式 Lead 回退或人工审核。
+Service 异步审核业务请求，其原生 Run 自行审核工具请求。启用 `approval_review.mode: auto_review` 后，需在 `approval_review.kinds` 中显式选择要委托的业务种类：`work_authority`、`delivery_authority`、`communication_authority`、`discussion_requirements`（接受需求）或 `ci_repair`（范围内的修复）。审核器读取固定提案、发布计划或消息及当前政策。Service 业务请求没有模型请求者绑定，使用 `requester` 时需要显式回退到 Lead 或转人工审核。
+
+超出已配置硬上限的 CI 修复（`repair_attempts.extra_required=true`）仍需操作者明确批准一次额外尝试。即使委托了 `communication_authority`，PR 的 `APPROVE` 和 `REQUEST_CHANGES` 审查仍需操作者显式决定。平台 PR 审查与合并权限仍取决于所配置的账户和项目政策。
 
 人工兜底使用原有终端、HTTP/Text UI 和 Python API。Run、Service 的持久请求可跨 worker 重启继续等待。
 

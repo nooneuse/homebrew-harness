@@ -2,7 +2,7 @@
 
 import uuid
 
-from homebrew_harness.services.spec import ServiceSpec, request_key
+from homebrew_harness.services.spec import ServiceSpec
 from homebrew_harness.services.store import ServiceStore
 from homebrew_harness.services.control import ControlClient
 from homebrew_harness.services.launcher import live, launch, recover_launch, gone
@@ -61,6 +61,7 @@ class ServiceHandle(ServiceControls, Handle):
             },
         )
 
+    @host_operation
     def query(self, method, payload=None):
         if self.runtime is not None and not self.runtime.finished.is_set():
             return self.runtime.dispatch(self.id, method, payload or {})
@@ -71,10 +72,7 @@ class ServiceHandle(ServiceControls, Handle):
         if method == "schedules":
             return self.store.page(self.id, section="service_jobs", **(payload or {}))
         if method == "receipt":
-            return self.store.runtime.get(
-                "service_commands",
-                request_key("command", self.id, payload["request_id"]),
-            )
+            return self.store.receipt(self.id, payload["request_id"])
         if method == "focus_get":
             return self.store.runtime.get(
                 "service_focus", self.id + ":" + payload["context"]

@@ -1,3 +1,4 @@
+import copy
 import tempfile
 import unittest
 from pathlib import Path
@@ -97,6 +98,16 @@ class MaintenanceTests(unittest.TestCase):
         value = service.store.work(work.id)
         self.assertEqual(value["authority"]["origin"], "host_policy")
         self.assertEqual(value["run_spec"]["write_paths"], ["src"])
+        scope = service.runtime.maintenance.store.policy["scopes"]["code"]
+        self.assertEqual(scope["tools"], ["read_file", "write_file", "request_attention"])
+        self.assertIn("request_attention", value["run_spec"]["tools"])
+        self.assertTrue(
+            any(
+                tool["function"]["name"] == "request_attention"
+                for request in self.peer.model_requests
+                for tool in request.get("tools", [])
+            )
+        )
         self.assertIn("Fix the documented local defect.", value["run_spec"]["prompt"])
         self.assertIn(
             "Maintain the project within its existing contract.",
@@ -110,6 +121,36 @@ class MaintenanceTests(unittest.TestCase):
                 for r in self.peer.model_requests
             )
         )
+
+    def test_scope_can_disable_inherited_attention_without_changing_run_schema(self):
+        service = self.start(scopes={"code": {"write_paths": ["src"], "allow_attention": False}})
+        scope = service.runtime.maintenance.store.policy["scopes"]["code"]
+        self.assertNotIn("request_attention", scope["tools"])
+        work = service.work.submit("Fix the documented local defect.")
+        eventually(lambda: work.snapshot().state == "review", 20)
+        self.assertNotIn("allow_attention", service.store.work(work.id)["run_spec"])
+
+    def test_recompiled_scope_keeps_existing_authority_fingerprint(self):
+        from homebrew_harness.services.maintenance_store import MaintenanceStore
+        from homebrew_harness.services.protocol import fingerprint
+
+        service = self.start()
+        runtime = service.runtime
+        policy = runtime.spec.maintenance
+        header = copy.deepcopy(runtime.header)
+        saved_policy = header["spec"]["maintenance"]
+        saved_policy["scopes"]["code"]["tools"].remove("request_attention")
+        work = {"requirements_revision": 0, "authority": {
+            "policy": fingerprint(saved_policy), "scope": "code",
+            "requirements_revision": 0, "revoked": False, "expires_at": None,
+        }}
+        reopened = MaintenanceStore(runtime.store, header, policy)
+        self.assertTrue(reopened.valid_authority(work))
+        self.assertIn("request_attention", reopened.scopes["code"]["tools"])
+        self.assertEqual(fingerprint(reopened.policy), work["authority"]["policy"])
+
+        different = {**policy, "objectives": "A different contract."}
+        self.assertFalse(MaintenanceStore(runtime.store, header, different).valid_authority(work))
 
     def test_empty_source_sweeps_do_not_call_the_model(self):
         service = self.start(sources=True)

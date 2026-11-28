@@ -10,7 +10,10 @@ from contextlib import redirect_stdout, redirect_stderr
 from pathlib import Path
 from unittest.mock import patch
 
+from homebrew_harness import ServiceSpec
 from homebrew_harness.cli import main
+from homebrew_harness.runs.spec import RunSpec
+from homebrew_harness.services.maintenance_spec import validate_policy
 from homebrew_harness.services.setup_validation import validate_service
 
 
@@ -103,6 +106,47 @@ class SetupValidationTests(unittest.TestCase):
         self.assertEqual(json.loads(output.getvalue())["state"], "validated")
         self.assertFalse(list(self.control.iterdir()))
 
+    def test_scope_attention_defaults_do_not_duplicate_tools_or_widen_host_defaults(self):
+        options = dict(workspace=str(self.workspace), profile="repository_maintenance")
+        maintenance = {"scopes": {
+            "narrow": {"tools": ["read_file"]},
+            "existing": {"tools": ["request_attention", "read_file"]},
+            "disabled": {"tools": ["read_file"], "allow_attention": False},
+        }}
+        spec = ServiceSpec(**options, maintenance=maintenance)
+        scopes = spec.maintenance["scopes"]
+        self.assertEqual(scopes["narrow"]["tools"], ["read_file", "request_attention"])
+        self.assertEqual(scopes["existing"]["tools"], ["request_attention", "read_file"])
+        self.assertNotIn("allow_attention", scopes["narrow"])
+        self.assertNotIn("allow_attention", scopes["existing"])
+        self.assertEqual(scopes["disabled"]["tools"], ["read_file"])
+        self.assertIs(scopes["disabled"]["allow_attention"], False)
+        self.assertEqual(ServiceSpec(**spec.data()).maintenance, spec.maintenance)
+
+        # Native RunSpec supplies its own control tools. Exercise the policy
+        # compiler separately with a host tool catalog that lacks attention.
+        from types import SimpleNamespace
+
+        native = RunSpec("Use the configured tools.")
+        host = SimpleNamespace(
+            tools=["read_file"], write_paths=native.write_paths,
+            allow_tests=native.allow_tests, data=native.data,
+        )
+        limited = validate_policy({"scopes": {"code": {"allow_attention": True}}}, host)
+        self.assertEqual(limited["scopes"]["code"]["tools"], ["read_file"])
+
+    def test_scope_attention_rejects_contradictions_and_non_booleans(self):
+        for scope, message in [
+            ({"tools": ["request_attention"], "allow_attention": False}, "conflicts"),
+            ({"allow_attention": 1}, "must be Boolean"),
+        ]:
+            with self.subTest(scope=scope), self.assertRaisesRegex(ValueError, message) as caught:
+                ServiceSpec(
+                    str(self.workspace), profile="repository_maintenance",
+                    maintenance={"scopes": {"code": scope}},
+                )
+            self.assertEqual(caught.exception.code, "service_configuration")
+
     def test_unknown_or_denied_test_is_rejected(self):
         self.recipe["authorization"] = "deny"
         self.save_tests()
@@ -156,6 +200,59 @@ class SetupValidationTests(unittest.TestCase):
                 self.validate()
         self.spec["delivery"]["credentials_file"] = str(self.publisher)
         self.publisher.chmod(0o644)
+        with self.assertRaisesRegex(ValueError, "owner-only"):
+            self.validate()
+
+    def test_webhook_credentials_validate_without_posting(self):
+        credentials = self.private / "webhook.env"
+        url = "https://webhook.invalid/private/digest"
+        token = "notification-fixture-token"
+        credentials.write_text(f"WEBHOOK_URL={url}\nWEBHOOK_TOKEN={token}\n")
+        credentials.chmod(0o600)
+        self.spec["notifications"] = {
+            "url_env": "WEBHOOK_URL",
+            "token_env": "WEBHOOK_TOKEN",
+            "credentials_file": str(credentials),
+        }
+        with patch(
+            "homebrew_harness.platforms.http.JsonTransport.request",
+            side_effect=AssertionError("validation attempted a network request"),
+        ) as request:
+            result = self.validate()
+            credentials.write_text(f"WEBHOOK_URL={url}\n")
+            with (
+                patch.dict(os.environ, {"WEBHOOK_TOKEN": token}),
+                self.assertRaisesRegex(ValueError, "Notification host credentials are missing"),
+            ):
+                self.validate()
+        request.assert_not_called()
+        self.assertEqual(result["state"], "validated")
+        self.assertTrue(any("Webhook reachability" in check for check in result["pending"]))
+        for value in (url, token, str(credentials)):
+            self.assertNotIn(value, json.dumps(result))
+        self.assertFalse(list(self.control.iterdir()))
+
+    def test_webhook_credentials_file_must_be_external_and_owner_only(self):
+        credentials = self.private / "webhook.env"
+        credentials.write_text("WEBHOOK_URL=https://webhook.invalid/digest\n")
+        credentials.chmod(0o600)
+        self.spec["notifications"] = {"url_env": "WEBHOOK_URL"}
+        for parent in (self.workspace, self.control):
+            path = parent / credentials.name
+            path.write_bytes(credentials.read_bytes())
+            path.chmod(0o600)
+            self.spec["notifications"]["credentials_file"] = str(path)
+            with self.subTest(path=path), self.assertRaisesRegex(ValueError, "outside|external"):
+                self.validate()
+
+        alias = self.private / "webhook-alias.env"
+        alias.symlink_to(credentials)
+        self.spec["notifications"]["credentials_file"] = str(alias)
+        with self.assertRaisesRegex(ValueError, "without symlinks"):
+            self.validate()
+
+        self.spec["notifications"]["credentials_file"] = str(credentials)
+        credentials.chmod(0o644)
         with self.assertRaisesRegex(ValueError, "owner-only"):
             self.validate()
 

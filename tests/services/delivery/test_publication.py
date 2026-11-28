@@ -4,7 +4,10 @@ import copy
 import json
 import threading
 import unittest
+from dataclasses import replace
 
+from homebrew_harness.contracts import SDKError
+from homebrew_harness.services.delivery.publication import basis
 from tests.runtime.test_interaction import eventually
 from tests.services.delivery import test_flow as fixture
 
@@ -72,6 +75,149 @@ class Publication(unittest.TestCase):
         )
         self.assertEqual(service.store.work(work.id)["run_id"], before["run_id"])
 
+    def test_opt_in_drafts_and_publishes_wording_before_merge_approval(self):
+        self.held()
+        service = self.start(auto_publish_pr_text=True)
+        work = service.work.submit("Restore the documented value.")
+        try:
+            if not self.peer.publication_started.wait(60):
+                self.fail(f"Publication job did not start: {service.health()['issues']}")
+            self.assertEqual(self.row(service)["state"], "publication_drafting")
+            self.assertNotIn("publication", self.row(service)["review"])
+            self.assertFalse(self.peer.pulls)
+            self.assertFalse(
+                any(
+                    action["kind"] == "ensure_change_request"
+                    for action in service.records("actions")["items"]
+                )
+            )
+        finally:
+            self.peer.publication_hold.set()
+
+        request = eventually(lambda: self.pending_target(service), 60)
+        delivery = service.runtime.maintenance.delivery
+        merge = delivery.store.get("actions", request.arguments["action_id"])
+        self.assertEqual(merge["kind"], "merge_change_request")
+        self.assertEqual(merge["state"], "awaiting_approval")
+        self.assertIsNone(merge["authorization"])
+        self.assertEqual(merge["attempts"], 0)
+        self.assertFalse(any(kind == "merge" for kind, _ in self.peer.writes))
+
+        self.assertEqual(self.row(service)["publication"], self.draft)
+        jobs = [
+            job for job in service.records("jobs")["items"] if job["kind"] == "publication"
+        ]
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual(jobs[0]["state"], "completed")
+        actions = [
+            action
+            for action in delivery.rows("actions")
+            if action["kind"] == "ensure_change_request"
+        ]
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0]["state"], "confirmed")
+        self.assertEqual(actions[0]["authorization"], "host_policy")
+        self.assertIs(actions[0]["plan"].get("draft", False), False)
+        self.assertEqual(len(self.peer.pulls), 1)
+        self.assertEqual(self.peer.pulls[0]["title"], self.draft["title"])
+        self.assertEqual(
+            self.peer.pulls[0]["body"].split("\n\n<!--", 1)[0], self.draft["body"]
+        )
+        pull_writes = [data for kind, data in self.peer.writes if kind == "pull"]
+        self.assertEqual(len(pull_writes), 1)
+        self.assertIs(pull_writes[0].get("draft", False), False)
+
+        service.decide(request, "approve", decision_id="approve-merge")
+        eventually(lambda: work.snapshot().state == "delivered", 80)
+        self.assertEqual(sum(kind == "merge" for kind, _ in self.peer.writes), 1)
+
+    def test_published_draft_still_needs_final_wording(self):
+        from homebrew_harness.services.delivery.publication import prepare
+
+        service = self.start(merge={"mode": "manual"})
+        work = service.work.submit("Restore the documented value.")
+        delivery = service.runtime.maintenance.delivery
+        eventually(lambda: any(row.get("change_request") for row in delivery.rows("changesets")), 40)
+        service.pause("all")
+        row = delivery.store.get("changesets", service.store.work(work.id)["changeset_id"])
+        self.assertIsNotNone(row["change_request"])
+        self.assertIsNone(row.get("publication"))
+        self.assertNotIn("publication", row["review"])
+        # Simulate an existing draft without requiring the peer's GraphQL API.
+        delivery.spec["auto_publish_pr_text"] = True
+        row = delivery.store.update("changesets", row["id"], state="review_branch_ready", draft_published=True)
+        self.assertTrue(prepare(delivery, row))
+        after = delivery.store.get("changesets", row["id"])
+        self.assertEqual(after["state"], "publication_drafting")
+        self.assertEqual(after["change_request"], row["change_request"])
+        self.assertEqual(after["frozen"], row["frozen"])
+        job_id = after["reasoning_job_id"]
+        self.assertEqual(service.job(job_id)["kind"], "publication")
+        self.peer.publication_value = self.draft
+        service.resume()
+        eventually(lambda: service.job(job_id)["state"] == "completed", 30)
+        updated = eventually(lambda: next((a for a in delivery.rows("actions")
+                                          if a["kind"] == "ensure_change_request"
+                                          and a["plan"]["title"] == self.draft["title"]
+                                          and a["state"] == "confirmed"), None), 30)
+        self.assertEqual(updated["plan"]["existing"], row["change_request"])
+        self.assertEqual(updated["plan"]["body"], self.draft["body"])
+        self.assertFalse(updated["plan"].get("draft"))
+        self.assertFalse(self.row(service)["draft_published"])
+        self.assertEqual(len(self.peer.pulls), 1)
+
+    def test_queued_automatic_wording_redrafts_on_work_context_change(self):
+        from unittest.mock import patch
+
+        from homebrew_harness.services.delivery.runtime import Delivery
+        from homebrew_harness.services.protocol import fingerprint
+
+        self.peer.review_extra = {"publication": self.draft}
+        self.peer.publication_value = self.draft  # Identical wording must get a fresh action.
+        queued, release = threading.Event(), threading.Event()
+        first = []
+        original = Delivery.execute
+
+        def execute(delivery, action):
+            if action["kind"] == "ensure_change_request" and not first:
+                first.append(action)
+                queued.set()
+                release.wait(20)
+            return original(delivery, action)
+
+        with patch.object(Delivery, "execute", execute):
+            service = self.start(auto_publish_pr_text=True, merge={"mode": "manual"})
+            work = service.work.submit("Restore the documented value.")
+            try:
+                self.assertTrue(queued.wait(40))
+                old = first[0]
+                before = self.row(service)
+                context = service.store.work(work.id).get("execution_context", [])
+                self.assertEqual(old["context_hash"], fingerprint(context))
+                self.assertNotIn("context_hash", old["plan"])
+                work.context("Reconsider the wording with this operator clarification.")
+                self.assertEqual(service.plan_delivery(before["id"], "ensure_change_request")["id"], old["id"])
+                self.assertFalse(self.peer.pulls)
+            finally:
+                release.set()
+            eventually(lambda: self.peer.pulls, 40)
+
+        delivery = service.runtime.maintenance.delivery
+        saved = delivery.store.get("actions", old["id"])
+        self.assertEqual((saved["state"], saved["attempts"]), ("superseded", 0))
+        replacement = next(a for a in delivery.rows("actions")
+                           if a["kind"] == "ensure_change_request" and a["id"] != old["id"])
+        self.assertEqual(replacement["plan"], old["plan"])
+        self.assertEqual(replacement["plan_hash"], old["plan_hash"])
+        self.assertNotEqual(replacement["context_hash"], old["context_hash"])
+        eventually(lambda: delivery.store.get("actions", replacement["id"])["state"] == "confirmed", 15)
+        self.assertEqual(sum(kind == "pull" for kind, _ in self.peer.writes), 1)
+        for key in ("candidate", "quality", "review", "frozen", "review_commit"):
+            self.assertEqual(self.row(service)[key], before[key])
+        jobs = service.records("jobs")["items"]
+        self.assertEqual(sum(job["kind"] == "review" for job in jobs), 1)
+        self.assertEqual(sum(job["kind"] == "publication" for job in jobs), 1)
+
     def test_denied_wording_gets_a_new_exact_approval_and_keeps_confirmed_branch(self):
         self.held()
         bad = {"title": "Restore value", "body": "An unprefixed draft."}
@@ -129,12 +275,114 @@ class Publication(unittest.TestCase):
             "Confirm the public writing policy", str(service.health()["issues"])
         )
         self.assertTrue(service.health()["waiting_for_operator"])
+        question = next(r for r in service.requests() if r.kind == "delivery_information")
         before = copy.deepcopy(row)
         self.peer.publication_value = self.draft
         work.context("Use FROM TEST AGENT with the confirmed changes and tests.")
         eventually(lambda: self.pending_target(service), 25)
         self.assertEqual(self.row(service)["quality"], before["quality"])
         self.assertEqual(self.row(service)["review"], before["review"])
+        self.assertNotIn(question.ref.id, [r.ref.id for r in service.requests()])
+        with self.assertRaisesRegex(SDKError, "stale"):
+            service.decide(question, "answer", text="Outdated clarification.")
+
+    def test_answer_publication_question_redrafts_without_new_authority(self):
+        reason = "Use title A or B?"
+        answer = "Use the second one"
+        self.peer.publication_value = {"human_required": True, "reason": reason}
+        service = self.start(auto_actions=["publish_branch"], merge={"mode": "manual"})
+        work = service.work.submit("Restore the value.")
+        question = eventually(
+            lambda: next(
+                (r for r in service.requests(work.id) if r.kind == "delivery_information"), None
+            ),
+            25,
+        )
+        service.pause("all")
+        before = self.row(service)
+        work_before = service.store.work(work.id)
+        self.assertEqual(before["state"], "publication_attention")
+        self.assertEqual(before["error"], "publication_needs_operator")
+        self.assertEqual(question.question, reason)
+        self.assertEqual(question.arguments, {
+            "work_id": work.id, "changeset_id": before["id"], "stage": "publication",
+        })
+        self.assertIsNone(question.expires_at)
+        self.assertTrue(question.ref.durable)
+        store = service.runtime.maintenance.store
+        self.assertEqual(store.get("decisions", question.ref.id)["basis"], before["publication_basis"])
+        with self.assertRaisesRegex(SDKError, "requires an operator answer"):
+            service.decide(question, "approve")
+        with self.assertRaisesRegex(SDKError, "operator answer must be nonempty"):
+            service.decide(question, "answer", text="  ")
+        with self.assertRaises(SDKError):
+            service.decide(replace(question.ref, revision=question.ref.revision + 1), "answer", text=answer)
+        self.assertEqual(service.store.work(work.id), work_before)
+
+        result = service.decide(question, "answer", text=answer, decision_id="clarify-publication")
+        self.assertEqual(result["state"], "answered")
+        self.assertEqual(result, service.decide(question, "answer", text=answer, decision_id="clarify-publication"))
+        saved = store.get("decisions", question.ref.id)
+        self.assertEqual(saved["answer"], answer)
+        self.assertEqual(saved["revision"], question.ref.revision + 1)
+        self.assertNotIn(question.ref.id, [r.ref.id for r in service.requests()])
+        after = self.row(service)
+        self.assertEqual(after["state"], "review_branch_ready")
+        self.assertEqual(after["revision"], before["revision"] + 1)
+        for key in ("error", "error_detail", "error_info", "publication_basis"):
+            self.assertIsNone(after[key])
+        clarification = {
+            "stage": "publication",
+            "request_id": question.ref.id,
+            "basis": before["publication_basis"],
+            "question": reason,
+            "question_origin": "model",
+            "answer": answer,
+            "answer_origin": "operator",
+        }
+        self.assertEqual(after["clarifications"], [clarification])
+        # Work context is identical in these two probes; the row's structured
+        # provenance alone must also affect the publication basis.
+        delivery = service.runtime.maintenance.delivery.store
+        with delivery.db.connection() as conn:
+            self.assertNotEqual(
+                basis(delivery, after, None, conn),
+                basis(delivery, {**after, "clarifications": []}, None, conn),
+            )
+        clarified = service.store.work(work.id)
+        note = f"Delivery clarification (publication): {answer}"
+        self.assertNotIn(reason, "\n".join(clarified["execution_context"]))
+        self.assertEqual(
+            clarified["execution_context"], [*work_before.get("execution_context", []), note]
+        )
+        self.assertEqual(clarified["revision"], work_before["revision"] + 1)
+        for key in ("requirements_revision", "authority", "run_id", "changeset_id"):
+            self.assertEqual(clarified[key], work_before[key])
+
+        self.peer.publication_value = self.draft
+        service.resume()
+        target = eventually(lambda: self.pending_target(service), 25)
+        self.assertFalse(self.peer.pulls)
+        after = self.row(service)
+        for key in ("candidate", "quality", "review", "frozen"):
+            self.assertEqual(after[key], before[key])
+        self.assertEqual(after["publication"], self.draft)
+        self.assertEqual(after["clarifications"], [clarification])
+        self.assertNotEqual(after["reasoning_job_id"], before["reasoning_job_id"])
+        self.assertNotEqual(after["publication_basis"], before["publication_basis"])
+        self.assertEqual(
+            after["publication_basis"], service.job(after["reasoning_job_id"])["input"]["basis"]
+        )
+        payloads = [
+            json.loads(message["content"])
+            for request in self.peer.model_requests
+            for message in request["messages"]
+            if message.get("role") == "user" and message.get("content", "").startswith('{"job":')
+        ]
+        draft = next(p for p in payloads if p["job"]["id"] == after["reasoning_job_id"])
+        self.assertEqual(draft["input"]["clarifications"], [clarification])
+        self.assertIn(note, draft["input"]["work_context"]["execution_context"])
+        self.assertEqual(target.kind, "delivery_authority")
 
     def test_denied_current_action_exposes_its_exact_review_reason(self):
         self.peer.review_extra = {"publication": self.draft}

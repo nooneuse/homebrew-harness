@@ -102,6 +102,47 @@ Delivery approval receives one exact action plan; identical copies in request an
 
 `exit` or EOF disconnects the UI and leaves a detached service running. Ctrl-C cancels the current input/observation. `stop` explicitly requests service shutdown. Output is plain JSON/text; external terminal control characters are escaped. No terminal UI library is required. Text UI and individual control commands use the same authenticated HTTP API.
 
+## Inbox notifications
+
+Both `manual` and `repository_maintenance` services can send their [operator inbox](#operator-inbox) to a host-configured JSON webhook. Omit the top-level `notifications` object or set it to `{}` to keep the existing behavior: no outbound notifications. A nonempty object enables notifications by default (`enabled: true`) and requires `url_env`; set `enabled: false` to disable sending while retaining the declaration.
+
+```json
+{
+  "notifications": {
+    "url_env": "HARNESS_INBOX_WEBHOOK_URL",
+    "token_env": "HARNESS_INBOX_WEBHOOK_TOKEN",
+    "credentials_file": "/path/to/private/inbox-webhook.env",
+    "min_pending": 3
+  }
+}
+```
+
+`mode` defaults to `remote`. Both modes require HTTPS for non-loopback destinations and allow HTTP only on `localhost`, `127.0.0.1`, or `::1`; `local` restricts the destination to those loopback hosts, even over HTTPS. The URL may have a path, but no userinfo, query, or fragment. `url_env`, optional Bearer `token_env`, and optional `ca_file_env` name host variables, not literal connection values. See [webhook host setup](HOSTING.md#configure-the-inbox-webhook) for credential sources and offline validation.
+
+| Field | Default | Accepted values |
+| --- | --- | --- |
+| `every_seconds` | `43200` (12 hours) | `0.1`–`31536000` seconds |
+| `min_pending` | `null` (no early trigger) | `null` or a positive integer |
+| `cooldown_seconds` | `300` (5 minutes) | `0`–`86400` seconds |
+| `request_seconds` | `10` | `0.1`–`60` seconds per POST, subject to host transport limits |
+| `include_expired` | `true` | Boolean |
+
+The webhook receives a JSON POST with `event: "service.inbox.digest"`, `service_id`, `trigger` (`schedule`, `threshold`, or `manual`), and `generated_at`, plus the same bounded `items`, `counts`, `oldest_created_at`, `digest`, and human-readable `summary` as `inbox list --json` (all Work, up to 50 items, possibly fewer under the size limit). The items and summary can contain request titles and clipped previews. Expired items appear after pending items when included, and do not count as actionable. Use only an endpoint you trust to receive this private context. The webhook is a reminder, not a way to approve, answer, or refresh a request; re-list the live inbox before acting on its short numbers.
+
+Automatic delivery only runs while the service is running and not draining or parked. It does not send an empty or expired-only inbox, and it may send the first actionable inbox immediately. After a successful send, the same pending-item digest is suppressed until a full `every_seconds` interval has elapsed. The optional threshold can send earlier only when the actionable count shown reaches `min_pending` **and** the digest has changed. All automatic sends respect the cooldown, and failures delay the next attempt using backoff (including bounded `Retry-After` on HTTP `429` or `503`).
+
+Pausing the service suspends automatic sends. Manual sends bypass the automatic timing rules and work during an ordinary pause, but are blocked during draining, parking, or shutdown. Without `--force`, manual sends also require an actionable item; `--force` permits empty or expired-only snapshots, but does not enable notifications on a disabled service.
+
+```sh
+homebrew-harness service inbox SERVICE_ID notify-status
+homebrew-harness service inbox SERVICE_ID notify --force --request-id inbox-notify-1
+homebrew-harness service receipt SERVICE_ID inbox-notify-1
+```
+
+In Text UI, omit the service ID: `inbox notify-status`, `inbox notify --force --request-id inbox-notify-1`, and `receipt inbox-notify-1`. In synchronous or asynchronous Python, use `service.notification_status()`, `service.send_notification(force=True, request_id="inbox-notify-1")`, and `service.receipt("inbox-notify-1")`. Status shows the effective non-secret settings, the last successful delivery, and retry/error state.
+
+The POST carries an `Idempotency-Key` identifying the logical delivery. Give each intended manual send a stable `--request-id`. On a lost response or `delivery_unknown`/`delivery_failed`, inspect the receipt and check the receiver before choosing to send again. Repeating the accepted ID with the same arguments returns its existing receipt instead of resending. The receiver should deduplicate by the `Idempotency-Key`; notifications do not guarantee exactly-once delivery.
+
 ## HTTP connections and remote clients
 
 The service binds to loopback. A private control credential is generated once per service, and each instance publishes a private endpoint descriptor in `.harness/control/endpoint.json`. Local commands discover only this connection configuration; they do not read the service database.
@@ -247,6 +288,10 @@ Add these fields to an external service specification:
 
 The usual workspace, version and Run defaults also apply. Fill connection values only in external host files—either the host environment or an optional per-source owner-only `credentials_file` (read exclusively without inheriting the host environment). Source credentials are used by the fixed read adapter. Scopes must fit within the host Run defaults for paths, tools and registered tests. Omitting `auto_categories` sends executable proposals to the operator for approval. Automatic categories choose among already authorized scopes; they do not expand permissions. Native tool approvals remain in effect.
 
+When the host Run includes `request_attention`, the maintenance compiler retains it in the development scope even if the scope's tool list omits it. Set the optional Boolean `allow_attention: false` to exclude it from the compiled scope; do not also list `request_attention` in that scope's `tools`. This setting controls scope compilation, not the native Run's fixed control tools.
+
+By default, approving a `discussion_requirements` request still requires a separate `work_authority` decision before development. Set `maintenance.grant_on_requirements_acceptance: true` (default `false`) to grant development authority immediately on acceptance. The native Run remains bound to the original approved scope, registered tests and existing tool approvals.
+
 Repository polling records issue/PR identities and issue-comment versions, with durable page positions, overlap and deduplication. A poll observes available versions; it cannot reconstruct an edit or deletion that disappeared between polls. Source failures retain their cursor and show retry state. Unchanged polling makes no model calls.
 
 Triage uses three packaged skills: requirement-triage, maintenance-planning and maintenance-reporting. Their bodies load on demand. Service reasoning can read service records and visible project files, and submit candidates; it cannot execute Bash, approve requests or publish changes. Plans and scopes are validated by the host.
@@ -283,9 +328,23 @@ with RemoteService.from_file(connection_file, control=True) as service:
 
 Each maintenance job has one input and result contract. Conversations read same-context history through the current message and evidence associated with their explicitly selected Work. General conversations can browse a minimal Work directory. Reports read their frozen activity window and referenced records, distinguishing those historical facts from current details. Candidate submission prepares a result; the runtime validates and applies it with the job completion in one transaction.
 
-Messages are durable and their replies can be read after reconnect. Reports reference recorded work and execution facts; acknowledging one updates that reader's position. Reports are available through the control interface. Public GitHub replies, outbound report delivery and grouped publication approvals are not performed by this profile.
+Messages are durable and their replies can be read after reconnect. Reports reference recorded work and execution facts; acknowledging one updates that reader's position. Reports are available through the control interface, not sent outbound. Public GitHub replies and PR publication require their optional capabilities.
 
-`reports` lists unread ready reports for a control context. `job-retry JOB_ID --request-id ...` explicitly authorizes another bounded reasoning attempt cycle; cumulative attempts remain recorded. `work request-authority WORK_ID` refreshes an expired or denied request for the current plan, without rerunning triage or granting execution. Information requests use `answer`, and their replies amend requirements before a new triage pass.
+`reports` lists unread ready reports for a control context. `job-retry JOB_ID --request-id ...` explicitly authorizes another bounded reasoning attempt cycle; cumulative attempts remain recorded. `work request-authority WORK_ID` refreshes an expired or denied request for the current plan, without rerunning triage or granting execution. Work triage questions (`work_information`) use `answer`; their replies amend requirements before a new triage pass. Delivery clarification requests (`delivery_information`) also use `answer`, but append execution context without revising requirements or granting approval.
+
+### Operator inbox
+
+`inbox` combines service approvals and questions with requests from the active Run. It prints a numbered summary and a snapshot digest of the pending refs shown; `--json` adds exact refs and counts. Use `--work-id` to restrict the list and `--include-expired` to display expired requests after pending ones. The default limit is 50 (maximum 100).
+
+```sh
+homebrew-harness service inbox SERVICE_ID list --include-expired
+homebrew-harness service inbox SERVICE_ID decide --snapshot DIGEST --approve 1 --deny 2 --answer '3=Keep the existing behavior' --request-id inbox-1
+homebrew-harness service inbox SERVICE_ID refresh-expired --request-id refresh-1
+```
+
+Short numbers and bare request IDs require the displayed snapshot digest and the same Work scope and limit that you listed. If the pending items change, list the inbox again. Exact `REQUEST_ID:REVISION` tokens from the JSON refs work without a snapshot. In Text UI, omit the command prefix and service ID; the last listed snapshot, scope, and limit are used by default. Repeat `--answer TOKEN=TEXT` for multiple questions. Only use `--allow-extra-attempt TOKEN` with an explicitly approved CI repair. If a response is lost, repeat the same decision command with the same `--request-id` to recover its result.
+
+Batches and expiry refresh are available in `repository_maintenance` even without delivery or communication. `batch decide` also accepts `--answer REQUEST_ID=TEXT`. Refresh reopens only eligible, still-current service decisions; it neither approves them nor renews native Run requests. Pass `--ids REQUEST_ID ...` to restrict the refresh. If a response contains `has_more: true`, pass its `next_cursor` as `--cursor` with the same ordered `--ids` selection (if any) and a new request ID. In synchronous or asynchronous Python, use `service.inbox(...)`, `service.decide_inbox(actions, ...)`, or `service.refresh_expired(ids=..., cursor=..., request_id=...)`.
 
 Run the complete deterministic P2 scenario:
 
@@ -305,11 +364,11 @@ CI counts are advisory by default: `ci_fix_limit=null` and `ci_fix_warning=2`. D
 
 A paused repair Run resumes as the current execution. An earlier candidate remains available as delivery context, but it does not replace the active Run; completed accepted handoffs still continue through Delivery.
 
-A scoped CI repair can request one additional attempt beyond the configured ceiling. Approval uses `service.decide(request, "approve", allow_extra_attempt=True)` or the CLI/Text UI `approve ... --allow-extra-attempt`; the extension belongs to this plan and its next attempt. `service.refresh_delivery()` can renew an expired pending CI decision or retry an accepted preparation, including baseline conflict repair. Earlier Runs, verification and decisions remain historical records.
+A scoped CI repair can request one additional attempt beyond the configured ceiling. It requires manual approval via `service.decide(request, "approve", allow_extra_attempt=True)` or the CLI/Text UI `approve ... --allow-extra-attempt`; the extension belongs to this plan and its next attempt. `service.refresh_delivery()` can renew an expired pending CI decision or retry an accepted preparation, including baseline conflict repair. Earlier Runs, verification and decisions remain historical records.
 
 Failed candidate tests retain their receipts and readable output for model diagnosis. Scoped code repairs use native Runs; local transient failures can request a recheck of the same candidate, bounded only by an explicitly configured `ci_fix_limit`. Publication requires passing candidate checks. `work.progress()` shows delivery status, and health reports current blocked candidates. `service.refresh_delivery(changeset_id)` can explicitly recheck a settled, unpublished candidate after resolving a blocker, preserving its failure history. If an approved CI repair failed before creating its Run, the same operation retries that preparation while keeping the original candidate verification records. It does not grant a missing repair decision or restart an already accepted repair Run. A subsequent requirements revision uses the verified synchronized integration as its baseline while retaining prior delivery records.
 
-Publication wording is recorded separately from code review. A draft supplied by review goes directly into the action plan; when the default template has not been preauthorized and wording is missing, a publication job drafts it from accepted requirements, review and verification facts. A denied publication gives its feedback to the model for correction, and changed wording needs a new exact approval. Reviewed code, quality receipts and confirmed branches are reused. Operator referrals wait for new execution instructions; failed publication jobs can be retried independently. Health and Work progress show current denials and their reasons.
+Publication wording is recorded separately from code review. Wording supplied by review goes into the action plan. If review is required and wording is missing, a publication job can draft it from accepted requirements, review and verification facts when PR creation is not preauthorized or `delivery.auto_publish_pr_text` is enabled. The [Delivery opt-in](DELIVERY.md#fixed-candidates-and-actual-results) can publish that wording without a separate publication decision, but does not authorize a merge. Denied wording can be revised with the recorded feedback; any required publication decision binds the new exact wording. Reviewed code, quality receipts and confirmed branches are reused. Operator referrals await new instructions; failed publication jobs can be retried independently. Health and Work progress show denials and their reasons.
 
 Candidate review and CI diagnosis receive the bound Work's current execution context, accepted requirements, completed handoff and prior validation evidence. Their record reads use the same evidence projection, while internal file inventories remain in storage. A changed Work instruction requires a fresh proposal. Retrying a failed reasoning job preserves its failure history and candidate receipts; the subsequent repair Run receives current execution instructions. Health and Work progress show the reasoning job and its actual failure reason.
 

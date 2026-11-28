@@ -8,7 +8,7 @@
 
 在 repository_maintenance 的 ServiceSpec 中增加 communication。项目需已有 repository source，完整配置见[英文文档](COMMUNICATION.md#host-configuration)。projects 使用 provider/instance/project 和宿主环境变量引用；凭据与真实接入地址保存在两个工作区之外。remote 模式要求 owner-only 的独立 credentials_file，写凭据不进入模型或开发环境；local 只接受 synthetic 的本地协议服务。
 
-普通讨论默认每半天轮询一次，auto_intents 为空，公开发言需要批准。可明确预授权配置项目内的 acknowledge/clarify/followup。own_pr_reply 允许在当前 Work 授权下，回应本 Service 已确认发布的 PR，支持普通评论和线程回复，不包括其他 PR 或正式 review。正式 review 和项目路线承诺仍需操作者决定，提交 review 不自动合并或关闭 PR。
+普通讨论默认每半天轮询一次。`auto_intents` 默认为 `[]`，不预授权任何公开发言。可预授权配置项目内的 `acknowledge`、`clarify`、`followup`；`own_pr_reply` 允许在当前 Work 授权下对本 Service 已确认发布的 PR 发表普通评论或线程回复。加入 `review_feedback` 可预授权建议性反馈；对于 `submit_review`，仅允许自动发布 `COMMENT` 事件。`APPROVE` 和 `REQUEST_CHANGES` 即使启用独立审批审核也仍需操作者明确决定；项目路线承诺同样需要显式决定。提交审查不会合并或关闭 PR。
 
 ## 跟进自身 PR
 
@@ -28,11 +28,11 @@ Service 执行合并前检查未研判反馈、未解决问题／发现和待发
 
 新回复推进讨论输入，不直接改变正式 Work 需求、Goal 或开发权限。没有新材料不调用模型，等待作者不占用开发 Run。问题、事实、草案、分歧和每轮结论持久保存；已授权发言进入发送队列，不等下一次半天巡检。
 
-需求足够清晰后产生正式接受请求，接受后创建或更新 proposed Work，再走已有开发授权。替换活动工作的需求前，需要先让原 Run 收尾。模型可以把方向分歧或多轮无进展呈现给操作者，不按总轮数自动拒绝。
+需求足够清晰且尚未获既有策略授权时，Service 会提出正式接受请求。接受后创建或更新 Work，通常仍需单独取得开发授权；启用 [`maintenance.grant_on_requirements_acceptance`](SERVICES.zh-CN.md#仓库维护p2) 后，接受即授予范围内的开发权限。替换活动工作的需求前，需要先让原 Run 收尾。模型可以把方向分歧或多轮无进展呈现给操作者，不按总轮数自动拒绝。
 
 Lead 按谁掌握答案、谁有决定权选择 recipient=requester／maintainer。可以主动向参与者询问本人是否愿意贡献 PR 或测试，无需等其先提出；仓库事实自己查证，已有授权内的常规分工和文档位置由 agent 安排，实际尚未委托的方向、权限、凭据和资源决定才交维护者。
 
-贡献邀请是可选协作，不使已清晰需求退回不完整。开放的贡献问题可以和 develop 草案、验收条件同时提交；需求接受和开发授权仍独立执行。意愿与预计时间是来源事实，沉默不是拒绝，模型决定等待或通过维护流程安排后续。已有对应开发权限才承诺 agent 实现。公开 question_ids 只能引用 Lead 已选择的开放 requester 问题，起草模型不能自行加问；必要维护者问题仍使用 operator。语义由模型判断，运行时只检查引用与授权合同。
+贡献邀请是可选协作，不使已清晰需求退回不完整。开放的贡献问题可以和 develop 草案、验收条件同时提交，但不会接受需求或授予开发权限。意愿与预计时间是来源事实，沉默不是拒绝，模型决定等待或通过维护流程安排后续。已有对应开发权限才承诺 agent 实现。公开 question_ids 只能引用 Lead 已选择的开放 requester 问题，起草模型不能自行加问；必要维护者问题仍使用 operator。语义由模型判断，运行时只检查引用与授权合同。
 
 Lead 可以提供简短 reply_brief，包含 scope、next_step 与可选 verification。起草阶段优先接收这个提要及开放的公开问题，不再自动收到完整验收清单；原研判仍保留完整需求、内部分析与来源，正式 Work 仍使用原完整草案。现有字段按读者分工：draft.text 描述供维护者确认的工作，reply_brief 选择参与者需要知道的关键范围与实际下一步；问题和贡献邀请只在 public_questions 中出现一次。提出 develop 候选表达模型建议，正式接受与交付表述由真实 Work 状态支持。没有提要的已保存研判沿用既有完整投影。
 

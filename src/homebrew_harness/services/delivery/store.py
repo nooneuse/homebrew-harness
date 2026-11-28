@@ -63,6 +63,16 @@ class DeliveryStore:
                 self.retire_publication(conn, work_id=value["work_id"])
             return result
 
+    def supersede_changeset(self, row, error):
+        with self.db.write() as conn:
+            self.runtime.store.guard(conn, self.runtime.header)
+            current = self.get("changesets", row["id"], conn)
+            if (current["revision"] != row["revision"] or current["state"] != row["state"]
+                    or current.get("observation_terminal") or self.merged_pr(conn, current)):
+                return
+            current.update(state="superseded", error=type(error).__name__, revision=current["revision"] + 1)
+            self.put(conn, "changesets", current)
+
     def commit_feedback(self, row, changes, *, diagnose=False, merge=False):
         """Commit one queried version, never overwrite newer preparation or merge facts."""
         with self.db.write() as conn:
@@ -122,6 +132,40 @@ class DeliveryStore:
             "candidate": {"scope": "ci-repair", "plan": result["plan"], "reason": result["reason"]},
             "reason": result["reason"],
         })
+
+    def information_request(self, conn, row, *, stage, basis, reason):
+        identity = "request_" + request_key(
+            "delivery-information", self.id, row["id"] + ":" + stage + ":" + basis
+        )
+        prior = self.db._get(conn, "service_decisions", identity)
+        if prior:
+            return prior
+        return self.put(conn, "decisions", {
+            "id": identity, "kind": "delivery_information", "work_id": row["work_id"],
+            "requirements_revision": row["requirements_revision"], "changeset_id": row["id"],
+            "stage": stage, "basis": basis, "reason": reason,
+            "candidate": {"scope": "delivery", "stage": stage, "plan": reason},
+            "expires_at": None, "revision": 0, "state": "pending", "created_at": time.time(),
+        })
+
+    @staticmethod
+    def information_matches(row, request):
+        basis = request.get("basis")
+        if (
+            not basis
+            or request["work_id"] != row["work_id"]
+            or request["requirements_revision"] != row["requirements_revision"]
+        ):
+            return False
+        if request["stage"] == "publication":
+            return row["state"] == "publication_attention" and row.get("publication_basis") == basis
+        if request["stage"] == "ci_triage":
+            return (
+                row["state"] == "blocked"
+                and row.get("error") == "model_human_required"
+                and row.get("reasoning_job_id") == basis
+            )
+        return False
 
     def renew_repair_request(self, row):
         with self.db.write() as conn:
@@ -347,6 +391,20 @@ class DeliveryStore:
                 "This PR is already merged; the delivery action is no longer applicable.",
             )
 
+    def supersede_unstarted(self, conn, action, reason):
+        if action["state"] not in {"queued", "awaiting_approval"}:
+            return False
+        action.update(state="superseded", error=reason, superseded_reason=reason,
+                      revision=action["revision"] + 1)
+        self.put(conn, "actions", action)
+        identity = "request_" + request_key("delivery-request", self.id, action["id"])
+        request = self.db._get(conn, "service_decisions", identity)
+        if request and request["state"] == "pending":
+            request.update(state="superseded", unavailable_reason=reason,
+                           revision=request["revision"] + 1)
+            self.put(conn, "decisions", request)
+        return True
+
     def retire_action(self, conn, action, merge):
         evidence = {"subject": merge["subject"], "result_commit": merge["result_commit"]}
         if action["state"] in {"queued", "awaiting_approval"}:
@@ -382,10 +440,13 @@ class DeliveryStore:
             self.runtime.store.guard(conn, self.runtime.header)
             self.retire_publication(conn)
 
-    def action(self, conn, row, kind, *, body=None, subject=None, draft=False, publication=None):
+    def action(
+        self, conn, row, kind, *, body=None, subject=None, draft=False,
+        publication=None, explicit_publication=None,
+    ):
         saved = self.db._get(conn, "service_changesets", row["id"])
         self.require_unmerged(conn, saved or row, kind)
-        self.current(row, conn)
+        work = self.current(row, conn)
         if kind == "merge_change_request" and self.ms.communication is not None:
             from homebrew_harness.services.communication.followup import pending
 
@@ -408,6 +469,9 @@ class DeliveryStore:
         if not row.get('candidate'):raise ValueError('Capture a source candidate before draft publication.')
         if draft and kind=='ensure_change_request' and not publication:
             raise ValueError('Draft PR publication requires a truthful title/body.')
+        if explicit_publication is None:
+            explicit_publication = publication is not None
+        stored_publication = row.get("publication") or (row.get("review") or {}).get("publication")
         if not draft and not row.get("frozen"):
             raise boundary_error(
                 ValueError, "delivery_contract", "Candidate is not quality-ready."
@@ -481,7 +545,10 @@ class DeliveryStore:
                 )
             content.update(body=body, subject=subject)
         if kind == "ensure_change_request":
-            work = self.current(row)
+            if not explicit_publication and not draft and row.get("publication_redraft_action") and (
+                row.get("publication_redraft") or row["state"] in {"publication_drafting", "publication_attention"}
+            ):
+                raise boundary_error(ValueError, "delivery_contract", "Current publication wording is still being prepared.")
             content.update(
                 title="Maintain " + work["id"],
                 body="Work "
@@ -490,7 +557,7 @@ class DeliveryStore:
                 + row["candidate"]["commit"]
                 + "\n\nLocal verification completed. Publication is tracked separately.",
             )
-            publication = publication or row.get("publication") or (row.get("review") or {}).get("publication")
+            publication = publication or stored_publication
             if publication:
                 content.update(publication)
             if row.get("change_request"):
@@ -505,8 +572,29 @@ class DeliveryStore:
                         existing=prior["change_request"],
                         previous_correlation=prior["change_request_action"],
                     )
+        # The opt-in covers stored review/drafting output, not caller-supplied text.
+        auto = kind in self.spec["auto_actions"] and (
+            kind != "ensure_change_request"
+            or (
+                not explicit_publication
+                and (not stored_publication or (self.spec.get("auto_publish_pr_text") and not draft))
+            )
+        )
+        context = None
+        action_key = [kind, content]
+        if kind == "ensure_change_request" and publication and auto and not draft:
+            from .publication import context_hash
+
+            context = row.get("publication_context_hash") or context_hash(work)
+            # While the plan is queued, changing context must not mint a new
+            # action using the old wording. Only a redraft can replace it.
+            if replaced := row.get("publication_redraft_action"):
+                action_key.append(replaced)
+        if kind == "ensure_change_request" and explicit_publication:
+            # Identical wording must not inherit an implicit plan's authorization.
+            action_key.append("explicit_publication")
         identity = "delivery_" + request_key(
-            "action", self.id, fingerprint([kind, content])
+            "action", self.id, fingerprint(action_key)
         )
         old = self.db._get(conn, "service_actions", identity)
         if old:
@@ -518,30 +606,18 @@ class DeliveryStore:
             "changeset_id": row["id"],
             "plan": content,
             "plan_hash": fingerprint(content),
-            "state": (
-                "queued"
-                if kind in self.spec["auto_actions"]
-                and not (
-                    kind == "ensure_change_request"
-                    and (row.get("publication") or row.get("review", {}).get("publication"))
-                )
-                else "awaiting_approval"
-            ),
-            "authorization": (
-                "host_policy"
-                if kind in self.spec["auto_actions"]
-                and not (
-                    kind == "ensure_change_request"
-                    and (row.get("publication") or row.get("review", {}).get("publication"))
-                )
-                else None
-            ),
+            "state": "queued" if auto else "awaiting_approval",
+            "authorization": "host_policy" if auto else None,
             "expires_at": expiry(self.spec["authorization_seconds"], time.time()),
             "revision": 0,
             "attempts": 0,
             "result": None,
             "created_at": time.time(),
         }
+        if kind == "ensure_change_request" and explicit_publication:
+            value["explicit_publication"] = True
+        if context is not None:
+            value["context_hash"] = context
         self.put(conn, "actions", value)
         if value["state"] == "awaiting_approval":
             self.request(conn, row, value)
@@ -588,9 +664,57 @@ class DeliveryStore:
             },
             "created_at": time.time(),
         }
+        if action.get("explicit_publication") is True:
+            value["explicit_publication"] = True
         return self.put(conn, "decisions", value)
 
+    def answer_information(self, conn, request, payload, decision_id):
+        if payload["decision"] != "answer":
+            raise boundary_error(ValueError, "delivery_contract", "Delivery information requires an operator answer.")
+        answer = text(payload.get("text"), "operator answer", 8000)
+        row = self.get("changesets", request["changeset_id"], conn)
+        work = self.current(row, conn)
+        if (
+            type(payload["revision"]) is not int
+            or request["revision"] != payload["revision"]
+            or request["state"] != "pending"
+            or not self.information_matches(row, request)
+        ):
+            raise boundary_error(ValueError, "delivery_contract", "Delivery information request is stale.")
+
+        stage = request["stage"]
+        question = request.get("reason") or row.get("error_detail") or ""
+        row.setdefault("clarifications", []).append({
+            "stage": stage,
+            "request_id": request["id"],
+            "basis": request["basis"],
+            "question": question,
+            "question_origin": "model",
+            "answer": answer,
+            "answer_origin": "operator",
+        })
+        # Native Runs consume execution_context as operator guidance. The
+        # model's question belongs only in the attributed changeset evidence.
+        work.setdefault("execution_context", []).append(f"Delivery clarification ({stage}): {answer}")
+        work["revision"] += 1
+        self.db._put(conn, "service_work", work["id"], work)
+        request.update(state="answered", answer=answer, revision=request["revision"] + 1)
+        self.put(conn, "decisions", request)
+        row.update(error=None, error_detail=None, error_info=None, revision=row["revision"] + 1)
+        if stage == "publication":
+            row.update(state="review_branch_ready", publication_basis=None, publication_redraft=True)
+        else:
+            row["state"] = "ci_diagnosing"
+            job = self.ms.job(conn, "ci_triage", row["id"], row["revision"], {},
+                              row["id"] + ":ci-answer:" + str(row["revision"]))
+            row["reasoning_job_id"] = job["id"]
+        self.put(conn, "changesets", row)
+        self.ms.changed(conn, work["id"])
+        return {"id": request["id"], "state": "answered", "request_id": decision_id}
+
     def decide(self, conn, request, payload, decision_id):
+        if request["kind"] == "delivery_information":
+            return self.answer_information(conn, request, payload, decision_id)
         if request["kind"] == "ci_repair":
             row = self.get("changesets", request["changeset_id"], conn)
             work = self.current(row, conn)
@@ -700,6 +824,33 @@ class DeliveryStore:
             "request_id": decision_id,
         }
 
+    def recover_stale_action(self, action, error):
+        """Do not overwrite a newer authorization or a started attempt."""
+        from .publication import StalePublication, mark_redraft
+
+        with self.db.write() as conn:
+            self.runtime.store.guard(conn, self.runtime.header)
+            current = self.get("actions", action["id"], conn)
+            if current["state"] != "queued" or current["revision"] != action["revision"]:
+                return False
+            row = self.get("changesets", current["changeset_id"], conn)
+            if current["kind"] in PR_MUTATIONS and (merged := self.merged_pr(conn, row)):
+                self.retire_action(conn, current, merged)
+                return False
+            reason = "publication_context_changed" if isinstance(error, StalePublication) else type(error).__name__
+            self.supersede_unstarted(conn, current, reason)
+            try:
+                self.current(row, conn)
+            except StaleDelivery:
+                return False
+            if isinstance(error, StalePublication):
+                if self.action_basis(row, current["plan"]) == current["plan"]["hash"]:
+                    mark_redraft(self, row, conn, current["id"])
+            elif current["kind"] == "merge_change_request" and row["state"] == "merge_ready":
+                row.update(state="review_waiting", next_ci=0, revision=row["revision"] + 1)
+                self.put(conn, "changesets", row)
+            return True
+
     def start_action(self, action):
         with self.db.write() as conn:
             meta = self.runtime.store.guard(conn, self.runtime.header)
@@ -712,9 +863,10 @@ class DeliveryStore:
                     "delivery_contract",
                     "Service is not executing delivery.",
                 )
-            self.current(row, conn)
+            work = self.current(row, conn)
             if (
                 current["state"] != "queued"
+                or current["revision"] != action["revision"]
                 or current["authorization"] is None
                 or expired(current["expires_at"], time.time())
             ):
@@ -733,6 +885,11 @@ class DeliveryStore:
                     "delivery_contract",
                     "Candidate quality evidence changed.",
                 )
+            if current.get("authorization") == "host_policy" and "context_hash" in current:
+                from .publication import StalePublication, context_hash
+
+                if current["context_hash"] != context_hash(work):
+                    raise StalePublication("Work execution context changed since automatic wording was prepared.")
             if (
                 current["kind"] == "merge_change_request"
                 and row["state"] != "merge_ready"
@@ -863,14 +1020,15 @@ class DeliveryStore:
 
     def finish_model(self, conn, job, result):
         row = self.get("changesets", job["target"], conn)
-        self.current(row)
+        self.current(row, conn)
         if row["revision"] != job["revision"]:
             return "stale"
         if job["kind"] == "validation_plan":
             row.update(validation_plan=result, state="validating", error=None)
             if result.get('draft') and not self.merged_pr(conn, row):
                 self.action(conn,row,'publish_branch',draft=True)
-                self.action(conn,row,'ensure_change_request',draft=True,publication=result['draft'])
+                self.action(conn, row, "ensure_change_request", draft=True,
+                            publication=result["draft"], explicit_publication=False)
         elif job["kind"] == "publication":
             from .publication import accept
             accept(self, row, job, result, conn)
@@ -905,6 +1063,10 @@ class DeliveryStore:
             else:
                 row.update(state="review_branch_ready")
                 row["frozen"] = self.freeze(row)
+                if result.get("publication"):
+                    from .publication import context_hash
+
+                    row["publication_context_hash"] = context_hash(self.current(row, conn))
         elif job["kind"] == "ci_triage":
             row["ci_diagnosis"] = result
             row["reasoning_job_id"] = job["id"]
@@ -918,6 +1080,9 @@ class DeliveryStore:
                            integration_ci_basis=ci_failure_basis(self.spec, row["ci"]), next_merge=0)
             elif action in {"defer", "stop", "human_required"}:
                 row.update(state="blocked", error="model_" + action, error_detail=result["reason"])
+                if action == "human_required":
+                    self.information_request(conn, row, stage="ci_triage", basis=job["id"],
+                                             reason=result["reason"])
             elif action == "plan_validation":
                 row["validation_history"] = [*row.get("validation_history", []), {"candidate_commit": row["candidate"]["commit"], "quality": row.get("quality"), "test_failure": row.get("test_failure"), "validation_plan": row.get("validation_plan"), "reason": result["reason"]}]
                 row.update(state="validating", validation_execution=None, validation_plan=None, error=None)

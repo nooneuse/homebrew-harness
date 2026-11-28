@@ -5,6 +5,7 @@ import json
 import shlex
 import sys
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 
 from homebrew_harness.cli_arguments import add_location_arguments
@@ -308,11 +309,31 @@ def commands(parser, *, attach=True):
     show.add_argument("identity")
     decide = batch_ops.add_parser("decide")
     decide.add_argument("identity")
-    decide.add_argument("--approve", nargs="*", default=[])
-    decide.add_argument("--deny", nargs="*", default=[])
-    decide.add_argument("--allow-extra-attempt", nargs="*", default=[], metavar="REQUEST_ID")
+    _decision_arguments(decide, "REQUEST_ID")
     decide.add_argument("--revision", type=int, default=0)
-    decide.add_argument("--request-id")
+    inbox = actions.add_parser("inbox", help="List, decide, or refresh human requests.")
+    if attach:
+        inbox.add_argument("service_id")
+    _inbox_list_arguments(inbox)
+    inbox_ops = inbox.add_subparsers(dest="inbox_command")
+    _inbox_list_arguments(inbox_ops.add_parser("list"))
+    inbox_decide = inbox_ops.add_parser("decide")
+    _decision_arguments(inbox_decide, "TOKEN")
+    inbox_decide.add_argument("--work-id", default=argparse.SUPPRESS)
+    inbox_decide.add_argument("--snapshot", metavar="DIGEST", help="Pending inbox snapshot for indices and bare IDs.")
+    inbox_decide.add_argument("--limit", metavar="N", type=int, default=argparse.SUPPRESS,
+                              help="Limit used to list the snapshot (default: 50).")
+    refresh = inbox_ops.add_parser("refresh-expired")
+    refresh.add_argument("--ids", nargs="+", metavar="REQUEST_ID")
+    refresh.add_argument(
+        "--cursor", type=int, default=0,
+        help="Continue from next_cursor with the same selection and a new request ID.",
+    )
+    refresh.add_argument("--request-id")
+    inbox_ops.add_parser("notify-status", help="Show webhook configuration and delivery status.")
+    notify = inbox_ops.add_parser("notify", help="Send the current inbox digest to the configured webhook.")
+    notify.add_argument("--force", action="store_true", help="Send even when no items are actionable.")
+    notify.add_argument("--request-id")
     tasks = work.add_subparsers(dest="work_command", required=True)
     submit = tasks.add_parser("submit")
     submit.add_argument("text")
@@ -381,6 +402,22 @@ def commands(parser, *, attach=True):
     return actions
 
 
+def _decision_arguments(parser, token):
+    parser.add_argument("--approve", nargs="*", action="extend", default=[], metavar=token)
+    parser.add_argument("--deny", nargs="*", action="extend", default=[], metavar=token)
+    parser.add_argument("--answer", action="append", default=[], metavar=token + "=TEXT")
+    parser.add_argument("--allow-extra-attempt", nargs="*", action="extend", default=[], metavar=token)
+    parser.add_argument("--request-id")
+
+
+def _inbox_list_arguments(parser):
+    # Shared by the implicit and explicit list forms; do not overwrite parent flags.
+    parser.add_argument("--work-id", default=argparse.SUPPRESS)
+    parser.add_argument("--include-expired", action="store_true", default=argparse.SUPPRESS)
+    parser.add_argument("--limit", type=int, default=argparse.SUPPRESS)
+    parser.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
+
+
 def register(groups):
     parser = groups.add_parser(
         "service", help="Manage persistent services and attach a local text interface."
@@ -437,7 +474,91 @@ def submit(service, text, *, priority=0, request_id=None):
     }
 
 
-def operate(service, args):
+def _batch_decisions(args):
+    approved = args.approve
+    extra = set(args.allow_extra_attempt)
+    if extra - set(approved):
+        raise ValueError("Extra attempts must name approved CI repair requests in this batch.")
+    decisions = [
+        {"id": identity, "decision": "approve", **({"allow_extra_attempt": True} if identity in extra else {})}
+        for identity in approved
+    ]
+    decisions.extend({"id": token, "decision": "deny"} for token in args.deny)
+    decisions.extend(_answer_action(answer, "id") for answer in args.answer)
+    return decisions
+
+
+def _answer_action(answer, key):
+    token, separator, text = answer.partition("=")
+    if not separator or not token or not text.strip():
+        raise ValueError("Use --answer TOKEN=TEXT with a nonempty answer.")
+    return {key: token, "decision": "answer", "text": text}
+
+
+def _operate_inbox(service, args, *, inbox_snapshot=None, inbox_requests=None):
+    work_id = getattr(args, "work_id", None)
+    if args.inbox_command == "refresh-expired":
+        return service.refresh_expired(ids=args.ids, request_id=args.request_id, cursor=args.cursor)
+    if args.inbox_command == "notify-status":
+        return service.notification_status()
+    if args.inbox_command == "notify":
+        return service.send_notification(force=args.force, request_id=args.request_id)
+    if args.inbox_command != "decide":
+        return service.inbox(
+            work_id=work_id,
+            include_expired=getattr(args, "include_expired", False),
+            limit=getattr(args, "limit", 50),
+        )
+
+    from .inbox import EXACT_TOKEN
+
+    actions = [
+        {"token": token, "decision": decision}
+        for decision in ("approve", "deny", "allow_extra_attempt")
+        for token in getattr(args, decision)
+    ]
+    actions.extend(_answer_action(answer, "token") for answer in args.answer)
+    snapshot = args.snapshot
+    limit = getattr(args, "limit", 50)
+    needs_snapshot = any(not EXACT_TOKEN.fullmatch(action["token"]) for action in actions)
+    saved = inbox_requests.get(args.request_id) if inbox_requests is not None else None
+    if saved is not None and (needs_snapshot or snapshot is not None):
+        original_snapshot, original_work, original_limit = saved
+        if snapshot is None:
+            snapshot = original_snapshot
+        work_id = getattr(args, "work_id", original_work)
+        limit = getattr(args, "limit", original_limit)
+    elif snapshot is None and needs_snapshot and inbox_snapshot is not None:
+        # The digest covers only displayed pending items, even when the listing
+        # included expired requests. Exact references never inherit this scope.
+        snapshot = inbox_snapshot["digest"]
+        work_id = getattr(args, "work_id", inbox_snapshot["work_id"])
+        limit = getattr(args, "limit", inbox_snapshot["limit"])
+    if inbox_requests is not None and snapshot is not None and args.request_id:
+        # Remember before sending: a lost response can still mean acceptance.
+        inbox_requests.setdefault(args.request_id, (snapshot, work_id, limit))
+        inbox_requests.move_to_end(args.request_id)
+        if len(inbox_requests) > 100:
+            inbox_requests.popitem(last=False)
+    return service.decide_inbox(
+        actions, work_id=work_id, snapshot=snapshot, limit=limit, request_id=args.request_id
+    )
+
+
+def _render_command(value, args):
+    if (
+        args.command == "inbox"
+        and args.inbox_command in {None, "list"}
+        and not getattr(args, "json", False)
+    ):
+        print(value["summary"])
+    else:
+        render(value)
+
+
+def operate(service, args, *, inbox_snapshot=None, inbox_requests=None):
+    if args.command == "inbox":
+        return _operate_inbox(service, args, inbox_snapshot=inbox_snapshot, inbox_requests=inbox_requests)
     if args.command == "ops":
         op = args.ops_command
         if op == "health":
@@ -523,16 +644,9 @@ def operate(service, args):
             )
         if args.batch_command == "show":
             return service.delivery(args.identity, kind="batches")
-        extra = set(getattr(args, "allow_extra_attempt", []))
-        if extra - set(args.approve):
-            raise ValueError("Extra attempts must name approved CI repair requests in this batch.")
         return service.decide_batch(
-            args.identity,
-            [{"id": i, "decision": "approve", **({"allow_extra_attempt": True} if i in extra else {})}
-             for i in args.approve]
-            + [{"id": i, "decision": "deny"} for i in args.deny],
-            revision=args.revision,
-            request_id=args.request_id,
+            args.identity, _batch_decisions(args),
+            revision=args.revision, request_id=args.request_id,
         )
     if args.command == "reports":
         return service.reports(
@@ -735,6 +849,8 @@ def attach(service, *, input_fn=input, context="default"):
     focus = service.current_focus(context=context)
     if focus and focus["work_id"]:
         render({"focus": focus})
+    last_inbox = None
+    last_inbox_requests = OrderedDict()
     while True:
         try:
             line = input_fn("service> ")
@@ -788,7 +904,18 @@ def attach(service, *, input_fn=input, context="default"):
                     else:
                         render([r.data() for r in service.requests(focus["work_id"])])
                 else:
-                    render(operate(service, args))
+                    value = operate(
+                        service, args, inbox_snapshot=last_inbox, inbox_requests=last_inbox_requests
+                    )
+                    if args.command == "inbox" and args.inbox_command in {None, "list"}:
+                        last_inbox = {
+                            "digest": value["digest"],
+                            "work_id": getattr(args, "work_id", None),
+                            "limit": getattr(args, "limit", 50),
+                        }
+                    # Keep the listed digest for exact retries with --request-id;
+                    # a new decision against a stale digest is rejected server-side.
+                    _render_command(value, args)
         except StopIteration:
             continue
         except KeyboardInterrupt:
@@ -888,7 +1015,7 @@ def execute(args, parser):
                 )
             attach(remote, context=args.context)
         else:
-            render(operate(remote, args))
+            _render_command(operate(remote, args), args)
         return 0
     except Exception as error:
         render_error(error, file=sys.stderr)

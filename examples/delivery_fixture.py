@@ -306,7 +306,8 @@ class Peer:
                     elif kind == "validation_plan":
                         options = data["input"].get("validation_options", {})
                         proposal = {"tests": options.get("required_tests", []) or options.get("available_tests", []),
-                                    "review": True, "reason": "Verify the fixture with its admitted recipe and independent review."}
+                                    "review": True, "reason": "Verify the fixture with its admitted recipe and independent review.",
+                                    **getattr(outer, "validation_extra", {})}
                     elif kind == "review":
                         proposal = {
                             "text": "Fixed candidate reviewed.", "findings": [],

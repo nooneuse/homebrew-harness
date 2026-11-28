@@ -88,6 +88,8 @@ QUERY_METHODS = {
     "work_list": {"state", "cursor", "limit"},
     "schedules": {"cursor", "limit"},
     "requests": {"work_id"},
+    "service_inbox": {"work_id", "include_expired", "limit"},
+    "notification_status": set(),
     "receipt": {"request_id"},
 }
 MAINTENANCE_COMMANDS = {
@@ -129,6 +131,8 @@ MAINTENANCE_COMMANDS = {
     "delivery_base_update": {"mode"},
     "batch_create": {"refs"},
     "batch_decide": {"id", "revision", "decisions"},
+    "inbox_decide": {"actions", "work_id", "snapshot", "limit"},
+    "inbox_refresh_expired": {"ids", "cursor"},
     "conversation_submit": {"text", "context", "work_id", "revision"},
     "service_decide": {"id", "revision", "decision", "text", "allow_extra_attempt"},
     "report_create": set(),
@@ -147,6 +151,7 @@ COMMAND_METHODS = {
     **MAINTENANCE_COMMANDS,
     "focus": {"context", "id", "revision"},
     "tick": set(),
+    "notification_send": {"force"},
     "submit": {"text", "goal", "priority"},
     "pause": {"revision", "scope"},
     "resume": {"revision"},

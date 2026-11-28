@@ -9,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from homebrew_harness import Harness, HostConfig, ServiceSpec
+from homebrew_harness.runs.spec import RUN_CONTROL_TOOLS
 from tests.runtime.test_interaction import eventually
 from .peer import Peer
 
@@ -180,8 +181,71 @@ class CommunicationFlow(unittest.TestCase):
             5,
         )
         self.assertTrue(authority)
-        self.assertEqual(len(service.work.list()["items"]), 1)
+        (work,) = service.work.list()["items"]
+        self.assertIsNone(work["authority"])
         self.assertEqual(service.discussion(did)["draft_revision"], 1)
+
+    def _accept_discussion_requirements(self, *, grant_authority):
+        self.peer.issue()
+        self.peer.proposals = [
+            {
+                "next_step": "develop",
+                "reason": "The scope is clear.",
+                "alignment": "Preserves file compatibility.",
+                "draft": {
+                    "text": "Add offline export.",
+                    "scope": "code",
+                    "acceptance": "Existing files remain readable.",
+                },
+            }
+        ]
+        service = self.start(
+            maintenance={"grant_on_requirements_acceptance": grant_authority}
+        )
+        did = self.discussion(service)
+        request = eventually(
+            lambda: next(
+                (r for r in service.requests() if r.kind == "discussion_requirements"),
+                None,
+            ),
+            15,
+        )
+        self.assertFalse(service.work.list()["items"])
+        decision = service.decide(request, "approve", decision_id="accept")
+        self.assertEqual(decision["state"], "approved")
+        work = service.store.work(service.discussion(did)["work_id"])
+        return service, work, decision
+
+    def test_requirements_acceptance_can_grant_configured_work_scope(self):
+        service, work, decision = self._accept_discussion_requirements(
+            grant_authority=True
+        )
+        self.assertEqual(
+            work["authority"]["origin"], "operator:" + decision["request_id"]
+        )
+        self.assertEqual(work["authority"]["scope"], "code")
+        self.assertEqual(work["run_spec"]["write_paths"], ["src"])
+        self.assertEqual(
+            set(work["run_spec"]["tools"]) - RUN_CONTROL_TOOLS, {"read_file", "write_file"}
+        )
+        self.assertEqual(work["run_spec"]["allow_tests"], [])
+        self.assertNotIn(
+            "work_authority", [r["kind"] for r in service.records("decisions")["items"]]
+        )
+
+    def test_requirements_acceptance_explicit_false_still_needs_work_approval(self):
+        service, work, _ = self._accept_discussion_requirements(grant_authority=False)
+        self.assertIsNone(work["authority"])
+        self.assertIsNone(work["run_id"])
+        (authority,) = service.requests()
+        self.assertEqual(authority.kind, "work_authority")
+        self.assertEqual(authority.arguments["work_id"], work["id"])
+        self.assertEqual(authority.arguments["scope"], "code")
+        decision = service.decide(authority, "approve", decision_id="authorize-work")
+        self.assertEqual(
+            service.store.work(work["id"])["authority"]["origin"],
+            "operator:" + decision["request_id"],
+        )
 
     def test_unapproved_message_is_independent_of_changesets(self):
         self.peer.issue()
@@ -329,6 +393,102 @@ class CommunicationFlow(unittest.TestCase):
         ]
         eventually(lambda: service.discussion(did)["review_id"] != review, 15)
 
+    def _propose_review_feedback_comment(self, *, pr):
+        self.peer.issue(pr=pr)
+        self.peer.proposals = [
+            {
+                "next_step": "wait",
+                "reason": "Provide advisory feedback.",
+                "alignment": "Within scope.",
+                "communication": {
+                    "kind": "post_comment",
+                    "intent": "review_feedback",
+                    "body": "Please clarify the expected behavior.",
+                },
+            }
+        ]
+        service = self.start(auto_intents=["review_feedback"])
+        (action,) = eventually(lambda: service.communication_actions()["items"], 20)
+        return service, service.communication(action["id"])
+
+    def test_review_feedback_policy_holds_issue_comment(self):
+        service, action = self._propose_review_feedback_comment(pr=False)
+        self.assertEqual(action["plan"]["subject"]["kind"], "issue")
+        self.assertEqual(action["state"], "awaiting_approval")
+        self.assertIsNone(action["authorization"])
+        self.assertEqual(action["attempts"], 0)
+        (request,) = service.requests()
+        self.assertEqual(request.kind, "communication_authority")
+        self.assertEqual(request.state, "pending")
+        self.assertEqual(request.arguments["action_id"], action["id"])
+        self.assertFalse(self.peer.writes)
+
+    def test_review_feedback_policy_publishes_external_pr_post_comment(self):
+        service, action = self._propose_review_feedback_comment(pr=True)
+        self.assertEqual(action["plan"]["subject"]["kind"], "change_request")
+        self.assertEqual(action["authorization"], "host_policy")
+        eventually(
+            lambda: service.communication(action["id"])["state"] == "confirmed", 10
+        )
+        self.assertFalse(service.records("decisions")["items"])
+        (kind, comment), = self.peer.writes
+        self.assertEqual(kind, "comment")
+        self.assertTrue(comment["body"].startswith(action["plan"]["body"] + "\n\n"))
+
+    def _propose_external_review(self, event, intent):
+        self.peer.issue(pr=True)
+        self.peer.proposals = [
+            {
+                "next_step": "wait",
+                "reason": "Review the current version.",
+                "alignment": "Within scope.",
+                "communication": {
+                    "kind": "submit_review",
+                    "intent": intent,
+                    "event": event,
+                    "body": "Review of the current change.",
+                },
+            }
+        ]
+        service = self.start(auto_intents=["review_feedback"])
+        (action,) = eventually(lambda: service.communication_actions()["items"], 20)
+        return service, action["id"]
+
+    def test_review_feedback_policy_publishes_external_pr_comment(self):
+        service, action_id = self._propose_external_review("COMMENT", "review_feedback")
+        eventually(lambda: service.communication(action_id)["state"] == "confirmed", 10)
+        action = service.communication(action_id)
+        self.assertIsNone(action["work_id"])
+        self.assertEqual(action["authorization"], "host_policy")
+        self.assertFalse(service.records("decisions")["items"])
+        (kind, review), = self.peer.writes
+        self.assertEqual(kind, "review")
+        self.assertEqual(review["state"], "COMMENTED")
+        self.assertEqual(review["commit_id"], self.peer.head)
+        self.assertEqual(action["result"]["object"]["id"], str(review["id"]))
+        self.assertTrue(review["body"].startswith("Review of the current change.\n\n"))
+
+    def _assert_external_review_requires_approval(self, event, intent):
+        service, action_id = self._propose_external_review(event, intent)
+        action = service.communication(action_id)
+        self.assertEqual(action["plan"]["event"], event)
+        self.assertEqual(action["state"], "awaiting_approval")
+        self.assertIsNone(action["authorization"])
+        self.assertEqual(action["attempts"], 0)
+        (request,) = service.requests()
+        self.assertEqual(request.kind, "communication_authority")
+        self.assertEqual(request.state, "pending")
+        self.assertEqual(request.arguments["action_id"], action_id)
+        service.stop()
+        self.assertTrue(service.wait_closed(8))
+        self.assertFalse(self.peer.writes)
+
+    def test_review_feedback_policy_holds_external_pr_approval(self):
+        self._assert_external_review_requires_approval("APPROVE", "approve_review")
+
+    def test_review_feedback_policy_holds_external_pr_change_request(self):
+        self._assert_external_review_requires_approval("REQUEST_CHANGES", "request_changes")
+
     def test_thread_reply_is_scoped_and_does_not_claim_a_merge(self):
         self.peer.issue(pr=True)
         self.peer.inline = [
@@ -370,6 +530,36 @@ class CommunicationFlow(unittest.TestCase):
         eventually(lambda: any(kind == "reply" for kind, _ in self.peer.writes), 10)
         self.assertEqual(self.peer.inline[-1]["in_reply_to_id"], 9)
         eventually(lambda: service.discussion(did)["state"] == "waiting_participant", 5)
+
+    def test_inbox_renews_only_current_communication_authority(self):
+        self.peer.issue()
+        self.peer.proposals = [{
+            "next_step": "clarify", "reason": "Clarify requirements.", "alignment": "Keep offline support.",
+            "questions": [{"id": "offline", "text": "Must it work offline?", "sources": []}],
+            "communication": {"kind": "post_comment", "intent": "clarify", "body": "Must it work offline?"},
+        }]
+        service = self.start()
+        request = eventually(lambda: next((r for r in service.requests()
+                                           if r.kind == "communication_authority"), None), 20)
+        store = service.runtime.maintenance.store
+        with store.db.write() as conn:
+            old = store.get("decisions", request.ref.id, conn)
+            old = store.put(conn, "decisions", {**old, "expires_at": time.time() - 1})
+        item = next(i for i in service.inbox(include_expired=True)["items"] if i["ref"]["id"] == old["id"])
+        self.assertEqual(item["group_key"], "issue:#1")
+        self.assertEqual(item["preview"], "Must it work offline?")
+        self.assertEqual(item["state"], "expired")
+        result = service.refresh_expired([old["id"]], request_id="refresh-comment")
+        self.assertEqual(result["skipped"], [])
+        self.assertEqual(result["refreshed"][0]["revision"], old["revision"] + 1)
+        self.assertEqual(self.peer.writes, [])
+        self.assertEqual(service.communication(old["action_id"])["state"], "awaiting_approval")
+        with store.db.write() as conn:
+            renewed = store.get("decisions", old["id"], conn)
+            store.put(conn, "decisions", {**renewed, "expires_at": time.time() - 1, "basis": "old-basis"})
+        result = service.refresh_expired([old["id"]], request_id="skip-stale-comment")
+        self.assertEqual(result["refreshed"], [])
+        self.assertIn("basis changed", result["skipped"][0]["reason"])
 
     def test_new_reply_invalidates_old_approval_and_preserves_round_history(self):
         self.peer.issue()

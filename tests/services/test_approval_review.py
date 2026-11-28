@@ -2,13 +2,25 @@
 
 import json
 import unittest
+from dataclasses import replace
 from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
+from homebrew_harness.security.approval_review import ApprovalReviewer, ReviewConfig
 from homebrew_harness.services.approval_review import ServiceApprovalReview
 from homebrew_harness.storage.durable_runtime import DurableStore
 from homebrew_harness.execution.model_gateway import ensure_gateway
 from tests.runtime import test_slash_commands as helpers
+from tests.runtime.test_interaction import eventually
+from tests.services.communication import test_flow as communication_fixture
+from tests.services.delivery import test_flow as delivery_fixture
 from tests.support.clients import fake_client, model_binding, reply
+
+
+def configure_business_review(host, kind):
+    host.config = replace(host.config, settings=replace(
+        host.config.settings, approval_review={"mode": "auto_review", "kinds": [kind]},
+    ))
 
 
 class ServiceReview(unittest.TestCase):
@@ -134,6 +146,190 @@ class ServiceReview(unittest.TestCase):
         self.assertEqual(len(published), 1)
         self.assertIn("Which parser behavior?", str(payloads[0]))
         self.assertIn("allowed_intents", str(payloads[0]))
+
+    def test_requirements_review_includes_bounded_discussion_and_prepared_navigation(self):
+        runtime, request, published, client, payloads = self.runtime(["discussion_requirements"])
+        draft = {"text": "Support offline export.", "acceptance": "Keep old files readable.", "scope": "code"}
+        request.update(kind="discussion_requirements", arguments={"candidate": draft})
+        runtime.maintenance.store.get = lambda *args: {
+            "work_id": None, "discussion_id": "discussion", "candidate": draft,
+        }
+        runtime.maintenance.store.job_get = lambda identity: {
+            "target": "discussion", "input": {"review_id": "snapshot"},
+            "discussion_assessment": {"evidence": {"src/value.py": "a" * 64}},
+        }
+        workspace = self.root / "fixed"
+        workspace.mkdir()
+        rows = {
+            "discussions": {
+                "id": "discussion", "subject": {"kind": "change_request", "number": 1},
+                "reason": "The scope is clear.", "alignment": "Preserves compatibility.",
+                "operator_note": "Support offline export only; leave cloud sync out of scope.",
+                "projection": {"draft": draft, "facts": [{"text": "x" * 50000}]},
+                "review_id": "snapshot", "last_round": "round",
+            },
+            "review_snapshots": {"workspace": str(workspace), "coverage": {"complete": True}},
+            "rounds": {"job_id": "round-job"},
+        }
+        runtime.maintenance.communication = SimpleNamespace(store=SimpleNamespace(
+            get=lambda section, identity: rows[section], policy={"auto_intents": []},
+        ))
+        reviewer = ServiceApprovalReview(runtime)
+        self.addCleanup(reviewer.close)
+        reviewer.run()
+        self.assertEqual(published, [("service_decide", {"id": "request-fixture", "revision": 0, "decision": "approve"})])
+        self.assertEqual(client.chat.completions.create.call_count, 1)
+        context = json.loads(payloads[0][1]["content"])["host_context"]
+        discussion = context["proposal_evidence"]["discussion"]
+        self.assertEqual(discussion["projection"]["draft"], draft)
+        self.assertTrue(discussion["projection"]["facts"]["truncated"])
+        self.assertEqual(discussion["alignment"], rows["discussions"]["alignment"])
+        self.assertEqual(discussion["operator_note"], rows["discussions"]["operator_note"])
+        self.assertEqual(discussion["review_snapshot"]["coverage"], {"complete": True})
+        self.assertEqual(context["host_scope"]["communication_policy"], {"auto_intents": []})
+        self.assertEqual(context["cwd"], str(workspace))
+        self.assertEqual(context["evidence_navigation"], [
+            {"path": "src/value.py", "observed_sha256": "a" * 64},
+        ])
+
+    def ci_review(self, *, extra_required=False):
+        runtime, request, published, client, payloads = self.runtime(["ci_repair"])
+        request.update(kind="ci_repair", arguments={
+            "changeset_id": "change-fixture", "plan": "Restore the parser.",
+            "repair_attempts": {"used": 0, "limit": 0 if extra_required else 1,
+                                "extra_required": extra_required},
+        })
+        workspace = self.root / "candidate"
+        workspace.mkdir()
+        rows = {
+            "decisions": {"work_id": "work-fixture", "changeset_id": "change-fixture"},
+            "changesets": {
+                "candidate": {"workspace": str(workspace), "commit": "a" * 40,
+                              "files": {f"src/value_{i}.py": {"sha256": "b" * 64} for i in range(40)}},
+                "quality": [{"recipe": "fixed", "status": "failed", "internal": "not evidence"}],
+                "ci": {"kind": "independent_review", "head": "a" * 40},
+                "ci_diagnosis": {"classification": "code", "plan": "Restore the parser."},
+            },
+        }
+        runtime.maintenance.store.get = lambda section, identity: rows[section]
+        runtime.maintenance.delivery = SimpleNamespace(store=SimpleNamespace(spec={"auto_ci_fix": False}))
+        return runtime, request, published, client, payloads
+
+    def test_ci_review_includes_candidate_evidence_and_publishes_without_extension(self):
+        runtime, request, published, client, payloads = self.ci_review()
+        reviewer = ServiceApprovalReview(runtime)
+        self.addCleanup(reviewer.close)
+        reviewer.run()
+        self.assertEqual(published, [("service_decide", {"id": "request-fixture", "revision": 0, "decision": "approve"})])
+        self.assertEqual(client.chat.completions.create.call_count, 1)
+        context = json.loads(payloads[0][1]["content"])["host_context"]
+        changeset = context["proposal_evidence"]["changeset"]
+        self.assertEqual(changeset["candidate"]["commit"], "a" * 40)
+        self.assertNotIn("files", changeset["candidate"])
+        self.assertEqual(changeset["quality"], [{"recipe": "fixed", "status": "failed"}])
+        self.assertEqual(changeset["ci"]["head"], "a" * 40)
+        self.assertEqual(changeset["ci_diagnosis"]["plan"], request["arguments"]["plan"])
+        self.assertEqual(changeset["repair_attempts"], request["arguments"]["repair_attempts"])
+        self.assertEqual(context["host_scope"]["delivery_policy"], {"auto_ci_fix": False})
+        self.assertEqual(context["cwd"], str(self.root / "candidate"))
+        self.assertEqual(len(context["evidence_navigation"]), 16)
+        self.assertEqual(context["evidence_navigation"][0], {"path": "src/value_0.py", "observed_sha256": "b" * 64})
+
+    def test_capped_ci_review_stays_manual_in_tick_and_run(self):
+        runtime, request, published, client, _ = self.ci_review(extra_required=True)
+        runtime.workers = Mock()
+        reviewer = ServiceApprovalReview(runtime)
+        self.addCleanup(reviewer.close)
+        reviewer.tick()
+        runtime.workers.start.assert_not_called()
+        reviewer.run()
+        self.assertFalse(published)
+        client.chat.completions.create.assert_not_called()
+        self.assertFalse(runtime.store.runtime.items("approval_reviews"))
+        self.assertEqual(request["state"], "pending")
+
+    def test_ci_reaching_cap_during_review_supersedes_verdict(self):
+        runtime, request, published, client, _ = self.ci_review()
+        original = client.chat.completions.create.side_effect
+
+        def model(**kwargs):
+            result = original(**kwargs)
+            request["arguments"]["repair_attempts"].update(used=1, extra_required=True)
+            return result
+
+        client.chat.completions.create.side_effect = model
+        reviewer = ServiceApprovalReview(runtime)
+        self.addCleanup(reviewer.close)
+        reviewer.run()
+        self.assertFalse(published)
+        self.assertEqual(request["state"], "pending")
+        record, = runtime.store.runtime.items("approval_reviews").values()
+        self.assertEqual(record["state"], "superseded")
+
+    def test_formal_pr_votes_stay_manual_even_if_communication_is_delegated(self):
+        runtime, request, published, client, _ = self.runtime(["communication_authority"])
+        runtime.workers = Mock()
+        reviewer = ServiceApprovalReview(runtime)
+        self.addCleanup(reviewer.close)
+        for intent in ("approve_review", "request_changes"):
+            with self.subTest(intent=intent):
+                request.update(kind="communication_authority", arguments={"candidate": {"intent": intent}})
+                reviewer.tick()
+                runtime.workers.start.assert_not_called()
+                reviewer.run()
+                self.assertFalse(published)
+                client.chat.completions.create.assert_not_called()
+                self.assertEqual(request["state"], "pending")
+
+    def test_explicit_pr_publication_stays_manual_when_delivery_is_delegated(self):
+        from homebrew_harness.services.request_views import project
+
+        runtime, request, published, client, _ = self.runtime(["delivery_authority"])
+        runtime.workers = Mock()
+        maintenance = runtime.maintenance
+        maintenance.runtime = runtime
+        maintenance.store.id = runtime.id
+        maintenance.delivery = SimpleNamespace(store=SimpleNamespace(
+            current=Mock(), spec={"auto_publish_pr_text": False},
+        ))
+        plan = {"commit": "a" * 40, "title": "Fix parser", "body": "Preserve existing behavior."}
+        decision = {
+            "id": request["ref"]["id"], "kind": "delivery_authority", "revision": 0,
+            "work_id": "work-fixture", "requirements_revision": 0,
+            "action_id": "action-fixture", "changeset_id": "change-fixture",
+            "candidate": {"scope": "delivery", "plan": str(plan)},
+            "expires_at": request["expires_at"], "explicit_publication": True,
+        }
+        action = {"kind": "ensure_change_request", "plan": plan,
+                  "state": "awaiting_approval", "explicit_publication": True}
+        rows = {"decisions": decision, "actions": action, "changesets": {}}
+        maintenance.store.get = lambda section, identity: rows[section]
+        runtime.requests = lambda: (
+            [project(maintenance, decision, None)] if request["state"] == "pending" else []
+        )
+        reviewer = ServiceApprovalReview(runtime)
+        self.addCleanup(reviewer.close)
+
+        view, = runtime.requests()
+        self.assertIs(view["arguments"]["explicit_publication"], True)
+        self.assertEqual(view["state"], "pending")
+        self.assertIsNone(reviewer.context(view))
+        reviewer.tick()
+        runtime.workers.start.assert_not_called()
+        reviewer.run()
+        client.chat.completions.create.assert_not_called()
+        self.assertFalse(published)
+        self.assertFalse(runtime.store.runtime.items("approval_reviews"))
+        with self.assertRaisesRegex(ValueError, "no longer pending or delegated"):
+            reviewer.retry(view["ref"]["id"], view["ref"]["revision"])
+
+        # The same text from an implicit delivery plan can still be reviewed.
+        del action["explicit_publication"], decision["explicit_publication"]
+        reviewer.run()
+        client.chat.completions.create.assert_called_once()
+        self.assertEqual(published, [("service_decide", {
+            "id": view["ref"]["id"], "revision": 0, "decision": "approve",
+        })])
 
     def test_delivery_review_includes_frozen_plan_and_quality_facts(self):
         runtime, request, published, client, payloads = self.runtime(
@@ -367,3 +563,78 @@ class ServiceRuntimeReview(unittest.TestCase):
         self.assertTrue(service.wait_closed(8))
         release.set()
         self.assertIsNone(service.store.work(work.id).get("authority"))
+
+
+class DiscussionRuntimeReview(unittest.TestCase):
+    setUp = communication_fixture.CommunicationFlow.setUp
+    start = communication_fixture.CommunicationFlow.start
+
+    def test_automatic_requirements_review_accepts_and_grants_scoped_work(self):
+        configure_business_review(self.host, "discussion_requirements")
+        self.peer.issue()
+        self.peer.proposals = [{
+            "next_step": "develop", "reason": "The scope is clear.", "alignment": "Preserve formats.",
+            "draft": {"text": "Add offline export.", "scope": "code", "acceptance": "Keep old files readable."},
+        }]
+        with patch.object(ApprovalReviewer, "assess", return_value=(
+            {"decision": "approve", "reason": "Within the configured project scope."}, [],
+        )) as assess:
+            service = self.start(maintenance={"grant_on_requirements_acceptance": True})
+            audit = eventually(lambda: next((
+                row for row in self.host.store.items("approval_reviews").values()
+                if row["state"] == "approved"
+            ), None), 15)
+            assess.assert_called_once()
+        store = service.runtime.maintenance.store
+        decision = store.get("decisions", audit["request_id"])
+        work = service.store.work(service.work.list()["items"][0]["id"])
+        self.assertEqual(decision["kind"], "discussion_requirements")
+        self.assertEqual(decision["state"], "approved")
+        self.assertEqual(work["authority"]["scope"], "code")
+        self.assertEqual(work["authority"]["origin"], "operator:auto-review-" + audit["id"])
+        self.assertFalse(any(request.kind == "work_authority" for request in service.requests()))
+
+
+class CIRuntimeReview(unittest.TestCase):
+    setUp = delivery_fixture.FlowTests.setUp
+    start = delivery_fixture.FlowTests.start
+    run_git = delivery_fixture.FlowTests.run_git
+
+    def test_automatic_ci_review_admits_one_native_repair_attempt(self):
+        service = self.start(ci_fix_limit=1)
+        delivery = service.runtime.maintenance.delivery
+        reviewer = ServiceApprovalReview(service.runtime)
+        reviewer.config = ReviewConfig(mode="auto_review", kinds=("ci_repair",))
+        self.addCleanup(reviewer.close)
+        # Exercise real request projection and dispatch without executing a repair Run.
+        with (
+            service.runtime.lock,
+            patch.object(delivery, "advance"),
+            patch.object(ApprovalReviewer, "assess", return_value=(
+                {"decision": "approve", "reason": "Current candidate has a scoped conflict."}, [],
+            )) as assess,
+        ):
+            with service.store.db.write() as conn:
+                work = service.store.enqueue(conn, service.id, "Keep the existing scope.", "repair-fixture")
+                work.update(state="review", run_id="completed-run")
+                changeset = delivery.store.create(conn, work)
+                changeset.update(
+                    state="repair_waiting", candidate={"commit": "a" * 40, "target_base": "b" * 40},
+                    ci_diagnosis={"classification": "code", "next_action": "repair",
+                                  "plan": "Resolve the tracked conflict.", "reason": "Current target changed."},
+                )
+                delivery.store.put(conn, "changesets", changeset)
+                pending = delivery.store.repair_request(conn, changeset)
+            (request,) = service.requests()
+            self.assertEqual(request.ref.id, pending["id"])
+            self.assertFalse(request.arguments["repair_attempts"]["extra_required"])
+            reviewer.run()
+            assess.assert_called_once()
+            decision = delivery.store.get("decisions", request.ref.id)
+            self.assertEqual(decision["kind"], "ci_repair")
+            self.assertEqual(decision["state"], "approved", self.host.store.items("approval_reviews"))
+            self.assertEqual(decision["work_id"], work["id"])
+            self.assertEqual(decision["authorized_attempt"], 1)
+            self.assertFalse(decision["extra_attempt"])
+            self.assertEqual(delivery.store.get("changesets", changeset["id"])["state"], "repair_approved")
+            service.pause("all")

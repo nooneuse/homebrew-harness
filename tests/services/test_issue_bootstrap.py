@@ -38,3 +38,28 @@ class IssueBootstrapTests(unittest.TestCase):
         self.assertIn("kind='events'", instruction)
         self.assertIn('next_offset', instruction)
         self.assertIn('not event IDs', instruction)
+
+    def test_recovery_instruction_without_input(self):
+        contract = JobContract(None, {"kind": "recovery_plan"})
+        instruction = contract.instruction(SimpleNamespace(skills={}))
+        self.assertIn("Propose an evidence-based recovery plan", instruction)
+        self.assertNotIn("The operator explicitly requested applying", instruction)
+
+    def test_ci_triage_instruction_without_store(self):
+        contract = JobContract(None, {"kind": "ci_triage"})
+        instruction = contract.instruction(SimpleNamespace(skills={}))
+        self.assertIn("Read fixed candidate code", instruction)
+        self.assertNotIn("next_action=assess_integration", instruction)
+
+    def test_own_pr_instruction_preserves_followup_for_each_state(self):
+        for pr_state, delivery_state, expected in (
+            ("open", "published", "next_step=repair"),
+            ("closed", "published", "Do not submit a code review"),
+            ("open", "delivered", "Do not submit a code review"),
+        ):
+            with self.subTest(pr_state=pr_state, delivery_state=delivery_state):
+                contract = JobContract(None, {"kind": "discussion", "input": {
+                    "own_pr": {"delivery_state": delivery_state},
+                    "observed_pr": {"state": pr_state},
+                }})
+                self.assertIn(expected, contract.instruction(SimpleNamespace(skills={})))

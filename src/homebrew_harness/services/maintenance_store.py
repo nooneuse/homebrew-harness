@@ -46,6 +46,19 @@ class MaintenanceStore:
     def __init__(self, store, header, policy):
         self.store, self.db, self.header, self.policy = store, store.db, header, policy
         self.id = header["id"]
+        self.scopes = policy.get("scopes", {})
+        saved = header.get("spec", {}).get("maintenance")
+        if saved and saved != policy:
+            # Keep existing Work and discussion bases when the only difference
+            # is the compiler retaining an already-native Run control tool.
+            scopes = {}
+            for name, scope in saved.get("scopes", {}).items():
+                tools = scope["tools"]
+                if "allow_attention" not in scope and "request_attention" not in tools:
+                    tools = [*tools, "request_attention"]
+                scopes[name] = {**scope, "tools": tools}
+            if {**saved, "scopes": scopes} == policy:
+                self.policy = saved
         self.delivery = None
         self.communication = None
 
@@ -638,7 +651,8 @@ class MaintenanceStore:
             prompt += "\n\nConfigured development guidance:\n" + "\n\n".join(
                 guidance.values()
             )
-        settings = {**compiled, **self.policy["scopes"][scope]}
+        settings = {**compiled, **self.scopes[scope]}
+        settings.pop("allow_attention", None)
         from .work_progress import seed
 
         settings["work_context"] = {
@@ -883,7 +897,9 @@ class MaintenanceStore:
             if self.communication is None:
                 raise ValueError("Communication is not configured.")
             return self.communication.decide(conn, decision, payload, request_id)
-        if decision["kind"] in {"delivery_authority", "ci_repair"}:
+        if decision["kind"] in {"delivery_authority", "ci_repair", "delivery_information"}:
+            if self.delivery is None:
+                raise ValueError("Delivery is not configured.")
             return self.delivery.store.decide(conn, decision, payload, request_id)
         work = self.store.work(decision["work_id"], self.id)
         if (
@@ -937,9 +953,14 @@ class MaintenanceStore:
                     "Finish or cancel the previous Run before authorizing replacement requirements."
                 )
             if action == "approve":
-                scope = self.policy["scopes"].get(authority["scope"])
-                if not scope or any(set(scope[field]) - set(work["run_spec"][field])
-                                    for field in ("write_paths", "tools", "allow_tests")):
+                # The compatible legacy policy differs only by the compiler's
+                # implicit request_attention. Check renewal against that policy;
+                # new grants still use the recompiled scopes.
+                scope = self.policy.get("scopes", {}).get(authority["scope"])
+                if not scope or any(
+                    set(scope[field]) - set(work["run_spec"][field])
+                    for field in ("write_paths", "tools", "allow_tests")
+                ):
                     raise ValueError("Renewal cannot widen the current Work's accepted execution scope.")
                 authority.update(
                     policy=fingerprint(self.policy),

@@ -73,7 +73,9 @@ Session reviews include original requirements, input version, execution role, wo
 
 Run review begins after a durable request is accepted. Approved tool requests still need `execute_approved`; the original call is consumed once when accepted. Member test renewals retain task scope and registered run/time limits. Attention questions and the managed member/Lead boundary keep their existing behavior.
 
-Service reviews business requests asynchronously; its native Runs review tool requests. Explicitly include `work_authority`, `delivery_authority`, or `communication_authority` in `kinds` to delegate the corresponding business decisions, together with the configured project policy. The reviewer receives the fixed proposal, publication plan or message, and current policy. Platform PR approval and merge privileges continue to depend on the configured account and project policy. Service business requests currently have no captured model requester: `requester` requires the explicit Lead fallback or human review for them.
+Service reviews business requests asynchronously; its native Runs review tool requests. With `approval_review.mode: auto_review`, explicitly select each business kind in `approval_review.kinds`: `work_authority`, `delivery_authority`, `communication_authority`, `discussion_requirements` (requirements acceptance), or `ci_repair` (scoped repair). The reviewer receives the fixed proposal, publication plan or message and current policy. Service business requests have no captured model requester: `requester` requires the explicit Lead fallback or human review for them.
+
+CI repairs that exceed a configured hard cap (`repair_attempts.extra_required=true`) still require an operator to approve one extra attempt explicitly. `APPROVE` and `REQUEST_CHANGES` PR reviews require an explicit operator decision even when `communication_authority` is delegated. Platform PR review and merge privileges still depend on the configured account and project policy.
 
 Human fallback uses the existing terminal, HTTP/Text UI and Python API. Durable Run and Service requests remain pending across worker restarts.
 

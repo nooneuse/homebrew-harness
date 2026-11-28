@@ -24,6 +24,14 @@ class ServiceStore:
             raise ValueError("Unknown service reference.")
         return value
 
+    def receipt(self, identity, request_id):
+        value = self.runtime.get("service_commands", request_key("command", identity, request_id))
+        if value and value["method"] == "inbox_decide":
+            # Hide replay internals in receipts accepted before they moved to
+            # a separate section; no migration is needed to read old receipts.
+            return {k: value[k] for k in ("service_id", "method", "payload", "result", "checkpoint")}
+        return value
+
     def configure_stopped_budgets(self, identity, changes, revision, request_id, **kwargs):
         from .budgets import configure
         return configure(self, identity, changes, revision, request_id, **kwargs)

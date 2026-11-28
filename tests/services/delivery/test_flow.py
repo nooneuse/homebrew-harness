@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from homebrew_harness import Harness, HostConfig, ServiceSpec
+from homebrew_harness.contracts import SDKError
 from tests.services.delivery.fixture import Peer
 from tests.runtime.test_interaction import eventually
 
@@ -391,6 +392,87 @@ class FlowTests(unittest.TestCase):
         service.decide(request, "approve", decision_id="target")
         eventually(lambda: work.snapshot().state == "delivered", 80)
 
+    def test_answer_ci_question_queues_new_diagnosis_with_current_context(self):
+        reason = "Which CI compatibility guarantee applies?"
+        answer = "Preserve compatibility with the current check."
+        self.peer.ci_failure = True
+        self.peer.ci_value = {
+            "next_action": "human_required", "classification": "unknown",
+            "reason": reason, "plan": "Clarify the expected behavior before proposing a repair.",
+        }
+        service = self.start(auto_ci_fix=False)
+        work = service.work.submit("Fix the scoped source and diagnose CI.")
+        question = eventually(
+            lambda: next(
+                (r for r in service.requests() if r.kind == "delivery_information"), None
+            ),
+            120,
+        )
+        service.pause("all")
+        prior_note = "Keep the original acceptance checks."
+        work.context(prior_note)
+        work_before = service.store.work(work.id)
+        store = service.runtime.maintenance.store
+        before = store.get("changesets", work_before["changeset_id"])
+        self.assertEqual(before["state"], "blocked")
+        self.assertEqual(before["error"], "model_human_required")
+        self.assertEqual(question.question, reason)
+        self.assertEqual(question.arguments, {
+            "work_id": work.id, "changeset_id": before["id"], "stage": "ci_triage",
+        })
+        self.assertIsNone(question.expires_at)
+        first_job = before["reasoning_job_id"]
+        self.assertEqual(store.get("decisions", question.ref.id)["basis"], first_job)
+        self.assertEqual(service.job(first_job)["state"], "completed")
+
+        result = service.decide(question, "answer", text=answer)
+        self.assertEqual(result["state"], "answered")
+        self.assertEqual(store.get("decisions", question.ref.id)["answer"], answer)
+        with self.assertRaises(SDKError):
+            service.decide(question, "answer", text="Do not add an outdated answer.")
+        self.assertNotIn(question.ref.id, [r.ref.id for r in service.requests()])
+        resumed = store.get("changesets", before["id"])
+        self.assertEqual(resumed["state"], "ci_diagnosing")
+        self.assertEqual(resumed["revision"], before["revision"] + 1)
+        self.assertEqual(resumed["candidate"], before["candidate"])
+        for key in ("error", "error_detail", "error_info"):
+            self.assertIsNone(resumed[key])
+        job = service.job(resumed["reasoning_job_id"])
+        self.assertNotEqual(job["id"], first_job)
+        self.assertEqual((job["kind"], job["state"], job["revision"]),
+                         ("ci_triage", "queued", resumed["revision"]))
+        note = f"Delivery clarification (ci_triage): {answer}"
+        self.assertEqual(resumed["clarifications"][-1]["question"], reason)
+        self.assertEqual(resumed["clarifications"][-1]["question_origin"], "model")
+        clarified = service.store.work(work.id)
+        self.assertEqual(clarified["execution_context"], [prior_note, note])
+        self.assertEqual(clarified["revision"], work_before["revision"] + 1)
+        for key in ("requirements_revision", "authority", "run_id", "changeset_id"):
+            self.assertEqual(clarified[key], work_before[key])
+
+        # A new diagnosis may still need clarification. Even an identical reason
+        # belongs to a new job and must not reopen the already answered request.
+        service.resume()
+        followup = eventually(
+            lambda: next(
+                (r for r in service.requests() if r.kind == "delivery_information"), None
+            ),
+            25,
+        )
+        self.assertNotEqual(followup.ref.id, question.ref.id)
+        self.assertEqual(followup.question, question.question)
+        self.assertEqual(store.get("decisions", followup.ref.id)["basis"], job["id"])
+        self.assertEqual(service.job(job["id"])["state"], "completed")
+        payloads = [
+            json.loads(message["content"])
+            for request in self.peer.model_requests
+            for message in request["messages"]
+            if message.get("role") == "user" and message.get("content", "").startswith('{"job":')
+        ]
+        diagnosis = next(p for p in payloads if p["job"]["id"] == job["id"])
+        self.assertEqual(diagnosis["input"]["work_context"]["execution_context"], [prior_note, note])
+        self.assertFalse(any(kind == "merge" for kind, _ in self.peer.writes))
+
     def test_ci_triage_keeps_fixed_delta_without_serializing_host_inventory(self):
         from homebrew_harness.services.agent import ServiceAgent
 
@@ -472,6 +554,29 @@ class FlowTests(unittest.TestCase):
         self.assertEqual(
             context["requirements_revision"], saved["requirements_revision"]
         )
+
+    def test_stale_preflight_does_not_overwrite_a_newer_action_or_changeset(self):
+        from homebrew_harness.services.delivery.git import StaleDelivery
+
+        service = self.start()
+        service.work.submit("Fix the scoped value.")
+        request = eventually(lambda: self.pending_target(service), 120)
+        service.pause("all")
+        store = service.runtime.maintenance.delivery.store
+        action = store.get("actions", request.arguments["action_id"])
+        row = store.get("changesets", action["changeset_id"])
+        service.decide(request, "approve")
+        queued = store.get("actions", action["id"])
+        err = StaleDelivery("An earlier observation is stale.")
+        self.assertFalse(store.recover_stale_action(action, err))
+        self.assertEqual(store.get("actions", action["id"]), queued)
+
+        started = store.update("actions", action["id"], state="started", attempts=1)
+        self.assertFalse(store.recover_stale_action(queued, err))
+        self.assertEqual(store.get("actions", action["id"]), started)
+        advanced = store.update("changesets", row["id"], state="review_waiting")
+        store.supersede_changeset(row, err)
+        self.assertEqual(store.get("changesets", row["id"]), advanced)
 
     def test_lost_pull_creation_ack_is_reconciled_without_duplicate_write(self):
         self.peer.drop = "pull"

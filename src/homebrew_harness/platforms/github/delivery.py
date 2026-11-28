@@ -97,7 +97,7 @@ class GithubDelivery:
     def ensure_change_request(self, plan, *, reconcile=False):
         marker = self.marker(plan["correlation"])
         title, body = plan["title"], plan["body"]
-        if CLOSING.search(body):
+        if not self.spec.get("allow_closing_keywords") and CLOSING.search(body):
             raise ValueError(
                 "Change-request descriptions cannot implicitly close issues."
             )

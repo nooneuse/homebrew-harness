@@ -31,6 +31,76 @@ class PolicyTests(unittest.TestCase):
             with self.subTest(warning=warning), self.assertRaises(ValueError):
                 validate({**raw, 'ci_fix_warning': warning})
 
+    def test_automatic_pr_text_requires_a_boolean_and_pr_preauthorization(self):
+        raw = {k: v for k, v in self.spec.items() if k != "auto_publish_pr_text"}
+        # Keep omitted settings out of persisted policy fingerprints.
+        self.assertNotIn("auto_publish_pr_text", validate(raw))
+        self.assertIs(
+            validate({**raw, "auto_publish_pr_text": False})["auto_publish_pr_text"],
+            False,
+        )
+        for actions in ([], ["publish_branch"]):
+            with self.subTest(actions=actions), self.assertRaisesRegex(
+                ValueError, "ensure_change_request"
+            ):
+                validate({**raw, "auto_actions": actions, "auto_publish_pr_text": True})
+        enabled = {**raw, "auto_actions": ["ensure_change_request"]}
+        self.assertIs(
+            validate({**enabled, "auto_publish_pr_text": True})["auto_publish_pr_text"],
+            True,
+        )
+        for value in (None, 0, 1, "false", "true", [], {}):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                validate({**enabled, "auto_publish_pr_text": value})
+
+    def test_closing_keyword_opt_in_is_boolean_and_omission_does_not_change_policy(self):
+        from homebrew_harness.services.protocol import fingerprint
+
+        raw = {k: v for k, v in self.spec.items() if k != "allow_closing_keywords"}
+        compiled = validate(raw)
+        self.assertNotIn("allow_closing_keywords", compiled)
+        for value in (True, False):
+            declared = validate({**raw, "allow_closing_keywords": value})
+            self.assertIs(declared.pop("allow_closing_keywords"), value)
+            self.assertEqual(fingerprint(compiled), fingerprint(declared))
+        for value in (None, 0, 1, "false", "true", [], {}):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, "allow_closing_keywords"):
+                validate({**raw, "allow_closing_keywords": value})
+
+    def test_review_publication_and_github_guard_closing_keywords_by_default(self):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+        from homebrew_harness.platforms.effects import EffectFailure
+        from homebrew_harness.platforms.github.delivery import GithubDelivery
+        from homebrew_harness.services import job_results
+
+        publication = {"title": "Restore the value", "body": "Fixes #1"}
+        review = {"text": "Verified", "findings": [], "publication": publication}
+        plan = {**publication, "correlation": "1", "branch": "harness/example"}
+        for flag in ({}, {"allow_closing_keywords": False}, {"allow_closing_keywords": True}):
+            with self.subTest(flag=flag):
+                spec = {**self.spec, **flag}
+                store = SimpleNamespace(delivery=SimpleNamespace(spec=spec))
+                adapter = GithubDelivery(spec, {"api_url": "http://127.0.0.1:9", "api_token": "synthetic"})
+                try:
+                    with patch.object(adapter, "pages", return_value=[]) as pages:
+                        if flag.get("allow_closing_keywords"):
+                            self.assertEqual(job_results.review(store, {"kind": "review"}, review), review)
+                            self.assertEqual(job_results.publication(store, {}, publication), publication)
+                            self.assertIsNone(adapter.ensure_change_request(plan, reconcile=True))
+                            pages.assert_called_once()
+                        else:
+                            with self.assertRaisesRegex(ValueError, "implicitly close issues"):
+                                job_results.review(store, {"kind": "review"}, review)
+                            with self.assertRaisesRegex(ValueError, "implicitly close issues"):
+                                job_results.publication(store, {}, publication)
+                            with self.assertRaisesRegex(EffectFailure, "not_executed") as blocked:
+                                adapter.ensure_change_request(plan, reconcile=True)
+                            self.assertIn("implicitly close issues", str(blocked.exception.__cause__))
+                            pages.assert_not_called()
+                finally:
+                    adapter.close()
+
     def test_connection_values_use_external_references(self):
         for values in (
             {"mode": []},
