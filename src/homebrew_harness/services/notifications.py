@@ -149,10 +149,13 @@ def open_notification_transport(spec, environment, roots):
     return transport
 
 
+def _permanent_rejection(error):
+    return isinstance(error, RemoteFailure) and 400 <= error.status < 500 and error.status not in {408, 429}
+
+
 def _retry_seconds(error, attempts, now):
     status = error.status if isinstance(error, RemoteFailure) else None
-    non_transient = status is not None and 400 <= status < 500 and status not in {408, 429}
-    delay = backoff(attempts - 1, initial=60 if non_transient else 1, maximum=3600)
+    delay = backoff(attempts - 1, initial=60 if _permanent_rejection(error) else 1, maximum=3600)
     if status in {429, 503}:
         retry = next((value for key, value in error.headers.items() if key.lower() == "retry-after"), None)
         if retry is not None:
@@ -482,8 +485,10 @@ class ServiceNotifications:
                          next_retry_at=None, sent_count=state["sent_count"] + 1)
             if key is None:
                 self._auto_retry = None
-                self._next_retry_at = 0
+            self._next_retry_at = 0
         else:
+            if key is None and _permanent_rejection(error):
+                self._auto_retry = None
             result = {**receipt, "reason": "delivery_failed", "last_error": message}
             attempts = state["attempts"] + 1
             state.update(last_error=message, attempts=attempts,

@@ -1,8 +1,12 @@
 """PR-writing preferences and the opt-in boundary for custom publication."""
 
 import json
+import threading
 import unittest
+from unittest.mock import patch
 
+from homebrew_harness.services.delivery.publication import context_hash
+from homebrew_harness.services.delivery.runtime import Delivery
 from tests.runtime.test_interaction import eventually
 from tests.services.delivery import test_flow as fixture
 
@@ -105,10 +109,6 @@ class CustomPublication(unittest.TestCase):
         self.assertEqual(self.peer.pulls[0]["title"], fallback["plan"]["title"])
 
     def test_validation_plan_draft_retains_host_policy_authorization(self):
-        from unittest.mock import patch
-
-        from homebrew_harness.services.delivery.runtime import Delivery
-
         self.peer.validation_extra = {
             "draft": {"title": "Draft the scoped change", "body": "Verification is pending."}
         }
@@ -124,6 +124,51 @@ class CustomPublication(unittest.TestCase):
         self.assertIsNot(draft.get("explicit_publication"), True)
         self.assertNotIn("context_hash", draft)
         self.assertNotIn(draft["id"], {r.arguments.get("action_id") for r in service.requests()})
+
+    def test_context_change_before_action_creation_redrafts_accepted_review_wording(self):
+        original = {"title": "Initial review wording", "body": "Describe the verified change."}
+        revised = {"title": "Updated operator wording", "body": "Describe the change and its compatibility."}
+        self.peer.review_extra = {"publication": original}
+        self.peer.publication_value = revised
+        accepted, release = threading.Event(), threading.Event()
+        advance = Delivery.advance
+
+        def hold_before_planning(delivery, row):
+            if row["state"] == "review_branch_ready" and not accepted.is_set():
+                accepted.set()
+                release.wait(20)
+            return advance(delivery, row)
+
+        with patch.object(Delivery, "advance", hold_before_planning):
+            service = self.start(auto_publish_pr_text=True, merge={"mode": "manual"})
+            work = service.work.submit("Restore the documented value.")
+            try:
+                self.assertTrue(accepted.wait(45), "Review wording was not accepted before planning.")
+                saved_work = service.store.work(work.id)
+                changeset = service.delivery(saved_work["changeset_id"])
+                self.assertEqual(changeset["review"]["publication"], original)
+                accepted_hash = context_hash(saved_work)
+                self.assertEqual(changeset["publication_context_hash"], accepted_hash)
+                self.assertFalse(service.records("actions")["items"])
+                work.context("Mention compatibility in the public description.")
+                updated_hash = context_hash(service.store.work(work.id))
+                self.assertNotEqual(updated_hash, accepted_hash)
+            finally:
+                release.set()
+
+            def publication_actions():
+                return [a for a in service.records("actions")["items"] if a["kind"] == "ensure_change_request"]
+
+            published = eventually(lambda: next((a for a in publication_actions()
+                                                 if a["state"] == "confirmed"), None), 45)
+            previous = next(a for a in publication_actions() if a["plan"]["title"] == original["title"])
+            self.assertEqual((previous["state"], previous["attempts"]), ("superseded", 0))
+            self.assertEqual(previous["context_hash"], accepted_hash)
+            self.assertEqual(published["plan"]["title"], revised["title"])
+            self.assertEqual(published["context_hash"], updated_hash)
+            self.assertEqual(service.delivery(changeset["id"])["publication_context_hash"], updated_hash)
+            self.assertEqual([pull["title"] for pull in self.peer.pulls], [revised["title"]])
+            self.assertEqual(self.peer.pulls[0]["body"].split("\n\n<!--", 1)[0], revised["body"])
 
     def test_opt_in_publishes_review_text_but_does_not_authorize_explicit_plans(self):
         publication = {

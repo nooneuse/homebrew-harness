@@ -244,6 +244,69 @@ class NotificationsTests(unittest.TestCase):
             self.assertNotIn(private, data)
             self.assertEqual(redact(private), "[redacted]")
 
+    def test_manual_success_clears_backoff_for_automatic_delivery(self):
+        webhook = self.webhook()
+        webhook.status, webhook.retry_after = 429, 86400
+        self.configure(webhook.url)
+        with patch("homebrew_harness.services.notifications.ServiceNotifications.start"):
+            service = self.start(every_seconds=3600, min_pending=2)
+        first = self.seed(service, "First pending item")
+        worker = service.runtime.notifications
+
+        before = time.time()
+        failed = service.send_notification(request_id="manual-rate-limited")
+        self.assertFalse(failed["sent"])
+        self.assertEqual(failed["last_error"], "Webhook returned HTTP 429.")
+        self.assertGreaterEqual(service.notification_status()["next_retry_at"], before + 86400)
+
+        webhook.status, webhook.retry_after = 204, None
+        self.assertTrue(service.send_notification(request_id="manual-recovered")["sent"])
+        self.assertIsNone(service.notification_status()["next_retry_at"])
+        second = self.seed(service, "Second pending item")
+        worker.tick()
+
+        self.assertEqual(service.notification_status()["sent_count"], 2)
+        self.assertEqual(len(webhook.calls), 3)
+        payload = webhook.calls[-1][2]
+        self.assertEqual(payload["trigger"], "threshold")
+        self.assertEqual([item["ref"]["id"] for item in payload["items"]], [first, second])
+
+    def test_permanently_rejected_snapshot_does_not_block_newer_digest(self):
+        webhook = self.webhook()
+        webhook.status = 422
+        self.configure(webhook.url)
+        with patch("homebrew_harness.services.notifications.ServiceNotifications.start"):
+            service = self.start(every_seconds=3600)
+        first = self.seed(service, "Reject this snapshot")
+        worker = service.runtime.notifications
+        now = time.time()
+
+        with patch("homebrew_harness.services.notifications.time", SimpleNamespace(time=lambda: now)):
+            worker.tick()
+            failed = service.notification_status()
+            self.assertEqual(failed["last_error"], "Webhook returned HTTP 422.")
+            self.assertGreater(failed["next_retry_at"], now)
+            self.assertEqual(len(webhook.calls), 1)
+            _, old_headers, old_payload = webhook.calls[0]
+            self.assertEqual([item["ref"]["id"] for item in old_payload["items"]], [first])
+
+            request = next(request for request in service.requests() if request.ref.id == first)
+            service.decide(request, "deny")
+            second = self.seed(service, "Send this newer snapshot")
+            webhook.status = 204
+            worker.tick()
+            self.assertEqual(len(webhook.calls), 1)
+
+            now = failed["next_retry_at"]
+            worker.tick()
+
+        self.assertEqual(service.notification_status()["sent_count"], 1)
+        self.assertEqual(len(webhook.calls), 2)
+        _, headers, payload = webhook.calls[1]
+        self.assertNotEqual(headers["Idempotency-Key"], old_headers["Idempotency-Key"])
+        self.assertNotEqual(payload["digest"], old_payload["digest"])
+        self.assertEqual([item["ref"]["id"] for item in payload["items"]], [second])
+
     def test_retry_keeps_wire_body_and_backoff_when_outcome_writes_fail(self):
         webhook = self.webhook()
         webhook.status, webhook.retry_after = 429, 30

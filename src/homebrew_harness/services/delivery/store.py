@@ -585,7 +585,7 @@ class DeliveryStore:
         if kind == "ensure_change_request" and publication and auto and not draft:
             from .publication import context_hash
 
-            context = context_hash(work)
+            context = row.get("publication_context_hash") or context_hash(work)
             # While the plan is queued, changing context must not mint a new
             # action using the old wording. Only a redraft can replace it.
             if replaced := row.get("publication_redraft_action"):
@@ -1063,6 +1063,10 @@ class DeliveryStore:
             else:
                 row.update(state="review_branch_ready")
                 row["frozen"] = self.freeze(row)
+                if result.get("publication"):
+                    from .publication import context_hash
+
+                    row["publication_context_hash"] = context_hash(self.current(row, conn))
         elif job["kind"] == "ci_triage":
             row["ci_diagnosis"] = result
             row["reasoning_job_id"] = job["id"]

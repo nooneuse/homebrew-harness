@@ -72,7 +72,7 @@ def mark_redraft(store, row, conn, action_id):
             or not row.get("frozen") or row["frozen"] != store.freeze(row)
             or store.merged_pr(conn, row)):
         return False
-    row.update(publication=None, publication_basis=None, publication_redraft=True,
+    row.update(publication=None, publication_context_hash=None, publication_basis=None, publication_redraft=True,
                publication_redraft_action=action_id, error=None, error_detail=None, error_info=None,
                revision=row["revision"] + 1)
     store.put(conn, "changesets", row)
@@ -148,5 +148,5 @@ def accept(store, row, job, result, conn):
     row["publication_history"] = [*row.get("publication_history", []),
                                   {"publication": content(row), "feedback": rejected,
                                    "job_id": job["id"]}]
-    row.update(publication=result, state="review_branch_ready", error=None,
-               error_detail=None, error_info=None)
+    row.update(publication=result, publication_context_hash=context_hash(store.current(row, conn)),
+               state="review_branch_ready", error=None, error_detail=None, error_info=None)
